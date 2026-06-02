@@ -168,13 +168,10 @@ pub fn read_app_config() -> Result<AppConfig, String> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| cwd.clone());
     let paths = vec![
-        // Bundled resource (production)
-        exe_dir.join("../Resources/update/update.json"),
-        // Relative to CWD (development)
-        cwd.join("update").join("update.json"),
+        // Bundled resource (production) — Tauri v2 copies to Resources/
+        exe_dir.join("../Resources/update.json"),
+        // Development fallback
         cwd.join("update.json"),
-        cwd.join("..").join("update").join("update.json"),
-        cwd.join("..").join("update.json"),
         // Global fallback
         home_dir().join(".claude-profiles").join("update.json"),
     ];
