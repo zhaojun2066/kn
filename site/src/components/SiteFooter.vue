@@ -15,9 +15,9 @@ import { APP_NAME, APP_VERSION } from '../config'
       </div>
 
       <div class="footer-links">
-        <a href="#features">特性</a>
-        <a href="#docs">文档</a>
-        <a href="#download">下载</a>
+        <a href="#/">特性</a>
+        <a href="#/docs">文档</a>
+        <a href="#/#download">下载</a>
       </div>
 
       <div class="footer-right">

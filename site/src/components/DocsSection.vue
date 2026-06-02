@@ -185,6 +185,12 @@ function toggleFaq(idx: number) {
           </div>
         </div>
       </div>
+      <!-- CTA -->
+      <div class="docs-cta reveal" style="text-align: center; margin-top: 40px;">
+        <a href="#/docs" class="btn btn-outline">
+          查看完整文档 →
+        </a>
+      </div>
     </div>
   </section>
 </template>

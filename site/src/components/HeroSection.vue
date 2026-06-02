@@ -30,7 +30,7 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               下载
             </a>
-            <a href="#docs" class="btn btn-outline">查看文档</a>
+            <a href="#/docs" class="btn btn-outline">查看文档</a>
           </div>
           <p class="hero-meta">v{{ APP_VERSION }} · macOS 12+ · 开源免费</p>
         </div>
