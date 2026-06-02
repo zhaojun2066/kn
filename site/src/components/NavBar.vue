@@ -12,6 +12,10 @@ function onScroll() {
   scrolled.value = window.scrollY > 20
 }
 
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
 onMounted(() => {
   window.addEventListener('scroll', onScroll, { passive: true })
   onScroll()
@@ -25,7 +29,7 @@ onUnmounted(() => {
 <template>
   <nav class="nav" :class="{ 'nav-scrolled': scrolled }">
     <div class="nav-inner">
-      <a href="#" class="nav-brand" @click.prevent="window.scrollTo({ top: 0, behavior: 'smooth' })">
+      <a href="#" class="nav-brand" @click.prevent="scrollToTop">
         <img src="/icon-128.png" alt="" class="nav-icon" />
         <span class="nav-name">AI Profile Manager</span>
       </a>

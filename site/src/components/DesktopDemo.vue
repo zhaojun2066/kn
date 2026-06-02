@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 
 // Scenes to cycle through
 const scenes = [
@@ -68,11 +68,6 @@ const scene = computed(() => scenes[currentScene.value])
 // Animated cursor for terminal
 const typedLineIdx = ref(-1)
 const typedCharCount = ref(0)
-const totalLines = computed(() => scenes[currentScene.value].mainType === 'terminal'
-  ? (scenes[currentScene.value].terminalLines?.length || 0)
-  : 0
-)
-
 function resetTyping() {
   typedLineIdx.value = -1
   typedCharCount.value = 0

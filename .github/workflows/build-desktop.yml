@@ -14,14 +14,17 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            target: universal-apple-darwin
-            artifact: dmg
+            target: aarch64-apple-darwin
+            label: macos-apple-silicon
+          - os: macos-13
+            target: x86_64-apple-darwin
+            label: macos-intel
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: msi
+            label: windows-x64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: deb
+            label: linux-x64
 
     runs-on: ${{ matrix.os }}
 
@@ -48,20 +51,12 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      - name: Build frontend
-        working-directory: desktop
-        run: npm run build
-
       - name: Build Tauri
-        working-directory: desktop/src-tauri
-        run: cargo build --release
-
-      - name: Bundle
-        working-directory: desktop/src-tauri
-        run: cargo tauri build --target ${{ matrix.target }}
+        working-directory: desktop
+        run: npx tauri build --target ${{ matrix.target }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ai-profile-manager-${{ runner.os }}
+          name: ai-profile-manager-${{ matrix.label }}
           path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
