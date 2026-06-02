@@ -17,7 +17,7 @@ jobs:
             target: aarch64-apple-darwin
             label: macos-apple-silicon
             platform: darwin-aarch64
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             label: macos-intel
             platform: darwin-x86_64
@@ -42,6 +42,9 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
 
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
