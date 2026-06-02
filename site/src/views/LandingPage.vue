@@ -1,0 +1,32 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import { useScrollReveal } from '../composables/useScrollReveal'
+import NavBar from '../components/NavBar.vue'
+import HeroSection from '../components/HeroSection.vue'
+import FeaturesSection from '../components/FeaturesSection.vue'
+import ComparisonSection from '../components/ComparisonSection.vue'
+import DownloadSection from '../components/DownloadSection.vue'
+import DocsSection from '../components/DocsSection.vue'
+import SiteFooter from '../components/SiteFooter.vue'
+
+const appRef = ref<HTMLElement | null>(null)
+useScrollReveal(appRef)
+</script>
+
+<template>
+  <div ref="appRef" class="landing">
+    <NavBar />
+    <HeroSection />
+    <FeaturesSection />
+    <ComparisonSection />
+    <DocsSection />
+    <DownloadSection />
+    <SiteFooter />
+  </div>
+</template>
+
+<style scoped>
+.landing {
+  min-height: 100vh;
+}
+</style>
