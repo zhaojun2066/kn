@@ -16,15 +16,19 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-apple-silicon
+            platform: darwin-aarch64
           - os: macos-13
             target: x86_64-apple-darwin
             label: macos-intel
+            platform: darwin-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows-x64
+            platform: windows-x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             label: linux-x64
+            platform: linux-x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -58,5 +62,115 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ai-profile-manager-${{ matrix.label }}
+          name: ${{ matrix.label }}
           path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read app version
+        id: version
+        run: |
+          VER=$(grep '"version"' desktop/src-tauri/tauri.conf.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/')
+          echo "APP_VERSION=$VER" >> $GITHUB_ENV
+          echo "version=$VER" >> $GITHUB_OUTPUT
+
+      - name: Download macOS Apple Silicon
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-apple-silicon
+          path: assets/darwin-aarch64
+
+      - name: Download macOS Intel
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-intel
+          path: assets/darwin-x86_64
+
+      - name: Download Windows
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x64
+          path: assets/windows-x86_64
+
+      - name: Download Linux
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x64
+          path: assets/linux-x86_64
+
+      - name: Generate download.json manifest
+        run: |
+          echo '{"version":"","notes":"","platforms":{}}' > download.json
+
+          # darwin-aarch64
+          DMG=$(find assets/darwin-aarch64 -name "*.dmg" | head -1)
+          if [ -f "$DMG" ]; then
+            SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
+            FNAME=$(basename "$DMG")
+            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
+               --arg sha "$SHA" \
+               '.platforms["darwin-aarch64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
+          fi
+
+          # darwin-x86_64
+          DMG=$(find assets/darwin-x86_64 -name "*.dmg" | head -1)
+          if [ -f "$DMG" ]; then
+            SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
+            FNAME=$(basename "$DMG")
+            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
+               --arg sha "$SHA" \
+               '.platforms["darwin-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
+          fi
+
+          # windows-x86_64
+          MSI=$(find assets/windows-x86_64 -name "*.msi" | head -1)
+          if [ -f "$MSI" ]; then
+            SHA=$(sha256sum "$MSI" | cut -d' ' -f1)
+            FNAME=$(basename "$MSI")
+            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
+               --arg sha "$SHA" \
+               '.platforms["windows-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
+          fi
+
+          # linux-x86_64
+          DEB=$(find assets/linux-x86_64 -name "*.deb" | head -1)
+          if [ -f "$DEB" ]; then
+            SHA=$(sha256sum "$DEB" | cut -d' ' -f1)
+            FNAME=$(basename "$DEB")
+            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
+               --arg sha "$SHA" \
+               '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
+          fi
+
+          jq --arg v "$APP_VERSION" --arg n "自动构建版本 $APP_VERSION" \
+             '.version = $v | .notes = $n' download.json > tmp && mv tmp download.json
+
+          echo "=== download.json ==="
+          cat download.json
+
+      - name: Create Release and upload
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_VERSION }}
+          name: v${{ env.APP_VERSION }}
+          body: |
+            自动构建版本。
+
+            | 平台 | 文件 |
+            |------|------|
+            | macOS Apple Silicon | `.dmg` |
+            | macOS Intel | `.dmg` |
+            | Windows x64 | `.msi` |
+            | Linux x64 | `.deb` |
+          files: |
+            assets/**/*
+            download.json
+          draft: false
+          prerelease: false
