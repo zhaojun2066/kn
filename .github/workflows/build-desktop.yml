@@ -1,11 +1,13 @@
 name: Build Desktop App
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "desktop/**"
-      - ".github/workflows/build-desktop.yml"
+  # 注释掉自动触发，改为手动触发。桌面构建耗时长（4 个平台），每次 push 都跑太浪费。
+  # 需要发布新版本时，去 Actions → Build Desktop App → Run workflow 手动执行。
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - "desktop/**"
+  #     - ".github/workflows/build-desktop.yml"
   workflow_dispatch:
 
 jobs:
