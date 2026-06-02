@@ -1,7 +1,5 @@
 <script setup lang="ts">
-import { APP_VERSION } from '../config'
-
-const GITHUB_RELEASES = 'https://github.com/user/ai-profile-manager/releases'
+import { APP_VERSION, GITHUB_RELEASES } from '../config'
 </script>
 
 <template>
