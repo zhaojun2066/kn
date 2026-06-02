@@ -21,14 +21,14 @@ jobs:
             target: x86_64-apple-darwin
             label: macos-intel
             platform: darwin-x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            label: windows-x64
-            platform: windows-x86_64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            label: linux-x64
-            platform: linux-x86_64
+          # - os: windows-latest
+          #   target: x86_64-pc-windows-msvc
+          #   label: windows-x64
+          #   platform: windows-x86_64
+          # - os: ubuntu-latest
+          #   target: x86_64-unknown-linux-gnu
+          #   label: linux-x64
+          #   platform: linux-x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -93,17 +93,17 @@ jobs:
           name: macos-intel
           path: assets/darwin-x86_64
 
-      - name: Download Windows
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-x64
-          path: assets/windows-x86_64
+      # - name: Download Windows
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: windows-x64
+      #     path: assets/windows-x86_64
 
-      - name: Download Linux
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-x64
-          path: assets/linux-x86_64
+      # - name: Download Linux
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: linux-x64
+      #     path: assets/linux-x86_64
 
       - name: Generate download.json manifest
         run: |
@@ -129,25 +129,25 @@ jobs:
                '.platforms["darwin-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi
 
-          # windows-x86_64
-          MSI=$(find assets/windows-x86_64 -name "*.msi" | head -1)
-          if [ -f "$MSI" ]; then
-            SHA=$(sha256sum "$MSI" | cut -d' ' -f1)
-            FNAME=$(basename "$MSI")
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
-               --arg sha "$SHA" \
-               '.platforms["windows-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
-          fi
+          # # windows-x86_64
+          # MSI=$(find assets/windows-x86_64 -name "*.msi" | head -1)
+          # if [ -f "$MSI" ]; then
+          #   SHA=$(sha256sum "$MSI" | cut -d' ' -f1)
+          #   FNAME=$(basename "$MSI")
+          #   jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
+          #      --arg sha "$SHA" \
+          #      '.platforms["windows-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
+          # fi
 
-          # linux-x86_64
-          DEB=$(find assets/linux-x86_64 -name "*.deb" | head -1)
-          if [ -f "$DEB" ]; then
-            SHA=$(sha256sum "$DEB" | cut -d' ' -f1)
-            FNAME=$(basename "$DEB")
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
-               --arg sha "$SHA" \
-               '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
-          fi
+          # # linux-x86_64
+          # DEB=$(find assets/linux-x86_64 -name "*.deb" | head -1)
+          # if [ -f "$DEB" ]; then
+          #   SHA=$(sha256sum "$DEB" | cut -d' ' -f1)
+          #   FNAME=$(basename "$DEB")
+          #   jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
+          #      --arg sha "$SHA" \
+          #      '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
+          # fi
 
           jq --arg v "$APP_VERSION" --arg n "自动构建版本 $APP_VERSION" \
              '.version = $v | .notes = $n' download.json > tmp && mv tmp download.json
