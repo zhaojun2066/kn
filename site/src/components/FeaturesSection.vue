@@ -44,7 +44,7 @@ const features = [
     <div class="container">
       <div class="feat-header reveal">
         <span class="section-label">核心特性</span>
-        <h2 class="section-title">专为多 API 管理场景打造</h2>
+        <h2 class="section-title">专为多会话 API Key 管理场景打造</h2>
         <p class="section-desc">
           不论是 DeepSeek 中转、官方 Anthropic、OpenAI 兼容 API——一套 Profile 全管理。
         </p>
