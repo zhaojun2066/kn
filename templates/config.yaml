@@ -1,0 +1,29 @@
+# AI Profile Manager — config
+# Edit directly or use: profile <command>
+# https://api.deepseek.com/anthropic
+
+default: deepseek
+
+profiles:
+  deepseek:
+    desc: "DeepSeek 中转"
+    env:
+      ANTHROPIC_AUTH_TOKEN: sk-xxxxx
+      ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+      ANTHROPIC_MODEL: deepseek-v4-pro
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
+      ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro[1M]
+      ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-v4-pro[1M]
+      DISABLE_AUTOUPDATER: "1"
+
+  codex-default:
+    desc: "OpenAI 官方 Codex"
+    env:
+      OPENAI_API_KEY: sk-proj-xxxxxxxx
+
+  codex-custom:
+    desc: "OpenAI 兼容中转"
+    env:
+      OPENAI_API_KEY: sk-zzz-xxxxxxxx
+      OPENAI_BASE_URL: https://api.custom-provider.com/v1
+      OPENAI_MODEL: gpt-5

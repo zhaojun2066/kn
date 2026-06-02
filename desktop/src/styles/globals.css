@@ -1,0 +1,243 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════
+   THEME: Light (default / :root)
+   Terminal-on-paper — warm cream + dark green ink
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  --app-bg:           #f4f1ea;
+  --app-panel:        #faf8f4;
+  --app-sidebar:      #f0ede6;
+  --app-input:        #faf8f4;
+  --app-hover:        #ebe6db;
+  --app-active:       #e3dccf;
+  --app-selected:     #dce6d2;
+  --app-focus:        #2d8a2d;
+  --app-border:       #d6d1c6;
+  --app-border-light: #e2ded6;
+  --app-text:         #1a2818;
+  --app-text-dim:     #4a5a44;
+  --app-text-muted:   #8a9680;
+  --app-accent:       #2d8a2d;
+  --app-accent-dim:   #3a6e3a;
+  --app-amber:        #b8761a;
+  --app-amber-glow:   #d4922a;
+  --app-green:        #2d8a2d;
+  --app-green-bg:     #dde8d0;
+  --app-red:          #c04040;
+  --app-red-bg:       #f0d8d8;
+  --app-orange:       #b8761a;
+  --app-orange-bg:    #f0e4d0;
+  --app-blue:         #3a6db5;
+  --app-purple:       #6d4db5;
+  --app-teal:         #2d7a6d;
+  --app-toolbar:      #f0ede6;
+  --app-statusbar:    #ebe6dc;
+  --app-subtle:       #f0ede6;
+  --app-cmd-bg:       #f0ede6;
+  --app-cmd-header:   #ebe6dc;
+  --app-terminal-bg:       #ece8df;
+  --app-terminal-header:   #e4dfd4;
+  --app-terminal-input-bg: #f0ede6;
+  --app-glow:         rgba(45, 138, 45, 0.12);
+  --app-glow-amber:   rgba(184, 118, 26, 0.14);
+  --app-glow-red:     rgba(192, 64, 64, 0.12);
+  --shadow-panel:     0 2px 12px rgba(0,0,0,0.08);
+  --shadow-dialog:    0 8px 30px rgba(0,0,0,0.15), 0 0 0 1px #d6d1c6;
+  --shadow-glow:      0 0 10px rgba(45,138,45,0.1);
+  --shadow-glow-amber:0 0 12px rgba(184,118,26,0.12);
+  /* Button-specific */
+  --btn-pri-bg:       #f5edd8;
+  --btn-pri-border:   #d4c090;
+  --btn-pri-hover-bg: #faf3e2;
+  --btn-pri-hover-border: #c4a830;
+  --btn-pri-active-bg: #f0e4c4;
+  --btn-sec-bg:       #f0ede6;
+  --btn-sec-border:   var(--app-border);
+  --btn-sec-hover-bg: #e8e4da;
+  --btn-sec-hover-border: #c0baa8;
+  --btn-sec-active-bg: #e0dcd0;
+  --btn-danger-bg:    #f0d8d8;
+  --btn-danger-border:#d4a8a8;
+  --btn-danger-hover-bg: #f0cccc;
+  --btn-danger-hover-border: #c88080;
+  --btn-danger-active-bg: #e8c0c0;
+  --btn-ghost-hover-bg: #ebe6db;
+  --btn-ghost-active-bg: #e3dccf;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   THEME: Dark
+   Terminal CRT — deep green-black + phosphor glow
+   ═══════════════════════════════════════════════════════════ */
+
+.dark {
+  --app-bg:           #0a0c0a;
+  --app-panel:        #0f120f;
+  --app-sidebar:      #0c0f0c;
+  --app-input:        #0d110d;
+  --app-hover:        #131a13;
+  --app-active:       #182018;
+  --app-selected:     #162616;
+  --app-focus:        #3dfc3d;
+  --app-border:       #1a241a;
+  --app-border-light: #141c14;
+  --app-text:         #b8d0b8;
+  --app-text-dim:     #7d9a7d;
+  --app-text-muted:   #4d664d;
+  --app-accent:       #3dfc3d;
+  --app-accent-dim:   #2db82d;
+  --app-amber:        #e6a940;
+  --app-amber-glow:   #ffc44d;
+  --app-green:        #5cdb5c;
+  --app-green-bg:     #112611;
+  --app-red:          #e05555;
+  --app-red-bg:       #1f1212;
+  --app-orange:       #e6a940;
+  --app-orange-bg:    #1f1a10;
+  --app-blue:         #5c9edb;
+  --app-purple:       #9c7cdb;
+  --app-teal:         #3a9e8c;
+  --app-toolbar:      #0c0f0c;
+  --app-statusbar:    #080a08;
+  --app-subtle:       #0c0f0c;
+  --app-cmd-bg:       #0a0e0a;
+  --app-cmd-header:   #0c100c;
+  --app-terminal-bg:       #070a07;
+  --app-terminal-header:   #0a0e0a;
+  --app-terminal-input-bg: #0c100c;
+  --app-glow:         rgba(61, 252, 61, 0.15);
+  --app-glow-amber:   rgba(230, 169, 64, 0.18);
+  --app-glow-red:     rgba(224, 85, 85, 0.15);
+  --shadow-panel:     0 2px 12px rgba(0,0,0,0.5);
+  --shadow-dialog:    0 8px 30px rgba(0,0,0,0.7), 0 0 0 1px #1a241a;
+  --shadow-glow:      0 0 10px rgba(61,252,61,0.12);
+  --shadow-glow-amber:0 0 12px rgba(230,169,64,0.15);
+  /* Button-specific */
+  --btn-pri-bg:       #1a1608;
+  --btn-pri-border:   #3d2e10;
+  --btn-pri-hover-bg: #241c08;
+  --btn-pri-hover-border: #5a4216;
+  --btn-pri-active-bg: #2e220a;
+  --btn-sec-bg:       #0d110d;
+  --btn-sec-border:   var(--app-border);
+  --btn-sec-hover-bg: #111611;
+  --btn-sec-hover-border: #243324;
+  --btn-sec-active-bg: #151d15;
+  --btn-danger-bg:    #1a0e0e;
+  --btn-danger-border:#3d1a1a;
+  --btn-danger-hover-bg: #241010;
+  --btn-danger-hover-border: #5a2222;
+  --btn-danger-active-bg: #2e1212;
+  --btn-ghost-hover-bg: #111611;
+  --btn-ghost-active-bg: #151d15;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   BASE STYLES
+   ═══════════════════════════════════════════════════════════ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  background-color: var(--app-bg);
+  color: var(--app-text);
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  height: 100%;
+  user-select: none;
+}
+
+::selection {
+  background: var(--app-selected);
+  color: var(--app-accent);
+}
+
+/* ── Scrollbar ────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--app-border); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--app-text-muted); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ── Input / textarea ────────────────────────────────── */
+input, textarea, select {
+  background-color: var(--app-input);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
+  border-radius: 0;
+  padding: 4px 10px;
+  outline: none;
+  font-size: 13px;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+  transition: border-color 100ms ease, box-shadow 100ms ease;
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--app-accent);
+  box-shadow: 0 0 0 1px var(--app-accent), 0 0 8px var(--app-glow);
+}
+input::placeholder, textarea::placeholder {
+  color: var(--app-text-muted);
+}
+
+/* ── Focus ring ──────────────────────────────────────── */
+:focus { outline: none; }
+:focus-visible {
+  outline: 1px solid var(--app-accent);
+  outline-offset: 0;
+  border-radius: 0;
+}
+
+/* ── Button reset ────────────────────────────────────── */
+button {
+  font-size: 13px;
+  cursor: pointer;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+}
+
+/* ── Transitions ─────────────────────────────────────── */
+button, a, input, select {
+  transition-property: background-color, border-color, color, opacity, box-shadow;
+  transition-duration: 100ms;
+  transition-timing-function: ease-out;
+}
+
+/* ── Animations ──────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes loading {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+/* ── kbd ─────────────────────────────────────────────── */
+kbd {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  background: var(--app-input);
+  border: 1px solid var(--app-border);
+  padding: 1px 5px;
+  font-size: 11px;
+}

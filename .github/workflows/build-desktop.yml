@@ -1,0 +1,67 @@
+name: Build Desktop App
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/build-desktop.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: universal-apple-darwin
+            artifact: dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: msi
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: deb
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev
+
+      - name: Install npm deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: desktop
+        run: npm run build
+
+      - name: Build Tauri
+        working-directory: desktop/src-tauri
+        run: cargo build --release
+
+      - name: Bundle
+        working-directory: desktop/src-tauri
+        run: cargo tauri build --target ${{ matrix.target }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-profile-manager-${{ runner.os }}
+          path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/

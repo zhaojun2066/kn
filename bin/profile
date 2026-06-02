@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""AI Profile Manager CLI — thin wrapper around lib.config."""
+
+import os
+import sys
+import json
+import re
+
+# Import shared config module (works both in dev and after install)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_lib_paths = [
+    os.path.join(_script_dir, "..", "lib"),                     # dev layout
+    os.path.join(os.path.expanduser("~"), ".claude-profiles", "lib"),  # installed layout
+]
+for _p in _lib_paths:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+import config as cfg
+
+USAGE = """Usage: profile <command> [args...]
+
+Commands:
+  list              List all profiles
+  show   <name>     Show profile details
+  env    <name>     Output env vars for shell eval
+  names             Output profile list for fzf
+
+  add    <name> [desc] [-i]  Create new profile (use -i for interactive)
+  remove <name>           Delete a profile
+  set    <name> <K=V>     Set env var in profile
+  unset  <name> <K>       Remove env var from profile
+  default [name]          Get/set default profile
+
+  init              Bootstrap from ~/.claude/settings.json
+"""
+
+# ── Query commands ────────────────────────────────────────────
+
+def cmd_list(config):
+    """List all profiles with descriptions."""
+    profiles = config.get("profiles", {})
+    default = config.get("default", "")
+    if not profiles:
+        print("No profiles configured. Run: profile init")
+        return
+    width = max(len(n) for n in profiles) if profiles else 0
+    for name in sorted(profiles):
+        marker = " *" if name == default else "  "
+        desc = profiles[name].get("desc", "")
+        env_count = len(profiles[name].get("env", {}))
+        print(f" {marker} {name:<{width}}  {desc} ({env_count} vars)")
+
+
+def cmd_show(config, name):
+    """Print full detail of one profile."""
+    if not name:
+        print("Usage: profile show <name>", file=sys.stderr)
+        sys.exit(1)
+    if name not in config.get("profiles", {}):
+        print(f"Profile '{name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    p = config["profiles"][name]
+    print(f"[{name}]")
+    if p.get("desc"):
+        print(f"  desc: {p['desc']}")
+    print(f"  env:")
+    env = p.get("env", {})
+    if env:
+        for k, v in sorted(env.items()):
+            display = _mask_secret(k, v)
+            print(f"    {k}={display}")
+    else:
+        print("    (empty)")
+
+
+def _mask_secret(key, val):
+    """Mask API keys/tokens in display output.
+
+    Matches on whole token boundaries (split by _ or -), not substrings.
+    Masks if length >= 4 (skip only trivially short values).
+    """
+    secret_tokens = {"KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH_TOKEN", "API_KEY"}
+    tokens = set(key.upper().replace("-", "_").split("_"))
+    is_secret = bool(tokens & secret_tokens)
+    if is_secret and len(val) >= 8:
+        return val[:4] + "****" + val[-4:]
+    return val
+
+
+def cmd_env(config, name):
+    """Output env vars as shell eval-safe statements."""
+    if not name:
+        print("Usage: profile env <name>", file=sys.stderr)
+        sys.exit(1)
+    if name not in config.get("profiles", {}):
+        print(f"Profile '{name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    for k, v in sorted(config["profiles"][name].get("env", {}).items()):
+        safe = v.replace("'", "'\\''")
+        print(f"export {k}='{safe}'")
+
+
+def cmd_names(config):
+    """Output profile names for fzf/select. Tab-separated name + desc."""
+    for name in sorted(config.get("profiles", {})):
+        desc = config["profiles"][name].get("desc", "")
+        print(f"{name}\t{desc}")
+
+
+def cmd_init(config):
+    """Bootstrap from existing ~/.claude/settings.json."""
+    settings_file = os.path.expanduser("~/.claude/settings.json")
+    if not os.path.exists(settings_file):
+        print("No existing ~/.claude/settings.json found. Creating empty config.")
+        if not config.get("profiles"):
+            config["profiles"] = {}
+        cfg.write_config(config)
+        return
+
+    try:
+        with open(settings_file, "r") as f:
+            settings = json.load(f)
+    except (json.JSONDecodeError, PermissionError, OSError) as e:
+        print(f"Error reading {settings_file}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    env = settings.get("env", {})
+    if not env:
+        print("No env vars found in settings.json. Creating empty config.")
+        if not config.get("profiles"):
+            config["profiles"] = {}
+        cfg.write_config(config)
+        return
+
+    base_url = env.get("ANTHROPIC_BASE_URL", "")
+    name = "deepseek" if "deepseek" in base_url else "imported"
+
+    config["profiles"][name] = {
+        "desc": f"Imported from ~/.claude/settings.json",
+        "env": dict(env),
+    }
+    config["default"] = name
+    cfg.write_config(config)
+    print(f"Imported {len(env)} env vars from settings.json → profile '{name}'")
+    print(f"Config saved to {cfg.CONFIG_FILE}")
+
+
+# ── Mutation commands ─────────────────────────────────────────
+
+def cmd_add(config, name, desc, interactive=False, json_mode=False):
+    """Create a new profile. With -i, interactive guided setup."""
+    if not name:
+        print("Usage: profile add <name> [description] [-i]", file=sys.stderr)
+        sys.exit(1)
+    if not re.match(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", name):
+        print("Profile name must be lowercase alphanumeric + hyphens.", file=sys.stderr)
+        sys.exit(1)
+    if name in config.get("profiles", {}):
+        print(f"Profile '{name}' already exists.", file=sys.stderr)
+        sys.exit(1)
+
+    if interactive:
+        _interactive_setup(config, name)
+    else:
+        config.setdefault("profiles", {})[name] = {"desc": desc, "env": {}}
+        cfg.write_config(config)
+        if not json_mode:
+            print(f"Profile '{name}' added.")
+
+
+def _interactive_setup(config, name):
+    """Walk through common fields, prompt user, create profile in one shot."""
+    env = {}
+    print(f"\n--- Setting up profile: {name} ---")
+    print("(Press Enter to skip any field)\n")
+
+    # Description
+    desc = _prompt("Description").strip()
+    print()
+
+    # API type
+    print("Which API provider(s) will this profile use?")
+    print("  [A] Anthropic (Claude Code)")
+    print("  [O] OpenAI   (Codex)")
+    print("  [B] Both")
+    choice = _prompt("Choice [A/O/B]", default="A").strip().lower()
+
+    use_anthropic = choice in ("a", "b", "")
+    use_openai = choice in ("o", "b")
+
+    if use_anthropic:
+        print("\n--- Anthropic / Claude Code settings ---")
+        _ask(env, "ANTHROPIC_AUTH_TOKEN", "API Key")
+        _ask(env, "ANTHROPIC_BASE_URL", "Base URL")
+        _ask(env, "ANTHROPIC_MODEL", "Default model")
+        _ask(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL", "Haiku model")
+        _ask(env, "ANTHROPIC_DEFAULT_SONNET_MODEL", "Sonnet model")
+        _ask(env, "ANTHROPIC_DEFAULT_OPUS_MODEL", "Opus model")
+        _ask(env, "DISABLE_AUTOUPDATER", "Disable autoupdater? (1/0)")
+
+    if use_openai:
+        print("\n--- OpenAI / Codex settings ---")
+        _ask(env, "OPENAI_API_KEY", "API Key")
+        _ask(env, "OPENAI_BASE_URL", "Base URL")
+        _ask(env, "OPENAI_MODEL", "Default model")
+
+    # Custom env vars
+    print("\n--- Custom env vars ---")
+    while True:
+        key = _prompt("Env var name (Enter to finish)").strip()
+        if not key:
+            break
+        val = _prompt(f"  {key}=").strip()
+        if val:
+            env[key] = val
+
+    # Save
+    config.setdefault("profiles", {})[name] = {"desc": desc, "env": env}
+    cfg.write_config(config)
+    print(f"\nProfile '{name}' created with {len(env)} env vars.")
+
+    # Default?
+    if not config.get("default") and _prompt("\nSet as default profile? [y/N]", default="n").strip().lower() == "y":
+        config["default"] = name
+        cfg.write_config(config)
+        print(f"Default profile → '{name}'.")
+
+
+def _ask(env, key, label):
+    """Ask for one env var, set if non-empty."""
+    val = _prompt(f"{label} ({key})").strip()
+    if val:
+        env[key] = val
+
+
+def _prompt(text, default=""):
+    """Print prompt and return user input."""
+    if default:
+        sys.stdout.write(f"  {text} [{default}]: ")
+    else:
+        sys.stdout.write(f"  {text}: ")
+    sys.stdout.flush()
+    result = sys.stdin.readline()
+    if not result:
+        return default
+    result = result.rstrip("\n")
+    return result if result else default
+
+
+def cmd_remove(config, name, json_mode=False):
+    """Delete a profile."""
+    if not name:
+        print("Usage: profile remove <name>", file=sys.stderr)
+        sys.exit(1)
+    if name not in config.get("profiles", {}):
+        print(f"Profile '{name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    del config["profiles"][name]
+    if config.get("default") == name:
+        config["default"] = ""
+    cfg.write_config(config)
+    if not json_mode:
+        print(f"Profile '{name}' removed.")
+
+
+def cmd_set(config, name, raw, json_mode=False):
+    """Set an env var in a profile. raw is KEY=VALUE."""
+    if not name or not raw:
+        print("Usage: profile set <name> <KEY>=<value>", file=sys.stderr)
+        sys.exit(1)
+    if name not in config.get("profiles", {}):
+        print(f"Profile '{name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    if "=" not in raw:
+        print("Format: KEY=VALUE", file=sys.stderr)
+        sys.exit(1)
+    key, _, val = raw.partition("=")
+    if not key:
+        print("KEY cannot be empty.", file=sys.stderr)
+        sys.exit(1)
+    config["profiles"][name].setdefault("env", {})[key] = val
+    cfg.write_config(config)
+    if not json_mode:
+        print(f"{key} = {val}")
+
+
+def cmd_unset(config, name, key, json_mode=False):
+    """Remove an env var from a profile."""
+    if not name or not key:
+        print("Usage: profile unset <name> <KEY>", file=sys.stderr)
+        sys.exit(1)
+    if name not in config.get("profiles", {}):
+        print(f"Profile '{name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    env = config["profiles"][name].get("env", {})
+    if key in env:
+        del env[key]
+        cfg.write_config(config)
+        if not json_mode:
+            print(f"Removed {key} from '{name}'.")
+    else:
+        if json_mode:
+            _json_err(f"Key '{key}' not found in '{name}'.")
+            sys.exit(1)
+        else:
+            print(f"Key '{key}' not found in '{name}'.", file=sys.stderr)
+
+
+def cmd_default(config, name, json_mode=False):
+    """Get or set the default profile."""
+    if not name:
+        d = config.get("default", "")
+        if json_mode:
+            print(json.dumps({"default": d}, ensure_ascii=False))
+        elif d:
+            print(d)
+        else:
+            print("No default profile set.", file=sys.stderr)
+        return
+    if name not in config.get("profiles", {}):
+        print(f"Profile '{name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    config["default"] = name
+    cfg.write_config(config)
+    if not json_mode:
+        print(f"Default profile → '{name}'.")
+
+
+# ── CLI entry point ───────────────────────────────────────────
+
+def _json_ok(**kwargs):
+    """Print a JSON success response."""
+    result = {"ok": True}
+    result.update(kwargs)
+    print(json.dumps(result, ensure_ascii=False))
+
+
+def _json_err(msg):
+    """Print a JSON error response to stderr."""
+    result = {"ok": False, "error": msg}
+    print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
+
+
+def main():
+    # Extract --json and --stdin global flags before command dispatch
+    json_mode = False
+    use_stdin = False
+    args = sys.argv[1:]
+    filtered = []
+    for a in args:
+        if a in ("--json",):
+            json_mode = True
+        elif a in ("--stdin",):
+            use_stdin = True
+        else:
+            filtered.append(a)
+
+    if not filtered:
+        print(USAGE, file=sys.stderr)
+        sys.exit(1)
+
+    cmd = filtered[0]
+    rest = filtered[1:]
+    config = cfg.read_config()
+
+    # Query commands
+    if cmd == "list":
+        if json_mode:
+            _cmd_list_json(config)
+        else:
+            cmd_list(config)
+    elif cmd == "show":
+        name = rest[0] if rest else ""
+        if json_mode:
+            _cmd_show_json(config, name)
+        else:
+            cmd_show(config, name)
+    elif cmd == "env":
+        name = rest[0] if rest else ""
+        if json_mode:
+            _cmd_env_json(config, name)
+        else:
+            cmd_env(config, name)
+    elif cmd == "names":
+        cmd_names(config)
+    elif cmd == "init":
+        try:
+            cmd_init(config)
+            if json_mode:
+                _json_ok(action="init")
+        except SystemExit:
+            if json_mode:
+                _json_err("Failed to initialize from settings.json")
+            raise
+    # Mutation commands
+    elif cmd == "add":
+        interactive = "-i" in rest or "--interactive" in rest
+        name_args = [a for a in rest if a not in ("-i", "--interactive")]
+        name = name_args[0] if name_args else ""
+        desc = name_args[1] if len(name_args) > 1 else ""
+        try:
+            cmd_add(config, name, desc, interactive=interactive, json_mode=json_mode)
+            if json_mode:
+                _json_ok(action="add", profile=name)
+        except SystemExit as e:
+            if json_mode and e.code != 0:
+                _json_err(f"Failed to add profile '{name}'")
+            raise
+
+    elif cmd == "remove":
+        name = rest[0] if rest else ""
+        try:
+            cmd_remove(config, name, json_mode=json_mode)
+            if json_mode:
+                _json_ok(action="remove", profile=name)
+        except SystemExit as e:
+            if json_mode and e.code != 0:
+                _json_err(f"Failed to remove profile '{name}'")
+            raise
+
+    elif cmd == "set":
+        name = rest[0] if rest else ""
+        if use_stdin and json_mode:
+            raw = sys.stdin.read().strip()
+        elif rest and len(rest) > 1:
+            raw = rest[1]
+        else:
+            raw = ""
+        try:
+            cmd_set(config, name, raw, json_mode=json_mode)
+            if json_mode:
+                k = raw.partition("=")[0] if "=" in raw else ""
+                _json_ok(action="set", profile=name, key=k)
+        except SystemExit as e:
+            if json_mode and e.code != 0:
+                _json_err(f"Failed to set env var in '{name}'")
+            raise
+
+    elif cmd == "unset":
+        name = rest[0] if rest else ""
+        key = rest[1] if len(rest) > 1 else ""
+        try:
+            cmd_unset(config, name, key, json_mode=json_mode)
+            if json_mode:
+                _json_ok(action="unset", profile=name, key=key)
+        except SystemExit as e:
+            if json_mode and e.code != 0:
+                _json_err(f"Failed to unset '{key}' from '{name}'")
+            raise
+
+    elif cmd == "default":
+        name = rest[0] if rest else ""
+        try:
+            cmd_default(config, name, json_mode=json_mode)
+            if json_mode:
+                _json_ok(action="default", profile=name or config.get("default", ""))
+        except SystemExit as e:
+            if json_mode and e.code != 0:
+                _json_err(f"Failed to set default profile")
+            raise
+
+    else:
+        if json_mode:
+            _json_err(f"Unknown command: {cmd}")
+        else:
+            print(f"Unknown command: {cmd}", file=sys.stderr)
+            print(USAGE, file=sys.stderr)
+        sys.exit(1)
+
+
+# ── JSON output helpers ─────────────────────────────────────────
+
+def _cmd_list_json(config):
+    profiles = config.get("profiles", {})
+    default = config.get("default", "")
+    result = {
+        "default": default,
+        "profiles": [
+            {
+                "name": name,
+                "desc": profiles[name].get("desc", ""),
+                "env_count": len(profiles[name].get("env", {})),
+                "is_default": name == default,
+            }
+            for name in sorted(profiles)
+        ],
+    }
+    print(json.dumps(result, ensure_ascii=False))
+
+
+def _cmd_show_json(config, name):
+    if not name:
+        _json_err("Usage: profile --json show <name>")
+        sys.exit(1)
+    profiles = config.get("profiles", {})
+    if name not in profiles:
+        _json_err(f"Profile '{name}' not found.")
+        sys.exit(1)
+    p = profiles[name]
+    result = {
+        "name": name,
+        "desc": p.get("desc", ""),
+        "env": dict(sorted(p.get("env", {}).items())),
+        "is_default": config.get("default", "") == name,
+    }
+    print(json.dumps(result, ensure_ascii=False))
+
+
+def _cmd_env_json(config, name):
+    if not name:
+        _json_err("Usage: profile --json env <name>")
+        sys.exit(1)
+    profiles = config.get("profiles", {})
+    if name not in profiles:
+        _json_err(f"Profile '{name}' not found.")
+        sys.exit(1)
+    result = {
+        "name": name,
+        "env": dict(sorted(profiles[name].get("env", {}).items())),
+    }
+    print(json.dumps(result, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
