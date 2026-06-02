@@ -409,6 +409,32 @@ rm -rf ~/.claude-profiles
 
 除了命令行，还可以使用桌面应用管理 profile。桌面应用与 CLI **共享同一份 `~/.claude-profiles/config.yaml`**，两边数据实时同步。
 
+### 下载安装
+
+从 [GitHub Releases](https://github.com/zhaojun2066/ai-profile-manager/releases/latest) 下载 `.dmg` 安装包。
+
+> **macOS 用户注意**：由于应用未经过 Apple 开发者签名和公证，首次打开时会提示「已损坏，无法打开」或被阻止。
+>
+> **解决方法（任选一种）：**
+>
+> **方法一**：清除隔离属性后打开
+>
+> ```bash
+> # 解除 macOS 安全限制
+> xattr -d com.apple.quarantine "/Applications/AI Profile Manager.app"
+> # 然后双击打开即可
+> ```
+>
+> 如果提示权限不足，加 `sudo`：
+>
+> ```bash
+> sudo xattr -rd com.apple.quarantine "/Applications/AI Profile Manager.app"
+> ```
+>
+> **方法二**：右键打开
+>
+> 在 Finder 中找到 App，**右键 → 打开**（不要双击），弹出的对话框里点「打开」。
+
 ### 启动桌面应用
 
 ```bash
