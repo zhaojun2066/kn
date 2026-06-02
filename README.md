@@ -2,6 +2,8 @@
 
 多 profile 管理系统，让你在不同终端会话中为 `claude` / `codex` 使用不同的 API key、base URL 和模型配置。
 
+> 🌐 官网：[https://zhaojun2066.github.io/ai-profile-manager/](https://zhaojun2066.github.io/ai-profile-manager/)
+
 ## 目录
 
 - [安装](#安装)
