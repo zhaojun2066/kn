@@ -1,6 +1,75 @@
 use tauri::command;
 use crate::profile_cmd;
 
+// ── Config backup paths ────────────────────────────────────
+fn config_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("CLAUDE_PROFILES_HOME") {
+        return std::path::PathBuf::from(dir);
+    }
+    home_dir().join(".claude-profiles")
+}
+fn config_file() -> std::path::PathBuf { config_dir().join("config.yaml") }
+fn backup_file() -> std::path::PathBuf { config_dir().join("config.yaml.bak") }
+
+#[command]
+pub fn config_backup_exists() -> bool {
+    backup_file().exists()
+}
+
+#[command]
+pub fn backup_config() -> Result<String, String> {
+    let cfg = config_file();
+    let bak = backup_file();
+    if !cfg.exists() {
+        return Err("配置文件不存在".into());
+    }
+    std::fs::copy(&cfg, &bak).map_err(|e| format!("备份失败: {}", e))?;
+    Ok("配置已备份".into())
+}
+
+#[command]
+pub fn restore_config_backup() -> Result<String, String> {
+    let bak = backup_file();
+    let cfg = config_file();
+    if !bak.exists() {
+        return Err("备份文件不存在".into());
+    }
+    // Create a backup of current config before restoring (safety net)
+    if cfg.exists() {
+        let pre_restore = config_dir().join("config.yaml.pre-restore");
+        std::fs::copy(&cfg, &pre_restore).map_err(|e| format!("无法创建恢复前备份: {}", e))?;
+    }
+    std::fs::copy(&bak, &cfg).map_err(|e| format!("恢复失败: {}", e))?;
+    Ok("配置已从备份恢复".into())
+}
+
+#[command]
+pub fn batch_export_profiles(names: Vec<String>) -> Result<String, String> {
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    for name in &names {
+        let detail = profile_cmd::show_profile_cmd(name)?;
+        results.push(serde_json::json!({
+            "name": detail.name,
+            "desc": detail.desc,
+            "env": detail.env,
+        }));
+    }
+    serde_json::to_string_pretty(&results).map_err(|e| format!("JSON 序列化失败: {}", e))
+}
+
+#[command]
+pub fn batch_delete_profiles(names: Vec<String>) -> Result<Vec<String>, String> {
+    let mut deleted: Vec<String> = Vec::new();
+    for name in &names {
+        match profile_cmd::remove_profile_cmd(name) {
+            Ok(r) if r.ok => { deleted.push(name.clone()); }
+            Ok(_) => { /* profile didn't exist, skip */ }
+            Err(e) => return Err(format!("删除 '{}' 失败: {}", name, e)),
+        }
+    }
+    Ok(deleted)
+}
+
 #[command]
 pub fn list_profiles() -> Result<profile_cmd::ProfileList, String> {
     profile_cmd::list_profiles_cmd()
@@ -367,4 +436,132 @@ pub fn new_window(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| format!("{}", e))?;
     let _ = w.set_focus();
     Ok(())
+}
+
+// ── Environment check (for onboarding) ───────────────────────
+
+#[derive(Debug, serde::Serialize)]
+pub struct EnvCheckItem {
+    pub name: String,
+    pub label: String,
+    pub status: String,  // "ok" | "warn" | "missing"
+    pub detail: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct EnvCheckResult {
+    pub items: Vec<EnvCheckItem>,
+    pub all_ok: bool,
+}
+
+fn check_binary_on_path(name: &str) -> Option<String> {
+    // Try full paths first (fast, no shell overhead)
+    if let Some(path) = find_binary(&[name]) {
+        if std::path::Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+    // Use login shell to resolve user PATH (brew, npx, etc.)
+    let shell = if cfg!(target_os = "windows") { "powershell.exe" } else { "/bin/bash" };
+    let shell_args: &[&str] = if cfg!(target_os = "windows") {
+        &["-Command", &format!("Get-Command {} -ErrorAction SilentlyContinue | ForEach-Object Source", name)]
+    } else {
+        &["-lc", &format!("command -v {} 2>/dev/null || type {} 2>/dev/null", name, name)]
+    };
+    if let Ok(output) = std::process::Command::new(shell).args(shell_args).output() {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !s.is_empty() { return Some(s); }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn check_environment() -> EnvCheckResult {
+    let home = home_dir();
+    let mut items = Vec::new();
+
+    // 1. Claude Code
+    match check_binary_on_path("claude") {
+        Some(path) => items.push(EnvCheckItem {
+            name: "claude".into(),
+            label: "Claude Code".into(),
+            status: "ok".into(),
+            detail: path,
+        }),
+        None => items.push(EnvCheckItem {
+            name: "claude".into(),
+            label: "Claude Code".into(),
+            status: "missing".into(),
+            detail: "未安装 (npm i -g @anthropic-ai/claude-code)".into(),
+        }),
+    }
+
+    // 2. Codex
+    match check_binary_on_path("codex") {
+        Some(path) => items.push(EnvCheckItem {
+            name: "codex".into(),
+            label: "Codex".into(),
+            status: "ok".into(),
+            detail: path,
+        }),
+        None => items.push(EnvCheckItem {
+            name: "codex".into(),
+            label: "Codex".into(),
+            status: "missing".into(),
+            detail: "未安装 (npm i -g @openai/codex)".into(),
+        }),
+    }
+
+    // 3. Shell wrapper
+    let shell_rc = home.join(".claude-profiles").join("shell-rc");
+    if shell_rc.exists() {
+        let in_zshrc = if let Ok(zshrc) = std::fs::read_to_string(home.join(".zshrc")) {
+            zshrc.contains("shell-rc") || zshrc.contains(".claude-profiles")
+        } else { false };
+        items.push(EnvCheckItem {
+            name: "shell-wrapper".into(),
+            label: "Shell 集成".into(),
+            status: if in_zshrc { "ok".into() } else { "warn".into() },
+            detail: if in_zshrc { "已激活".into() } else { "已安装但未激活".into() },
+        });
+    } else {
+        items.push(EnvCheckItem {
+            name: "shell-wrapper".into(),
+            label: "Shell 集成".into(),
+            status: "missing".into(),
+            detail: "未安装，请在终端运行 install.sh".into(),
+        });
+    }
+
+    // 4. Config directory
+    let config_dir = home.join(".claude-profiles");
+    let config_file = config_dir.join("config.yaml");
+    if config_dir.exists() {
+        if config_file.exists() {
+            items.push(EnvCheckItem {
+                name: "config".into(),
+                label: "配置文件".into(),
+                status: "ok".into(),
+                detail: config_file.display().to_string(),
+            });
+        } else {
+            items.push(EnvCheckItem {
+                name: "config".into(),
+                label: "配置文件".into(),
+                status: "warn".into(),
+                detail: "目录存在但无配置文件".into(),
+            });
+        }
+    } else {
+        items.push(EnvCheckItem {
+            name: "config".into(),
+            label: "配置文件".into(),
+            status: "missing".into(),
+            detail: "目录不存在".into(),
+        });
+    }
+
+    let all_ok = items.iter().all(|i| i.status == "ok");
+
+    EnvCheckResult { items, all_ok }
 }

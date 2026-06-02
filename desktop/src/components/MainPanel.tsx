@@ -1,10 +1,12 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { EnvVarTable } from "./EnvVarTable";
 import { Badge } from "./common/Badge";
-import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock, FolderOpen } from "lucide-react";
+import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock, FolderOpen, Trash2 } from "lucide-react";
 import type { ProfileDetail } from "../lib/types";
 import type { SessionRecord } from "../hooks/useTerminal";
 import { shortenPath } from "../lib/path-utils";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { OnboardingWizard } from "./OnboardingWizard";
 
 interface MainPanelProps {
   profile: ProfileDetail | null;
@@ -18,8 +20,11 @@ interface MainPanelProps {
   onRenameProfile: (name: string) => void;
   onResumeSession: (record: SessionRecord) => void;
   onNewSessionFromHistory: (record: SessionRecord) => void;
+  onDeleteHistory: (id: string) => void;
+  onClearProfileHistory: (profileName: string) => void;
   onInit: () => void;
   onSetTags: (name: string, tags: string) => Promise<void>;
+  onAdd: () => void;
 }
 
 /* ── Helpers ─────────────────────────────────────────────── */
@@ -377,12 +382,27 @@ function TagsRow({ profile, allTags, onSetTags }: { profile: ProfileDetail; allT
 }
 
 /* ── MainPanel ──────────────────────────────────────────── */
-export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history, onSetEnv, onDeleteEnv, onPasteCommand, onRenameProfile, onResumeSession, onNewSessionFromHistory, onInit, onSetTags }: MainPanelProps) {
-  if (showWelcome) return <EmptyState hasProfiles={false} onInit={onInit} />;
+export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history, onSetEnv, onDeleteEnv, onPasteCommand, onRenameProfile, onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearProfileHistory, onInit, onSetTags, onAdd }: MainPanelProps) {
+  if (showWelcome) return (
+    <OnboardingWizard
+      hasProfiles={hasProfiles}
+      onScan={onInit}
+      onCreate={onAdd}
+      onDismiss={() => {
+        // Toggle welcome off — the caller handles this via onToggleWelcome
+        // We dispatch a custom event since the dismiss callback comes from App
+        window.dispatchEvent(new CustomEvent("kn-dismiss-welcome"));
+      }}
+    />
+  );
   if (!profile) return <EmptyState hasProfiles={hasProfiles} onInit={onInit} />;
 
   const envCount = Object.keys(profile.env).length;
   const commands = buildCommands(profile.name, profile.env);
+
+  // Confirm dialog states for history deletion
+  const [clearConfirm, setClearConfirm] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<SessionRecord | null>(null);
 
   // Filter history for this profile
   const profileHistory = history.filter((r) => {
@@ -432,10 +452,18 @@ export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history,
               <Clock size={11} className="text-app-text-muted" />
               <span className="text-2xs text-app-text-muted font-mono uppercase tracking-wider">会话历史</span>
               <span className="text-2xs text-app-text-dim font-mono">({profileHistory.length})</span>
+              <span className="flex-1" />
+              <button
+                onClick={() => setClearConfirm(true)}
+                className="text-2xs text-app-text-dim hover:text-app-red transition-colors font-mono"
+                title="清除此 profile 的全部历史"
+              >
+                清除
+              </button>
             </div>
             <div className="flex-1 overflow-y-auto">
               {profileHistory.slice(0, 50).map((r) => (
-                <div key={r.id} className="px-3 py-2 border-b border-app-border-light hover:bg-[var(--app-hover)] group/h transition-colors">
+                <div key={r.id} className="px-3 py-2 border-b border-app-border-light hover:bg-[var(--app-hover)] transition-colors">
                   <div className="flex items-center justify-between min-w-0">
                     <div className="min-w-0 flex-1">
                       {r.workDir && (
@@ -470,6 +498,16 @@ export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history,
                             <Play size={10} />恢复
                           </button>
                         )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteTarget(r);
+                        }}
+                        className="p-0.5 text-app-text-dim hover:text-app-red hover:bg-app-red-bg transition-colors"
+                        title="删除此记录"
+                      >
+                        <Trash2 size={11} />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -485,6 +523,34 @@ export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history,
           />
         </div>
       </div>
+
+      {/* Clear profile history confirm */}
+      <ConfirmDialog
+        open={clearConfirm}
+        title="清除会话历史"
+        message={`确定要清除 "${profile.name}" 的全部 ${profileHistory.length} 条会话历史吗？此操作不可撤销。`}
+        confirmLabel="清除"
+        onConfirm={() => {
+          onClearProfileHistory(profile.name);
+          setClearConfirm(false);
+        }}
+        onCancel={() => setClearConfirm(false)}
+      />
+
+      {/* Delete single record confirm */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="删除会话记录"
+        message={`确定要删除此会话记录吗？\n\n${deleteTarget?.command || ""}`}
+        confirmLabel="删除"
+        onConfirm={() => {
+          if (deleteTarget) {
+            onDeleteHistory(deleteTarget.id);
+            setDeleteTarget(null);
+          }
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

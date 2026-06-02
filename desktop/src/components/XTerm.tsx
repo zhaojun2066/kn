@@ -2,10 +2,13 @@ import React, { useEffect, useLayoutEffect, useRef, useCallback, useImperativeHa
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { SearchAddon } from "@xterm/addon-search";
+import { getThemeByName, type TerminalTheme } from "../lib/terminalThemes";
 import "@xterm/xterm/css/xterm.css";
 
 export interface XTermHandle {
   fit: () => void;
+  searchAddon: SearchAddon | null;
 }
 
 interface XTermProps {
@@ -14,64 +17,14 @@ interface XTermProps {
   onResize?: (cols: number, rows: number) => void;
   fontSize?: number;
   className?: string;
+  themeName?: string;
 }
 
-const DARK_THEME = {
-  background: "#070a07",
-  foreground: "#b8d0b8",
-  cursor: "#3dfc3d",
-  cursorAccent: "#070a07",
-  selectionBackground: "#2e436e",
-  black: "#0a0c0a",
-  red: "#e05555",
-  green: "#5cdb5c",
-  yellow: "#e6a940",
-  blue: "#5c9edb",
-  magenta: "#9c7cdb",
-  cyan: "#3a9e8c",
-  white: "#b8d0b8",
-  brightBlack: "#4d664d",
-  brightRed: "#ff6b6b",
-  brightGreen: "#7deb7d",
-  brightYellow: "#ffc44d",
-  brightBlue: "#8ab4f8",
-  brightMagenta: "#b8a0f0",
-  brightCyan: "#5cdbcd",
-  brightWhite: "#d8f0d8",
-};
-
-const LIGHT_THEME = {
-  background: "#ece8df",
-  foreground: "#0f1f0d",
-  cursor: "#2d8a2d",
-  cursorAccent: "#f4f1ea",
-  selectionBackground: "#dce6d2",
-  black: "#f4f1ea",
-  red: "#c04040",
-  green: "#2d8a2d",
-  yellow: "#b8761a",
-  blue: "#3a6db5",
-  magenta: "#6d4db5",
-  cyan: "#2d7a6d",
-  white: "#1a2818",
-  brightBlack: "#8a9680",
-  brightRed: "#d06060",
-  brightGreen: "#4a9a4a",
-  brightYellow: "#d4922a",
-  brightBlue: "#5a8dd5",
-  brightMagenta: "#8d6dd5",
-  brightCyan: "#4d9a8d",
-  brightWhite: "#0a1808",
-};
-
-function isDarkMode(): boolean {
-  return document.documentElement.classList.contains("dark");
-}
-
-export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerminal, onReady, onResize, fontSize = 13, className = "" }, ref) {
+export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerminal, onReady, onResize, fontSize = 13, className = "", themeName }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
   const initRef = useRef(false);
   const readyFiredRef = useRef(false);
 
@@ -101,12 +54,14 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
     }
   }, [onReady, onResize]);
 
-  useImperativeHandle(ref, () => ({ fit }), [fit]);
+  useImperativeHandle(ref, () => ({ fit, searchAddon: searchAddonRef.current }), [fit]);
 
   // Initial mount
   useEffect(() => {
     if (!containerRef.current || initRef.current) return;
     initRef.current = true;
+
+    const initialTheme = getThemeByName(themeName || "default-dark");
 
     const term = new Terminal({
       cursorBlink: true,
@@ -119,7 +74,7 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
       allowTransparency: true,
       scrollback: 5000,
       drawBoldTextInBrightColors: true,
-      theme: isDarkMode() ? DARK_THEME : LIGHT_THEME,
+      theme: initialTheme,
     });
 
     const fitAddon = new FitAddon();
@@ -132,6 +87,11 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
     } catch {
       // WebGL not available, fall back to default canvas renderer
     }
+
+    // Search addon — for Cmd/Ctrl+F terminal search
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchAddonRef.current = searchAddon;
 
     term.open(containerRef.current);
 
@@ -173,18 +133,15 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
     };
   }, [fit]);
 
-  // Theme observer
+  // Apply theme changes (from selector or external prop)
   useEffect(() => {
-    const mo = new MutationObserver(() => {
-      if (termRef.current) {
-        termRef.current.options.theme = isDarkMode() ? DARK_THEME : LIGHT_THEME;
-      }
-    });
-    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => mo.disconnect();
-  }, []);
+    const t = getThemeByName(themeName || "default-dark");
+    if (termRef.current) {
+      termRef.current.options.theme = t;
+    }
+  }, [themeName]);
 
-  const themeBg = isDarkMode() ? DARK_THEME.background : LIGHT_THEME.background;
+  const themeBg = getThemeByName(themeName || "default-dark").background;
 
   return (
     <div

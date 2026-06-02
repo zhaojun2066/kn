@@ -12,7 +12,7 @@
 - [配置结构](#配置结构)
 - [常见场景](#常见场景)
 - [FAQ](#faq)
-- [未来 UI 扩展](#未来-ui-扩展)
+- [Desktop GUI 应用](#desktop-gui-应用)
 
 ---
 
@@ -245,9 +245,14 @@ codex     # 原生 Codex
 
 | 用法 | 说明 |
 |------|------|
-| `ai <tool> <profile>` | 用指定 profile 启动 claude 或 codex |
-| `ai <tool>` | 交互式选择 profile 后启动 |
-| `ai` | 显示帮助和可用 profile 列表 |
+| `ai claude <profile>` | 用指定 profile 启动 Claude Code |
+| `ai codex <profile>` | 用指定 profile 启动 Codex CLI |
+| `ai claude` | 交互式选择 profile 后启动 Claude Code |
+| `ai codex` | 交互式选择 profile 后启动 Codex CLI |
+| `ai profile list` | 列出所有 profile（标注默认） |
+| `ai profile env <name>` | 查看某个 profile 的环境变量 |
+| `ai profile switch <name>` | 切换默认 profile |
+| `ai` / `ai --help` | 显示帮助信息 |
 | `claude` / `codex` | 原生命令，不受影响，无 profile 注入 |
 
 ---
@@ -398,6 +403,38 @@ rm -rf ~/.claude-profiles
 
 ---
 
-## 未来 UI 扩展
+## Desktop GUI 应用
 
-UI 界面读写同一份 `~/.claude-profiles/config.yaml`，与 CLI 完全共享数据。文件锁保证了并发安全——你用 CLI 改 config 的同时用 UI 编辑也不会冲突。
+除了命令行，还可以使用桌面应用管理 profile。桌面应用与 CLI **共享同一份 `~/.claude-profiles/config.yaml`**，两边数据实时同步。
+
+### 启动桌面应用
+
+```bash
+cd desktop
+npm run tauri dev
+```
+
+### 主要功能
+
+- **可视化 profile 管理** — 新建、编辑、删除、复制、导入/导出
+- **内置终端** — 点击「运行」直接在右侧终端启动 `ai claude <profile>`
+- **批量操作** — Cmd/Ctrl+点击多选，批量删除/导出
+- **会话历史** — 自动记录运行历史，一键恢复之前的会话
+- **终端搜索** — Cmd/Ctrl+F 搜索终端输出
+- **配色主题** — 6 套终端配色独立切换（Dracula / Solarized / Monokai 等）
+- **首次引导** — 自动检测环境、扫描已有配置
+- **配置备份** — 自动备份 + 手动恢复
+
+### 快捷键
+
+| 快捷键 | 功能 |
+|--------|------|
+| `⌘N` | 新建 Profile |
+| `⌘B` | 切换侧边栏 |
+| `` Ctrl+` `` / `⌘J` | 切换底部终端 |
+| `⌘⇧M` | 最大化终端 |
+| `⌘F` | 搜索终端输出 |
+| `⌘K` | 快捷键帮助 |
+| `Backspace` | 删除选中的 Profile |
+
+桌面应用与 CLI 使用同一份配置文件和文件锁，并发安全。

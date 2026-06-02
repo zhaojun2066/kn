@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { Toolbar } from "./components/Toolbar";
 import { Sidebar } from "./components/Sidebar";
 import { MainPanel } from "./components/MainPanel";
@@ -8,6 +8,7 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { NameDialog } from "./components/NameDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
+import { AboutDialog } from "./components/AboutDialog";
 import { ImportPreview } from "./components/ImportPreview";
 import { ScanPreview, ScanProfile } from "./components/ScanPreview";
 import { useProfiles } from "./hooks/useProfiles";
@@ -19,9 +20,13 @@ import { X, AlertCircle, CheckCircle2 } from "lucide-react";
 
 type Toast = { id: number; type: "error" | "success"; message: string };
 
+interface EnvCheckItem { name: string; label: string; status: "ok" | "warn" | "missing"; detail: string; }
+type EnvCheckResult = { items: EnvCheckItem[]; all_ok: boolean } | null;
+
 export function App() {
   const ctx = useProfiles();
-  const terminal = useTerminal();
+  const rightTerminal = useTerminal("right");     // profile「运行」→ 右侧面板
+  const bottomTerminal = useTerminal("bottom");   // 工具栏按钮 → 底部面板 (VS Code 风格)
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
@@ -35,10 +40,43 @@ export function App() {
   const [nameDialogInitial, setNameDialogInitial] = useState("");
   const [nameDialogOnConfirm, setNameDialogOnConfirm] = useState<((name: string) => Promise<void>) | null>(null);
   const [appVersion, setAppVersion] = useState("");
-  const [terminalMaximized, setTerminalMaximized] = useState(false);
+  const [rightMaximized, setRightMaximized] = useState(false);
+  const [bottomMaximized, setBottomMaximized] = useState(false);
+  const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [backupExists, setBackupExists] = useState(false);
+  const [envCheck, setEnvCheck] = useState<EnvCheckResult>(null);
+  const [showAbout, setShowAbout] = useState(false);
+  const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
+  const batchDeleteNamesRef = useRef<string[]>([]);
 
   // Load profiles on mount
   useEffect(() => { ctx.loadProfiles(); }, []);
+
+  // Keep terminals aware of valid profile names (for history restore validation)
+  useEffect(() => {
+    const names = ctx.profiles.map((p) => p.name);
+    rightTerminal.setValidProfileNames(names);
+    bottomTerminal.setValidProfileNames(names);
+  }, [ctx.profiles]);
+
+  // Run environment check on mount
+  useEffect(() => {
+    invoke<EnvCheckResult>("check_environment").then(setEnvCheck).catch(() => {});
+  }, []);
+
+  // Check backup status on mount + after profile changes
+  useEffect(() => {
+    invoke<boolean>("config_backup_exists").then(setBackupExists).catch(() => {});
+  }, [ctx.profiles]);
+
+  // Merge per-profile run counts from both terminal panels
+  const usageCounts = useMemo(() => {
+    const merged: Record<string, number> = { ...bottomTerminal.usageCounts };
+    for (const [k, v] of Object.entries(rightTerminal.usageCounts)) {
+      merged[k] = (merged[k] || 0) + v;
+    }
+    return merged;
+  }, [rightTerminal.usageCounts, bottomTerminal.usageCounts]);
 
   // Ensure shell wrapper is installed (ai command)
   useEffect(() => {
@@ -48,21 +86,30 @@ export function App() {
   // Auto-open terminal for pop-out windows (?terminal=1)
   useEffect(() => {
     if (window.location.search.includes("terminal=1")) {
-      terminal.open();
+      bottomTerminal.open();
     }
   }, []);
-  // Terminal error → toast
+
+  // Listen for onboarding wizard dismiss event
   useEffect(() => {
-    terminal.setErrorCallback((msg: string) => addToast("error", msg));
-    return () => terminal.setErrorCallback(() => {});
+    const handler = () => setShowWelcome(false);
+    window.addEventListener("kn-dismiss-welcome", handler);
+    return () => window.removeEventListener("kn-dismiss-welcome", handler);
+  }, []);
+  // Terminal error → toast (both panels)
+  useEffect(() => {
+    rightTerminal.setErrorCallback((msg: string) => addToast("error", msg));
+    return () => rightTerminal.setErrorCallback(() => {});
+  }, []);
+  useEffect(() => {
+    bottomTerminal.setErrorCallback((msg: string) => addToast("error", msg));
+    return () => bottomTerminal.setErrorCallback(() => {});
   }, []);
 
   // Fetch app version
   useEffect(() => {
     invoke<string>("get_app_version").then((v) => setAppVersion(v)).catch(() => {});
   }, []);
-
-  // Environment check + install prompt
 
   // Toast management
   const addToast = useCallback((type: "error" | "success", message: string) => {
@@ -103,15 +150,43 @@ export function App() {
       if (e.key === "Backspace" && ctx.selectedName && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
         setShowDeleteConfirm(true);
       }
-      // Toggle terminal with Ctrl+`
+      // Toggle bottom terminal with Ctrl+`
       if (e.ctrlKey && e.key === "`") {
         e.preventDefault();
-        terminal.toggle();
+        bottomTerminal.toggle();
+      }
+      // Toggle sidebar — Cmd/Ctrl+B (VS Code standard)
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "b") {
+        e.preventDefault();
+        setSidebarVisible((v) => !v);
+      }
+      // Toggle bottom terminal — Cmd/Ctrl+J (VS Code standard)
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "j") {
+        e.preventDefault();
+        bottomTerminal.toggle();
+      }
+      // Maximize/restore terminal — Cmd/Ctrl+Shift+M. Works when terminal panel is focused.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "m" || e.key === "M")) {
+        e.preventDefault();
+        const el = document.activeElement as HTMLElement | null;
+        const panel = el?.closest("[data-panel]") as HTMLElement | null;
+        if (panel) {
+          if (panel.dataset.panel === "right") {
+            setRightMaximized((v) => !v);
+            setBottomMaximized(false);
+          } else if (panel.dataset.panel === "bottom") {
+            setBottomMaximized((v) => !v);
+            setRightMaximized(false);
+          }
+        } else {
+          // No terminal panel focused — show guidance toast
+          addToast("success", "💡 请先点击终端面板，再使用 ⌘⇧M 最大化");
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [ctx.selectedName, terminal.toggle, showAddDialog, showDeleteConfirm, showNameDialog, showShortcuts]);
+  }, [ctx.selectedName, bottomTerminal.toggle, showAddDialog, showDeleteConfirm, showNameDialog, showShortcuts]);
 
   const isDefault = ctx.selectedProfile?.is_default ?? false;
 
@@ -128,12 +203,12 @@ export function App() {
       } catch { /* cancelled */ }
       if (!selected || typeof selected !== "string") return;
 
-      await terminal.runInTerminal(cmd, selected);
+      await rightTerminal.runInTerminal(cmd, selected);
     } else {
       // Non-ai commands: create new tab too
-      await terminal.runInNewTab(cmd, "", cmd.slice(0, 30));
+      await rightTerminal.runInNewTab(cmd, "", cmd.slice(0, 30));
     }
-  }, [terminal]);
+  }, [rightTerminal]);
 
   // Export profile to JSON file
   const handleExport = useCallback(async () => {
@@ -143,11 +218,46 @@ export function App() {
       const path = await tauriSave({ defaultPath: `${data.name}.json`, filters: [{ name: "JSON", extensions: ["json"] }] });
       if (!path) return;
       const json = JSON.stringify(data, null, 2);
-      // Use Rust backend to write file reliably
       await invoke("write_file", { path, content: json });
       addToast("success", `已导出到 ${path}`);
     } catch (e) { addToast("error", `导出失败: ${e}`); }
   }, [ctx.selectedProfile]);
+
+  // Batch delete — show confirmation first
+  const handleBatchDelete = useCallback((names: string[]) => {
+    batchDeleteNamesRef.current = names;
+    setShowBatchDeleteConfirm(true);
+  }, []);
+
+  const executeBatchDelete = useCallback(async () => {
+    const names = batchDeleteNamesRef.current;
+    try {
+      const deleted: string[] = await invoke("batch_delete_profiles", { names });
+      for (const name of deleted) {
+        rightTerminal.clearProfileHistory(name);
+        bottomTerminal.clearProfileHistory(name);
+      }
+      await ctx.loadProfiles();
+      addToast("success", `已删除 ${deleted.length} 个 profile`);
+    } catch (e) { addToast("error", `批量删除失败: ${e}`); }
+    setShowBatchDeleteConfirm(false);
+    batchDeleteNamesRef.current = [];
+  }, [ctx, rightTerminal, bottomTerminal]);
+
+  // About dialog
+  const handleAbout = useCallback(() => setShowAbout(true), []);
+
+  // Batch export
+  const handleBatchExport = useCallback(async (names: string[]) => {
+    try {
+      if (names.length === 0) return;
+      const json: string = await invoke("batch_export_profiles", { names });
+      const path = await tauriSave({ defaultPath: "profiles.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+      if (!path) return;
+      await invoke("write_file", { path, content: json });
+      addToast("success", `已导出 ${names.length} 个 profile 到 ${path}`);
+    } catch (e) { addToast("error", `批量导出失败: ${e}`); }
+  }, []);
 
   // Import profile — parse file, show preview
   const handleImport = useCallback(async () => {
@@ -197,33 +307,34 @@ export function App() {
   }, [ctx, importData]);
 
   // Check for updates
-  const handleCheckUpdate = useCallback(async () => {
+  const handleCheckUpdate = useCallback(async (opts?: { silent?: boolean }) => {
     try {
       const config: { update_url?: string } = await invoke("read_app_config");
       if (!config.update_url) {
-        addToast("error", "未配置更新地址。请编辑 update/update.json"); return;
+        if (!opts?.silent) addToast("error", "未配置更新地址。请编辑 update/update.json");
+        return;
       }
       const currentVersion: string = await invoke("get_app_version");
 
-      // Fetch manifest via Rust (no shell scope needed)
       let manifest: any;
       try {
         const text = (await invoke("fetch_url", { url: config.update_url })) as string;
         if (!text.trim()) throw new Error("空响应");
         manifest = JSON.parse(text);
       } catch (e: any) {
-        addToast("error", `无法获取更新清单: ${e}\n${config.update_url}`); return;
+        if (!opts?.silent) addToast("error", `无法获取更新清单: ${e}\n${config.update_url}`);
+        return;
       }
       if (!manifest.version || !manifest.platforms) {
-        addToast("error", "更新清单格式无效"); return;
+        if (!opts?.silent) addToast("error", "更新清单格式无效");
+        return;
       }
 
-      // Compare versions
       if (manifest.version <= currentVersion) {
-        addToast("success", `已是最新版本 (${currentVersion})`); return;
+        if (!opts?.silent) addToast("success", `已是最新版本 (${currentVersion})`);
+        return;
       }
 
-      // Get platform-specific info from Rust
       const platformInfo: { os: string; arch: string } = await invoke("get_platform_info");
       const platform = `${platformInfo.os === "macos" ? "darwin" : platformInfo.os}-${platformInfo.arch}`;
       const plat = manifest.platforms[platform] || Object.values(manifest.platforms)[0] as any;
@@ -231,9 +342,7 @@ export function App() {
 
       addToast("success", `发现新版本 ${manifest.version}，正在下载...`);
 
-      // Download to temp (Rust side, no shell scope)
       const tmpDir: string = await invoke("temp_dir");
-      // Extract extension from URL so macOS can recognize the file type
       const pathPart = (plat.url as string).split('?')[0];
       const ext = pathPart.split('.').pop() || 'dmg';
       const tmpPath = `${tmpDir}/ai-profile-manager-update-${Date.now()}.${ext}`;
@@ -243,7 +352,6 @@ export function App() {
         addToast("error", `下载失败: ${e}`); return;
       }
 
-      // Verify SHA256
       if (plat.sha256) {
         const ok = (await invoke("verify_sha256", { path: tmpPath, expected: plat.sha256 })) as boolean;
         if (!ok) {
@@ -254,9 +362,32 @@ export function App() {
       addToast("success", `已下载 ${manifest.version}，正在打开安装包...`);
       await invoke("open_file", { path: tmpPath });
     } catch (e) {
-      addToast("error", `检查更新失败: ${e}`);
+      if (!opts?.silent) addToast("error", `检查更新失败: ${e}`);
     }
   }, []);
+
+  // Auto-check for updates on startup (silent — only shows toast when update available)
+  useEffect(() => {
+    handleCheckUpdate({ silent: true });
+  }, []);
+
+  // ── Backup / Restore config ──────────────────────────────
+  const handleBackup = useCallback(async () => {
+    try {
+      const msg: string = await invoke("backup_config");
+      setBackupExists(true);
+      addToast("success", msg);
+    } catch (e) { addToast("error", `备份失败: ${e}`); }
+  }, []);
+
+  const handleRestore = useCallback(async () => {
+    try {
+      const msg: string = await invoke("restore_config_backup");
+      await ctx.loadProfiles();
+      setBackupExists(true);
+      addToast("success", msg);
+    } catch (e) { addToast("error", `恢复失败: ${e}`); }
+  }, [ctx]);
 
   // Copy selected profile — prompt for new name
   const handleCopyProfile = useCallback(() => {
@@ -269,7 +400,7 @@ export function App() {
       for (const [k, v] of Object.entries(src.env)) {
         await ctx.setEnvVar(newName, k, v);
       }
-      await ctx.loadProfiles(); // refresh sidebar counts
+      await ctx.loadProfiles();
       ctx.selectProfile(newName);
       addToast("success", `Profile "${newName}" 已复制`);
     });
@@ -284,7 +415,6 @@ export function App() {
     setNameDialogInitial(oldName);
     setNameDialogOnConfirm(() => async (newName: string) => {
       if (newName === oldName) return;
-      // Check for name conflict
       if (ctx.profiles.some((p) => p.name === newName)) {
         addToast("error", `Profile "${newName}" 已存在`);
         return;
@@ -298,6 +428,9 @@ export function App() {
         if (v) await ctx.setEnvVar(newName, k, v);
       }
       await ctx.removeProfile(oldName);
+      // Clean up session history referencing the old profile name
+      rightTerminal.clearProfileHistory(oldName);
+      bottomTerminal.clearProfileHistory(oldName);
       await ctx.loadProfiles();
       ctx.selectProfile(newName);
       addToast("success", `已重命名为 "${newName}"`);
@@ -305,15 +438,17 @@ export function App() {
     setShowNameDialog(true);
   }, [ctx]);
 
-  // Resize handle for terminal panel
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+  // ── Resize handlers ───────────────────────────────────────
+
+  // Right terminal — horizontal drag (adjusts width)
+  const handleRightResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
-    const startWidth = terminal.width;
+    const startSize = rightTerminal.size;
 
     const onMouseMove = (ev: MouseEvent) => {
       const delta = startX - ev.clientX;
-      terminal.setTerminalWidth(startWidth + delta);
+      rightTerminal.setSize(startSize + delta);
     };
 
     const onMouseUp = () => {
@@ -323,7 +458,53 @@ export function App() {
 
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
-  }, [terminal]);
+  }, [rightTerminal.size, rightTerminal.setSize]);
+
+  // Bottom terminal — vertical drag (adjusts height)
+  const handleBottomResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startSize = bottomTerminal.size;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const delta = startY - ev.clientY;
+      bottomTerminal.setSize(startSize + delta);
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [bottomTerminal.size, bottomTerminal.setSize]);
+
+  // ── Helper: build TerminalPanel props ──────────────────────
+  const buildTerminalProps = (tm: ReturnType<typeof useTerminal>) => ({
+    tabs: tm.tabs,
+    activeTabId: tm.activeTabId,
+    history: tm.history,
+    onAttachTerminal: tm.attachTerminal,
+    onClose: tm.close,
+    onSwitchTab: tm.switchTab,
+    onCloseTab: tm.closeTab,
+    onCloseOthers: tm.closeOthers,
+    onCloseToRight: tm.closeToRight,
+    onNewTab: () => tm.newEmptyTab(),
+    onSetWorkDir: tm.setWorkDir,
+    onTerminalReady: (tabId: string) => tm.handleTerminalReady(tabId),
+    onTerminalResize: (tabId: string, cols: number, rows: number) => tm.handleTerminalResize(tabId, cols, rows),
+    fontSize: tm.fontSize,
+    onSetFontSize: (s: number) => tm.setFontSize(s),
+    terminalVersion: tm.terminalVersion,
+    onResumeSession: (r: any) => tm.resumeSession(r),
+    onNewSessionFromHistory: (r: any) => tm.newSessionFromHistory(r),
+    onDeleteHistory: (id: string) => tm.deleteHistory(id),
+    onClearHistory: () => tm.clearHistory(),
+  });
+
+  const isAnyTerminalOpen = rightTerminal.isOpen || bottomTerminal.isOpen;
 
   return (
     <ErrorBoundary>
@@ -333,7 +514,6 @@ export function App() {
         selectedName={ctx.selectedName}
         isDefault={isDefault}
         onAdd={() => setShowAddDialog(true)}
-        onRemove={() => setShowDeleteConfirm(true)}
         onSetDefault={(name) => ctx.setDefault(name)}
         onInit={async () => {
           try {
@@ -347,20 +527,30 @@ export function App() {
             addToast("error", `扫描失败: ${e}`);
           }
         }}
-        onToggleTerminal={terminal.toggle}
+        sidebarVisible={sidebarVisible}
+        onToggleSidebar={() => setSidebarVisible((v) => !v)}
+        terminalVisible={bottomTerminal.isOpen}
+        rightTerminalVisible={rightTerminal.isOpen}
+        onToggleRightTerminal={() => rightTerminal.isOpen ? rightTerminal.hide() : rightTerminal.open()}
+        onToggleTerminal={bottomTerminal.toggle}
         onToggleWelcome={() => { setShowWelcome(!showWelcome); if (ctx.selectedName) ctx.deselect(); }}
         onRefresh={() => ctx.loadProfiles()}
-        onExport={handleExport}
         onImport={handleImport}
         onCopyProfile={handleCopyProfile}
         hasSelection={!!ctx.selectedName}
         onCheckUpdate={handleCheckUpdate}
+        onBackup={handleBackup}
+        onRestore={handleRestore}
+        backupExists={backupExists}
+        envCheck={envCheck}
+        onAbout={() => setShowAbout(true)}
       />
 
-      {/* Main content */}
-      <div className="flex-1 flex overflow-hidden">
-        {!terminalMaximized && (
-          <>
+      {/* Main content — VS Code-style: Sidebar | (MainPanel + BottomTerminal) | RightTerminal */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex overflow-hidden min-h-0">
+          {/* Sidebar — hidden when either panel is maximized, or toggled off */}
+          {sidebarVisible && !rightMaximized && !bottomMaximized && (
             <Sidebar
               profiles={ctx.filteredProfiles}
               selectedName={ctx.selectedName}
@@ -371,83 +561,99 @@ export function App() {
               onRename={handleRenameProfile}
               onDelete={(name) => { ctx.selectProfile(name); setShowDeleteConfirm(true); }}
               onSetDefault={(name) => ctx.setDefault(name)}
+              usageCounts={usageCounts}
+              onBatchDelete={handleBatchDelete}
+              onBatchExport={handleBatchExport}
             />
+          )}
 
-            <MainPanel
-              profile={ctx.selectedProfile}
-              hasProfiles={ctx.profiles.length > 0}
-              showWelcome={showWelcome}
-              allTags={Array.from(new Set(ctx.profiles.flatMap((p) => p.tags || []))).sort()}
-              history={terminal.history}
-              onSetEnv={async (key, value) => {
-                if (ctx.selectedName) await ctx.setEnvVar(ctx.selectedName, key, value);
-              }}
-              onDeleteEnv={async (key) => {
-                if (ctx.selectedName) await ctx.unsetEnvVar(ctx.selectedName, key);
-              }}
-              onPasteCommand={handlePasteCommand}
-              onRenameProfile={handleRenameProfile}
-              onResumeSession={(r) => terminal.resumeSession(r)}
-              onNewSessionFromHistory={(r) => terminal.newSessionFromHistory(r)}
-              onSetTags={async (name, tags) => {
-                if (tags) await ctx.setEnvVar(name, "_KN_TAGS", tags);
-                else await ctx.unsetEnvVar(name, "_KN_TAGS");
-                await ctx.loadProfiles(); // refresh sidebar list + tag filter
-                ctx.selectProfile(name);
-              }}
-              onInit={async () => {
-              try {
-                const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
-                if (result.profiles.length === 0) {
-                  addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
-                  return;
+          {/* Middle column: MainPanel + Bottom terminal — hidden when right panel is maximized */}
+          {!rightMaximized && (
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+            {/* MainPanel — hidden when either panel is maximized */}
+            {!rightMaximized && !bottomMaximized && (
+              <MainPanel
+                profile={ctx.selectedProfile}
+                hasProfiles={ctx.profiles.length > 0}
+                showWelcome={showWelcome}
+                allTags={Array.from(new Set(ctx.profiles.flatMap((p) => p.tags || []))).sort()}
+                history={rightTerminal.history}
+                onAdd={() => setShowAddDialog(true)}
+                onSetEnv={async (key, value) => {
+                  if (ctx.selectedName) await ctx.setEnvVar(ctx.selectedName, key, value);
+                }}
+                onDeleteEnv={async (key) => {
+                  if (ctx.selectedName) await ctx.unsetEnvVar(ctx.selectedName, key);
+                }}
+                onPasteCommand={handlePasteCommand}
+                onRenameProfile={handleRenameProfile}
+                onResumeSession={(r) => rightTerminal.resumeSession(r)}
+                onNewSessionFromHistory={(r) => rightTerminal.newSessionFromHistory(r)}
+                onDeleteHistory={(id) => rightTerminal.deleteHistory(id)}
+                onClearProfileHistory={(name) => rightTerminal.clearProfileHistory(name)}
+                onSetTags={async (name, tags) => {
+                  if (tags) await ctx.setEnvVar(name, "_KN_TAGS", tags);
+                  else await ctx.unsetEnvVar(name, "_KN_TAGS");
+                  await ctx.loadProfiles();
+                  ctx.selectProfile(name);
+                }}
+                onInit={async () => {
+                try {
+                  const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
+                  if (result.profiles.length === 0) {
+                    addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
+                    return;
+                  }
+                  setScanData(result.profiles);
+                } catch (e) {
+                  addToast("error", `扫描失败: ${e}`);
                 }
-                setScanData(result.profiles);
-              } catch (e) {
-                addToast("error", `扫描失败: ${e}`);
-              }
-            }}
-            />
-          </>
-        )}
+              }}
+              />
+            )}
 
-        {/* Resize handle + Terminal panel */}
-        {terminal.isOpen && (
-          <>
-            {!terminalMaximized && (
+            {/* Bottom terminal (VS Code-style panel) */}
+            {bottomTerminal.isOpen && !bottomMaximized && (
               <div
-                className="w-[6px] shrink-0 cursor-col-resize hover:bg-app-accent/20
-                  transition-colors duration-fast group/resize relative flex items-center justify-center"
-                onMouseDown={handleResizeStart}
+                className="h-[6px] shrink-0 cursor-row-resize hover:bg-app-accent/20
+                  transition-colors duration-fast group/resize flex items-center justify-center"
+                onMouseDown={handleBottomResize}
               >
-                <div className="w-px h-full bg-app-border group-hover/resize:bg-app-accent/50" />
+                <div className="h-px w-full bg-app-border group-hover/resize:bg-app-accent/50" />
               </div>
             )}
+            {bottomTerminal.isOpen && (
+              <TerminalPanel
+                mode="bottom"
+                size={bottomMaximized ? undefined : bottomTerminal.size}
+                maximized={bottomMaximized}
+                onToggleMaximize={() => { setBottomMaximized((v) => !v); setRightMaximized(false); }}
+                {...buildTerminalProps(bottomTerminal)}
+              />
+            )}
+          </div>
+          )}
+
+          {/* Right terminal (profile「运行」) */}
+          {rightTerminal.isOpen && !rightMaximized && !bottomMaximized && (
+            <div
+              className="w-[6px] shrink-0 cursor-col-resize hover:bg-app-accent/20
+                transition-colors duration-fast group/resize flex items-center justify-center"
+              onMouseDown={handleRightResize}
+            >
+              <div className="w-px h-full bg-app-border group-hover/resize:bg-app-accent/50" />
+            </div>
+          )}
+          {rightTerminal.isOpen && !bottomMaximized && (
             <TerminalPanel
-              width={terminalMaximized ? undefined : terminal.width}
-              maximized={terminalMaximized}
-              onToggleMaximize={() => setTerminalMaximized((v) => !v)}
-              tabs={terminal.tabs}
-              activeTabId={terminal.activeTabId}
-              history={terminal.history}
-              onAttachTerminal={terminal.attachTerminal}
-              onClose={terminal.close}
-              onSwitchTab={terminal.switchTab}
-              onCloseTab={terminal.closeTab}
-              onNewTab={() => terminal.newEmptyTab()}
-              onSetWorkDir={terminal.setWorkDir}
-              onTerminalReady={(tabId) => terminal.handleTerminalReady(tabId)}
-              onTerminalResize={(tabId, cols, rows) => terminal.handleTerminalResize(tabId, cols, rows)}
-              fontSize={terminal.fontSize}
-              onSetFontSize={(s) => terminal.setFontSize(s)}
-              terminalVersion={terminal.terminalVersion}
-              onResumeSession={(r) => terminal.resumeSession(r)}
-              onNewSessionFromHistory={(r) => terminal.newSessionFromHistory(r)}
-              onDeleteHistory={(id) => terminal.deleteHistory(id)}
-              onClearHistory={() => terminal.clearHistory()}
+              mode="right"
+              size={rightMaximized ? undefined : rightTerminal.size}
+              maximized={rightMaximized}
+              onToggleMaximize={() => { setRightMaximized((v) => !v); setBottomMaximized(false); }}
+              {...buildTerminalProps(rightTerminal)}
             />
-          </>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Status bar */}
@@ -456,7 +662,7 @@ export function App() {
           {ctx.loading ? "..." : ctx.profiles.length > 0 ? `[${ctx.profiles.length} 个 profile]` : "[就绪]"}
         </span>
         <span className="flex-1" />
-        {terminal.isOpen && (
+        {isAnyTerminalOpen && (
           <span className="text-2xs text-app-accent font-mono mr-3">
             终端已连接
           </span>
@@ -520,13 +726,15 @@ export function App() {
           for (const [k, v] of Object.entries(env)) {
             await ctx.setEnvVar(name, k, v);
           }
-          await ctx.loadProfiles(); // refresh sidebar with tags + CLI type
+          await ctx.loadProfiles();
           ctx.selectProfile(name);
           addToast("success", `Profile "${name}" 创建成功`);
         }}
       />
 
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
+
+      <AboutDialog open={showAbout} onClose={() => setShowAbout(false)} />
 
       <ImportPreview
         open={!!importData}
@@ -560,12 +768,25 @@ export function App() {
           onConfirm={async () => {
             const name = ctx.selectedName!;
             await ctx.removeProfile(name);
+            // Clean up session history referencing this profile
+            rightTerminal.clearProfileHistory(name);
+            bottomTerminal.clearProfileHistory(name);
             setShowDeleteConfirm(false);
             addToast("success", `Profile "${name}" 已删除`);
           }}
           onCancel={() => setShowDeleteConfirm(false)}
         />
       )}
+
+      {/* Batch delete confirmation */}
+      <ConfirmDialog
+        open={showBatchDeleteConfirm}
+        title="批量删除 Profile"
+        message={`确定要永久删除选中的 ${batchDeleteNamesRef.current.length} 个 profile 吗？此操作不可撤销。`}
+        confirmLabel="删除"
+        onConfirm={executeBatchDelete}
+        onCancel={() => { setShowBatchDeleteConfirm(false); batchDeleteNamesRef.current = []; }}
+      />
 
     </div>
     </ErrorBoundary>

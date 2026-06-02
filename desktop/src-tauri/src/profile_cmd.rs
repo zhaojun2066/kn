@@ -101,6 +101,7 @@ fn write_config(config: &Config) -> Result<(), String> {
     let dir = config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
     let path = config_file();
+    let backup = dir.join("config.yaml.bak");
 
     // File lock with staleness detection
     let lock = lock_file_path();
@@ -126,8 +127,21 @@ fn write_config(config: &Config) -> Result<(), String> {
     }
     fs::write(&lock, "").map_err(|e| format!("锁定失败: {}", e))?;
 
+    // ── Backup existing config before overwriting ──
+    if path.exists() {
+        let _ = fs::copy(&path, &backup); // best-effort, don't fail on backup error
+    }
+
     let yaml = serde_yaml::to_string(config).map_err(|e| format!("序列化失败: {}", e))?;
-    fs::write(&path, &yaml).map_err(|e| format!("写入配置失败: {}", e))?;
+
+    // Atomic-ish write: tmp file → fsync → rename
+    let tmp = dir.join("config.yaml.tmp");
+    fs::write(&tmp, &yaml).map_err(|e| format!("写入配置失败: {}", e))?;
+    // fsync the tmp file before renaming
+    if let Ok(f) = std::fs::File::open(&tmp) {
+        let _ = f.sync_all();
+    }
+    fs::rename(&tmp, &path).map_err(|e| format!("替换配置文件失败: {}", e))?;
 
     let _ = fs::remove_file(&lock);
     Ok(())
@@ -284,36 +298,114 @@ pub fn init_profiles_cmd() -> Result<MutationResult, String> {
 
 const SHELL_RC: &str = r#"# AI Profile Manager — Shell Wrapper
 # Usage: ai <tool> <profile>
+#        ai profile <command>
+
+CONFIG="$HOME/.claude-profiles/config.yaml"
 
 _profile_env() {
     local name="$1"
-    local config="$HOME/.claude-profiles/config.yaml"
-    [ ! -f "$config" ] && return 1
-    sed -n "/^  ${name}:/,/^  [a-z]/p" "$config" | \
+    [ ! -f "$CONFIG" ] && return 1
+    sed -n "/^  ${name}:/,/^  [a-z]/p" "$CONFIG" | \
         sed -n 's/^      \([A-Z][A-Z_]*\): *\(.*\)/export \1=\2/p'
 }
 
+_profile_list() {
+    [ ! -f "$CONFIG" ] && { echo "No config found at $CONFIG" >&2; return 1; }
+    grep '^  [a-zA-Z]' "$CONFIG" | sed 's/^  \([a-zA-Z0-9_-]*\):.*/\1/' | while read -r name; do
+        local is_default=""
+        grep -q "^default: \"$name\"" "$CONFIG" && is_default=" (*)"
+        echo "  $name$is_default"
+    done
+}
+
+_profile_show() {
+    local name="$1"
+    [ ! -f "$CONFIG" ] && { echo "No config found" >&2; return 1; }
+    local output
+    output=$(_profile_env "$name")
+    if [ -z "$output" ]; then
+        echo "Profile '$name' not found" >&2
+        return 1
+    fi
+    echo "Profile: $name"
+    echo "$output" | sed 's/^export //'
+}
+
 ai() {
-    if [ $# -eq 0 ]; then
-        echo "Usage: ai <tool> [profile] [args...]"
-        echo "  Supported tools: claude, codex"
+    local cmd="${1:-}"
+    if [ -z "$cmd" ]; then
+        echo "Usage: ai <tool> [args...]"
+        echo ""
+        echo "  Run with profile:"
+        echo "    ai claude <profile>       Run Claude Code with profile env"
+        echo "    ai codex <profile>        Run Codex CLI with profile env"
+        echo ""
+        echo "  Manage profiles:"
+        echo "    ai profile list           List all profiles"
+        echo "    ai profile env <name>     Show env vars for a profile"
+        echo "    ai profile switch <name>  Set default profile"
         return
     fi
-    local tool="$1"; shift
-    case "$tool" in
-        claude|codex) ;;
-        *) echo "Unknown tool: $tool (supported: claude, codex)" >&2; return 1 ;;
+    case "$cmd" in
+        claude|codex)
+            local tool="$1"; shift
+            if [ $# -gt 0 ]; then
+                local env_output=$(_profile_env "$1")
+                if [ -n "$env_output" ]; then
+                    local profile_name="$1"; shift
+                    echo "-> Using profile: $profile_name"
+                    (eval "$env_output" && command "$tool" "$@")
+                    return
+                fi
+            fi
+            command "$tool" "$@"
+            ;;
+        profile)
+            shift
+            case "${1:-}" in
+                list)
+                    _profile_list
+                    ;;
+                env)
+                    shift
+                    _profile_show "${1:-}"
+                    ;;
+                switch)
+                    shift
+                    local name="${1:-}"
+                    if [ -z "$name" ]; then
+                        echo "Usage: ai profile switch <name>" >&2
+                        return 1
+                    fi
+                    if grep -q "^  ${name}:" "$CONFIG" 2>/dev/null; then
+                        sed -i '' "s/^default:.*/default: \"$name\"/" "$CONFIG" 2>/dev/null || \
+                        sed -i "s/^default:.*/default: \"$name\"/" "$CONFIG"
+                        echo "Default profile set to '$name'"
+                    else
+                        echo "Profile '$name' not found" >&2
+                        return 1
+                    fi
+                    ;;
+                *)
+                    echo "Usage: ai profile {list|env <name>|switch <name>}" >&2
+                    return 1
+                    ;;
+            esac
+            ;;
+        -h|--help|help)
+            echo "AI Profile Manager"
+            echo "  ai claude <profile>       Run Claude Code with profile"
+            echo "  ai codex <profile>        Run Codex CLI with profile"
+            echo "  ai profile list           List all profiles"
+            echo "  ai profile env <name>     Show env vars for profile"
+            echo "  ai profile switch <name>  Set default profile"
+            ;;
+        *)
+            echo "Unknown command: $cmd" >&2
+            echo "Supported: claude, codex, profile" >&2
+            return 1
+            ;;
     esac
-    if [ $# -gt 0 ]; then
-        local env_output=$(_profile_env "$1")
-        if [ -n "$env_output" ]; then
-            local profile_name="$1"; shift
-            echo "-> Using profile: $profile_name"
-            (eval "$env_output" && command "$tool" "$@")
-            return
-        fi
-    fi
-    command "$tool" "$@"
 }
 "#;
 

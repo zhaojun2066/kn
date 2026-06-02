@@ -30,7 +30,10 @@ AI Profile Manager — a Tauri v2 desktop app (React + Tailwind + TypeScript fro
 
 ### Key Technology Stack
 - **Desktop shell**: Tauri v2 with `tauri-plugin-shell` (for `Command.create` from frontend), `tauri-plugin-dialog` (file open/save dialogs), `tauri-plugin-fs`, `tauri-plugin-updater`
-- **Terminal**: xterm.js (`@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-webgl`) in the frontend, `portable-pty` crate in Rust for real PTY-backed shell sessions
+- **Terminal**: xterm.js (`@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-webgl`) in the frontend, `portable-pty` crate in Rust for real PTY-backed shell sessions. **Two independent terminal panels** coexist:
+  - **Right terminal** (`panelId="right"`): opens on the right side when user clicks「运行」on a profile. Width-based sizing.
+  - **Bottom terminal** (`panelId="bottom"`): VS Code-style bottom panel, toggled via toolbar button or Ctrl+`. Height-based sizing.
+  - Each has its own tabs, history, PTY sessions — fully independent.
 - **PTY data flow**: Rust spawns `zsh -i -l` (login + interactive) via `portable-pty`, uses Tauri `Channel<PtyEvent>` to stream stdout/stderr to the frontend, frontend `invoke("write_pty", {sessionId, data})` to send keystrokes
 - **Profile storage**: Single YAML config at `~/.claude-profiles/config.yaml`. The Tauri backend reads/writes it directly via `serde_yaml`. The shell wrapper (`~/.claude-profiles/shell-rc`) reads it with `sed` for zero-dependency profile injection in the terminal. **No separate dev/prod config — one file for all modes.**
 
@@ -38,12 +41,12 @@ AI Profile Manager — a Tauri v2 desktop app (React + Tailwind + TypeScript fro
 ```
 desktop/
 ├── src/                    # React frontend
-│   ├── App.tsx             # Top-level layout: Toolbar | Sidebar + MainPanel + TerminalPanel | StatusBar
+│   ├── App.tsx             # Top-level layout: Toolbar | (Sidebar + MainPanel + BottomTerm) vs RightTerm | StatusBar
 │   ├── components/
-│   │   ├── Toolbar.tsx     # Add/delete/copy/scan/refresh/export/import profile, theme, terminal toggle
+│   │   ├── Toolbar.tsx     # Add/delete/copy/scan/refresh/export/import profile, theme, terminal toggle (toggles bottom terminal)
 │   │   ├── Sidebar.tsx     # Profile list with search, sort, right-click menu, CLI type icons
-│   │   ├── MainPanel.tsx   # Profile detail: env var table + command reference block + test button
-│   │   ├── TerminalPanel.tsx # Tab bar + xterm terminals + work dir selector + history dropdown
+│   │   ├── MainPanel.tsx   # Profile detail: env var table + command reference block + session history
+│   │   ├── TerminalPanel.tsx # Tab bar + xterm terminals + work dir + history dropdown. mode="right"|"bottom" adapts sizing
 │   │   ├── XTerm.tsx       # xterm.js + WebGL + FitAddon wrapper (forwardRef)
 │   │   ├── ProfileDialog.tsx # 4-step create wizard: name → CLI type → env vars → done
 │   │   ├── ImportPreview.tsx  # JSON import preview with CLI detection
@@ -52,7 +55,7 @@ desktop/
 │   │   ├── ConfirmDialog.tsx / NameDialog.tsx / ShortcutsPanel.tsx / ErrorBoundary.tsx
 │   │   └── common/         # Button, Badge, SearchInput, CLIIcon
 │   ├── hooks/
-│   │   ├── useTerminal.ts  # Multi-tab PTY session management (the most complex hook — ~400 lines)
+│   │   ├── useTerminal.ts  # Multi-instance PTY session management: useTerminal("right") | useTerminal("bottom")
 │   │   ├── useProfiles.ts  # Profile CRUD via Tauri IPC
 │   │   └── useTheme.ts     # light/dark/system theme toggle
 │   ├── lib/
@@ -87,6 +90,25 @@ User types → xterm.onData → invoke("write_pty", {sessionId, data})
   → Rust reader thread → Channel.send(PtyEvent::Data)
   → Frontend Channel.onmessage → term.write(data)
 ```
+
+### Dual Terminal Instances
+`App.tsx` creates two independent `useTerminal` instances:
+```ts
+const rightTerminal = useTerminal("right");   // profile「运行」→ 右侧面板
+const bottomTerminal = useTerminal("bottom"); // 工具栏按钮 → 底部面板 (VS Code 风格)
+```
+
+| Aspect | Right Terminal | Bottom Terminal |
+|--------|---------------|-----------------|
+| Trigger | Profile「运行」button | Toolbar terminal toggle / Ctrl+` |
+| Layout | Right side of MainPanel | Below MainPanel (VS Code panel) |
+| Sizing | Width-based (min 480px) | Height-based (min 120px) |
+| Resize | Horizontal drag (cursor-col-resize) | Vertical drag (cursor-row-resize) |
+| Maximize | Hides Sidebar+MainPanel+Bottom | Hides Sidebar+MainPanel+Right |
+| localStorage | `kn-terminal-right-*` | `kn-terminal-bottom-*` |
+
+Each instance has its own tabs, history, PTY sessions — fully independent.
+`TerminalPanel` adapts via `mode="right"|"bottom"` prop (border direction, sizing, etc.).
 
 ### PTY Resize Chain
 ```

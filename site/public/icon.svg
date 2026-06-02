@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Background gradient: deep green-black -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d110d"/>
+      <stop offset="100%" stop-color="#0a0c0a"/>
+    </linearGradient>
+    <!-- Green glow -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="glowStrong">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Amber glow -->
+    <filter id="amberGlow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect x="64" y="64" width="896" height="896" rx="180" ry="180" fill="url(#bg)" stroke="#1a241a" stroke-width="6"/>
+
+  <!-- Terminal window title bar dots -->
+  <circle cx="200" cy="200" r="24" fill="#e05555" opacity="0.8"/>
+  <circle cx="272" cy="200" r="24" fill="#e6a940" opacity="0.7"/>
+  <circle cx="344" cy="200" r="24" fill="#5cdb5c" opacity="0.8"/>
+
+  <!-- Profile / gear icon — stylized as a circle with nodes -->
+  <!-- Central circle (profile) -->
+  <circle cx="400" cy="520" r="120" fill="none" stroke="#3dfc3d" stroke-width="14" filter="url(#glow)"/>
+  <!-- Person silhouette (head + shoulders inside circle) -->
+  <circle cx="400" cy="440" r="48" fill="#3dfc3d" filter="url(#glow)"/>
+  <path d="M280 600 Q280 520 400 520 Q520 520 520 600" fill="#3dfc3d" filter="url(#glow)"/>
+
+  <!-- Terminal prompt: >_  -->
+  <text x="570" y="450" font-family="'JetBrains Mono','Fira Code',monospace" font-size="120" font-weight="bold" fill="#3dfc3d" filter="url(#glowStrong)">&gt;_</text>
+
+  <!-- Amber accent connection dots -->
+  <circle cx="400" cy="260" r="14" fill="#e6a940" filter="url(#amberGlow)"/>
+  <line x1="400" y1="260" x2="400" y2="370" stroke="#e6a940" stroke-width="4" opacity="0.4" stroke-dasharray="8,8"/>
+
+  <!-- Three small network nodes -->
+  <circle cx="260" cy="760" r="16" fill="none" stroke="#3dfc3d" stroke-width="6" opacity="0.6"/>
+  <circle cx="400" cy="780" r="16" fill="none" stroke="#3dfc3d" stroke-width="6" opacity="0.8"/>
+  <circle cx="540" cy="760" r="16" fill="none" stroke="#3dfc3d" stroke-width="6" opacity="0.6"/>
+  <line x1="276" y1="760" x2="384" y2="780" stroke="#3dfc3d" stroke-width="4" opacity="0.4"/>
+  <line x1="416" y1="780" x2="524" y2="760" stroke="#3dfc3d" stroke-width="4" opacity="0.4"/>
+
+  <!-- Outer ring accent -->
+  <circle cx="512" cy="512" r="400" fill="none" stroke="#3dfc3d" stroke-width="2" opacity="0.08"/>
+  <circle cx="512" cy="512" r="380" fill="none" stroke="#3dfc3d" stroke-width="1" opacity="0.05"/>
+</svg>

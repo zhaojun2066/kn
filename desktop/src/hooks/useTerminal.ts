@@ -1,19 +1,8 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { Terminal } from "@xterm/xterm";
 
-const MIN_WIDTH = 480;
-const STORAGE_WIDTH = "kn-terminal-width";
-
-function defaultWidth(): number {
-  try {
-    const saved = localStorage.getItem(STORAGE_WIDTH);
-    if (saved) return Math.max(MIN_WIDTH, parseInt(saved, 10));
-  } catch { /* */ }
-  return Math.max(MIN_WIDTH, Math.floor(window.innerWidth * 0.55));
-}
 const MAX_HISTORY = 30;
-const STORAGE_HISTORY = "kn-terminal-history";
 
 let tabCounter = 1;
 
@@ -37,7 +26,7 @@ export interface SessionRecord {
   timestamp: number;
 }
 
-function parseAiCmd(cmd: string): { tool: string; profile: string } | null {
+export function parseAiCmd(cmd: string): { tool: string; profile: string } | null {
   const m = cmd.match(/^ai\s+(claude|codex)\s+(\S+)/);
   if (!m) return null;
   return { tool: m[1], profile: m[2] };
@@ -59,25 +48,6 @@ function buildResumeLastCmd(cmd: string): string | null {
   return null;
 }
 
-function loadHistory(): SessionRecord[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_HISTORY);
-    if (!raw) return [];
-    const records: SessionRecord[] = JSON.parse(raw);
-    // Migrate: fill missing resumeLastCommand for old records
-    return records.map((r) => ({
-      ...r,
-      resumeLastCommand: r.resumeLastCommand || buildResumeLastCmd(r.command),
-    }));
-  } catch { return []; }
-}
-
-function saveHistory(records: SessionRecord[]) {
-  try {
-    localStorage.setItem(STORAGE_HISTORY, JSON.stringify(records.slice(0, MAX_HISTORY)));
-  } catch { /* */ }
-}
-
 type PtyEvent =
   | { event: "ready" }
   | { event: "data"; data: string }
@@ -95,15 +65,61 @@ function newTab(name?: string, workDir?: string): TabSession {
   };
 }
 
-export function useTerminal() {
+/**
+ * Multi-instance terminal hook.
+ * @param panelId - "right" (profile run) or "bottom" (manual toggle).
+ *   "right" uses width-based sizing, "bottom" uses height-based sizing.
+ */
+export function useTerminal(panelId: string = "right") {
+  const isBottom = panelId === "bottom";
+
+  // ── panel-specific configuration ──────────────────────
+  const MIN_SIZE = isBottom ? 120 : 480;
+  const STORAGE_SIZE = `kn-terminal-${panelId}-size`;
+  const STORAGE_HISTORY = `kn-terminal-${panelId}-history`;
+  const STORAGE_FONTSIZE = `kn-terminal-${panelId}-fontsize`;
+
+  function defaultSize(): number {
+    try {
+      const saved = localStorage.getItem(STORAGE_SIZE);
+      if (saved) return Math.max(MIN_SIZE, parseInt(saved, 10));
+    } catch { /* */ }
+    if (isBottom) {
+      return Math.max(MIN_SIZE, Math.floor(window.innerHeight * 0.3));
+    }
+    return Math.max(MIN_SIZE, Math.floor(window.innerWidth * 0.55));
+  }
+
+  function loadHistory(): SessionRecord[] {
+    try {
+      const raw = localStorage.getItem(STORAGE_HISTORY);
+      if (!raw) return [];
+      const records: SessionRecord[] = JSON.parse(raw);
+      return records.map((r) => ({
+        ...r,
+        resumeLastCommand: r.resumeLastCommand || buildResumeLastCmd(r.command),
+      }));
+    } catch { return []; }
+  }
+
+  function saveHistory(records: SessionRecord[]) {
+    try {
+      localStorage.setItem(STORAGE_HISTORY, JSON.stringify(records.slice(0, MAX_HISTORY)));
+    } catch { /* */ }
+  }
+
   const [isOpen, setIsOpen] = useState(false);
-  const [width, setWidth] = useState(() => defaultWidth());
+  const [size, setSizeState] = useState(() => defaultSize());
   const [fontSize, setFontSizeState] = useState(() => {
-    try { return parseInt(localStorage.getItem("kn-terminal-fontsize") || "13", 10); } catch { return 13; }
+    try { return parseInt(localStorage.getItem(STORAGE_FONTSIZE) || "13", 10); } catch { return 13; }
   });
-  const [tabs, setTabs] = useState<TabSession[]>(() => [newTab("终端")]);
+  // Right panel starts empty (no default tab); bottom panel starts with one tab.
+  const [tabs, setTabs] = useState<TabSession[]>(() => isBottom ? [newTab("终端")] : []);
   const [history, setHistory] = useState<SessionRecord[]>(() => loadHistory());
   const [activeTabId, setActiveTabId] = useState<string>(tabs[0]?.id || "");
+
+  // Per-profile run counter (incremented on each "运行" click)
+  const [usageCounts, setUsageCounts] = useState<Record<string, number>>({});
 
   // Per-tab: Terminal instance + text
   const termRefs = useRef<Map<string, Terminal>>(new Map());
@@ -175,6 +191,22 @@ export function useTerminal() {
   // Promise resolvers for onReady (tabId → resolve function)
   const errorCallbackRef = useRef<((msg: string) => void) | null>(null);
   const setErrorCallback = useCallback((cb: (msg: string) => void) => { errorCallbackRef.current = cb; }, []);
+
+  // Valid profile names (for validating history restore)
+  const profileNamesRef = useRef<Set<string>>(new Set());
+  const setValidProfileNames = useCallback((names: string[]) => {
+    profileNamesRef.current = new Set(names);
+  }, []);
+  const deleteHistoryRef = useRef<((id: string) => void) | null>(null);
+  const validateProfile = useCallback((record: SessionRecord): boolean => {
+    const parsed = parseAiCmd(record.command);
+    if (!parsed) return true;
+    if (profileNamesRef.current.has(parsed.profile)) return true;
+    // Profile gone — delete the stale record
+    deleteHistoryRef.current?.(record.id);
+    errorCallbackRef.current?.(`Profile "${parsed.profile}" 不存在，已删除历史记录`);
+    return false;
+  }, []);
 
   const readyPromiseRefs = useRef<Map<string, () => void>>(new Map());
 
@@ -265,22 +297,33 @@ export function useTerminal() {
     termRefs.current.clear();
     textRefs.current.clear();
     mountedTabs.current.clear();
-    // Reset to a single fresh tab (old tabs are dead)
-    const fresh = newTab("终端");
-    setTabs([fresh]);
-    activeTabIdRef.current = fresh.id;
-    setActiveTabId(fresh.id);
+    // Bottom panel: reset to a single fresh tab. Right panel: stay empty.
+    if (isBottom) {
+      const fresh = newTab("终端");
+      setTabs([fresh]);
+      activeTabIdRef.current = fresh.id;
+      setActiveTabId(fresh.id);
+    } else {
+      setTabs([]);
+      activeTabIdRef.current = "";
+      setActiveTabId("");
+    }
     setIsOpen(false);
-  }, [tabs]);
+  }, [tabs, isBottom]);
+
+  /* ── Hide without destroying ─────────────────────────── */
+  const hide = useCallback(() => {
+    setIsOpen(false);
+  }, []);
 
   const openingRef = useRef(false);
   const toggle = useCallback(() => {
-    if (isOpen) { close(); }
+    if (isOpen) { hide(); }                       // soft hide — keep PTYs alive
     else if (!openingRef.current) {
       openingRef.current = true;
       open().finally(() => { openingRef.current = false; });
     }
-  }, [isOpen, close, open]);
+  }, [isOpen, hide, open]);
 
   /* ── Create a new tab and run command ──────────────────── */
   const runInNewTab = useCallback(async (cmd: string, workDir: string, label?: string) => {
@@ -298,9 +341,13 @@ export function useTerminal() {
     await spawnPty(tab);
     setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, ptyRunning: true } : t));
 
-    // Save to history
-    const parsed = parseAiCmd(cmd);
-    const record: SessionRecord = {
+    // Save to history — right panel only (bottom panel is manual workspace)
+    if (!isBottom) {
+      const parsed = parseAiCmd(cmd);
+      if (parsed) {
+        setUsageCounts((prev) => ({ ...prev, [parsed.profile]: (prev[parsed.profile] || 0) + 1 }));
+      }
+      const record: SessionRecord = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       command: cmd,
       resumeCommand: buildResumeCmd(cmd),
@@ -316,6 +363,7 @@ export function useTerminal() {
     });
     // Persist outside updater
     saveHistory([record, ...history.filter((r) => !(r.command === cmd && r.workDir === workDir))].slice(0, MAX_HISTORY));
+    } // !isBottom — history only for right panel
 
     // Wait for shell prompt + resize signal to settle, then send command
     await new Promise((r) => setTimeout(r, 800));
@@ -323,7 +371,7 @@ export function useTerminal() {
       sessionId: tab.sessionId,
       data: cmd + "\r",
     }).catch(() => {});
-  }, [isOpen, spawnPty]);
+  }, [isOpen, spawnPty, history, waitForReady, isBottom]);
 
   /* ── Open existing or create new tab ───────────────────── */
   const runInTerminal = useCallback(async (cmd: string, workDir: string) => {
@@ -340,17 +388,19 @@ export function useTerminal() {
 
   /* ── Resume from history ───────────────────────────────── */
   const resumeSession = useCallback(async (record: SessionRecord) => {
+    if (!validateProfile(record)) return;
     const cmd = record.resumeCommand || record.command;
     const label = record.resumeCommand
       ? `${record.label} · 恢复`
       : record.label;
     await runInNewTab(cmd, record.workDir, label);
-  }, [runInNewTab]);
+  }, [runInNewTab, validateProfile]);
 
   /* ── New session from history (no resume) ──────────────── */
   const newSessionFromHistory = useCallback(async (record: SessionRecord) => {
+    if (!validateProfile(record)) return;
     await runInNewTab(record.command, record.workDir, record.label);
-  }, [runInNewTab]);
+  }, [runInNewTab, validateProfile]);
 
   /* ── Delete history entry ──────────────────────────────── */
   const deleteHistory = useCallback((id: string) => {
@@ -360,11 +410,24 @@ export function useTerminal() {
       return next;
     });
   }, []);
+  deleteHistoryRef.current = deleteHistory;
 
   /* ── Clear all history ─────────────────────────────────── */
   const clearHistory = useCallback(() => {
     setHistory([]);
     try { localStorage.removeItem(STORAGE_HISTORY); } catch { /* */ }
+  }, [STORAGE_HISTORY]);
+
+  /* ── Clear history for a specific profile ─────────────── */
+  const clearProfileHistory = useCallback((profileName: string) => {
+    setHistory((prev) => {
+      const next = prev.filter((r) => {
+        const parsed = parseAiCmd(r.command);
+        return parsed?.profile !== profileName;
+      });
+      saveHistory(next);
+      return next;
+    });
   }, []);
 
   /* ── Switch tab ────────────────────────────────────────── */
@@ -384,20 +447,59 @@ export function useTerminal() {
 
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
-      if (next.length === 0) {
-        const nt = newTab("终端");
-        return [nt];
+      if (next.length === 0 && isBottom) {
+        return [newTab("终端")];
       }
       return next;
     });
 
-    if (activeTabIdRef.current === tabId) {
-      setActiveTabId(() => {
-        const remaining = sessionsRef.current.filter((t) => t.id !== tabId);
-        return remaining[0]?.id || "";
-      });
+    // Right panel: close when last tab removed
+    const remaining = sessionsRef.current.filter((t) => t.id !== tabId);
+    if (remaining.length === 0 && !isBottom) {
+      setIsOpen(false);
+    } else if (activeTabIdRef.current === tabId) {
+      setActiveTabId(remaining[0]?.id || "");
     }
-  }, [tabs, activeTabId]);
+  }, [isBottom]);
+
+  /* ── Close all tabs except the specified one ───────────── */
+  const closeOthers = useCallback(async (tabId: string) => {
+    const allTabs = sessionsRef.current;
+    for (const tab of allTabs) {
+      if (tab.id !== tabId && tab.ptyRunning) {
+        try { await invoke("kill_pty", { sessionId: tab.sessionId }); } catch { /* */ }
+      }
+      if (tab.id !== tabId) {
+        termRefs.current.delete(tab.id);
+        textRefs.current.delete(tab.id);
+        mountedTabs.current.delete(tab.id);
+      }
+    }
+    const kept = allTabs.find((t) => t.id === tabId);
+    setTabs(kept ? [kept] : (isBottom ? [newTab("终端")] : []));
+    setActiveTabId(tabId);
+  }, [isBottom]);
+
+  /* ── Close tabs to the right of the specified one ──────── */
+  const closeToRight = useCallback(async (tabId: string) => {
+    const allTabs = sessionsRef.current;
+    const idx = allTabs.findIndex((t) => t.id === tabId);
+    if (idx < 0) return;
+    const toClose = allTabs.slice(idx + 1);
+    for (const tab of toClose) {
+      if (tab.ptyRunning) {
+        try { await invoke("kill_pty", { sessionId: tab.sessionId }); } catch { /* */ }
+      }
+      termRefs.current.delete(tab.id);
+      textRefs.current.delete(tab.id);
+      mountedTabs.current.delete(tab.id);
+    }
+    setTabs((prev) => prev.slice(0, idx + 1));
+    // If active tab was among closed ones, switch to the right-clicked tab
+    if (toClose.some((t) => t.id === activeTabIdRef.current)) {
+      setActiveTabId(tabId);
+    }
+  }, []);
 
   const [terminalVersion, setTerminalVersion] = useState(0);
   const setFontSize = useCallback((s: number) => {
@@ -410,25 +512,32 @@ export function useTerminal() {
     }
     setFontSizeState(clamped);
     setTerminalVersion((v) => v + 1);
-    try { localStorage.setItem("kn-terminal-fontsize", String(clamped)); } catch { /* */ }
+    try { localStorage.setItem(STORAGE_FONTSIZE, String(clamped)); } catch { /* */ }
   }, []);
 
-  const setTerminalWidth = useCallback((w: number) => {
-    const clamped = Math.min(Math.max(w, MIN_WIDTH), Math.floor(window.innerWidth * 0.65));
-    setWidth(clamped);
-    try { localStorage.setItem(STORAGE_WIDTH, String(clamped)); } catch { /* */ }
-  }, []);
+  const setSize = useCallback((s: number) => {
+    const max = isBottom
+      ? Math.floor(window.innerHeight * 0.6)
+      : Math.floor(window.innerWidth * 0.65);
+    const clamped = Math.min(Math.max(s, MIN_SIZE), max);
+    setSizeState(clamped);
+    try { localStorage.setItem(STORAGE_SIZE, String(clamped)); } catch { /* */ }
+  }, [isBottom, MIN_SIZE, STORAGE_SIZE]);
 
   const setWorkDir = useCallback((tabId: string, dir: string) => {
     setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, workDir: dir } : t));
   }, []);
 
   return {
-    isOpen, width,
+    isOpen,
+    size,
+    isBottom,
     tabs, activeTabId, activeTab,
     history,
     setErrorCallback,
-    open, close, toggle,
+    setValidProfileNames,
+    usageCounts,
+    open, close, hide, toggle,
     attachTerminal,
     handleTerminalReady,
     handleTerminalResize,
@@ -440,9 +549,10 @@ export function useTerminal() {
     newSessionFromHistory,
     deleteHistory,
     clearHistory,
-    switchTab, closeTab,
+    clearProfileHistory,
+    switchTab, closeTab, closeOthers, closeToRight,
     setWorkDir,
-    setTerminalWidth,
+    setSize,
     fontSize, setFontSize, terminalVersion,
   };
 }

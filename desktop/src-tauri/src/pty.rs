@@ -78,6 +78,7 @@ pub fn start_pty(
     // without these the shell may disable line editing or behave as "dumb" terminal.
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "ai-profile-manager");
 
     let mut child = pair
         .slave

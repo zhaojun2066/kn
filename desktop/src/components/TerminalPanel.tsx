@@ -1,12 +1,14 @@
 import React, { useRef, useEffect, useCallback, useState } from "react";
-import { X, Plus, FolderOpen, Clock, Trash2, Play, Minus, ExternalLink, Maximize2, Minimize2 } from "lucide-react";
+import { X, Plus, FolderOpen, Clock, Trash2, Play, Minus, ExternalLink, Maximize2, Minimize2, Search, ChevronUp, ChevronDown, Copy, CopyCheck, Palette } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import { XTerm, XTermHandle } from "./XTerm";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ContextMenu } from "./ContextMenu";
 import type { Terminal } from "@xterm/xterm";
 import type { SessionRecord } from "../hooks/useTerminal";
 import { shortenPath } from "../lib/path-utils";
+import { TERMINAL_THEMES, loadTerminalTheme, saveTerminalTheme, isThemeSync, setThemeSync } from "../lib/terminalThemes";
 
 interface TabInfo {
   id: string;
@@ -16,7 +18,8 @@ interface TabInfo {
 }
 
 interface TerminalPanelProps {
-  width?: number;
+  mode?: "right" | "bottom";
+  size?: number;
   maximized?: boolean;
   onToggleMaximize?: () => void;
   tabs: TabInfo[];
@@ -26,6 +29,8 @@ interface TerminalPanelProps {
   onClose: () => void;
   onSwitchTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
+  onCloseOthers: (tabId: string) => void;
+  onCloseToRight: (tabId: string) => void;
   onNewTab: () => void;
   onSetWorkDir: (tabId: string, dir: string) => void;
   onTerminalReady?: (tabId: string) => void;
@@ -40,12 +45,14 @@ interface TerminalPanelProps {
 }
 
 /* ── Per-tab XTerm wrapper ──────────────────────────────── */
-function TabTerminal({ tabId, onAttach, onReady, onResize, fontSize }: {
+function TabTerminal({ tabId, onAttach, onReady, onResize, fontSize, onXTermHandle, themeName }: {
   tabId: string;
   onAttach: (term: Terminal) => void;
   onReady?: () => void;
   onResize?: (cols: number, rows: number) => void;
   fontSize?: number;
+  onXTermHandle?: (tabId: string, handle: XTermHandle | null) => void;
+  themeName?: string;
 }) {
   const xtermRef = useRef<XTermHandle>(null);
   const attached = useRef(false);
@@ -54,12 +61,20 @@ function TabTerminal({ tabId, onAttach, onReady, onResize, fontSize }: {
     if (!attached.current) {
       attached.current = true;
       onAttach(term);
+      if (onXTermHandle) onXTermHandle(tabId, xtermRef.current);
     }
-  }, [onAttach]);
+  }, [onAttach, onXTermHandle, tabId]);
 
-  useEffect(() => { attached.current = false; }, [tabId]);
+  useEffect(() => {
+    attached.current = false;
+    // Notify parent of the handle on mount
+    if (onXTermHandle && xtermRef.current) {
+      onXTermHandle(tabId, xtermRef.current);
+    }
+    return () => { if (onXTermHandle) onXTermHandle(tabId, null); };
+  }, [tabId]);
 
-  return <XTerm ref={xtermRef} onTerminal={handleTerminal} onReady={onReady} onResize={onResize} fontSize={fontSize} />;
+  return <XTerm ref={xtermRef} onTerminal={handleTerminal} onReady={onReady} onResize={onResize} fontSize={fontSize} themeName={themeName} />;
 }
 
 /* ── Format relative time ───────────────────────────────── */
@@ -77,19 +92,64 @@ function formatTime(ts: number): string {
 
 /* ── TerminalPanel ──────────────────────────────────────── */
 export function TerminalPanel({
-  width, maximized, onToggleMaximize,
+  mode, size, maximized, onToggleMaximize,
   tabs, activeTabId, history,
-  onAttachTerminal, onClose, onSwitchTab, onCloseTab, onNewTab,
+  onAttachTerminal, onClose, onSwitchTab, onCloseTab, onCloseOthers, onCloseToRight, onNewTab,
   onSetWorkDir, onTerminalReady, onTerminalResize,
   fontSize, onSetFontSize, terminalVersion,
   onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearHistory,
 }: TerminalPanelProps) {
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const runningCount = tabs.filter((t) => t.ptyRunning).length;
+  const modKey = navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl";
+  const maximizeTip = `${maximized ? "还原" : "最大化"} (${modKey}⇧M)`;
   const [showHistory, setShowHistory] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   const [closingPanel, setClosingPanel] = useState(false);
+  const [clearHistoryConfirm, setClearHistoryConfirm] = useState(false);
+  const [deleteHistoryTarget, setDeleteHistoryTarget] = useState<string | null>(null);
+  const [themeName, setThemeName] = useState(() => loadTerminalTheme(mode ?? "right"));
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
+  const [themeSync, setThemeSyncState] = useState(() => isThemeSync());
+
+  // Listen for theme sync/change events from the other panel (same-window custom event)
+  useEffect(() => {
+    const handler = () => {
+      setThemeSyncState(isThemeSync());
+      setThemeName(loadTerminalTheme(mode ?? "right"));
+    };
+    window.addEventListener("kn-theme-changed", handler);
+    return () => window.removeEventListener("kn-theme-changed", handler);
+  }, [mode]);
+
+  // ── Tab context menu ────────────────────────────────────
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
+  const [copiedPath, setCopiedPath] = useState(false);
+
+  const handleTabContextMenu = (e: React.MouseEvent, tabId: string) => {
+    e.preventDefault();
+    setCtxMenu({ x: e.clientX, y: e.clientY, tabId });
+  };
+
+  const handleCopyPath = async (tabId: string) => {
+    const tab = tabs.find((t) => t.id === tabId);
+    if (tab?.workDir) {
+      try {
+        await navigator.clipboard.writeText(tab.workDir);
+        setCopiedPath(true);
+        setTimeout(() => setCopiedPath(false), 1500);
+      } catch { /* clipboard may fail in some contexts */ }
+    }
+  };
+
+  // ── Terminal search state ──────────────────────────────
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [searchMatchIndex, setSearchMatchIndex] = useState(0);
+  const [searchMatchCount, setSearchMatchCount] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const xtermHandlesRef = useRef<Map<string, XTermHandle>>(new Map());
 
   const filteredHistory = historySearch.trim()
     ? history.filter((r) =>
@@ -107,15 +167,141 @@ export function TerminalPanel({
     } catch { /* */ }
   };
 
+  // ── XTerm handle tracking (for search addon access) ─────
+  const handleXTermRef = useCallback((tabId: string, handle: XTermHandle | null) => {
+    if (handle) {
+      xtermHandlesRef.current.set(tabId, handle);
+    } else {
+      xtermHandlesRef.current.delete(tabId);
+    }
+  }, []);
+
+  // ── Search actions ──────────────────────────────────────
+  const openSearch = useCallback(() => {
+    const handle = xtermHandlesRef.current.get(activeTabId);
+    if (!handle?.searchAddon) return;
+    setShowSearch(true);
+    setSearchMatchIndex(0);
+    setSearchMatchCount(0);
+    setTimeout(() => searchInputRef.current?.focus(), 50);
+  }, [activeTabId]);
+
+  const doSearch = useCallback((term: string) => {
+    const handle = xtermHandlesRef.current.get(activeTabId);
+    if (!handle?.searchAddon) return;
+    if (!term) {
+      handle.searchAddon.clearDecorations();
+      setSearchMatchIndex(0);
+      setSearchMatchCount(0);
+      return;
+    }
+    // findNext with { incremental: true } for live highlighting
+    try {
+      const result = handle.searchAddon.findNext(term, { incremental: true });
+      setSearchMatchIndex(result ? 1 : 0);
+      setSearchMatchCount(result ? 1 : 0);
+    } catch { /* search addon may throw on empty/invalid patterns */ }
+  }, [activeTabId]);
+
+  const findNext = useCallback(() => {
+    const handle = xtermHandlesRef.current.get(activeTabId);
+    if (!handle?.searchAddon || !searchTerm) return;
+    try {
+      const result = handle.searchAddon.findNext(searchTerm);
+      if (result) {
+        setSearchMatchIndex((prev) => {
+          const idx = prev + 1;
+          return idx > 999 ? 1 : idx;
+        });
+      }
+    } catch { /* */ }
+  }, [activeTabId, searchTerm]);
+
+  const findPrevious = useCallback(() => {
+    const handle = xtermHandlesRef.current.get(activeTabId);
+    if (!handle?.searchAddon || !searchTerm) return;
+    try {
+      const result = handle.searchAddon.findPrevious(searchTerm);
+      if (result) {
+        setSearchMatchIndex((prev) => {
+          const idx = prev - 1;
+          return idx < 1 ? 999 : idx;
+        });
+      }
+    } catch { /* */ }
+  }, [activeTabId, searchTerm]);
+
+  const closeSearch = useCallback(() => {
+    setShowSearch(false);
+    const handle = xtermHandlesRef.current.get(activeTabId);
+    try { handle?.searchAddon?.clearDecorations(); } catch { /* */ }
+    setSearchTerm("");
+    setSearchMatchIndex(0);
+    setSearchMatchCount(0);
+  }, [activeTabId]);
+
+  // ── Keyboard listener for Cmd/Ctrl+F ────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        // Check if focus is inside this terminal panel's DOM tree
+        const el = document.activeElement as HTMLElement | null;
+        const panel = el?.closest("[data-panel]") as HTMLElement | null;
+        const matchMode = panel?.dataset.panel === mode;
+        // Also check: is any xterm element inside this panel focused?
+        // xterm.js textarea may not always register in closest() chain
+        const xtermInPanel = el?.closest(".xterm") && el?.closest(`[data-panel="${mode}"]`);
+        if (matchMode || xtermInPanel) {
+          e.preventDefault();
+          e.stopPropagation();
+          openSearch();
+          return;
+        }
+        // Fallback: if this TerminalPanel has mounted tabs, allow Cmd+F
+        // even without strict focus match (e.g., focus just landed on terminal bg)
+        if (tabs.length > 0 && !el?.closest("[data-panel]")) {
+          // Focus is outside any panel — don't steal Cmd+F (browser find, etc.)
+          return;
+        }
+      }
+      if (e.key === "Escape" && showSearch) {
+        e.preventDefault();
+        closeSearch();
+      }
+    };
+    window.addEventListener("keydown", handler, true); // capture phase to beat xterm.js
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [mode, openSearch, showSearch, closeSearch, tabs.length]);
+
+  // Sync search when active tab changes
+  useEffect(() => {
+    if (showSearch) {
+      // Re-sync search term with new tab's search addon
+      if (searchTerm) doSearch(searchTerm);
+      else closeSearch();
+    }
+  }, [activeTabId]);
+
   useEffect(() => {
     const timer = setTimeout(() => window.dispatchEvent(new Event("resize")), 100);
     return () => clearTimeout(timer);
-  }, [width]);
+  }, [size]);
+
+  const isBottom = mode === "bottom";
+  const containerStyle: React.CSSProperties = maximized
+    ? {}
+    : (isBottom
+      ? (size !== undefined ? { height: `${size}px` } : {})
+      : (size !== undefined ? { width: `${size}px` } : {})
+    );
 
   return (
     <div
-      style={width !== undefined ? { width: `${width}px` } : undefined}
-      className={`flex flex-col bg-[var(--app-terminal-bg)] border-l border-app-border h-full ${maximized ? "flex-1" : "shrink-0"}`}
+      data-panel={mode}  // for keyboard shortcut: identify which panel has focus
+      style={containerStyle}
+      className={`flex flex-col bg-[var(--app-terminal-bg)] border-app-border
+        ${isBottom ? "border-t w-full" : "border-l h-full"}
+        ${maximized ? "flex-1" : "shrink-0"}`}
     >
       {/* Header */}
       <div className="flex items-center h-[28px] bg-[var(--app-terminal-header)] border-b border-app-border shrink-0 select-none">
@@ -125,6 +311,7 @@ export function TerminalPanel({
             const isActive = tab.id === activeTabId;
             return (
               <div key={tab.id} onClick={() => onSwitchTab(tab.id)}
+                onContextMenu={(e) => handleTabContextMenu(e, tab.id)}
                 className={`group flex items-center gap-1.5 px-2.5 h-[28px] text-2xs font-mono cursor-pointer
                   border-r border-app-border shrink-0 transition-colors select-none
                   ${isActive ? "bg-[var(--app-terminal-bg)] text-app-text border-b-[2px] border-b-app-accent -mb-px"
@@ -142,12 +329,16 @@ export function TerminalPanel({
               </div>
             );
           })}
-          <button onClick={onNewTab} className="px-2.5 h-[28px] text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)] transition-colors shrink-0" title="新建终端">
-            <Plus size={13} />
-          </button>
+          {/* Right panel: no manual "+" — only profile commands create tabs */}
+          {isBottom && (
+            <button onClick={onNewTab} className="px-2.5 h-[28px] text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)] transition-colors shrink-0" title="新建终端">
+              <Plus size={13} />
+            </button>
+          )}
         </div>
 
-        {/* History button */}
+        {/* History button — right panel only */}
+        {!isBottom && (
         <div className="relative shrink-0">
           <button onClick={() => setShowHistory(!showHistory)}
             className={`px-2 h-[28px] text-app-text-muted hover:text-app-text transition-colors flex items-center gap-1 ${showHistory ? "text-app-accent" : ""}`}
@@ -172,7 +363,7 @@ export function TerminalPanel({
                       <span className="text-2xs text-app-text-muted">({filteredHistory.length}/{history.length})</span>
                       {history.length > 0 && (
                         <button
-                          onClick={() => { if (window.confirm("确定要清空所有历史会话记录吗？")) onClearHistory(); }}
+                          onClick={() => setClearHistoryConfirm(true)}
                           className="text-2xs text-app-text-dim hover:text-app-red transition-colors"
                           title="清空全部历史"
                         >
@@ -251,9 +442,7 @@ export function TerminalPanel({
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (window.confirm(`确定要删除此会话记录吗？\n\n${r.command}`)) {
-                              onDeleteHistory(r.id);
-                            }
+                            setDeleteHistoryTarget(r.id);
                           }}
                           className="p-1 text-app-text-dim hover:text-app-red hover:bg-app-red-bg transition-colors shrink-0"
                           title="删除"
@@ -268,17 +457,76 @@ export function TerminalPanel({
             </>
           )}
         </div>
+        )}
 
-        {/* Work dir + close */}
-        <div className="flex items-center gap-1 px-2 shrink-0">
-          <input type="text" value={activeTab?.workDir || ""}
-            onChange={(e) => activeTabId && onSetWorkDir(activeTabId, e.target.value)}
-            placeholder="工作目录"
-            className="w-[160px] h-[20px] bg-[var(--app-input)] border border-app-border text-2xs font-mono text-app-text-dim px-1.5 py-0 focus:border-app-accent"
-            spellCheck={false} />
-          <button onClick={browseDir} className="p-0.5 text-app-text-muted hover:text-app-accent transition-colors" title="选择目录">
-            <FolderOpen size={11} />
+        {/* Search button (triggers terminal search bar) */}
+        <button
+          onClick={openSearch}
+          className={`shrink-0 px-2 h-[28px] text-app-text-muted hover:text-app-text transition-colors ${showSearch ? "text-app-accent" : ""}`}
+          title={`搜索终端输出 (${modKey}F)`}
+        >
+          <Search size={12} />
+        </button>
+
+        {/* Theme selector */}
+        <div className="relative shrink-0">
+          <button
+            onClick={() => setShowThemeMenu(!showThemeMenu)}
+            className={`px-2 h-[28px] text-app-text-muted hover:text-app-text transition-colors ${showThemeMenu ? "text-app-accent" : ""}`}
+            title="终端配色"
+          >
+            <Palette size={12} />
           </button>
+          {showThemeMenu && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowThemeMenu(false)} />
+              <div className="absolute right-0 top-[28px] z-50 w-[200px] bg-[var(--app-panel)] border border-app-border shadow-dialog py-0.5">
+                {TERMINAL_THEMES.map((t) => (
+                  <button
+                    key={t.name}
+                    onClick={() => {
+                      setThemeName(t.name);
+                      saveTerminalTheme(t.name, mode ?? "right");
+                      window.dispatchEvent(new Event("kn-theme-changed"));
+                      setShowThemeMenu(false);
+                    }}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs font-mono transition-colors
+                      ${themeName === t.name ? "text-app-accent bg-[var(--app-hover)]" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
+                  >
+                    <span
+                      className="w-3 h-3 rounded-sm border border-app-border shrink-0"
+                      style={{ background: t.background }}
+                    />
+                    {t.label}
+                  </button>
+                ))}
+                <div className="border-t border-app-border mt-0.5 pt-0.5">
+                  <label className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs font-mono text-app-text-dim hover:text-app-text transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={themeSync}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setThemeSync(checked);
+                        setThemeSyncState(checked);
+                        if (checked) {
+                          // Sync ON: save current selection to shared key
+                          saveTerminalTheme(themeName, mode ?? "right");
+                        }
+                        window.dispatchEvent(new Event("kn-theme-changed"));
+                      }}
+                      className="w-3 h-3 accent-app-accent"
+                    />
+                    同步配色
+                  </label>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Work dir (right panel only) + font + close */}
+        <div className="flex items-center gap-1 px-2 shrink-0">
           {/* Font size */}
           <button onClick={() => onSetFontSize(fontSize - 1)}
             className="px-1 h-[20px] text-2xs text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors font-mono"
@@ -300,10 +548,23 @@ export function TerminalPanel({
             <button
               onClick={onToggleMaximize}
               className="p-0.5 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
-              title={maximized ? "还原" : "最大化"}
+              title={maximizeTip}
             >
               {maximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
             </button>
+          )}
+          {/* Work dir — right panel only */}
+          {!isBottom && (
+            <>
+              <input type="text" value={activeTab?.workDir || ""}
+                onChange={(e) => activeTabId && onSetWorkDir(activeTabId, e.target.value)}
+                placeholder="工作目录"
+                className="w-[160px] h-[20px] bg-[var(--app-input)] border border-app-border text-2xs font-mono text-app-text-dim px-1.5 py-0 focus:border-app-accent"
+                spellCheck={false} />
+              <button onClick={browseDir} className="p-0.5 text-app-text-muted hover:text-app-accent transition-colors" title="选择目录">
+                <FolderOpen size={11} />
+              </button>
+            </>
           )}
           <button
             onClick={() => {
@@ -323,6 +584,58 @@ export function TerminalPanel({
 
       {/* Terminal area — all tabs mounted, inactive hidden via visibility (not display:none) */}
       <div className="flex-1 relative bg-[var(--app-terminal-bg)]">
+        {/* Search bar overlay */}
+        {showSearch && (
+          <div className="absolute top-0 right-0 z-20 flex items-center gap-1 px-2 py-1
+            bg-[var(--app-panel)] border-b border-l border-app-border shadow-lg
+            animate-[fadeIn_120ms_ease-out]"
+          >
+            <Search size={11} className="text-app-text-muted shrink-0" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchTerm}
+              onChange={(e) => { setSearchTerm(e.target.value); doSearch(e.target.value); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (e.shiftKey) findPrevious(); else findNext();
+                }
+                if (e.key === "Escape") { e.preventDefault(); closeSearch(); }
+              }}
+              className="w-[160px] h-[22px] text-xs font-mono bg-[var(--app-input)] border border-app-border px-1.5 py-0 focus:border-app-accent"
+              placeholder="搜索..."
+              spellCheck={false}
+            />
+            {searchTerm && (
+              <span className="text-2xs text-app-text-muted font-mono tabular-nums min-w-[28px] text-center">
+                {searchMatchIndex > 0 ? searchMatchIndex : "?"}
+              </span>
+            )}
+            <button
+              onClick={findPrevious}
+              className="p-0.5 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
+              title="上一个 (Shift+Enter)"
+            >
+              <ChevronUp size={12} />
+            </button>
+            <button
+              onClick={findNext}
+              className="p-0.5 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
+              title="下一个 (Enter)"
+            >
+              <ChevronDown size={12} />
+            </button>
+            <button
+              onClick={closeSearch}
+              className="p-0.5 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors ml-0.5"
+              title="关闭 (Escape)"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           return (
@@ -337,11 +650,40 @@ export function TerminalPanel({
               <TabTerminal tabId={tab.id} onAttach={(term) => onAttachTerminal(tab.id, term)}
                 onReady={onTerminalReady ? () => onTerminalReady(tab.id) : undefined}
                 onResize={onTerminalResize ? (cols, rows) => onTerminalResize(tab.id, cols, rows) : undefined}
-                fontSize={fontSize} />
+                fontSize={fontSize}
+                themeName={themeName}
+                onXTermHandle={handleXTermRef} />
             </div>
           );
         })}
       </div>
+
+      {/* Tab context menu */}
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x} y={ctxMenu.y}
+          onClose={() => setCtxMenu(null)}
+          items={[
+            {
+              label: "关闭其他",
+              icon: <X size={13} />,
+              onClick: () => onCloseOthers(ctxMenu.tabId),
+              disabled: tabs.length <= 1,
+            },
+            {
+              label: "关闭右侧",
+              icon: <Trash2 size={13} />,
+              onClick: () => onCloseToRight(ctxMenu.tabId),
+              disabled: tabs.findIndex((t) => t.id === ctxMenu.tabId) >= tabs.length - 1,
+            },
+            {
+              label: copiedPath ? "已复制 ✓" : "复制路径",
+              icon: copiedPath ? <CopyCheck size={13} /> : <Copy size={13} />,
+              onClick: () => handleCopyPath(ctxMenu.tabId),
+            },
+          ]}
+        />
+      )}
 
       <ConfirmDialog
         open={!!closingTabId}
@@ -364,6 +706,32 @@ export function TerminalPanel({
           onClose();
         }}
         onCancel={() => setClosingPanel(false)}
+      />
+
+      <ConfirmDialog
+        open={clearHistoryConfirm}
+        title="清空历史会话"
+        message="确定要清空所有历史会话记录吗？此操作不可撤销。"
+        confirmLabel="清空"
+        onConfirm={() => {
+          onClearHistory();
+          setClearHistoryConfirm(false);
+        }}
+        onCancel={() => setClearHistoryConfirm(false)}
+      />
+
+      <ConfirmDialog
+        open={!!deleteHistoryTarget}
+        title="删除会话记录"
+        message={`确定要删除此会话记录吗？\n\n${history.find(r => r.id === deleteHistoryTarget)?.command || ""}`}
+        confirmLabel="删除"
+        onConfirm={() => {
+          if (deleteHistoryTarget) {
+            onDeleteHistory(deleteHistoryTarget);
+            setDeleteHistoryTarget(null);
+          }
+        }}
+        onCancel={() => setDeleteHistoryTarget(null)}
       />
     </div>
   );

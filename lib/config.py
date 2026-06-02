@@ -11,6 +11,7 @@ import time
 
 CONFIG_DIR = os.environ.get("CLAUDE_PROFILES_HOME", os.path.expanduser("~/.claude-profiles"))
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.yaml")
+BACKUP_FILE = os.path.join(CONFIG_DIR, "config.yaml.bak")
 LOCK_FILE = os.path.join(CONFIG_DIR, ".config.lock")
 
 # ── Public API ─────────────────────────────────────────────────
@@ -25,7 +26,10 @@ def read_config():
 
 
 def write_config(config):
-    """Serialize config dict back to config.yaml, with file locking."""
+    """Serialize config dict back to config.yaml, with file locking.
+
+    Automatically backs up existing config.yaml → config.yaml.bak before writing.
+    """
     text = _format_yaml(config)
 
     os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -33,10 +37,37 @@ def write_config(config):
     with open(LOCK_FILE, "w") as lf:
         _acquire_lock(lf)
         try:
-            with open(CONFIG_FILE, "w") as f:
+            # Backup existing config before overwriting
+            if os.path.exists(CONFIG_FILE):
+                try:
+                    import shutil
+                    shutil.copy2(CONFIG_FILE, BACKUP_FILE)
+                except Exception:
+                    pass  # backup is best-effort; don't block the write
+
+            # Atomic-ish: write to temp file then rename
+            tmp_file = CONFIG_FILE + ".tmp"
+            with open(tmp_file, "w") as f:
                 f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, CONFIG_FILE)
         finally:
             _release_lock(lf)
+
+
+def restore_backup():
+    """Restore config.yaml from backup if it exists. Returns True on success."""
+    if not os.path.exists(BACKUP_FILE):
+        return False
+    import shutil
+    shutil.copy2(BACKUP_FILE, CONFIG_FILE)
+    return True
+
+
+def backup_exists():
+    """Check whether a backup file exists."""
+    return os.path.exists(BACKUP_FILE)
 
 
 def get_profile(config, name):
