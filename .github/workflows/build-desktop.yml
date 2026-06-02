@@ -118,7 +118,7 @@ jobs:
           DMG=$(find assets/darwin-aarch64 -name "*.dmg" | head -1)
           if [ -f "$DMG" ]; then
             SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
-            FNAME=$(basename "$DMG")
+            FNAME=$(basename "$DMG" | sed 's/ /%20/g')
             jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
                --arg sha "$SHA" \
                '.platforms["darwin-aarch64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
@@ -128,7 +128,7 @@ jobs:
           DMG=$(find assets/darwin-x86_64 -name "*.dmg" | head -1)
           if [ -f "$DMG" ]; then
             SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
-            FNAME=$(basename "$DMG")
+            FNAME=$(basename "$DMG" | sed 's/ /%20/g')
             jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/$FNAME" \
                --arg sha "$SHA" \
                '.platforms["darwin-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
