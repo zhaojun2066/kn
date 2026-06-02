@@ -30,6 +30,10 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
       - run: npm ci
+      - name: Read version from tauri.conf.json
+        run: |
+          VER=$(grep '"version"' ../desktop/src-tauri/tauri.conf.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/')
+          echo "VITE_APP_VERSION=$VER" >> $GITHUB_ENV
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

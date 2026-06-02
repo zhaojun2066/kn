@@ -1,4 +1,5 @@
-export const APP_VERSION = '1.0.1'
+// 构建时从 tauri.conf.json 注入，本地开发用默认值
+export const APP_VERSION = import.meta.env.VITE_APP_VERSION || 'dev'
 export const APP_NAME = 'AI Profile Manager'
 
 export const GITHUB_RELEASES = 'https://github.com/zhaojun2066/ai-profile-manager/releases'
