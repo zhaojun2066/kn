@@ -5,9 +5,6 @@ src-tauri/target/
 # Dependencies
 node_modules/
 
-# Environment config (each developer has their own)
-update/update.json
-
 # OS files
 .DS_Store
 Thumbs.db
