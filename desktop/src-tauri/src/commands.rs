@@ -366,29 +366,38 @@ fn find_binary(names: &[&str]) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn fetch_url(url: String) -> Result<String, String> {
-    let curl = find_binary(&["curl"]).unwrap_or_else(|| "curl".into());
-    let output = std::process::Command::new(&curl)
-        .args(["-sL", "--max-time", "30", &url])
-        .output()
-        .map_err(|e| format!("curl 执行失败: {}", e))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-    String::from_utf8(output.stdout).map_err(|e| format!("编码错误: {}", e))
+pub async fn fetch_url(url: String) -> Result<String, String> {
+    // 后台线程执行，不阻塞主异步运行时
+    tauri::async_runtime::spawn_blocking(move || {
+        let curl = find_binary(&["curl"]).unwrap_or_else(|| "curl".into());
+        let output = std::process::Command::new(&curl)
+            .args(["-sL", "--max-time", "30", &url])
+            .output()
+            .map_err(|e| format!("curl 执行失败: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+        String::from_utf8(output.stdout).map_err(|e| format!("编码错误: {}", e))
+    })
+    .await
+    .map_err(|e| format!("后台任务失败: {}", e))?
 }
 
 #[tauri::command]
-pub fn download_file(url: String, path: String) -> Result<(), String> {
-    let curl = find_binary(&["curl"]).unwrap_or_else(|| "curl".into());
-    let output = std::process::Command::new(&curl)
-        .args(["-sL", "--max-time", "600", "-o", &path, &url])
-        .output()
-        .map_err(|e| format!("curl 执行失败: {}", e))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-    Ok(())
+pub async fn download_file(url: String, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let curl = find_binary(&["curl"]).unwrap_or_else(|| "curl".into());
+        let output = std::process::Command::new(&curl)
+            .args(["-sL", "--max-time", "600", "-o", &path, &url])
+            .output()
+            .map_err(|e| format!("curl 执行失败: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("后台任务失败: {}", e))?
 }
 
 #[tauri::command]
