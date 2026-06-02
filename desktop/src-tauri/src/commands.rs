@@ -162,11 +162,20 @@ pub struct AppConfig {
 #[tauri::command]
 pub fn read_app_config() -> Result<AppConfig, String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    // macOS .app bundle: Resources/update/update.json (relative to executable)
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| cwd.clone());
     let paths = vec![
+        // Bundled resource (production)
+        exe_dir.join("../Resources/update/update.json"),
+        // Relative to CWD (development)
         cwd.join("update").join("update.json"),
         cwd.join("update.json"),
         cwd.join("..").join("update").join("update.json"),
         cwd.join("..").join("update.json"),
+        // Global fallback
         home_dir().join(".claude-profiles").join("update.json"),
     ];
     for path in &paths {

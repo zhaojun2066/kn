@@ -428,7 +428,7 @@ rm -rf ~/.claude-profiles
 > 如果提示权限不足，加 `sudo`：
 >
 > ```bash
-> sudo xattr -rd com.apple.quarantine "/Applications/AI Profile Manager.app"
+> sudo xattr -d com.apple.quarantine "/Applications/AI Profile Manager.app"
 > ```
 >
 > **方法二**：右键打开
