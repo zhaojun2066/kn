@@ -10,6 +10,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { AboutDialog } from "./components/AboutDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { UpdateDialog } from "./components/UpdateDialog";
 import { ImportPreview } from "./components/ImportPreview";
 import { ScanPreview, ScanProfile } from "./components/ScanPreview";
 import { formatShortcut } from "./utils/shortcut";
@@ -53,6 +54,8 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const batchDeleteNamesRef = useRef<string[]>([]);
+  // Update dialog: store manifest + platform data when new version found
+  const [updateDialog, setUpdateDialog] = useState<{ version: string; notes: string; url: string; sha256: string } | null>(null);
 
   // Load profiles on mount
   useEffect(() => { ctx.loadProfiles(); }, []);
@@ -345,31 +348,52 @@ export function App() {
       const plat = manifest.platforms[platform] || Object.values(manifest.platforms)[0] as any;
       if (!plat?.url) { addToast("error", `无此平台的更新包 (${platform})`); return; }
 
-      addToast("success", `发现新版本 ${manifest.version}，正在下载...`);
-
-      const tmpDir: string = await invoke("temp_dir");
-      const pathPart = (plat.url as string).split('?')[0];
-      const ext = pathPart.split('.').pop() || 'dmg';
-      const tmpPath = `${tmpDir}/ai-profile-manager-update-${Date.now()}.${ext}`;
-      try {
-        await invoke("download_file", { url: plat.url, path: tmpPath });
-      } catch (e: any) {
-        addToast("error", `下载失败: ${e}`); return;
-      }
-
-      if (plat.sha256) {
-        const ok = (await invoke("verify_sha256", { path: tmpPath, expected: plat.sha256 })) as boolean;
-        if (!ok) {
-          addToast("error", "SHA256 校验失败，文件可能损坏"); return;
-        }
-      }
-
-      addToast("success", `已下载 ${manifest.version}，正在打开安装包...`);
-      await invoke("open_file", { path: tmpPath });
+      // Show update dialog with release notes instead of auto-downloading
+      setUpdateDialog({
+        version: manifest.version,
+        notes: manifest.notes || "",
+        url: plat.url,
+        sha256: plat.sha256 || "",
+      });
     } catch (e) {
       if (!opts?.silent) addToast("error", `检查更新失败: ${e}`);
     }
   }, []);
+
+  // Confirm update: download, verify, and open installer
+  const handleConfirmUpdate = useCallback(async () => {
+    if (!updateDialog) return;
+    const { version, url, sha256 } = updateDialog;
+    try {
+      addToast("success", `正在下载 ${version}...`);
+      const tmpDir: string = await invoke("temp_dir");
+      const pathPart = url.split('?')[0];
+      const ext = pathPart.split('.').pop() || 'dmg';
+      const tmpPath = `${tmpDir}/ai-profile-manager-update-${Date.now()}.${ext}`;
+      try {
+        await invoke("download_file", { url, path: tmpPath });
+      } catch (e: any) {
+        addToast("error", `下载失败: ${e}`);
+        setUpdateDialog(null);
+        return;
+      }
+
+      if (sha256) {
+        const ok = (await invoke("verify_sha256", { path: tmpPath, expected: sha256 })) as boolean;
+        if (!ok) {
+          addToast("error", "SHA256 校验失败，文件可能损坏");
+          setUpdateDialog(null);
+          return;
+        }
+      }
+
+      addToast("success", `已下载 ${version}，正在打开安装包...`);
+      await invoke("open_file", { path: tmpPath });
+    } catch (e) {
+      addToast("error", `更新失败: ${e}`);
+    }
+    setUpdateDialog(null);
+  }, [updateDialog]);
 
   // Auto-check for updates on startup (silent — only shows toast when update available)
   useEffect(() => {
@@ -743,6 +767,16 @@ export function App() {
       <AboutDialog open={showAbout} onClose={() => setShowAbout(false)} />
 
       <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
+
+      {updateDialog && (
+        <UpdateDialog
+          open={true}
+          version={updateDialog.version}
+          notes={updateDialog.notes}
+          onConfirm={handleConfirmUpdate}
+          onCancel={() => setUpdateDialog(null)}
+        />
+      )}
 
       <ImportPreview
         open={!!importData}

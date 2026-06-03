@@ -9,6 +9,12 @@ on:
   #     - "desktop/**"
   #     - ".github/workflows/build-desktop.yml"
   workflow_dispatch:
+    inputs:
+      notes:
+        description: "Release notes (更新说明)"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -161,11 +167,18 @@ jobs:
                '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi
 
-          jq --arg v "$APP_VERSION" --arg n "自动构建版本 $APP_VERSION" \
+          RELEASE_NOTES="${{ inputs.notes }}"
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="自动构建版本 $APP_VERSION"
+          fi
+          jq --arg v "$APP_VERSION" --arg n "$RELEASE_NOTES" \
              '.version = $v | .notes = $n' download.json > tmp && mv tmp download.json
 
           echo "=== download.json ==="
           cat download.json
+
+          # Save notes to file for the release step
+          echo "$RELEASE_NOTES" > release-notes.txt
 
       - name: Create Release and upload
         uses: softprops/action-gh-release@v2
@@ -174,15 +187,7 @@ jobs:
           name: v${{ env.APP_VERSION }}
           overwrite_files: true
           fail_on_unmatched_files: false
-          body: |
-            自动构建版本。
-
-            | 平台 | 文件 |
-            |------|------|
-            | macOS Apple Silicon | `.dmg` |
-            | macOS Intel | `.dmg` |
-            | Windows x64 | `.exe` / `.msi` |
-            | Linux x64 | `.deb` |
+          body_path: release-notes.txt
           files: |
             assets/**/*.dmg
             assets/**/*.exe
