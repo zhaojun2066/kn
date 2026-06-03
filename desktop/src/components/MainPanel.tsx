@@ -202,7 +202,7 @@ function CommandBlock({
                 <span className="text-app-accent opacity-70 mr-1">$</span>
                 {cmd}
               </code>
-              <div className="flex items-center gap-0.5 opacity-0 group-hover/item:opacity-100 transition-all duration-fast">
+              <div className="flex items-center gap-0.5">
                 <button
                   onClick={() => onPaste(cmd)}
                   className="flex items-center gap-1 px-2 py-0.5 text-2xs
