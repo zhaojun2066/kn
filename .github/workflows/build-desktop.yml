@@ -134,9 +134,16 @@ jobs:
                '.platforms["darwin-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi
 
-          # windows-x86_64
+          # windows-x86_64 — prefer NSIS .exe (no MSI policy restrictions), fall back to .msi
+          EXE=$(find assets/windows-x86_64 -name "*.exe" | head -1)
           MSI=$(find assets/windows-x86_64 -name "*.msi" | head -1)
-          if [ -f "$MSI" ]; then
+          if [ -f "$EXE" ]; then
+            SHA=$(sha256sum "$EXE" | cut -d' ' -f1)
+            FNAME=$(basename "$EXE")
+            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+               --arg sha "$SHA" \
+               '.platforms["windows-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
+          elif [ -f "$MSI" ]; then
             SHA=$(sha256sum "$MSI" | cut -d' ' -f1)
             FNAME=$(basename "$MSI")
             jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
@@ -174,10 +181,11 @@ jobs:
             |------|------|
             | macOS Apple Silicon | `.dmg` |
             | macOS Intel | `.dmg` |
-            | Windows x64 | `.msi` |
+            | Windows x64 | `.exe` / `.msi` |
             | Linux x64 | `.deb` |
           files: |
             assets/**/*.dmg
+            assets/**/*.exe
             assets/**/*.msi
             assets/**/*.deb
             assets/**/*.AppImage
