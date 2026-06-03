@@ -33,10 +33,11 @@ jobs:
             target: x86_64-pc-windows-msvc
             label: windows-x64
             platform: windows-x86_64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            label: linux-x64
-            platform: linux-x86_64
+          # Linux build 暂时注释掉，CI 环境缺少 webkit2gtk 依赖导致编译失败
+          # - os: ubuntu-latest
+          #   target: x86_64-unknown-linux-gnu
+          #   label: linux-x64
+          #   platform: linux-x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -110,11 +111,12 @@ jobs:
           name: windows-x64
           path: assets/windows-x86_64
 
-      - name: Download Linux
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-x64
-          path: assets/linux-x86_64
+      # Linux build 暂时注释掉
+      # - name: Download Linux
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: linux-x64
+      #     path: assets/linux-x86_64
 
       - name: Generate download.json manifest
         run: |
@@ -157,15 +159,16 @@ jobs:
                '.platforms["windows-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi
 
-          # linux-x86_64
-          DEB=$(find assets/linux-x86_64 -name "*.deb" | head -1)
-          if [ -f "$DEB" ]; then
-            SHA=$(sha256sum "$DEB" | cut -d' ' -f1)
-            FNAME=$(basename "$DEB")
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
-               --arg sha "$SHA" \
-               '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
-          fi
+          # Linux build 暂时注释掉
+          # # linux-x86_64
+          # DEB=$(find assets/linux-x86_64 -name "*.deb" | head -1)
+          # if [ -f "$DEB" ]; then
+          #   SHA=$(sha256sum "$DEB" | cut -d' ' -f1)
+          #   FNAME=$(basename "$DEB")
+          #   jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+          #      --arg sha "$SHA" \
+          #      '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
+          # fi
 
           RELEASE_NOTES="${{ inputs.notes }}"
           if [ -z "$RELEASE_NOTES" ]; then
@@ -192,8 +195,9 @@ jobs:
             assets/**/*.dmg
             assets/**/*.exe
             assets/**/*.msi
-            assets/**/*.deb
-            assets/**/*.AppImage
+            # Linux build 暂时注释掉
+            # assets/**/*.deb
+            # assets/**/*.AppImage
             download.json
           draft: false
           prerelease: false
