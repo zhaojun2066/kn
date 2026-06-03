@@ -48,14 +48,15 @@ export default {
         sans: ['"JetBrains Mono"', '"Fira Code"', '"Cascadia Code"', "Consolas", "monospace"],
         mono: ['"JetBrains Mono"', '"Fira Code"', '"Cascadia Code"', "Consolas", "monospace"],
       },
+      // 使用 rem 单位（基准 13px），配合 useFontScale 实现全局字体缩放
       fontSize: {
-        "2xs":  ["10px", "14px"],
-        xs:     ["11px", "16px"],
-        sm:     ["12px", "18px"],
-        base:   ["13px", "20px"],
-        lg:     ["14px", "20px"],
-        xl:     ["16px", "24px"],
-        "2xl":  ["18px", "26px"],
+        "2xs":  ["0.769rem", "1.077rem"],   // 10px / 14px @13px base
+        xs:     ["0.846rem", "1.231rem"],   // 11px / 16px
+        sm:     ["0.923rem", "1.385rem"],   // 12px / 18px
+        base:   ["1rem",    "1.538rem"],    // 13px / 20px
+        lg:     ["1.077rem", "1.538rem"],   // 14px / 20px
+        xl:     ["1.231rem", "1.846rem"],   // 16px / 24px
+        "2xl":  ["1.385rem", "2rem"],       // 18px / 26px
       },
       spacing: {
         "0.5": "2px",
