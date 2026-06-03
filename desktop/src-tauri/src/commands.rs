@@ -351,7 +351,7 @@ fn find_binary(names: &[&str]) -> Option<String> {
         let paths = if cfg!(target_os = "macos") {
             vec![format!("/usr/bin/{}", name), format!("/opt/homebrew/bin/{}", name), format!("/usr/local/bin/{}", name)]
         } else if cfg!(target_os = "linux") {
-            vec![format!("/usr/bin/{}", name), format!("/bin/{}", name)]
+            vec![format!("/usr/bin/{}", name), format!("/bin/{}", name), format!("/usr/local/bin/{}", name)]
         } else {
             vec![name.to_string()]
         };
@@ -479,7 +479,7 @@ fn check_binary_on_path(name: &str) -> Option<String> {
     // Use login shell to resolve user PATH (brew, npx, etc.)
     let shell = if cfg!(target_os = "windows") { "powershell.exe" } else { "/bin/bash" };
     let shell_args: &[&str] = if cfg!(target_os = "windows") {
-        &["-Command", &format!("Get-Command {} -ErrorAction SilentlyContinue | ForEach-Object Source", name)]
+        &["-Command", &format!("Get-Command {} -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object Source", name)]
     } else {
         &["-lc", &format!("command -v {} 2>/dev/null || type {} 2>/dev/null", name, name)]
     };

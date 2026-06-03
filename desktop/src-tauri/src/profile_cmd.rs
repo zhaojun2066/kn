@@ -189,6 +189,14 @@ pub fn get_env_cmd(name: &str) -> Result<EnvOutput, String> {
 }
 
 pub fn add_profile_cmd(name: &str, desc: Option<&str>) -> Result<MutationResult, String> {
+    // Validate name: must match [a-z0-9]([a-z0-9-]*[a-z0-9])?
+    // This prevents shell injection in sed / regex-based YAML parsing in shell-rc.
+    if name.is_empty()
+        || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || name.starts_with('-') || name.ends_with('-')
+    {
+        return Ok(MutationResult { ok: false, error: Some("profile 名称只能包含小写字母、数字和连字符，不能以连字符开头或结尾".into()), action: None, profile: None, key: None });
+    }
     let mut config = read_config()?;
     if config.profiles.contains_key(name) {
         return Ok(MutationResult { ok: false, error: Some(format!("profile '{}' 已存在", name)), action: None, profile: None, key: None });
@@ -306,7 +314,7 @@ _profile_env() {
     local name="$1"
     [ ! -f "$CONFIG" ] && return 1
     sed -n "/^  ${name}:/,/^  [a-z]/p" "$CONFIG" | \
-        sed -n 's/^      \([A-Z][A-Z_]*\): *\(.*\)/export \1=\2/p'
+        sed -n 's/^      \([A-Za-z_][A-Za-z0-9_]*\): *\(.*\)/export \1=\2/p'
 }
 
 _profile_list() {
@@ -418,25 +426,26 @@ $script:_kn_config_dir = if ($env:HOME) { "$env:HOME\.claude-profiles" } else { 
 function _profile_env {
     param([string]$name)
     $cfg = Join-Path $script:_kn_config_dir "config.yaml"
-    if (-not (Test-Path $cfg)) { return @() }
-    $results = @()
+    if (-not (Test-Path $cfg)) { return @{} }
+    $env_vars = @{}
     $inProfile = $false; $inEnv = $false
     $escaped = [regex]::Escape($name)
     Get-Content $cfg | ForEach-Object {
         if ($_ -match "^  ${escaped}:") { $inProfile = $true; return }
         if ($inProfile -and $_ -match "^    env:") { $inEnv = $true; return }
         if ($inEnv -and $_ -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*"?([^"]*)"?\s*$') {
-            $results += "export $($Matches[1])=$($Matches[2])"
+            $env_vars[$Matches[1]] = $Matches[2]
         }
-        if ($inEnv -and $_ -match "^    [a-z]") { $inProfile = $false; $inEnv = $false }
+        if ($inEnv -and $_ -match "^  [a-z]") { $inProfile = $false; $inEnv = $false }
     }
-    return $results
+    return $env_vars
 }
 
 function _profile_list {
     $cfg = Join-Path $script:_kn_config_dir "config.yaml"
     if (-not (Test-Path $cfg)) { Write-Host "No config found at $cfg"; return }
-    $default = (Get-Content $cfg | Select-String '^default:\s*"?(.+?)"?\s*$').Matches.Groups[1].Value
+    $defaultMatch = Get-Content $cfg | Select-String '^default:\s*"?(.+?)"?\s*$'
+    $default = if ($defaultMatch) { $defaultMatch.Matches.Groups[1].Value } else { "" }
     Get-Content $cfg | Select-String '^  ([a-zA-Z0-9_-]+):' | ForEach-Object {
         $n = $_.Matches.Groups[1].Value
         if ($n -eq $default) { Write-Host "  $n (*)" } else { Write-Host "  $n" }
@@ -446,9 +455,11 @@ function _profile_list {
 function _profile_show {
     param([string]$name)
     $vars = _profile_env $name
-    if (-not $vars) { Write-Host "Profile '$name' not found"; return }
+    if (-not $vars -or $vars.Count -eq 0) { Write-Host "Profile '$name' not found"; return }
     Write-Host "Profile: $name"
-    $vars | ForEach-Object { Write-Host ($_ -replace '^export ','') }
+    foreach ($key in ($vars.Keys | Sort-Object)) {
+        Write-Host "  $key=$($vars[$key])"
+    }
 }
 
 function ai {
@@ -470,14 +481,16 @@ function ai {
     switch ($cmd) {
         'claude' {
             $tool = 'claude'
-            $rest = $args[1..$args.Length]
+            $rest = @($args | Select-Object -Skip 1)
             if ($rest.Count -gt 0) {
                 $envs = _profile_env $rest[0]
-                if ($envs) {
+                if ($envs -and $envs.Count -gt 0) {
                     $profileName = $rest[0]
-                    $toolArgs = $rest[1..$rest.Length]
+                    $toolArgs = @($rest | Select-Object -Skip 1)
                     Write-Host "-> Using profile: $profileName"
-                    $envs | ForEach-Object { Invoke-Expression $_ }
+                    foreach ($key in $envs.Keys) {
+                        Set-Item -Path "env:$key" -Value $envs[$key]
+                    }
                     & $tool @toolArgs
                     return
                 }
@@ -486,14 +499,16 @@ function ai {
         }
         'codex' {
             $tool = 'codex'
-            $rest = $args[1..$args.Length]
+            $rest = @($args | Select-Object -Skip 1)
             if ($rest.Count -gt 0) {
                 $envs = _profile_env $rest[0]
-                if ($envs) {
+                if ($envs -and $envs.Count -gt 0) {
                     $profileName = $rest[0]
-                    $toolArgs = $rest[1..$rest.Length]
+                    $toolArgs = @($rest | Select-Object -Skip 1)
                     Write-Host "-> Using profile: $profileName"
-                    $envs | ForEach-Object { Invoke-Expression $_ }
+                    foreach ($key in $envs.Keys) {
+                        Set-Item -Path "env:$key" -Value $envs[$key]
+                    }
                     & $tool @toolArgs
                     return
                 }
@@ -577,21 +592,28 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         fs::write(&zshrc, new_content).map_err(|e| format!("写入 .zshrc 失败: {}", e))?;
     }
 
-    // Windows only: add dot-source to PowerShell profile AND .bashrc (for Git Bash)
+    // Windows only: add dot-source to PowerShell profile (both PS5 and PS7) AND .bashrc (for Git Bash)
     if cfg!(target_os = "windows") {
-        let ps_profile = PathBuf::from(&home).join("Documents").join("PowerShell").join("Microsoft.PowerShell_profile.ps1");
-        if let Some(parent) = ps_profile.parent() {
-            fs::create_dir_all(parent).ok();
-        }
         let dir_str = dir.display().to_string().replace('\\', "/");
         let dot_line = format!(". \"{}/shell-rc.ps1\"", dir_str);
-        if ps_profile.exists() {
-            let content = fs::read_to_string(&ps_profile).unwrap_or_default();
-            if !content.contains(&dot_line) {
-                fs::write(&ps_profile, format!("{}\n# AI Profile Manager\n{}\n", content, dot_line)).ok();
+
+        // PowerShell 7 profile: %HOME%\Documents\PowerShell\Microsoft.PowerShell_profile.ps1
+        let ps7_profile = PathBuf::from(&home).join("Documents").join("PowerShell").join("Microsoft.PowerShell_profile.ps1");
+        // PowerShell 5.1 profile: %HOME%\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1
+        let ps5_profile = PathBuf::from(&home).join("Documents").join("WindowsPowerShell").join("Microsoft.PowerShell_profile.ps1");
+
+        for ps_profile in &[ps7_profile, ps5_profile] {
+            if let Some(parent) = ps_profile.parent() {
+                fs::create_dir_all(parent).ok();
             }
-        } else {
-            fs::write(&ps_profile, format!("# AI Profile Manager\n{}\n", dot_line)).ok();
+            if ps_profile.exists() {
+                let content = fs::read_to_string(&ps_profile).unwrap_or_default();
+                if !content.contains(&dot_line) {
+                    fs::write(&ps_profile, format!("{}\n# AI Profile Manager\n{}\n", content, dot_line)).ok();
+                }
+            } else {
+                fs::write(&ps_profile, format!("# AI Profile Manager\n{}\n", dot_line)).ok();
+            }
         }
 
         // Also add to .bashrc for Git Bash users (the PTY uses Git Bash on Windows)

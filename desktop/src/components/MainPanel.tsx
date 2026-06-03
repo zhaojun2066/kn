@@ -491,7 +491,7 @@ export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history,
                     <div className="flex items-center gap-1 shrink-0 ml-3">
                       {r.resumeLastCommand && (
                         <button
-                          onClick={() => onNewSessionFromHistory({ ...r, resumeCommand: r.resumeLastCommand })}
+                          onClick={() => onResumeSession({ ...r, resumeCommand: r.resumeLastCommand })}
                           className="flex items-center gap-1 px-1.5 py-0.5 text-2xs text-app-green
                             hover:bg-[var(--app-hover)] border border-transparent hover:border-app-border transition-colors font-mono"
                           title="恢复最近会话"

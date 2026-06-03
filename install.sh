@@ -69,7 +69,11 @@ if $NEED_PATH || $NEED_SOURCE; then
 
     # Remove old marker block if exists
     if grep -Fq "$MARKER_START" "$ZSHRC" 2>/dev/null; then
-        sed -i '' "/$MARKER_START/,/$MARKER_END/d" "$ZSHRC"
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "/$MARKER_START/,/$MARKER_END/d" "$ZSHRC"
+        else
+            sed -i "/$MARKER_START/,/$MARKER_END/d" "$ZSHRC"
+        fi
     fi
 
     # Always write both — idempotent, no harm
