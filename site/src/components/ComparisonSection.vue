@@ -23,7 +23,9 @@ const comparisons = [
       <div class="comp-table reveal">
         <!-- Table header -->
         <div class="comp-thead">
-          <div class="comp-th aspect-th"></div>
+          <div class="comp-th aspect-th">
+            <span class="th-label">对比维度</span>
+          </div>
           <div class="comp-th bad-th">
             <span class="th-badge bad">❌ 传统方式</span>
           </div>
@@ -65,7 +67,7 @@ const comparisons = [
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  margin-bottom: 48px;
+  margin-bottom: 40px;
 }
 
 .comp-header :deep(.section-desc) {
@@ -104,6 +106,15 @@ const comparisons = [
   font-size: 0.8125rem;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.th-label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--clr-text-muted);
 }
 
 .th-badge.bad {

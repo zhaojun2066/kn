@@ -46,7 +46,7 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
 
 <style scoped>
 .hero {
-  padding: 120px 28px 80px;
+  padding: 120px 28px 56px;
   min-height: auto;
   display: flex;
   align-items: flex-start;

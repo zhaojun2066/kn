@@ -74,7 +74,7 @@ const features = [
   flex-direction: column;
   align-items: center;
   gap: 14px;
-  margin-bottom: 60px;
+  margin-bottom: 44px;
 }
 
 .feat-header :deep(.section-desc) {

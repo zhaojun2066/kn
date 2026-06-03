@@ -41,7 +41,7 @@
 
   /* Spacing */
   --max-w: 1340px;
-  --section-pad: 100px;
+  --section-pad: 64px;
 
   /* Radius */
   --radius-sm: 6px;
@@ -462,7 +462,7 @@ img { max-width: 100%; display: block; }
 /* ── Responsive ────────────────────────────── */
 @media (max-width: 768px) {
   :root {
-    --section-pad: 64px;
+    --section-pad: 48px;
   }
   .container {
     padding: 0 16px;

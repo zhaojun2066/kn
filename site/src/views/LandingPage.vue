@@ -6,7 +6,6 @@ import HeroSection from '../components/HeroSection.vue'
 import FeaturesSection from '../components/FeaturesSection.vue'
 import ComparisonSection from '../components/ComparisonSection.vue'
 import DownloadSection from '../components/DownloadSection.vue'
-import DocsSection from '../components/DocsSection.vue'
 import SiteFooter from '../components/SiteFooter.vue'
 
 const appRef = ref<HTMLElement | null>(null)
@@ -19,7 +18,6 @@ useScrollReveal(appRef)
     <HeroSection />
     <FeaturesSection />
     <ComparisonSection />
-    <DocsSection />
     <DownloadSection />
     <SiteFooter />
   </div>
