@@ -160,10 +160,37 @@ def _import_claude_settings(config):
 
 
 def _import_codex_config(config):
-    """Import profile from ~/.codex/config.toml. Returns True on success."""
+    """Import profile from ~/.codex/config.toml + ~/.codex/auth.json. Returns True on success."""
+    env = {}
+    provider_name = ""
+
+    # 1. Read ~/.codex/auth.json — contains OPENAI_API_KEY
+    auth_file = os.path.expanduser("~/.codex/auth.json")
+    if os.path.exists(auth_file):
+        try:
+            with open(auth_file, "r") as f:
+                auth = json.load(f)
+            for k, v in auth.items():
+                env[str(k)] = str(v)
+        except (json.JSONDecodeError, PermissionError, OSError) as e:
+            print(f"Warning: error reading {auth_file}: {e}", file=sys.stderr)
+
+    # 2. Read ~/.codex/config.toml — contains model, base_url, shell env vars
     codex_file = os.path.expanduser("~/.codex/config.toml")
     if not os.path.exists(codex_file):
-        return False
+        if not env:
+            return False
+        # Have auth.json data but no config.toml — use it
+        name = "codex-imported"
+        config.setdefault("profiles", {})[name] = {
+            "desc": "Imported from ~/.codex/auth.json",
+            "env": env,
+        }
+        if not config.get("default"):
+            config["default"] = name
+        cfg.write_config(config)
+        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'")
+        return True
 
     # Parse TOML (requires Python 3.11+)
     try:
@@ -172,12 +199,38 @@ def _import_codex_config(config):
             codex = tomllib.load(f)
     except ImportError:
         print("Warning: Python 3.11+ required to read Codex config.toml", file=sys.stderr)
-        return False
+        if not env:
+            return False
+        name = "codex-imported"
+        config.setdefault("profiles", {})[name] = {
+            "desc": "Imported from ~/.codex/auth.json",
+            "env": env,
+        }
+        if not config.get("default"):
+            config["default"] = name
+        cfg.write_config(config)
+        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'")
+        return True
     except Exception as e:
         print(f"Warning: error reading {codex_file}: {e}", file=sys.stderr)
-        return False
+        if not env:
+            return False
+        name = "codex-imported"
+        config.setdefault("profiles", {})[name] = {
+            "desc": "Imported from ~/.codex/auth.json",
+            "env": env,
+        }
+        if not config.get("default"):
+            config["default"] = name
+        cfg.write_config(config)
+        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'")
+        return True
 
-    env = {}
+    # Extract top-level model as OPENAI_MODEL (if not already from auth.json)
+    if "OPENAI_MODEL" not in env:
+        model = codex.get("model", "")
+        if model:
+            env["OPENAI_MODEL"] = str(model)
 
     # Extract shell_environment_policy.set (env vars injected by Codex)
     shell_policy = codex.get("shell_environment_policy", {})
@@ -185,23 +238,18 @@ def _import_codex_config(config):
     for k, v in shell_env.items():
         env[str(k)] = str(v)
 
-    # Extract custom model provider — maps to OpenAI-compatible settings
+    # Extract custom model provider
     providers = codex.get("model_providers", {})
     if "custom" in providers:
         custom = providers["custom"]
-        provider_name = custom.get("name", "")
+        if not provider_name:
+            provider_name = custom.get("name", "")
         base_url = custom.get("base_url", "")
-
-        if provider_name and "ANTHROPIC_BASE_URL" not in env and not _looks_like_anthropic_url(base_url):
-            # Use custom provider base_url as Anthropic endpoint
-            pass
 
         if base_url and "OPENAI_BASE_URL" not in env:
             # Strip wire_api path suffix if present (/responses, /chat, etc.)
             clean_url = re.sub(r'/(responses|chat|completions)/?$', '', base_url.rstrip('/'))
             env["OPENAI_BASE_URL"] = clean_url
-    else:
-        provider_name = ""
 
     # Determine profile name
     if provider_name:
@@ -229,11 +277,6 @@ def _import_codex_config(config):
     cfg.write_config(config)
     print(f"Imported {len(env)} env vars from config.toml → profile '{name}'")
     return True
-
-
-def _looks_like_anthropic_url(url):
-    """Heuristic: does this URL look like an Anthropic API endpoint?"""
-    return bool(re.search(r'anthropic|claude', url, re.IGNORECASE))
 
 
 # ── Mutation commands ─────────────────────────────────────────
