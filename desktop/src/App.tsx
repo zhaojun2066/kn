@@ -22,6 +22,7 @@ import { useUsage } from "./hooks/useUsage";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { X, AlertCircle, CheckCircle2 } from "lucide-react";
 
 type Toast = { id: number; type: "error" | "success"; message: string };
@@ -60,6 +61,9 @@ export function App() {
   const batchDeleteNamesRef = useRef<string[]>([]);
   // Update dialog: store manifest + platform data when new version found
   const [updateDialog, setUpdateDialog] = useState<{ version: string; notes: string; url: string; sha256: string } | null>(null);
+  const [downloadState, setDownloadState] = useState<{ phase: "idle" | "downloading" | "verifying"; progress: number; error: string | null }>({
+    phase: "idle", progress: 0, error: null,
+  });
 
   // Load profiles on mount
   useEffect(() => { ctx.loadProfiles(); }, []);
@@ -368,35 +372,46 @@ export function App() {
   const handleConfirmUpdate = useCallback(async () => {
     if (!updateDialog) return;
     const { version, url, sha256 } = updateDialog;
+
+    // Kick off download — dialog stays open and shows progress
+    setDownloadState({ phase: "downloading", progress: 0, error: null });
+
+    // Listen for progress events from Rust
+    const unlisten = await listen<number>("download-progress", (event) => {
+      setDownloadState((prev) =>
+        prev.phase === "downloading" ? { ...prev, progress: event.payload } : prev
+      );
+    });
+
     try {
-      addToast("success", `正在下载 ${version}...`);
       const tmpDir: string = await invoke("temp_dir");
       const pathPart = url.split('?')[0];
       const ext = pathPart.split('.').pop() || 'dmg';
       const tmpPath = `${tmpDir}/ai-profile-manager-update-${Date.now()}.${ext}`;
-      try {
-        await invoke("download_file", { url, path: tmpPath });
-      } catch (e: any) {
-        addToast("error", `下载失败: ${e}`);
-        setUpdateDialog(null);
-        return;
-      }
+      await invoke("download_file", { url, path: tmpPath });
+
+      // Download complete — 100%
+      setDownloadState({ phase: "verifying", progress: 100, error: null });
 
       if (sha256) {
         const ok = (await invoke("verify_sha256", { path: tmpPath, expected: sha256 })) as boolean;
         if (!ok) {
-          addToast("error", "SHA256 校验失败，文件可能损坏");
-          setUpdateDialog(null);
+          setDownloadState({ phase: "idle", progress: 0, error: "SHA256 校验失败，文件可能损坏" });
           return;
         }
       }
 
+      // Done — show completion in dialog briefly, then open installer
+      setDownloadState({ phase: "idle", progress: 100, error: null });
+      await new Promise((r) => setTimeout(r, 800)); // brief pause so user sees "done"
+      setUpdateDialog(null);
+      setDownloadState({ phase: "idle", progress: 0, error: null });
       addToast("success", `已下载 ${version}，正在打开安装包...`);
       await invoke("open_file", { path: tmpPath });
-    } catch (e) {
-      addToast("error", `更新失败: ${e}`);
+    } catch (e: any) {
+      setDownloadState({ phase: "idle", progress: 0, error: String(e) });
     }
-    setUpdateDialog(null);
+    unlisten();
   }, [updateDialog]);
 
   // Auto-check for updates on startup (silent — only shows toast when update available)
@@ -797,8 +812,14 @@ export function App() {
           open={true}
           version={updateDialog.version}
           notes={updateDialog.notes}
+          downloading={downloadState.phase === "downloading"}
+          progress={downloadState.progress}
+          downloadError={downloadState.error}
           onConfirm={handleConfirmUpdate}
-          onCancel={() => setUpdateDialog(null)}
+          onCancel={() => {
+            setUpdateDialog(null);
+            setDownloadState({ phase: "idle", progress: 0, error: null });
+          }}
         />
       )}
 

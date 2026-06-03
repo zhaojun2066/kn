@@ -1,4 +1,5 @@
 use tauri::command;
+use tauri::Emitter;
 use crate::profile_cmd;
 
 // ── Config backup paths ────────────────────────────────────
@@ -379,16 +380,47 @@ pub async fn fetch_url(url: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn download_file(url: String, path: String) -> Result<(), String> {
+pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let curl = find_binary(&["curl"]).unwrap_or_else(|| "curl".into());
-        let output = std::process::Command::new(&curl)
-            .args(["-sL", "--max-time", "600", "-o", &path, &url])
-            .output()
-            .map_err(|e| format!("curl 执行失败: {}", e))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        let mut child = std::process::Command::new(&curl)
+            .args(["-L", "--max-time", "600", "-o", &path, &url])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("curl 启动失败: {}", e))?;
+
+        let stderr = child.stderr.take()
+            .ok_or_else(|| "无法获取 stderr".to_string())?;
+
+        // Read curl stderr for progress.  curl's default progress meter
+        // writes a status line to stderr, updating it in-place with \r.
+        // We split on \r and look for a percentage token in each fragment.
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(stderr);
+        let mut accumulated = String::new();
+        for line_result in reader.split(b'\r') {
+            let chunk = line_result.unwrap_or_default();
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            accumulated.push_str(&chunk_str);
+            // Find the last percentage in the accumulated buffer
+            for part in accumulated.split_whitespace().rev() {
+                if part.ends_with('%') && part.len() >= 2 {
+                    let pct_str = &part[..part.len()-1];
+                    if let Ok(pct) = pct_str.parse::<u8>() {
+                        let _ = app.emit("download-progress", pct);
+                    }
+                    break;
+                }
+            }
+            accumulated.clear();
         }
+
+        let status = child.wait().map_err(|e| format!("curl 等待失败: {}", e))?;
+        if !status.success() {
+            return Err("下载失败，请检查网络连接".into());
+        }
+        // Emit 100% at completion to ensure the UI shows done
+        let _ = app.emit("download-progress", 100u8);
         Ok(())
     })
     .await
