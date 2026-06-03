@@ -339,7 +339,7 @@ ai() {
                 if [ -n "$env_output" ]; then
                     local profile_name="$1"; shift
                     echo "-> Using profile: $profile_name"
-                    (eval "$env_output" && command "$tool" "$@")
+                    (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
                     return
                 fi
             fi
@@ -468,6 +468,8 @@ function ai {
                     foreach ($key in $envs.Keys) {
                         Set-Item -Path "env:$key" -Value $envs[$key]
                     }
+                    $env:KN_PROFILE = $profileName
+                    $env:KN_CLI_TOOL = $tool
                     & $tool @toolArgs
                     return
                 }
@@ -486,6 +488,8 @@ function ai {
                     foreach ($key in $envs.Keys) {
                         Set-Item -Path "env:$key" -Value $envs[$key]
                     }
+                    $env:KN_PROFILE = $profileName
+                    $env:KN_CLI_TOOL = $tool
                     & $tool @toolArgs
                     return
                 }
@@ -516,6 +520,81 @@ function ai {
     }
 }
 "#;
+
+const HOOK_RECORDER: &str = r##"#!/usr/bin/env python3
+"""Token usage recorder — called by Claude Code / Codex Stop hooks.
+Reads structured JSON from stdin, extracts token usage, appends to usage.jsonl.
+"""
+
+import sys, json, os
+from datetime import datetime, timezone
+
+USAGE_FILE = os.path.join(
+    os.path.expanduser("~"), ".claude-profiles", "usage.jsonl"
+)
+
+
+def main():
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        sys.exit(0)
+
+    profile = os.environ.get("KN_PROFILE", "")
+    tool = os.environ.get("KN_CLI_TOOL", "")
+
+    usage = extract(data)
+    if not usage:
+        sys.exit(0)
+
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "profile": profile,
+        "tool": tool,
+        **usage,
+    }
+
+    try:
+        os.makedirs(os.path.dirname(USAGE_FILE), exist_ok=True)
+        with open(USAGE_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+    sys.exit(0)
+
+
+def extract(data):
+    """Extract token usage from hook payload. Returns dict or None."""
+    # Codex: TurnComplete carries token_usage
+    if "token_usage" in data:
+        u = data["token_usage"]
+        return {
+            "model": str(u.get("model", "")),
+            "tokens_in": int(u.get("input", u.get("input_tokens", 0))),
+            "tokens_out": int(u.get("output", u.get("output_tokens", 0))),
+        }
+    # Claude Code: usage field in Stop/SessionEnd
+    if "usage" in data:
+        u = data["usage"]
+        return {
+            "model": str(u.get("model", "")),
+            "tokens_in": int(u.get("input_tokens", u.get("input", 0))),
+            "tokens_out": int(u.get("output_tokens", u.get("output", 0))),
+        }
+    # Generic fallback: top-level tokens_in / tokens_out
+    if "tokens_in" in data or "tokens_out" in data:
+        return {
+            "model": str(data.get("model", "")),
+            "tokens_in": int(data.get("tokens_in", 0)),
+            "tokens_out": int(data.get("tokens_out", 0)),
+        }
+    return None
+
+
+if __name__ == "__main__":
+    main()
+"##;
 
 pub fn ensure_shell_rc() -> Result<String, String> {
     let dir = config_dir();
@@ -554,6 +633,11 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     if cfg!(target_os = "windows") {
         fs::write(dir.join("shell-rc.ps1"), SHELL_RC_PS1).ok();
     }
+
+    // Write token usage hook recorder script
+    let hooks_dir = dir.join("hooks");
+    fs::create_dir_all(&hooks_dir).ok();
+    fs::write(hooks_dir.join("record-usage.py"), HOOK_RECORDER).ok();
 
     // Unix: add source line to ~/.zshrc (idempotent)
     let zshrc = PathBuf::from(&home).join(".zshrc");
