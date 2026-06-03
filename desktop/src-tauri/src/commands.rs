@@ -464,22 +464,6 @@ pub fn open_file(path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn new_window(app: tauri::AppHandle) -> Result<(), String> {
-    let id = format!("terminal-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
-    let w = tauri::WebviewWindowBuilder::new(
-        &app,
-        &id,
-        tauri::WebviewUrl::App("?terminal=1".into()),
-    )
-    .title("终端")
-    .inner_size(800.0, 600.0)
-    .build()
-    .map_err(|e| format!("{}", e))?;
-    let _ = w.set_focus();
-    Ok(())
-}
-
 // ── Environment check (for onboarding) ───────────────────────
 
 #[derive(Debug, serde::Serialize)]

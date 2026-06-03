@@ -51,7 +51,6 @@ pub fn run() {
             commands::download_file,
             commands::verify_sha256,
             commands::open_file,
-            commands::new_window,
             commands::check_environment,
             commands::config_backup_exists,
             commands::backup_config,

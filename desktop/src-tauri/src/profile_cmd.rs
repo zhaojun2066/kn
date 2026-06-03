@@ -574,6 +574,9 @@ def extract(data):
             "tokens_in": int(u.get("input_tokens", u.get("input", 0))),
             "tokens_out": int(u.get("output_tokens", u.get("output", 0))),
         }
+    # Claude Code Stop hook v2: no usage inline, read transcript file
+    if "transcript_path" in data:
+        return extract_from_transcript(data["transcript_path"])
     # Generic fallback: top-level tokens_in / tokens_out
     if "tokens_in" in data or "tokens_out" in data:
         return {
@@ -582,6 +585,40 @@ def extract(data):
             "tokens_out": int(data.get("tokens_out", 0)),
         }
     return None
+
+
+def extract_from_transcript(path):
+    """Read transcript JSONL, sum usage from all assistant messages."""
+    total_in = 0
+    total_out = 0
+    model = ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = entry.get("message", {})
+                if msg.get("role") != "assistant":
+                    continue
+                usage = msg.get("usage")
+                if usage:
+                    total_in += int(usage.get("input_tokens", 0))
+                    total_out += int(usage.get("output_tokens", 0))
+                    if not model:
+                        model = msg.get("model", "")
+    except OSError:
+        return None
+
+    if total_in == 0 and total_out == 0:
+        return None
+
+    return {
+        "model": str(model),
+        "tokens_in": total_in,
+        "tokens_out": total_out,
+    }
 
 
 if __name__ == "__main__":

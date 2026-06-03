@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useCallback, useState } from "react";
-import { X, Plus, FolderOpen, Clock, Trash2, Play, Minus, ExternalLink, Maximize2, Minimize2, Search, ChevronUp, ChevronDown, Copy, CopyCheck, Palette } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { X, Plus, FolderOpen, Clock, Trash2, Play, Minus, Maximize2, Minimize2, Search, ChevronUp, ChevronDown, Copy, CopyCheck, Palette } from "lucide-react";
+
+
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import { XTerm, XTermHandle } from "./XTerm";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -535,14 +536,6 @@ export function TerminalPanel({
           <button onClick={() => onSetFontSize(fontSize + 1)}
             className="px-1.5 h-[24px] text-xs text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors font-mono"
             title="放大字体">A⁺</button>
-          {/* Pop-out */}
-          <button
-            onClick={() => invoke("new_window").catch(() => {})}
-            className="p-0.5 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
-            title="弹出为独立窗口"
-          >
-            <ExternalLink size={14} />
-          </button>
           {/* Maximize / Restore */}
           {onToggleMaximize && (
             <button

@@ -106,6 +106,8 @@ _ai_launch_with_profile() {
     # env vars only affect THIS subshell, parent shell is clean
     (
         eval "$env_output"
+        export KN_PROFILE="$profile_name"
+        export KN_CLI_TOOL="$tool"
         command "$tool" "$@"
     )
 }
