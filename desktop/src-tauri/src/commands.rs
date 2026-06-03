@@ -122,11 +122,6 @@ pub fn init_profiles() -> Result<profile_cmd::MutationResult, String> {
 
 #[command]
 pub fn ensure_shell_rc() -> Result<String, String> {
-    // Clean stale lock file on startup
-    let lock = profile_cmd::lock_file_path();
-    if lock.exists() {
-        let _ = std::fs::remove_file(&lock);
-    }
     profile_cmd::ensure_shell_rc()
 }
 

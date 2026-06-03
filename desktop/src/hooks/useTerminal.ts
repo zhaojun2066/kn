@@ -287,17 +287,16 @@ export function useTerminal(panelId: string = "right") {
   }, [activeTabId, tabs, spawnPty, waitForReady]);
 
   /* ── Close ─────────────────────────────────────────────── */
-  const close = useCallback(async () => {
-    for (const tab of tabs) {
-      if (tab.ptyRunning) {
-        try { await invoke("kill_pty", { sessionId: tab.sessionId }); } catch { /* */ }
-      }
-    }
-    // Clean up all refs
-    termRefs.current.clear();
-    textRefs.current.clear();
-    mountedTabs.current.clear();
-    // Bottom panel: reset to a single fresh tab. Right panel: stay empty.
+  const close = useCallback(() => {
+    // Capture current tabs for async cleanup (don't depend on stale closure)
+    const currentTabs = sessionsRef.current;
+
+    // 1. Update UI immediately — hide the panel first.
+    //    This ensures the terminal closes instantly even if PTY
+    //    operations are blocked (e.g. full ConPTY buffer on Windows).
+    setIsOpen(false);
+
+    // 2. Reset tabs state synchronously
     if (isBottom) {
       const fresh = newTab("终端");
       setTabs([fresh]);
@@ -308,8 +307,20 @@ export function useTerminal(panelId: string = "right") {
       activeTabIdRef.current = "";
       setActiveTabId("");
     }
-    setIsOpen(false);
-  }, [tabs, isBottom]);
+
+    // 3. Clean up all refs
+    termRefs.current.clear();
+    textRefs.current.clear();
+    mountedTabs.current.clear();
+
+    // 4. Kill PTY sessions in background — fire-and-forget.
+    //    Don't await: even if kill_pty blocks, the UI is already closed.
+    for (const tab of currentTabs) {
+      if (tab.ptyRunning) {
+        invoke("kill_pty", { sessionId: tab.sessionId }).catch(() => {});
+      }
+    }
+  }, [isBottom]);
 
   /* ── Hide without destroying ─────────────────────────── */
   const hide = useCallback(() => {
@@ -436,11 +447,11 @@ export function useTerminal(panelId: string = "right") {
   }, []);
 
   /* ── Close a tab ───────────────────────────────────────── */
-  const closeTab = useCallback(async (tabId: string) => {
+  const closeTab = useCallback((tabId: string) => {
     const tab = sessionsRef.current.find((t) => t.id === tabId);
-    if (tab?.ptyRunning) {
-      try { await invoke("kill_pty", { sessionId: tab.sessionId }); } catch { /* */ }
-    }
+
+    // Update UI immediately, then kill PTY in background.
+    // This prevents UI freeze if the PTY operation blocks (Windows ConPTY).
     termRefs.current.delete(tabId);
     textRefs.current.delete(tabId);
     mountedTabs.current.delete(tabId);
@@ -460,14 +471,20 @@ export function useTerminal(panelId: string = "right") {
     } else if (activeTabIdRef.current === tabId) {
       setActiveTabId(remaining[0]?.id || "");
     }
+
+    // Kill PTY in background (fire-and-forget)
+    if (tab?.ptyRunning) {
+      invoke("kill_pty", { sessionId: tab.sessionId }).catch(() => {});
+    }
   }, [isBottom]);
 
   /* ── Close all tabs except the specified one ───────────── */
-  const closeOthers = useCallback(async (tabId: string) => {
+  const closeOthers = useCallback((tabId: string) => {
     const allTabs = sessionsRef.current;
+    // Kill PTYs in background, update UI immediately
     for (const tab of allTabs) {
       if (tab.id !== tabId && tab.ptyRunning) {
-        try { await invoke("kill_pty", { sessionId: tab.sessionId }); } catch { /* */ }
+        invoke("kill_pty", { sessionId: tab.sessionId }).catch(() => {});
       }
       if (tab.id !== tabId) {
         termRefs.current.delete(tab.id);
@@ -481,14 +498,14 @@ export function useTerminal(panelId: string = "right") {
   }, [isBottom]);
 
   /* ── Close tabs to the right of the specified one ──────── */
-  const closeToRight = useCallback(async (tabId: string) => {
+  const closeToRight = useCallback((tabId: string) => {
     const allTabs = sessionsRef.current;
     const idx = allTabs.findIndex((t) => t.id === tabId);
     if (idx < 0) return;
     const toClose = allTabs.slice(idx + 1);
     for (const tab of toClose) {
       if (tab.ptyRunning) {
-        try { await invoke("kill_pty", { sessionId: tab.sessionId }); } catch { /* */ }
+        invoke("kill_pty", { sessionId: tab.sessionId }).catch(() => {});
       }
       termRefs.current.delete(tab.id);
       textRefs.current.delete(tab.id);

@@ -80,10 +80,6 @@ fn config_file() -> PathBuf {
     config_dir().join("config.yaml")
 }
 
-pub fn lock_file_path() -> PathBuf {
-    config_dir().join(".config.lock")
-}
-
 // ── File operations ─────────────────────────────────────────
 
 fn read_config() -> Result<Config, String> {
@@ -103,30 +99,6 @@ fn write_config(config: &Config) -> Result<(), String> {
     let path = config_file();
     let backup = dir.join("config.yaml.bak");
 
-    // File lock with staleness detection
-    let lock = lock_file_path();
-    if lock.exists() {
-        // Check if lock is stale (> 3 seconds old)
-        if let Ok(meta) = fs::metadata(&lock) {
-            if let Ok(modified) = meta.modified() {
-                let age = std::time::SystemTime::now().duration_since(modified).unwrap_or_default();
-                if age.as_secs() > 3 {
-                    let _ = fs::remove_file(&lock); // stale lock, remove it
-                }
-            }
-        }
-        // Wait briefly for lock to clear
-        for _ in 0..20 {
-            if !lock.exists() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        if lock.exists() {
-            // Last resort: force remove stale lock
-            let _ = fs::remove_file(&lock);
-        }
-    }
-    fs::write(&lock, "").map_err(|e| format!("锁定失败: {}", e))?;
-
     // ── Backup existing config before overwriting ──
     if path.exists() {
         let _ = fs::copy(&path, &backup); // best-effort, don't fail on backup error
@@ -135,15 +107,20 @@ fn write_config(config: &Config) -> Result<(), String> {
     let yaml = serde_yaml::to_string(config).map_err(|e| format!("序列化失败: {}", e))?;
 
     // Atomic-ish write: tmp file → fsync → rename
+    // On Windows, rename() may fail if the target exists and is locked by AV/backup.
+    // Use write-then-rename for best-effort atomicity, fall back to direct write on failure.
     let tmp = dir.join("config.yaml.tmp");
     fs::write(&tmp, &yaml).map_err(|e| format!("写入配置失败: {}", e))?;
     // fsync the tmp file before renaming
     if let Ok(f) = std::fs::File::open(&tmp) {
         let _ = f.sync_all();
     }
-    fs::rename(&tmp, &path).map_err(|e| format!("替换配置文件失败: {}", e))?;
+    if fs::rename(&tmp, &path).is_err() {
+        // Rename failed (e.g. Windows file lock) — fall back to direct write
+        fs::write(&path, &yaml).map_err(|e| format!("写入配置文件失败: {}", e))?;
+        let _ = fs::remove_file(&tmp);
+    }
 
-    let _ = fs::remove_file(&lock);
     Ok(())
 }
 

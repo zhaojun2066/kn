@@ -14,8 +14,17 @@ pub enum PtyEvent {
     Error(String),
 }
 
+/// Thread-safe writer handle so `write_pty` can lock it independently
+/// without holding the global PtyState lock during I/O.
+pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// Shared child process handle so `kill_pty` can terminate the process
+/// even if the reader thread is blocked on I/O (Windows ConPTY quirk).
+pub type SharedChild = Arc<Mutex<Option<Box<dyn portable_pty::Child + Send>>>>;
+
 pub struct PtyHandle {
-    pub writer: Box<dyn Write + Send>,
+    pub writer: SharedWriter,
+    pub child: SharedChild,
     #[cfg(unix)]
     pub master_fd: std::os::unix::io::RawFd,
     #[cfg(windows)]
@@ -120,27 +129,30 @@ pub fn start_pty(
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM_PROGRAM", "ai-profile-manager");
 
-    let mut child = pair
+    let child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| format!("spawn: {}", e))?;
 
     drop(pair.slave);
 
+    // Share child handle between PtyHandle (for kill_pty) and reader thread (for wait).
+    let shared_child: SharedChild = Arc::new(Mutex::new(Some(child)));
+
     let mut reader = pair
         .master
         .try_clone_reader()
         .map_err(|e| format!("clone reader: {}", e))?;
 
-    // Capture master fd BEFORE take_writer consumes it
+    // Capture master fd BEFORE take_writer (safety: ensures fd is still valid)
     #[cfg(unix)]
     let master_fd = pair.master.as_raw_fd().unwrap_or(-1);
 
-    let writer: Box<dyn Write + Send> = Box::new(
+    let writer: SharedWriter = Arc::new(Mutex::new(Box::new(
         pair.master
             .take_writer()
             .map_err(|e| format!("take writer: {}", e))?,
-    );
+    ) as Box<dyn Write + Send>));
 
     #[cfg(windows)]
     let master: Box<dyn portable_pty::MasterPty + Send> = pair.master;
@@ -152,6 +164,7 @@ pub fn start_pty(
             session_id.clone(),
             PtyHandle {
                 writer,
+                child: shared_child.clone(),
                 #[cfg(unix)]
                 master_fd,
                 #[cfg(windows)]
@@ -162,6 +175,8 @@ pub fn start_pty(
 
     let _ = on_event.send(PtyEvent::Ready);
 
+    // Spawn reader thread with its own clone of the shared child handle.
+    let reader_child = shared_child;
     std::thread::spawn(move || {
         let mut buf = [0u8; 16384];
         loop {
@@ -182,7 +197,12 @@ pub fn start_pty(
                 }
             }
         }
-        let _ = child.wait();
+        // Wait for child to fully exit (takes the child out of the Arc).
+        if let Ok(mut guard) = reader_child.lock() {
+            if let Some(mut c) = guard.take() {
+                let _ = c.wait();
+            }
+        }
     });
 
     Ok(())
@@ -194,15 +214,22 @@ pub fn write_pty(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    let mut handles = state.lock().map_err(|e| format!("lock: {}", e))?;
-    let handle = handles
-        .handles
-        .get_mut(&session_id)
-        .ok_or_else(|| format!("session not found: {}", session_id))?;
+    // Clone the Arc<Mutex<Writer>> while holding the global lock,
+    // then drop the lock before performing the actual I/O.
+    // This prevents a blocked write (full ConPTY buffer on Windows)
+    // from starving resize/kill operations on the same or other sessions.
+    let writer: SharedWriter = {
+        let handles = state.lock().map_err(|e| format!("lock: {}", e))?;
+        handles
+            .handles
+            .get(&session_id)
+            .ok_or_else(|| format!("session not found: {}", session_id))?
+            .writer
+            .clone()
+    };
 
-    handle
-        .writer
-        .write_all(data.as_bytes())
+    let mut w = writer.lock().map_err(|e| format!("writer lock: {}", e))?;
+    w.write_all(data.as_bytes())
         .map_err(|e| format!("write: {}", e))
 }
 
@@ -213,18 +240,20 @@ pub fn resize_pty(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let handles = state.lock().map_err(|e| format!("lock: {}", e))?;
-    let handle = handles
-        .handles
-        .get(&session_id)
-        .ok_or_else(|| format!("session not found: {}", session_id))?;
-
     let size = PtySize {
         rows,
         cols,
         pixel_width: 0,
         pixel_height: 0,
     };
+
+    // On Unix, we need the master_fd. On Windows, we need the master.
+    // Both are fast kernel calls — the lock is held only briefly.
+    let handles = state.lock().map_err(|e| format!("lock: {}", e))?;
+    let handle = handles
+        .handles
+        .get(&session_id)
+        .ok_or_else(|| format!("session not found: {}", session_id))?;
 
     #[cfg(unix)]
     {
@@ -264,9 +293,18 @@ pub fn kill_pty(
     session_id: String,
 ) -> Result<(), String> {
     let mut handles = state.lock().map_err(|e| format!("lock: {}", e))?;
-    // Removing the handle drops the writer (PTY master fd).
-    // On Unix, this closes the master fd → kernel sends SIGHUP to child → child terminates.
-    // The reader thread's child.wait() then returns, cleaning up the process.
+    if let Some(handle) = handles.handles.get(&session_id) {
+        // Kill the child process first — this unblocks the reader thread
+        // on Windows where ConPTY reads may otherwise hang after the master is dropped.
+        if let Ok(mut guard) = handle.child.lock() {
+            if let Some(ref mut c) = *guard {
+                let _ = c.kill();
+            }
+        }
+    }
+    // Removing the handle drops the writer and master.
+    // On Unix: closing master fd → kernel sends SIGHUP → child terminates.
+    // On Windows: dropping master closes ConPTY → reader receives error.
     handles.handles.remove(&session_id);
     Ok(())
 }
