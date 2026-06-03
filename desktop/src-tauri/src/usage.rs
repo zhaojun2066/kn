@@ -59,10 +59,6 @@ fn pricing_file() -> PathBuf {
     crate::config_dir().join("pricing.json")
 }
 
-fn tracking_state_file() -> PathBuf {
-    crate::config_dir().join(".usage_tracking")
-}
-
 // ── Default pricing ─────────────────────────────────────────
 
 pub fn default_pricing() -> HashMap<String, ModelPricing> {
