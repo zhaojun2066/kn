@@ -110,10 +110,20 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
             <div>2. 填入 API 密钥和地址</div>
             <div>3. 点击运行，选择项目目录</div>
           </div>
-          <button onClick={onInit}
-            className="text-xs text-app-text-dim hover:text-app-accent font-mono transition-colors border border-app-border hover:border-app-accent bg-[var(--app-input)] px-3 py-1.5 hover:bg-[var(--app-hover)]">
-            扫描系统配置 (Claude / Codex)
-          </button>
+          {/* Scan button — prominent CTA with glow animation + tip badge */}
+          <div className="relative">
+            <span className="absolute -top-1.5 -right-1.5 z-10 px-2 py-0.5 text-[10px] font-mono font-bold
+              bg-app-accent text-[var(--app-bg)] onboarding-tip-badge">
+              推荐
+            </span>
+            <button onClick={onInit}
+              className="text-sm text-app-text font-mono font-semibold transition-colors border-2 border-app-accent
+                bg-[var(--app-selected)] px-4 py-2.5 hover:bg-[var(--app-active)]
+                onboarding-scan-btn w-full">
+              <span className="text-app-accent opacity-70 mr-1">$</span>
+              扫描系统配置 (Claude / Codex)
+            </button>
+          </div>
           <div className="text-2xs text-app-text-muted mt-2">
             点击 Toolbar 右侧 <kbd>?</kbd> 可随时重新打开此引导
           </div>

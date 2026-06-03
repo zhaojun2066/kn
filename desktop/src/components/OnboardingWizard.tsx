@@ -166,10 +166,16 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
             {/* Scan existing configs */}
             <button
               onClick={onScan}
-              className="w-full text-left flex items-start gap-4 px-5 py-4 border border-app-border
-                bg-[var(--app-cmd-bg)] hover:border-app-accent hover:bg-[var(--app-selected)]
-                transition-all duration-fast group"
+              className="w-full text-left flex items-start gap-4 px-5 py-4 border
+                bg-[var(--app-cmd-bg)] hover:bg-[var(--app-selected)]
+                transition-colors duration-fast group relative overflow-hidden
+                onboarding-scan-btn"
             >
+              {/* Tip badge — top right, pulses to catch first-time user attention */}
+              <span className="absolute -top-0 -right-0 px-2 py-0.5 text-[10px] font-mono font-bold
+                bg-app-accent text-[var(--app-bg)] onboarding-tip-badge">
+                推荐
+              </span>
               <div className="w-10 h-10 rounded-full bg-[var(--app-input)] border border-app-border
                 flex items-center justify-center shrink-0 mt-0.5
                 group-hover:border-app-accent group-hover:bg-[var(--app-selected)] transition-colors"

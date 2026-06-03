@@ -101,11 +101,16 @@ export default {
           "0%, 100%": { boxShadow: "0 0 8px rgba(61,252,61,0.08)" },
           "50%": { boxShadow: "0 0 16px rgba(61,252,61,0.18)" },
         },
+        "scan-blink": {
+          "0%, 100%": { boxShadow: "none" },
+          "50%": { boxShadow: "0 0 0 2px var(--app-accent), 0 0 18px var(--app-glow)" },
+        },
       },
       animation: {
         "cursor-blink": "cursor-blink 1s step-end infinite",
         "scanline": "scanline 0.1s linear infinite",
         "glow-pulse": "glow-pulse 2s ease-in-out infinite",
+        "scan-blink": "scan-blink 2.5s ease-in-out infinite",
       },
     },
   },

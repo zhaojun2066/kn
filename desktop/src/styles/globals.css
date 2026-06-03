@@ -215,6 +215,27 @@ button, a, input, select {
   transition-timing-function: ease-out;
 }
 
+/* ── Onboarding scan button blink ───────────────────── */
+@keyframes scanBlink {
+  0%, 100% { box-shadow: none; }
+  50%      { box-shadow: 0 0 0 2px var(--app-accent), 0 0 18px var(--app-glow); }
+}
+.onboarding-scan-btn {
+  animation: scanBlink 2.5s ease-in-out infinite;
+}
+.onboarding-scan-btn:hover {
+  animation: none;
+  border-color: var(--app-accent);
+}
+
+/* ── Onboarding tip badge pulse ─────────────────────── */
+@keyframes badgePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.85; transform: scale(1.08); }
+}
+.onboarding-tip-badge {
+  animation: badgePulse 2s ease-in-out infinite;
+}
 /* ── Animations ──────────────────────────────────────── */
 @keyframes fadeIn {
   from { opacity: 0; }
