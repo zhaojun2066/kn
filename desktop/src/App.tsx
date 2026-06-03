@@ -545,7 +545,6 @@ export function App() {
     onTerminalResize: (tabId: string, cols: number, rows: number) => tm.handleTerminalResize(tabId, cols, rows),
     fontSize: tm.fontSize,
     onSetFontSize: (s: number) => tm.setFontSize(s),
-    terminalVersion: tm.terminalVersion,
     onResumeSession: (r: any) => tm.resumeSession(r),
     onNewSessionFromHistory: (r: any) => tm.newSessionFromHistory(r),
     onDeleteHistory: (id: string) => tm.deleteHistory(id),

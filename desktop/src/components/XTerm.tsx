@@ -1,14 +1,14 @@
 import React, { useEffect, useLayoutEffect, useRef, useCallback, useImperativeHandle, forwardRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
+// import { WebglAddon } from "@xterm/addon-webgl";  // uncomment to re-enable WebGL
 import { SearchAddon } from "@xterm/addon-search";
 import { getThemeByName, type TerminalTheme } from "../lib/terminalThemes";
 import "@xterm/xterm/css/xterm.css";
 
 export interface XTermHandle {
   fit: () => void;
-  searchAddon: SearchAddon | null;
+  getSearchAddon: () => SearchAddon | null;
 }
 
 interface XTermProps {
@@ -54,7 +54,7 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
     }
   }, [onReady, onResize]);
 
-  useImperativeHandle(ref, () => ({ fit, searchAddon: searchAddonRef.current }), [fit]);
+  useImperativeHandle(ref, () => ({ fit, getSearchAddon: () => searchAddonRef.current }), [fit]);
 
   // Initial mount
   useEffect(() => {
@@ -80,13 +80,20 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
-    // Try WebGL renderer for best Unicode support
-    try {
-      const webglAddon = new WebglAddon();
-      term.loadAddon(webglAddon);
-    } catch {
-      // WebGL not available, fall back to default canvas renderer
-    }
+    // Use canvas renderer (default) for maximum stability.
+    // WebGL addon can cause rendering glitches with CJK fonts, box-drawing
+    // characters, and Braille spinners — all heavily used by Claude Code's TUI.
+    // The canvas renderer supports the same Unicode characters and is fast
+    // enough for all practical terminal throughput.
+    //
+    // To re-enable WebGL for performance, uncomment the block below.
+    // Make sure to handle WebGL context loss events for graceful fallback.
+    // try {
+    //   const webglAddon = new WebglAddon();
+    //   term.loadAddon(webglAddon);
+    // } catch {
+    //   // WebGL not available, fall back to default canvas renderer
+    // }
 
     // Search addon — for Cmd/Ctrl+F terminal search
     const searchAddon = new SearchAddon();
@@ -140,6 +147,15 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
       termRef.current.options.theme = t;
     }
   }, [themeName]);
+
+  // Update the existing terminal in place when font size changes.
+  // Recreating the xterm instance clears the visible buffer and drops
+  // interactive TUI context, which is why Codex/Claude screens blank out.
+  useEffect(() => {
+    if (!termRef.current) return;
+    termRef.current.options.fontSize = fontSize;
+    fit();
+  }, [fontSize, fit]);
 
   const themeBg = getThemeByName(themeName || "default-dark").background;
 

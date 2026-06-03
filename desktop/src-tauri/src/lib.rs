@@ -65,6 +65,7 @@ pub fn run() {
             usage::get_daily_usage,
             usage::get_pricing,
             usage::set_pricing,
+            usage::replace_pricing,
             usage::get_usage_tracking_enabled,
             usage::set_usage_tracking_enabled,
         ])

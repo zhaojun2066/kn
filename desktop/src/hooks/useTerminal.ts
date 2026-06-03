@@ -3,6 +3,8 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import type { Terminal } from "@xterm/xterm";
 
 const MAX_HISTORY = 30;
+const PTY_READY_SETTLE_MS = 80;
+const PTY_COMMAND_SETTLE_MS = 300;
 
 let tabCounter = 1;
 
@@ -11,7 +13,6 @@ interface TabSession {
   name: string;
   workDir: string;
   sessionId: string;
-  lastText: string;
   ptyRunning: boolean;
 }
 
@@ -60,7 +61,6 @@ function newTab(name?: string, workDir?: string): TabSession {
     name: name || `终端 ${tabCounter - 1}`,
     workDir: workDir || "",
     sessionId: `pty-${Date.now().toString(36)}-${tabCounter}`,
-    lastText: "",
     ptyRunning: false,
   };
 }
@@ -121,9 +121,13 @@ export function useTerminal(panelId: string = "right") {
   // Per-profile run counter (incremented on each "运行" click)
   const [usageCounts, setUsageCounts] = useState<Record<string, number>>({});
 
-  // Per-tab: Terminal instance + text
+  // Per-tab: Terminal instance
   const termRefs = useRef<Map<string, Terminal>>(new Map());
-  const textRefs = useRef<Map<string, string>>(new Map());
+
+  // Per-tab write batching: accumulate data within a frame, flush once via RAF.
+  // Prevents xterm.js parser overload when IPC delivers many small chunks rapidly.
+  const writeBufRef = useRef<Map<string, string>>(new Map());
+  const rafWriteRef = useRef<Map<string, number>>(new Map());
 
   // Track which tabs have mounted XTerm
   const mountedTabs = useRef<Set<string>>(new Set());
@@ -136,7 +140,9 @@ export function useTerminal(panelId: string = "right") {
 
   /* ── Spawn PTY for a tab ───────────────────────────────── */
   const spawnPty = useCallback((tab: TabSession): Promise<void> => {
-    textRefs.current.set(tab.id, "");
+    writeBufRef.current.delete(tab.id);
+    const rafId = rafWriteRef.current.get(tab.id);
+    if (rafId) { cancelAnimationFrame(rafId); rafWriteRef.current.delete(tab.id); }
 
     return new Promise(async (resolve, reject) => {
       try { await invoke("kill_pty", { sessionId: tab.sessionId }); } catch { /* */ }
@@ -151,13 +157,32 @@ export function useTerminal(panelId: string = "right") {
             resolve();
             break;
           case "data": {
-            const t = termRefs.current.get(tab.id);
-            t?.write(msg.data);
-            const cur = textRefs.current.get(tab.id) || "";
-            textRefs.current.set(tab.id, (cur + msg.data).slice(-100000));
+            // RAF-batched write: accumulate data, flush once per animation frame.
+            // Prevents parser overload when PTY produces many small chunks rapidly
+            // (e.g. Claude Code TUI streaming with ANSI escape sequences).
+            const existing = writeBufRef.current.get(tab.id) || "";
+            writeBufRef.current.set(tab.id, existing + msg.data);
+
+            if (!rafWriteRef.current.has(tab.id)) {
+              const rafId = requestAnimationFrame(() => {
+                rafWriteRef.current.delete(tab.id);
+                const data = writeBufRef.current.get(tab.id) || "";
+                writeBufRef.current.set(tab.id, "");
+                termRefs.current.get(tab.id)?.write(data);
+              });
+              rafWriteRef.current.set(tab.id, rafId);
+            }
             break;
           }
           case "exit":
+            // Flush any pending writes before showing exit message
+            {
+              const pending = writeBufRef.current.get(tab.id);
+              if (pending) {
+                termRefs.current.get(tab.id)?.write(pending);
+                writeBufRef.current.set(tab.id, "");
+              }
+            }
             termRefs.current.get(tab.id)?.writeln(`\r\n\x1b[90m[exit: ${msg.data}]\x1b[0m`);
             setTabs((prev) => prev.map((s) => s.id === tab.id ? { ...s, ptyRunning: false } : s));
             break;
@@ -212,12 +237,11 @@ export function useTerminal(panelId: string = "right") {
 
   /* ── Handle terminal ready (fit completed) ─────────────── */
   const handleTerminalReady = useCallback((tabId: string) => {
-    // Replay saved text if any
-    const saved = textRefs.current.get(tabId) || "";
-    const term = termRefs.current.get(tabId);
-    if (saved && term) {
-      term.write(saved);
-    }
+    // After a fresh XTerm mount (e.g. font size change), the PTY session is
+    // still running. The resize_pty call (triggered by fit → onResize) sends
+    // SIGWINCH to the child process, which causes TUI apps like Claude Code
+    // to redraw themselves. No text replay needed — raw ANSI sequences would
+    // corrupt the fresh terminal display.
 
     const resolve = readyPromiseRefs.current.get(tabId);
     if (resolve) {
@@ -266,7 +290,7 @@ export function useTerminal(panelId: string = "right") {
     if (!isOpen) setIsOpen(true);
     // Wait for XTerm to mount then spawn PTY (panel may or may not be open yet).
     await waitForReady(tab.id);
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
     await spawnPty(tab);
     setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, ptyRunning: true } : t));
   }, [isOpen, spawnPty, waitForReady]);
@@ -280,7 +304,7 @@ export function useTerminal(panelId: string = "right") {
     // Wait for XTerm to mount + first fit (onReady signal)
     await waitForReady(tab.id);
     // Brief delay for resize_pty to settle before spawning
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
 
     await spawnPty(tab);
     setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, ptyRunning: true } : t));
@@ -310,7 +334,9 @@ export function useTerminal(panelId: string = "right") {
 
     // 3. Clean up all refs
     termRefs.current.clear();
-    textRefs.current.clear();
+    writeBufRef.current.clear();
+    for (const [, id] of rafWriteRef.current) { cancelAnimationFrame(id); }
+    rafWriteRef.current.clear();
     mountedTabs.current.clear();
 
     // 4. Kill PTY sessions in background — fire-and-forget.
@@ -347,7 +373,7 @@ export function useTerminal(panelId: string = "right") {
     // Wait for XTerm mount + first fit (onReady signal)
     await waitForReady(tab.id);
     // Brief delay for resize signal to settle
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
 
     await spawnPty(tab);
     setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, ptyRunning: true } : t));
@@ -377,7 +403,7 @@ export function useTerminal(panelId: string = "right") {
     } // !isBottom — history only for right panel
 
     // Wait for shell prompt + resize signal to settle, then send command
-    await new Promise((r) => setTimeout(r, 800));
+    await new Promise((r) => setTimeout(r, PTY_COMMAND_SETTLE_MS));
     invoke("write_pty", {
       sessionId: tab.sessionId,
       data: cmd + "\r",
@@ -453,7 +479,9 @@ export function useTerminal(panelId: string = "right") {
     // Update UI immediately, then kill PTY in background.
     // This prevents UI freeze if the PTY operation blocks (Windows ConPTY).
     termRefs.current.delete(tabId);
-    textRefs.current.delete(tabId);
+    writeBufRef.current.delete(tabId);
+    const rafId = rafWriteRef.current.get(tabId);
+    if (rafId) { cancelAnimationFrame(rafId); rafWriteRef.current.delete(tabId); }
     mountedTabs.current.delete(tabId);
 
     setTabs((prev) => {
@@ -488,7 +516,9 @@ export function useTerminal(panelId: string = "right") {
       }
       if (tab.id !== tabId) {
         termRefs.current.delete(tab.id);
-        textRefs.current.delete(tab.id);
+        writeBufRef.current.delete(tab.id);
+        const rid = rafWriteRef.current.get(tab.id);
+        if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(tab.id); }
         mountedTabs.current.delete(tab.id);
       }
     }
@@ -508,7 +538,9 @@ export function useTerminal(panelId: string = "right") {
         invoke("kill_pty", { sessionId: tab.sessionId }).catch(() => {});
       }
       termRefs.current.delete(tab.id);
-      textRefs.current.delete(tab.id);
+      writeBufRef.current.delete(tab.id);
+      const rid = rafWriteRef.current.get(tab.id);
+      if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(tab.id); }
       mountedTabs.current.delete(tab.id);
     }
     setTabs((prev) => prev.slice(0, idx + 1));
@@ -518,17 +550,9 @@ export function useTerminal(panelId: string = "right") {
     }
   }, []);
 
-  const [terminalVersion, setTerminalVersion] = useState(0);
   const setFontSize = useCallback((s: number) => {
     const clamped = Math.min(Math.max(s, 10), 20);
-    // Save active tab text before remount
-    const activeId = activeTabIdRef.current;
-    if (activeId) {
-      const text = textRefs.current.get(activeId) || "";
-      setTabs((prev) => prev.map((t) => t.id === activeId ? { ...t, lastText: text } : t));
-    }
     setFontSizeState(clamped);
-    setTerminalVersion((v) => v + 1);
     try { localStorage.setItem(STORAGE_FONTSIZE, String(clamped)); } catch { /* */ }
   }, []);
 
@@ -570,6 +594,6 @@ export function useTerminal(panelId: string = "right") {
     switchTab, closeTab, closeOthers, closeToRight,
     setWorkDir,
     setSize,
-    fontSize, setFontSize, terminalVersion,
+    fontSize, setFontSize,
   };
 }

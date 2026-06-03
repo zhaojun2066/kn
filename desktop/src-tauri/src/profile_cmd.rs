@@ -513,7 +513,7 @@ function ai {
 }
 "#;
 
-const HOOK_RECORDER: &str = r##"#!/usr/bin/env python3
+	const HOOK_RECORDER: &str = r##"#!/usr/bin/env python3
 """Token usage recorder — called by Claude Code / Codex Stop hooks.
 Reads structured JSON from stdin, extracts token usage, appends to usage.jsonl.
 """
@@ -668,7 +668,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     fs::create_dir_all(&hooks_dir).ok();
     fs::write(hooks_dir.join("record-usage.py"), HOOK_RECORDER).ok();
 
-    // Unix: add source line to ~/.zshrc (idempotent)
+    // ── Unix: add source line to ~/.zshrc (idempotent) ──
     let zshrc = PathBuf::from(&home).join(".zshrc");
     let source_line = format!("source \"{}/shell-rc\"", dir.display());
     let content = if zshrc.exists() { fs::read_to_string(&zshrc).unwrap_or_default() } else { String::new() };
@@ -682,7 +682,23 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         fs::write(&zshrc, new_content).map_err(|e| format!("写入 .zshrc 失败: {}", e))?;
     }
 
-    // Windows only: add dot-source to PowerShell profile (both PS5 and PS7) AND .bashrc (for Git Bash)
+    // ── Unix: also add to ~/.bashrc (Linux default, also harmless on macOS) ──
+    {
+        let bashrc = PathBuf::from(&home).join(".bashrc");
+        let bash_source_line = format!("source \"{}/shell-rc\"", dir.display());
+        let bash_content = if bashrc.exists() { fs::read_to_string(&bashrc).unwrap_or_default() } else { String::new() };
+        let bash_marker = "# AI Profile Manager (bash)";
+        if !bash_content.contains(&bash_source_line) {
+            let new_bash = if bash_content.ends_with('\n') || bash_content.is_empty() {
+                format!("{}{}\n{}\n", bash_content, bash_marker, bash_source_line)
+            } else {
+                format!("{}\n{}\n{}\n", bash_content, bash_marker, bash_source_line)
+            };
+            fs::write(&bashrc, new_bash).ok();
+        }
+    }
+
+    // ── Windows only: PowerShell profile (PS5 + PS7) ──
     if cfg!(target_os = "windows") {
         let dir_str = dir.display().to_string().replace('\\', "/");
         let dot_line = format!(". \"{}/shell-rc.ps1\"", dir_str);
@@ -704,19 +720,6 @@ pub fn ensure_shell_rc() -> Result<String, String> {
             } else {
                 fs::write(&ps_profile, format!("# AI Profile Manager\n{}\n", dot_line)).ok();
             }
-        }
-
-        // Also add to .bashrc for Git Bash users (the PTY uses Git Bash on Windows)
-        let bashrc = PathBuf::from(&home).join(".bashrc");
-        let bash_source_line = format!("source \"{}/shell-rc\"", dir_str);
-        let bash_content = if bashrc.exists() { fs::read_to_string(&bashrc).unwrap_or_default() } else { String::new() };
-        if !bash_content.contains(&bash_source_line) {
-            let new_bash = if bash_content.ends_with('\n') || bash_content.is_empty() {
-                format!("{}# AI Profile Manager (bash)\n{}\n", bash_content, bash_source_line)
-            } else {
-                format!("{}\n# AI Profile Manager (bash)\n{}\n", bash_content, bash_source_line)
-            };
-            fs::write(&bashrc, new_bash).ok();
         }
     }
 

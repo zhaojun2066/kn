@@ -6,8 +6,15 @@ Uses fcntl.flock for concurrent write safety.
 """
 
 import os
-import fcntl
 import time
+
+# Cross-platform file locking: fcntl on Unix, msvcrt on Windows
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+    import msvcrt
 
 CONFIG_DIR = os.environ.get("CLAUDE_PROFILES_HOME", os.path.expanduser("~/.claude-profiles"))
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.yaml")
@@ -89,20 +96,35 @@ def get_default(config):
 
 def _acquire_lock(lock_file):
     """Block until exclusive lock is acquired (5s timeout)."""
-    deadline = time.time() + 5
-    while True:
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except BlockingIOError:
-            if time.time() > deadline:
-                raise TimeoutError("Could not acquire config lock after 5s")
-            time.sleep(0.05)
+    if _HAS_FCNTL:
+        deadline = time.time() + 5
+        while True:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if time.time() > deadline:
+                    raise TimeoutError("Could not acquire config lock after 5s")
+                time.sleep(0.05)
+    else:
+        # Windows: use msvcrt.locking (C runtime byte-range lock)
+        deadline = time.time() + 5
+        while True:
+            try:
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except (IOError, OSError):
+                if time.time() > deadline:
+                    raise TimeoutError("Could not acquire config lock after 5s")
+                time.sleep(0.05)
 
 
 def _release_lock(lock_file):
     """Release the file lock."""
-    fcntl.flock(lock_file, fcntl.LOCK_UN)
+    if _HAS_FCNTL:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+    else:
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 # ── YAML Parser (hand-rolled, zero-dependency) ─────────────────

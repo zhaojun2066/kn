@@ -35,6 +35,50 @@ pub struct PtyState {
     pub handles: HashMap<String, PtyHandle>,
 }
 
+fn drain_utf8_stream(buf: &mut Vec<u8>, on_event: &Channel<PtyEvent>) -> bool {
+    loop {
+        if buf.is_empty() {
+            return true;
+        }
+
+        match std::str::from_utf8(buf) {
+            Ok(s) => {
+                if !s.is_empty() && on_event.send(PtyEvent::Data(s.to_string())).is_err() {
+                    return false;
+                }
+                buf.clear();
+                return true;
+            }
+            Err(err) => {
+                let valid_up_to = err.valid_up_to();
+
+                if valid_up_to > 0 {
+                    let valid = &buf[..valid_up_to];
+                    let valid_str = unsafe { std::str::from_utf8_unchecked(valid) };
+                    if on_event.send(PtyEvent::Data(valid_str.to_string())).is_err() {
+                        return false;
+                    }
+                }
+
+                match err.error_len() {
+                    Some(len) => {
+                        let invalid_end = valid_up_to + len;
+                        let invalid = String::from_utf8_lossy(&buf[valid_up_to..invalid_end]).to_string();
+                        if !invalid.is_empty() && on_event.send(PtyEvent::Data(invalid)).is_err() {
+                            return false;
+                        }
+                        buf.drain(..invalid_end);
+                    }
+                    None => {
+                        buf.drain(..valid_up_to);
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub fn start_pty(
     state: tauri::State<'_, Arc<Mutex<PtyState>>>,
@@ -122,6 +166,13 @@ pub fn start_pty(
         cmd.env(&k, &v);
     }
 
+    if std::env::var_os("LANG").is_none() {
+        cmd.env("LANG", "en_US.UTF-8");
+    }
+    if std::env::var_os("LC_CTYPE").is_none() {
+        cmd.env("LC_CTYPE", "en_US.UTF-8");
+    }
+
     // Ensure terminal-essential env vars are set.
     // GUI apps (macOS .app, Windows, etc.) lack TERM and friends;
     // without these the shell may disable line editing or behave as "dumb" terminal.
@@ -179,19 +230,32 @@ pub fn start_pty(
     let reader_child = shared_child;
     std::thread::spawn(move || {
         let mut buf = [0u8; 16384];
+        let mut utf8_pending: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
+                    if !utf8_pending.is_empty() {
+                        let pending = String::from_utf8_lossy(&utf8_pending).to_string();
+                        if !pending.is_empty() {
+                            let _ = on_event.send(PtyEvent::Data(pending));
+                        }
+                    }
                     let _ = on_event.send(PtyEvent::Exit(0));
                     break;
                 }
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    if on_event.send(PtyEvent::Data(data)).is_err() {
+                    utf8_pending.extend_from_slice(&buf[..n]);
+                    if !drain_utf8_stream(&mut utf8_pending, &on_event) {
                         break;
                     }
                 }
                 Err(e) => {
+                    if !utf8_pending.is_empty() {
+                        let pending = String::from_utf8_lossy(&utf8_pending).to_string();
+                        if !pending.is_empty() {
+                            let _ = on_event.send(PtyEvent::Data(pending));
+                        }
+                    }
                     let _ = on_event.send(PtyEvent::Error(e.to_string()));
                     break;
                 }
@@ -308,4 +372,3 @@ pub fn kill_pty(
     handles.handles.remove(&session_id);
     Ok(())
 }
-

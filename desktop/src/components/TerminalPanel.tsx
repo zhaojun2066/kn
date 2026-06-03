@@ -39,7 +39,6 @@ interface TerminalPanelProps {
   onTerminalResize?: (tabId: string, cols: number, rows: number) => void;
   fontSize: number;
   onSetFontSize: (size: number) => void;
-  terminalVersion: number;
   onResumeSession: (record: SessionRecord) => void;
   onNewSessionFromHistory: (record: SessionRecord) => void;
   onDeleteHistory: (id: string) => void;
@@ -98,7 +97,7 @@ export function TerminalPanel({
   tabs, activeTabId, history,
   onAttachTerminal, onClose, onSwitchTab, onCloseTab, onCloseOthers, onCloseToRight, onNewTab,
   onSetWorkDir, onTerminalReady, onTerminalResize,
-  fontSize, onSetFontSize, terminalVersion,
+  fontSize, onSetFontSize,
   onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearHistory,
 }: TerminalPanelProps) {
   const activeTab = tabs.find((t) => t.id === activeTabId);
@@ -180,7 +179,8 @@ export function TerminalPanel({
   // ── Search actions ──────────────────────────────────────
   const openSearch = useCallback(() => {
     const handle = xtermHandlesRef.current.get(activeTabId);
-    if (!handle?.searchAddon) return;
+    const searchAddon = handle?.getSearchAddon();
+    if (!searchAddon) return;
     setShowSearch(true);
     setSearchMatchIndex(0);
     setSearchMatchCount(0);
@@ -189,16 +189,17 @@ export function TerminalPanel({
 
   const doSearch = useCallback((term: string) => {
     const handle = xtermHandlesRef.current.get(activeTabId);
-    if (!handle?.searchAddon) return;
+    const searchAddon = handle?.getSearchAddon();
+    if (!searchAddon) return;
     if (!term) {
-      handle.searchAddon.clearDecorations();
+      searchAddon.clearDecorations();
       setSearchMatchIndex(0);
       setSearchMatchCount(0);
       return;
     }
     // findNext with { incremental: true } for live highlighting
     try {
-      const result = handle.searchAddon.findNext(term, { incremental: true });
+      const result = searchAddon.findNext(term, { incremental: true });
       setSearchMatchIndex(result ? 1 : 0);
       setSearchMatchCount(result ? 1 : 0);
     } catch { /* search addon may throw on empty/invalid patterns */ }
@@ -206,9 +207,10 @@ export function TerminalPanel({
 
   const findNext = useCallback(() => {
     const handle = xtermHandlesRef.current.get(activeTabId);
-    if (!handle?.searchAddon || !searchTerm) return;
+    const searchAddon = handle?.getSearchAddon();
+    if (!searchAddon || !searchTerm) return;
     try {
-      const result = handle.searchAddon.findNext(searchTerm);
+      const result = searchAddon.findNext(searchTerm);
       if (result) {
         setSearchMatchIndex((prev) => {
           const idx = prev + 1;
@@ -220,9 +222,10 @@ export function TerminalPanel({
 
   const findPrevious = useCallback(() => {
     const handle = xtermHandlesRef.current.get(activeTabId);
-    if (!handle?.searchAddon || !searchTerm) return;
+    const searchAddon = handle?.getSearchAddon();
+    if (!searchAddon || !searchTerm) return;
     try {
-      const result = handle.searchAddon.findPrevious(searchTerm);
+      const result = searchAddon.findPrevious(searchTerm);
       if (result) {
         setSearchMatchIndex((prev) => {
           const idx = prev - 1;
@@ -235,7 +238,7 @@ export function TerminalPanel({
   const closeSearch = useCallback(() => {
     setShowSearch(false);
     const handle = xtermHandlesRef.current.get(activeTabId);
-    try { handle?.searchAddon?.clearDecorations(); } catch { /* */ }
+    try { handle?.getSearchAddon()?.clearDecorations(); } catch { /* */ }
     setSearchTerm("");
     setSearchMatchIndex(0);
     setSearchMatchCount(0);
@@ -633,7 +636,7 @@ export function TerminalPanel({
           const isActive = tab.id === activeTabId;
           return (
             <div
-              key={`${tab.id}-v${terminalVersion}`}
+              key={tab.id}
               className="absolute inset-0"
               style={{
                 visibility: isActive ? "visible" : "hidden",

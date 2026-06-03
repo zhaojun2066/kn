@@ -20,18 +20,14 @@ pub struct UsageRecord {
 pub struct UsageSummary {
     pub total_tokens_in: u64,
     pub total_tokens_out: u64,
-    pub total_cost: f64,
-    pub currency: String,
-    pub by_profile: Vec<ProfileUsage>,
+    pub by_model: Vec<ModelUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProfileUsage {
-    pub profile: String,
+pub struct ModelUsage {
+    pub model: String,
     pub tokens_in: u64,
     pub tokens_out: u64,
-    pub cost: f64,
-    pub currency: String,
     pub percentage: f64,
 }
 
@@ -57,6 +53,17 @@ fn usage_file() -> PathBuf {
 
 fn pricing_file() -> PathBuf {
     crate::config_dir().join("pricing.json")
+}
+
+fn parse_local_date(ts: &str) -> Option<chrono::NaiveDate> {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Local).date_naive())
+}
+
+fn cutoff_date(days: u32) -> chrono::NaiveDate {
+    let days = days.max(1) as i64;
+    chrono::Local::now().date_naive() - chrono::Duration::days(days - 1)
 }
 
 // ── Default pricing ─────────────────────────────────────────
@@ -94,98 +101,63 @@ pub fn save_pricing(pricing: &HashMap<String, ModelPricing>) -> Result<(), Strin
     fs::write(pricing_file(), json).map_err(|e| format!("write: {}", e))
 }
 
-fn ts_to_day(ts: &str) -> String {
-    if ts.len() >= 10 { ts[5..10].to_string() } else { String::new() }
-}
-
-fn ts_to_date(ts: &str) -> String {
-    if ts.len() >= 10 { ts[..10].to_string() } else { String::new() }
-}
-
-fn compute_cost(model: &str, tokens_in: u64, tokens_out: u64, pricing: &HashMap<String, ModelPricing>) -> (f64, String) {
-    // Exact match first, then prefix match (longest key wins → deterministic)
-    if let Some(p) = pricing.get(model) {
-        let cost = (tokens_in as f64 / 1_000_000.0) * p.input
-                 + (tokens_out as f64 / 1_000_000.0) * p.output;
-        return (cost, p.currency.clone());
-    }
-    let mut prefix_matches: Vec<(&String, &ModelPricing)> = pricing
-        .iter()
-        .filter(|(k, _)| model.starts_with(k.as_str()))
-        .collect();
-    prefix_matches.sort_by_key(|(k, _)| -(k.len() as i64)); // longest prefix first
-    if let Some((_, p)) = prefix_matches.first() {
-        let cost = (tokens_in as f64 / 1_000_000.0) * p.input
-                 + (tokens_out as f64 / 1_000_000.0) * p.output;
-        return (cost, p.currency.clone());
-    }
-    (0.0, "USD".into())
-}
-
 // ── Tauri commands ───────────────────────────────────────────
 
 #[tauri::command]
 pub fn get_usage(days: u32) -> Result<UsageSummary, String> {
-    let pricing = load_pricing();
-    let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
-    let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+    let cutoff = cutoff_date(days);
 
     let file = fs::File::open(usage_file()).map_err(|e| format!("open usage.jsonl: {}", e))?;
     let reader = BufReader::new(file);
 
     let mut total_in: u64 = 0;
     let mut total_out: u64 = 0;
-    let mut total_cost: f64 = 0.0;
-    let mut dominant_currency = "USD".to_string();
-    let mut profile_stats: HashMap<String, (u64, u64, f64, String)> = HashMap::new();
+    let mut model_stats: HashMap<String, (u64, u64)> = HashMap::new();
 
     for line in reader.lines() {
         let line = line.unwrap_or_default();
         if line.is_empty() { continue; }
         if let Ok(rec) = serde_json::from_str::<UsageRecord>(&line) {
-            if ts_to_date(&rec.ts) < cutoff_str { continue; }
+            let Some(day) = parse_local_date(&rec.ts) else { continue };
+            if day < cutoff { continue; }
             total_in += rec.tokens_in;
             total_out += rec.tokens_out;
-            let (cost, curr) = compute_cost(&rec.model, rec.tokens_in, rec.tokens_out, &pricing);
-            total_cost += cost;
-            dominant_currency = curr.clone();
-            let entry = profile_stats.entry(rec.profile.clone()).or_insert((0, 0, 0.0, curr.clone()));
+            let entry = model_stats.entry(rec.model.clone()).or_insert((0, 0));
             entry.0 += rec.tokens_in;
             entry.1 += rec.tokens_out;
-            entry.2 += cost;
         }
     }
 
     let grand_total = total_in + total_out;
-    let mut by_profile: Vec<ProfileUsage> = profile_stats
+    let mut by_model: Vec<ModelUsage> = model_stats
         .into_iter()
-        .filter(|(profile, _)| !profile.is_empty())
-        .map(|(profile, (tin, tout, cost, curr))| ProfileUsage {
-            profile,
-            tokens_in: tin,
-            tokens_out: tout,
-            cost,
-            currency: curr,
-            percentage: if grand_total > 0 {
-                ((tin + tout) as f64 / grand_total as f64) * 100.0
-            } else { 0.0 },
+        .map(|(model, (tin, tout))| {
+            let model = if model.is_empty() { "unknown".to_string() } else { model };
+            ModelUsage {
+                model,
+                tokens_in: tin,
+                tokens_out: tout,
+                percentage: if grand_total > 0 {
+                    ((tin + tout) as f64 / grand_total as f64) * 100.0
+                } else { 0.0 },
+            }
         })
         .collect();
-    by_profile.sort_by(|a, b| b.tokens_in.cmp(&a.tokens_in).then_with(|| b.tokens_out.cmp(&a.tokens_out)));
+    by_model.sort_by(|a, b| {
+        (b.tokens_in + b.tokens_out)
+            .cmp(&(a.tokens_in + a.tokens_out))
+    });
 
     Ok(UsageSummary {
         total_tokens_in: total_in,
         total_tokens_out: total_out,
-        total_cost,
-        currency: dominant_currency,
-        by_profile,
+        by_model,
     })
 }
 
 #[tauri::command]
 pub fn get_daily_usage(days: u32) -> Result<Vec<DailyUsage>, String> {
-    let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
-    let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+    let cutoff = cutoff_date(days);
 
     let file = match fs::File::open(usage_file()) {
         Ok(f) => f,
@@ -193,13 +165,13 @@ pub fn get_daily_usage(days: u32) -> Result<Vec<DailyUsage>, String> {
     };
     let reader = BufReader::new(file);
 
-    let mut daily: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut daily: HashMap<chrono::NaiveDate, (u64, u64)> = HashMap::new();
     for line in reader.lines() {
         let line = line.unwrap_or_default();
         if line.is_empty() { continue; }
         if let Ok(rec) = serde_json::from_str::<UsageRecord>(&line) {
-            if ts_to_date(&rec.ts) < cutoff_str { continue; }
-            let day = ts_to_day(&rec.ts);
+            let Some(day) = parse_local_date(&rec.ts) else { continue };
+            if day < cutoff { continue; }
             let entry = daily.entry(day).or_insert((0, 0));
             entry.0 += rec.tokens_in;
             entry.1 += rec.tokens_out;
@@ -208,7 +180,7 @@ pub fn get_daily_usage(days: u32) -> Result<Vec<DailyUsage>, String> {
 
     let mut result: Vec<DailyUsage> = daily
         .into_iter()
-        .map(|(date, (tin, tout))| DailyUsage { date, tokens_in: tin, tokens_out: tout })
+        .map(|(date, (tin, tout))| DailyUsage { date: date.to_string(), tokens_in: tin, tokens_out: tout })
         .collect();
     result.sort_by(|a, b| a.date.cmp(&b.date));
     Ok(result)
@@ -227,8 +199,12 @@ pub fn set_pricing(model: String, pricing: ModelPricing) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn replace_pricing(pricing: HashMap<String, ModelPricing>) -> Result<(), String> {
+    save_pricing(&pricing)
+}
+
+#[tauri::command]
 pub fn get_usage_tracking_enabled() -> Result<bool, String> {
-    // Check for actual hook presence in Claude Code settings.json
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());
@@ -239,7 +215,6 @@ pub fn get_usage_tracking_enabled() -> Result<bool, String> {
             return Ok(true);
         }
     }
-    // Also check Codex config
     let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
     if codex_config.exists() {
         let content = fs::read_to_string(&codex_config).unwrap_or_default();
@@ -259,8 +234,6 @@ pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
     fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
 
     let python = if cfg!(target_os = "windows") { "python" } else { "python3" };
-    // Normalize to forward slashes — Python on Windows accepts /, and
-    // Codex TOML config would mangle backslash escape sequences otherwise.
     let hooks_dir_str = hooks_dir.to_string_lossy().replace('\\', "/");
     let hook_cmd = format!("{} {}/record-usage.py", python, hooks_dir_str);
 

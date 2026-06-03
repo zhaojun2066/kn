@@ -54,17 +54,13 @@ export async function initProfiles(): Promise<MutationResult> {
 export interface UsageSummary {
   total_tokens_in: number;
   total_tokens_out: number;
-  total_cost: number;
-  currency: string;
-  by_profile: ProfileUsage[];
+  by_model: ModelUsage[];
 }
 
-export interface ProfileUsage {
-  profile: string;
+export interface ModelUsage {
+  model: string;
   tokens_in: number;
   tokens_out: number;
-  cost: number;
-  currency: string;
   percentage: number;
 }
 
@@ -94,6 +90,10 @@ export async function getPricing(): Promise<Record<string, ModelPricing>> {
 
 export async function setPricing(model: string, pricing: ModelPricing): Promise<void> {
   return invoke("set_pricing", { model, pricing });
+}
+
+export async function replacePricing(pricing: Record<string, ModelPricing>): Promise<void> {
+  return invoke("replace_pricing", { pricing });
 }
 
 export async function getUsageTrackingEnabled(): Promise<boolean> {

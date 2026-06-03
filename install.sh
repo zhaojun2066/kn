@@ -49,30 +49,49 @@ else
     echo "  - config.yaml (already exists, skipped)"
 fi
 
-# ── Auto-activate in ~/.zshrc ──────────────────────────────────
+# ── Auto-activate in shell RC files ───────────────────────────
+#
+# Always configure both ~/.zshrc and ~/.bashrc.
+# Writes are idempotent — we check before adding.
+# The user's active shell determines which message we show at the end.
 
-ZSHRC="$HOME/.zshrc"
-NEED_PATH=false
-NEED_SOURCE=false
+detect_shell() {
+    case "$SHELL" in
+        */zsh)  echo "zsh" ;;
+        */bash) echo "bash" ;;
+        *)      echo "other" ;;
+    esac
+}
 
-# Check what's missing
-if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR/bin"; then
-    NEED_PATH=true
-fi
+ACTIVE_SHELL="$(detect_shell)"
+CONFIGURED_FILES=""
 
-if ! grep -Fq "$INSTALL_DIR/shell-rc" "$ZSHRC" 2>/dev/null; then
-    NEED_SOURCE=true
-fi
+configure_rc() {
+    local rc_path="$1"
+    local rc_name="$2"
 
-if $NEED_PATH || $NEED_SOURCE; then
-    echo ""
+    local need_path=false
+    local need_source=false
+
+    if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR/bin"; then
+        need_path=true
+    fi
+
+    if ! grep -Fq "$INSTALL_DIR/shell-rc" "$rc_path" 2>/dev/null; then
+        need_source=true
+    fi
+
+    if ! $need_path && ! $need_source; then
+        echo "  - ~/$rc_name already configured, skipping"
+        return
+    fi
 
     # Remove old marker block if exists
-    if grep -Fq "$MARKER_START" "$ZSHRC" 2>/dev/null; then
+    if grep -Fq "$MARKER_START" "$rc_path" 2>/dev/null; then
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "/$MARKER_START/,/$MARKER_END/d" "$ZSHRC"
+            sed -i '' "/$MARKER_START/,/$MARKER_END/d" "$rc_path"
         else
-            sed -i "/$MARKER_START/,/$MARKER_END/d" "$ZSHRC"
+            sed -i "/$MARKER_START/,/$MARKER_END/d" "$rc_path"
         fi
     fi
 
@@ -83,20 +102,40 @@ if $NEED_PATH || $NEED_SOURCE; then
         echo "export PATH=\"$INSTALL_DIR/bin:\$PATH\""
         echo "source \"$INSTALL_DIR/shell-rc\""
         echo "$MARKER_END"
-    } >> "$ZSHRC"
+    } >> "$rc_path"
 
-    echo "  ✓ Added $INSTALL_DIR/bin to PATH"
-    echo "  ✓ Added shell-rc auto-source to ~/.zshrc"
-else
-    echo ""
-    echo "  - ~/.zshrc already configured, skipping"
+    echo "  ✓ Added to ~/$rc_name"
+    CONFIGURED_FILES="$CONFIGURED_FILES ~/$rc_name"
+}
+
+# Configure both zsh and bash (idempotent, harmless either way)
+configure_rc "$HOME/.zshrc" ".zshrc"
+configure_rc "$HOME/.bashrc" ".bashrc"
+
+if [ -z "$CONFIGURED_FILES" ]; then
+    echo "  - Shell already configured"
 fi
 
 echo ""
 echo "==> Done!"
 echo ""
-echo "    Run this to activate now (or restart your terminal):"
-echo "      source ~/.zshrc"
+
+case "$ACTIVE_SHELL" in
+    zsh)
+        echo "    Run this to activate now (or restart your terminal):"
+        echo "      source ~/.zshrc"
+        ;;
+    bash)
+        echo "    Run this to activate now (or restart your terminal):"
+        echo "      source ~/.bashrc"
+        ;;
+    *)
+        echo "    Run this to activate now (or restart your terminal):"
+        echo "      source ~/.zshrc   # if using zsh"
+        echo "      source ~/.bashrc  # if using bash"
+        ;;
+esac
+
 echo ""
 echo "    Then try:"
 echo "      profile list            # See all profiles"

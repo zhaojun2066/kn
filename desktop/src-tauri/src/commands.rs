@@ -544,8 +544,8 @@ pub fn check_environment() -> EnvCheckResult {
         let in_rc = if let Ok(zshrc) = std::fs::read_to_string(home.join(".zshrc")) {
             zshrc.contains("shell-rc") || zshrc.contains(".claude-profiles")
         } else { false };
-        // On Windows also check .bashrc (Git Bash)
-        let in_bashrc = cfg!(target_os = "windows") && {
+        // On non-macOS also check .bashrc (Linux + Windows Git Bash)
+        let in_bashrc = !cfg!(target_os = "macos") && {
             if let Ok(bashrc) = std::fs::read_to_string(home.join(".bashrc")) {
                 bashrc.contains("shell-rc") || bashrc.contains(".claude-profiles")
             } else { false }
