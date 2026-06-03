@@ -499,7 +499,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         fs::write(&zshrc, new_content).map_err(|e| format!("写入 .zshrc 失败: {}", e))?;
     }
 
-    // Windows only: add dot-source to PowerShell profile
+    // Windows only: add dot-source to PowerShell profile AND .bashrc (for Git Bash)
     if cfg!(target_os = "windows") {
         let ps_profile = PathBuf::from(&home).join("Documents").join("PowerShell").join("Microsoft.PowerShell_profile.ps1");
         if let Some(parent) = ps_profile.parent() {
@@ -514,6 +514,19 @@ pub fn ensure_shell_rc() -> Result<String, String> {
             }
         } else {
             fs::write(&ps_profile, format!("# AI Profile Manager\n{}\n", dot_line)).ok();
+        }
+
+        // Also add to .bashrc for Git Bash users (the PTY uses Git Bash on Windows)
+        let bashrc = PathBuf::from(&home).join(".bashrc");
+        let bash_source_line = format!("source \"{}/shell-rc\"", dir_str);
+        let bash_content = if bashrc.exists() { fs::read_to_string(&bashrc).unwrap_or_default() } else { String::new() };
+        if !bash_content.contains(&bash_source_line) {
+            let new_bash = if bash_content.ends_with('\n') || bash_content.is_empty() {
+                format!("{}# AI Profile Manager (bash)\n{}\n", bash_content, bash_source_line)
+            } else {
+                format!("{}\n# AI Profile Manager (bash)\n{}\n", bash_content, bash_source_line)
+            };
+            fs::write(&bashrc, new_bash).ok();
         }
     }
 

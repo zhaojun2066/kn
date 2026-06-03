@@ -99,6 +99,8 @@ export const docPages: Record<string, DocPage> = {
 
 **Windows：** 双击 \`.msi\` 按向导安装。
 
+> ⚠️ **Windows 11 用户注意：** 安装包未经过代码签名，智能应用控制（Smart App Control）可能会阻止安装。如遇拦截，参考 [Desktop 安装与启动](/docs/desktop-install) 中的解决方法。
+
 **Linux：** 给 \`.AppImage\` 添加执行权限后运行：
 
 \`\`\`bash
@@ -471,6 +473,19 @@ sudo xattr -d com.apple.quarantine "/Applications/AI Profile Manager.app"
 ### 解决方法二：右键打开
 
 在 Finder 中找到 App，**右键 → 打开**（不要双击），弹出的对话框里点「打开」。
+
+## Windows 智能应用控制 (SAC) 拦截
+
+Windows 11 全新安装默认启用**智能应用控制**（Smart App Control），由于安装包未经过代码签名，SAC 会阻止安装并提示「无法验证其发布者」。
+
+### 解决方法：关闭智能应用控制
+
+1. 打开 **Windows 安全中心**
+2. 选择左侧「**应用和浏览器控制**」
+3. 点击「**智能应用控制设置**」
+4. 选择「**关闭**」
+
+安装完成后可重新打开。此外，SAC 仅在 Windows 11 全新安装时默认启用——从 Windows 10 升级上来的系统默认是关闭的，通常不会遇到此问题。
 
 ## 开发模式启动
 

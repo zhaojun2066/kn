@@ -530,14 +530,21 @@ pub fn check_environment() -> EnvCheckResult {
     // 3. Shell wrapper
     let shell_rc = home.join(".claude-profiles").join("shell-rc");
     if shell_rc.exists() {
-        let in_zshrc = if let Ok(zshrc) = std::fs::read_to_string(home.join(".zshrc")) {
+        let in_rc = if let Ok(zshrc) = std::fs::read_to_string(home.join(".zshrc")) {
             zshrc.contains("shell-rc") || zshrc.contains(".claude-profiles")
         } else { false };
+        // On Windows also check .bashrc (Git Bash)
+        let in_bashrc = cfg!(target_os = "windows") && {
+            if let Ok(bashrc) = std::fs::read_to_string(home.join(".bashrc")) {
+                bashrc.contains("shell-rc") || bashrc.contains(".claude-profiles")
+            } else { false }
+        };
+        let activated = in_rc || in_bashrc;
         items.push(EnvCheckItem {
             name: "shell-wrapper".into(),
             label: "Shell 集成".into(),
-            status: if in_zshrc { "ok".into() } else { "warn".into() },
-            detail: if in_zshrc { "已激活".into() } else { "已安装但未激活".into() },
+            status: if activated { "ok".into() } else { "warn".into() },
+            detail: if activated { "已激活".into() } else { "已安装但未激活".into() },
         });
     } else {
         items.push(EnvCheckItem {

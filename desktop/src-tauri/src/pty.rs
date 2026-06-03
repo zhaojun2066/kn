@@ -48,17 +48,36 @@ pub fn start_pty(
         .openpty(size)
         .map_err(|e| format!("openpty: {}", e))?;
 
+    // Resolve shell binary.
+    // On Windows, prefer Git Bash (provides Unix environment where shell-rc works).
+    // Fall back to PowerShell with execution policy relaxed if Git Bash is absent.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(target_os = "windows") { "powershell.exe".into() }
-        else if cfg!(target_os = "macos") { "/bin/zsh".into() }
-        else { "/bin/bash".into() }
+        if cfg!(target_os = "windows") {
+            let candidates = [
+                r"C:\Program Files\Git\bin\bash.exe",
+                r"C:\Program Files (x86)\Git\bin\bash.exe",
+            ];
+            candidates
+                .iter()
+                .find(|p| std::path::Path::new(p).exists())
+                .map(|&s| s.to_string())
+                .unwrap_or_else(|| "powershell.exe".into())
+        } else if cfg!(target_os = "macos") {
+            "/bin/zsh".into()
+        } else {
+            "/bin/bash".into()
+        }
     });
 
+    let is_git_bash = cfg!(target_os = "windows") && shell.ends_with("bash.exe");
+
     let mut cmd = CommandBuilder::new(&shell);
-    // Use login + interactive flags for Unix shells.
-    // PowerShell on Windows uses -NoExit instead (no -i/-l semantics).
-    if cfg!(target_os = "windows") {
-        cmd.args(["-NoExit"]);
+    if is_git_bash {
+        // Git Bash: login + interactive so .bashrc / shell-rc is sourced
+        cmd.args(["-i", "-l"]);
+    } else if cfg!(target_os = "windows") {
+        // PowerShell fallback: allow scripts so shell-rc.ps1 can be loaded
+        cmd.args(["-NoExit", "-ExecutionPolicy", "Bypass"]);
     } else {
         cmd.args(["-i", "-l"]);
     }
