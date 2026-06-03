@@ -411,39 +411,117 @@ ai() {
 
 const SHELL_RC_PS1: &str = r#"# AI Profile Manager — PowerShell Wrapper
 # Usage: ai <tool> <profile>
-# Add to your PowerShell profile: . $HOME/.claude-profiles/shell-rc.ps1
+# Sourced by PTY on startup and/or via PowerShell profile.
+
+$script:_kn_config_dir = if ($env:HOME) { "$env:HOME\.claude-profiles" } else { "$env:USERPROFILE\.claude-profiles" }
 
 function _profile_env {
     param([string]$name)
-    $cfg = "$HOME/.claude-profiles/config.yaml"
-    if (-not (Test-Path $cfg)) { return "" }
+    $cfg = Join-Path $script:_kn_config_dir "config.yaml"
+    if (-not (Test-Path $cfg)) { return @() }
+    $results = @()
     $inProfile = $false; $inEnv = $false
+    $escaped = [regex]::Escape($name)
     Get-Content $cfg | ForEach-Object {
-        if ($_ -match "^  ${name}:") { $inProfile = $true; return }
+        if ($_ -match "^  ${escaped}:") { $inProfile = $true; return }
         if ($inProfile -and $_ -match "^    env:") { $inEnv = $true; return }
-        if ($inEnv -and $_ -match "^      ([A-Z][A-Z_]+):\s*(.*)") {
-            "export $($Matches[1])=$($Matches[2])"
+        if ($inEnv -and $_ -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*"?([^"]*)"?\s*$') {
+            $results += "export $($Matches[1])=$($Matches[2])"
         }
         if ($inEnv -and $_ -match "^    [a-z]") { $inProfile = $false; $inEnv = $false }
     }
+    return $results
+}
+
+function _profile_list {
+    $cfg = Join-Path $script:_kn_config_dir "config.yaml"
+    if (-not (Test-Path $cfg)) { Write-Host "No config found at $cfg"; return }
+    $default = (Get-Content $cfg | Select-String '^default:\s*"?(.+?)"?\s*$').Matches.Groups[1].Value
+    Get-Content $cfg | Select-String '^  ([a-zA-Z0-9_-]+):' | ForEach-Object {
+        $n = $_.Matches.Groups[1].Value
+        if ($n -eq $default) { Write-Host "  $n (*)" } else { Write-Host "  $n" }
+    }
+}
+
+function _profile_show {
+    param([string]$name)
+    $vars = _profile_env $name
+    if (-not $vars) { Write-Host "Profile '$name' not found"; return }
+    Write-Host "Profile: $name"
+    $vars | ForEach-Object { Write-Host ($_ -replace '^export ','') }
 }
 
 function ai {
-    param([string]$tool, [string]$profile, [string[]]$args)
-    if (-not $tool) { Write-Host "Usage: ai <tool> [profile]"; return }
-    if ($tool -notin @("claude","codex")) { Write-Host "Unknown tool: $tool"; return }
-    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-        Write-Host "$tool not installed. Run: npm install -g @anthropic-ai/claude-code"
+    $cmd = $args[0]
+
+    if (-not $cmd) {
+        Write-Host "Usage: ai <tool> [args...]"
+        Write-Host ""
+        Write-Host "  Run with profile:"
+        Write-Host "    ai claude <profile>       Run Claude Code with profile env"
+        Write-Host "    ai codex <profile>        Run Codex CLI with profile env"
+        Write-Host ""
+        Write-Host "  Manage profiles:"
+        Write-Host "    ai profile list           List all profiles"
+        Write-Host "    ai profile env <name>     Show env vars for a profile"
         return
     }
-    if ($profile) {
-        $envs = _profile_env $profile
-        if ($envs) {
-            Write-Host "-> Using profile: $profile"
-            $envs | ForEach-Object { Invoke-Expression $_ }
+
+    switch ($cmd) {
+        'claude' {
+            $tool = 'claude'
+            $rest = $args[1..$args.Length]
+            if ($rest.Count -gt 0) {
+                $envs = _profile_env $rest[0]
+                if ($envs) {
+                    $profileName = $rest[0]
+                    $toolArgs = $rest[1..$rest.Length]
+                    Write-Host "-> Using profile: $profileName"
+                    $envs | ForEach-Object { Invoke-Expression $_ }
+                    & $tool @toolArgs
+                    return
+                }
+            }
+            & $tool @rest
+        }
+        'codex' {
+            $tool = 'codex'
+            $rest = $args[1..$args.Length]
+            if ($rest.Count -gt 0) {
+                $envs = _profile_env $rest[0]
+                if ($envs) {
+                    $profileName = $rest[0]
+                    $toolArgs = $rest[1..$rest.Length]
+                    Write-Host "-> Using profile: $profileName"
+                    $envs | ForEach-Object { Invoke-Expression $_ }
+                    & $tool @toolArgs
+                    return
+                }
+            }
+            & $tool @rest
+        }
+        'profile' {
+            $subcmd = $args[1]
+            switch ($subcmd) {
+                'list' { _profile_list }
+                'env' { _profile_show $args[2] }
+                default {
+                    Write-Host "Usage: ai profile {list|env <name>}"
+                }
+            }
+        }
+        { $_ -in @('-h','--help','help') } {
+            Write-Host "AI Profile Manager"
+            Write-Host "  ai claude <profile>       Run Claude Code with profile"
+            Write-Host "  ai codex <profile>        Run Codex CLI with profile"
+            Write-Host "  ai profile list           List all profiles"
+            Write-Host "  ai profile env <name>     Show env vars for profile"
+        }
+        default {
+            Write-Host "Unknown command: $cmd"
+            Write-Host "Supported: claude, codex, profile"
         }
     }
-    & $tool @args
 }
 "#;
 

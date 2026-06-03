@@ -51,11 +51,18 @@ pub fn start_pty(
     // Resolve shell binary.
     // On Windows, prefer Git Bash (provides Unix environment where shell-rc works).
     // Fall back to PowerShell with execution policy relaxed if Git Bash is absent.
+    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
         if cfg!(target_os = "windows") {
             let candidates = [
                 r"C:\Program Files\Git\bin\bash.exe",
                 r"C:\Program Files (x86)\Git\bin\bash.exe",
+                // User-only installs (no admin)
+                &format!(r"{}\AppData\Local\Programs\Git\bin\bash.exe", home),
+                // Scoop / manual installs
+                r"C:\scoop\apps\git\current\bin\bash.exe",
+                // ProgramData (all-users, alternate)
+                r"C:\ProgramData\Git\bin\bash.exe",
             ];
             candidates
                 .iter()
@@ -70,14 +77,28 @@ pub fn start_pty(
     });
 
     let is_git_bash = cfg!(target_os = "windows") && shell.ends_with("bash.exe");
+    let is_powershell = cfg!(target_os = "windows") && (shell.ends_with("powershell.exe") || shell.ends_with("pwsh.exe"));
 
     let mut cmd = CommandBuilder::new(&shell);
     if is_git_bash {
         // Git Bash: login + interactive so .bashrc / shell-rc is sourced
         cmd.args(["-i", "-l"]);
-    } else if cfg!(target_os = "windows") {
-        // PowerShell fallback: allow scripts so shell-rc.ps1 can be loaded
-        cmd.args(["-NoExit", "-ExecutionPolicy", "Bypass"]);
+    } else if is_powershell {
+        // PowerShell: dot-source shell-rc.ps1 explicitly on startup.
+        // Don't depend on $PROFILE — the profile may not be set up yet,
+        // or the user may be in a fresh environment.
+        let ps1_path = format!("{}/.claude-profiles/shell-rc.ps1", home);
+        let ps1_path_escaped = ps1_path.replace('\'', "''");
+        let startup_cmd = format!(
+            "$rc = '{}'; if (Test-Path $rc) {{ . $rc }} else {{ Write-Host '[AI Profile Manager] shell-rc.ps1 not found at:' $rc }}",
+            ps1_path_escaped
+        );
+        cmd.args([
+            "-NoExit",
+            "-ExecutionPolicy", "Bypass",
+            "-NoLogo",
+            "-Command", &startup_cmd,
+        ]);
     } else {
         cmd.args(["-i", "-l"]);
     }
