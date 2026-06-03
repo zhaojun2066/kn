@@ -1,6 +1,7 @@
 import React from "react";
 import { Settings, X, RotateCcw } from "lucide-react";
 import { useFontScale, MIN_SCALE, MAX_SCALE } from "../hooks/useFontScale";
+import { getUsageTrackingEnabled, setUsageTrackingEnabled } from "../lib/tauri-api";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -9,6 +10,12 @@ interface SettingsDialogProps {
 
 export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const { scale, setScale } = useFontScale();
+  const [trackingEnabled, setTrackingEnabled] = React.useState(false);
+  React.useEffect(() => {
+    if (open) {
+      getUsageTrackingEnabled().then(setTrackingEnabled).catch(() => {});
+    }
+  }, [open]);
 
   if (!open) return null;
 
@@ -86,6 +93,43 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           <div className="flex items-start gap-2 text-2xs text-app-text-muted font-mono bg-[var(--app-subtle)] border border-app-border px-3 py-2">
             <span>💡</span>
             <span>终端内字体大小请在终端面板中使用 A⁻ / A⁺ 按钮独立调整，不受此处设置影响。</span>
+          </div>
+
+          {/* Token usage tracking toggle */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm text-app-text font-mono">Token 用量追踪</span>
+                <p className="text-2xs text-app-text-muted font-mono mt-0.5">
+                  自动记录每次 AI 会话的 token 消耗和费用
+                </p>
+              </div>
+              <button
+                onClick={async () => {
+                  const next = !trackingEnabled;
+                  try {
+                    await setUsageTrackingEnabled(next);
+                    setTrackingEnabled(next);
+                  } catch (e) {
+                    console.error("Failed to toggle usage tracking:", e);
+                  }
+                }}
+                className={`relative w-9 h-5 rounded-full transition-colors duration-200 ${
+                  trackingEnabled ? "bg-app-accent" : "bg-[var(--app-border)]"
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 w-4 h-4 rounded-full bg-[var(--app-bg)] border border-app-border transition-all duration-200 ${
+                    trackingEnabled ? "left-4" : "left-0.5"
+                  }`}
+                />
+              </button>
+            </div>
+            {trackingEnabled && (
+              <div className="text-2xs text-app-text-muted font-mono bg-[var(--app-subtle)] border border-app-border px-3 py-1.5">
+                数据保存在 ~/.claude-profiles/usage.jsonl，完全本地，不会上传。
+              </div>
+            )}
           </div>
         </div>
 

@@ -8,6 +8,7 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { NameDialog } from "./components/NameDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
+import { UsagePanel } from "./components/UsagePanel";
 import { AboutDialog } from "./components/AboutDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { UpdateDialog } from "./components/UpdateDialog";
@@ -17,6 +18,7 @@ import { formatShortcut } from "./utils/shortcut";
 import { useFontScale } from "./hooks/useFontScale";
 import { useProfiles } from "./hooks/useProfiles";
 import { useTerminal } from "./hooks/useTerminal";
+import { useUsage } from "./hooks/useUsage";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -53,6 +55,8 @@ export function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
+  const usage = useUsage();
   const batchDeleteNamesRef = useRef<string[]>([]);
   // Update dialog: store manifest + platform data when new version found
   const [updateDialog, setUpdateDialog] = useState<{ version: string; notes: string; url: string; sha256: string } | null>(null);
@@ -697,6 +701,24 @@ export function App() {
             终端已连接
           </span>
         )}
+        {usage.todayTokens > 0 && (
+          <span
+            className="text-2xs text-app-amber font-mono mr-3 cursor-pointer hover:text-app-amber-glow transition-colors"
+            onClick={() => setShowUsage(true)}
+            title="查看 Token 用量"
+          >
+            ◉ {usage.todayTokens >= 1000 ? `${(usage.todayTokens / 1000).toFixed(1)}K` : usage.todayTokens} 今天
+          </span>
+        )}
+        {usage.todayTokens === 0 && !usage.loading && (
+          <span
+            className="text-2xs text-app-text-dim font-mono mr-3 cursor-pointer hover:text-app-text-muted transition-colors"
+            onClick={() => setShowUsage(true)}
+            title="查看 Token 用量"
+          >
+            ◉ 用量
+          </span>
+        )}
         <span className="text-2xs text-app-text-muted font-mono">
           {ctx.selectedName && (
             <>
@@ -763,6 +785,8 @@ export function App() {
       />
 
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
+
+      <UsagePanel open={showUsage} onClose={() => setShowUsage(false)} />
 
       <AboutDialog open={showAbout} onClose={() => setShowAbout(false)} />
 

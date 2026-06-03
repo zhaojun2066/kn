@@ -50,3 +50,56 @@ export async function getDefaultProfile(): Promise<string> {
 export async function initProfiles(): Promise<MutationResult> {
   return invoke("init_profiles");
 }
+
+export interface UsageSummary {
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_cost: number;
+  currency: string;
+  by_profile: ProfileUsage[];
+}
+
+export interface ProfileUsage {
+  profile: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost: number;
+  currency: string;
+  percentage: number;
+}
+
+export interface DailyUsage {
+  date: string;
+  tokens_in: number;
+  tokens_out: number;
+}
+
+export interface ModelPricing {
+  input: number;
+  output: number;
+  currency: string;
+}
+
+export async function getUsage(days: number): Promise<UsageSummary> {
+  return invoke("get_usage", { days });
+}
+
+export async function getDailyUsage(days: number): Promise<DailyUsage[]> {
+  return invoke("get_daily_usage", { days });
+}
+
+export async function getPricing(): Promise<Record<string, ModelPricing>> {
+  return invoke("get_pricing");
+}
+
+export async function setPricing(model: string, pricing: ModelPricing): Promise<void> {
+  return invoke("set_pricing", { model, pricing });
+}
+
+export async function getUsageTrackingEnabled(): Promise<boolean> {
+  return invoke("get_usage_tracking_enabled");
+}
+
+export async function setUsageTrackingEnabled(enabled: boolean): Promise<void> {
+  return invoke("set_usage_tracking_enabled", { enabled });
+}
