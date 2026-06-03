@@ -1,22 +1,22 @@
 {
-  "version": "1.1.0",
-  "notes": "新增功能:\n1. 自动更新\n2. 扫描导入 Claude/Codex 配置\n3. 历史会话恢复\n\n修复:\n- 终端 resize 自适应\n- 字体大小可调\n- 环境变量全显/全隐",
+  "version": "1.0.2",
+  "notes": "新增功能:\n1. Windows Git Bash 终端支持, 解决 SAC 拦截和无 ai 命令问题\n2. 引导页扫描按钮增加视觉提示\n\n修复:\n- Windows PTY 编译错误 (Box::new 重复包装)\n- 终端 resize 自适应\n- 环境变量全显/全隐",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://downloads.example.com/ai-profile-manager/1.1.0/arm64/AI-Profile-Manager.dmg",
-      "sha256": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+      "url": "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v1.0.2/AI.Profile.Manager_1.0.2_aarch64.dmg",
+      "sha256": ""
     },
     "darwin-x86_64": {
-      "url": "https://downloads.example.com/ai-profile-manager/1.1.0/x64/AI-Profile-Manager.dmg",
-      "sha256": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
+      "url": "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v1.0.2/AI.Profile.Manager_1.0.2_x64.dmg",
+      "sha256": ""
     },
     "windows-x86_64": {
-      "url": "https://downloads.example.com/ai-profile-manager/1.1.0/x64/AI-Profile-Manager.msi",
-      "sha256": "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+      "url": "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v1.0.2/AI.Profile.Manager_1.0.2_x64_en-US.msi",
+      "sha256": ""
     },
     "linux-x86_64": {
-      "url": "https://downloads.example.com/ai-profile-manager/1.1.0/x64/ai-profile-manager.AppImage",
-      "sha256": "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5"
+      "url": "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v1.0.2/ai-profile-manager_1.0.2_amd64.AppImage",
+      "sha256": ""
     }
   }
 }
