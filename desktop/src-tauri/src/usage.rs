@@ -68,7 +68,13 @@ pub fn default_pricing() -> HashMap<String, ModelPricing> {
     m.insert("claude-haiku-4-5".into(), ModelPricing { input: 0.8, output: 4.0, currency: "USD".into() });
     m.insert("deepseek-chat".into(), ModelPricing { input: 1.0, output: 2.0, currency: "CNY".into() });
     m.insert("deepseek-reasoner".into(), ModelPricing { input: 4.0, output: 16.0, currency: "CNY".into() });
+    m.insert("deepseek-v4-pro".into(), ModelPricing { input: 1.0, output: 2.0, currency: "CNY".into() });
+    m.insert("deepseek-v3".into(), ModelPricing { input: 1.0, output: 2.0, currency: "CNY".into() });
+    m.insert("claude-3.5".into(), ModelPricing { input: 3.0, output: 15.0, currency: "USD".into() });
+    m.insert("claude-3".into(), ModelPricing { input: 3.0, output: 15.0, currency: "USD".into() });
+    m.insert("gpt-5.5".into(), ModelPricing { input: 2.5, output: 10.0, currency: "USD".into() });
     m.insert("gpt-5".into(), ModelPricing { input: 2.5, output: 10.0, currency: "USD".into() });
+    m.insert("gpt-4".into(), ModelPricing { input: 5.0, output: 15.0, currency: "USD".into() });
     m
 }
 
@@ -97,17 +103,23 @@ fn ts_to_date(ts: &str) -> String {
 }
 
 fn compute_cost(model: &str, tokens_in: u64, tokens_out: u64, pricing: &HashMap<String, ModelPricing>) -> (f64, String) {
-    let price = pricing.get(model).or_else(|| {
-        pricing.iter().find(|(k, _)| model.starts_with(k.as_str())).map(|(_, v)| v)
-    });
-    match price {
-        Some(p) => {
-            let cost = (tokens_in as f64 / 1_000_000.0) * p.input
-                     + (tokens_out as f64 / 1_000_000.0) * p.output;
-            (cost, p.currency.clone())
-        }
-        None => (0.0, "USD".into()),
+    // Exact match first, then prefix match (longest key wins → deterministic)
+    if let Some(p) = pricing.get(model) {
+        let cost = (tokens_in as f64 / 1_000_000.0) * p.input
+                 + (tokens_out as f64 / 1_000_000.0) * p.output;
+        return (cost, p.currency.clone());
     }
+    let mut prefix_matches: Vec<(&String, &ModelPricing)> = pricing
+        .iter()
+        .filter(|(k, _)| model.starts_with(k.as_str()))
+        .collect();
+    prefix_matches.sort_by_key(|(k, _)| -(k.len() as i64)); // longest prefix first
+    if let Some((_, p)) = prefix_matches.first() {
+        let cost = (tokens_in as f64 / 1_000_000.0) * p.input
+                 + (tokens_out as f64 / 1_000_000.0) * p.output;
+        return (cost, p.currency.clone());
+    }
+    (0.0, "USD".into())
 }
 
 // ── Tauri commands ───────────────────────────────────────────
@@ -147,6 +159,7 @@ pub fn get_usage(days: u32) -> Result<UsageSummary, String> {
     let grand_total = total_in + total_out;
     let mut by_profile: Vec<ProfileUsage> = profile_stats
         .into_iter()
+        .filter(|(profile, _)| !profile.is_empty())
         .map(|(profile, (tin, tout, cost, curr))| ProfileUsage {
             profile,
             tokens_in: tin,
