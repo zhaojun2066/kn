@@ -47,15 +47,6 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                 <span className="text-sm text-app-accent font-mono tabular-nums w-10 text-right">
                   {pct}%
                 </span>
-                {scale !== 1.0 && (
-                  <button
-                    onClick={() => setScale(1.0)}
-                    className="p-0.5 text-app-text-dim hover:text-app-accent transition-colors"
-                    title="重置为 100%"
-                  >
-                    <RotateCcw size={12} />
-                  </button>
-                )}
               </div>
             </div>
 
@@ -99,7 +90,20 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2.5 border-t border-app-border bg-[var(--app-subtle)] flex justify-end">
+        <div className="px-4 py-2.5 border-t border-app-border bg-[var(--app-subtle)] flex items-center justify-between">
+          <button
+            onClick={() => setScale(1.0)}
+            disabled={scale === 1.0}
+            className="flex items-center gap-1 px-3 py-1 text-xs font-mono transition-colors
+              border border-app-border
+              disabled:opacity-30 disabled:cursor-not-allowed
+              bg-[var(--app-input)] hover:bg-[var(--app-hover)]
+              text-app-text-dim hover:text-app-text"
+            title="恢复默认字体大小"
+          >
+            <RotateCcw size={11} />
+            恢复默认
+          </button>
           <button
             onClick={onClose}
             className="px-4 py-1 text-xs font-mono text-app-text-dim hover:text-app-text
