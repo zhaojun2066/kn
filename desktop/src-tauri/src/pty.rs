@@ -103,7 +103,7 @@ pub fn start_pty(
     );
 
     #[cfg(windows)]
-    let master: Box<dyn portable_pty::MasterPty + Send> = Box::new(pair.master);
+    let master: Box<dyn portable_pty::MasterPty + Send> = pair.master;
 
     // Store handle
     {
