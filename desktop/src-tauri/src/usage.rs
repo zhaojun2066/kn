@@ -51,19 +51,16 @@ pub struct ModelPricing {
 
 // ── Helpers ──────────────────────────────────────────────────
 
-fn config_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(&home).join(".claude-profiles")
-}
-
 fn usage_file() -> PathBuf {
-    config_dir().join("usage.jsonl")
+    crate::config_dir().join("usage.jsonl")
 }
 
 fn pricing_file() -> PathBuf {
-    config_dir().join("pricing.json")
+    crate::config_dir().join("pricing.json")
+}
+
+fn tracking_state_file() -> PathBuf {
+    crate::config_dir().join(".usage_tracking")
 }
 
 // ── Default pricing ─────────────────────────────────────────
@@ -89,7 +86,7 @@ pub fn load_pricing() -> HashMap<String, ModelPricing> {
 }
 
 pub fn save_pricing(pricing: &HashMap<String, ModelPricing>) -> Result<(), String> {
-    let dir = config_dir();
+    let dir = crate::config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create dir: {}", e))?;
     let json = serde_json::to_string_pretty(pricing).map_err(|e| format!("serialize: {}", e))?;
     fs::write(pricing_file(), json).map_err(|e| format!("write: {}", e))
@@ -222,10 +219,26 @@ pub fn set_pricing(model: String, pricing: ModelPricing) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_usage_tracking_enabled() -> Result<bool, String> {
-    let config_path = config_dir().join("config.yaml");
-    if !config_path.exists() { return Ok(false); }
-    let content = fs::read_to_string(&config_path).unwrap_or_default();
-    Ok(content.contains("usage_tracking: true"))
+    // Check for actual hook presence in Claude Code settings.json
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
+    let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
+    if claude_settings.exists() {
+        let content = fs::read_to_string(&claude_settings).unwrap_or_default();
+        if content.contains("record-usage.py") {
+            return Ok(true);
+        }
+    }
+    // Also check Codex config
+    let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
+    if codex_config.exists() {
+        let content = fs::read_to_string(&codex_config).unwrap_or_default();
+        if content.contains("record-usage.py") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -233,11 +246,14 @@ pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());
-    let hooks_dir = config_dir().join("hooks");
+    let hooks_dir = crate::config_dir().join("hooks");
     fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
 
     let python = if cfg!(target_os = "windows") { "python" } else { "python3" };
-    let hook_cmd = format!("{} {}/record-usage.py", python, hooks_dir.display());
+    // Normalize to forward slashes — Python on Windows accepts /, and
+    // Codex TOML config would mangle backslash escape sequences otherwise.
+    let hooks_dir_str = hooks_dir.to_string_lossy().replace('\\', "/");
+    let hook_cmd = format!("{} {}/record-usage.py", python, hooks_dir_str);
 
     if enabled {
         let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");

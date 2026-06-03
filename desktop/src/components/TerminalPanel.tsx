@@ -304,7 +304,7 @@ export function TerminalPanel({
         ${maximized ? "flex-1" : "shrink-0"}`}
     >
       {/* Header */}
-      <div className="flex items-center h-[28px] bg-[var(--app-terminal-header)] border-b border-app-border shrink-0 select-none">
+      <div className="flex items-center h-[32px] bg-[var(--app-terminal-header)] border-b border-app-border shrink-0 select-none">
         {/* Tab bar */}
         <div className="flex-1 flex items-center overflow-x-auto min-w-0">
           {tabs.map((tab) => {
@@ -312,18 +312,18 @@ export function TerminalPanel({
             return (
               <div key={tab.id} onClick={() => onSwitchTab(tab.id)}
                 onContextMenu={(e) => handleTabContextMenu(e, tab.id)}
-                className={`group flex items-center gap-1.5 px-2.5 h-[28px] text-2xs font-mono cursor-pointer
+                className={`group flex items-center gap-1.5 px-3 h-[32px] text-xs font-mono cursor-pointer
                   border-r border-app-border shrink-0 transition-colors select-none
                   ${isActive ? "bg-[var(--app-terminal-bg)] text-app-text border-b-[2px] border-b-app-accent -mb-px"
                     : "text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"}`}
               >
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tab.ptyRunning ? "bg-app-accent shadow-[0_0_4px_var(--app-glow)]" : "bg-app-text-muted opacity-40"}`} />
+                <span className={`w-2 h-2 rounded-full shrink-0 ${tab.ptyRunning ? "bg-app-accent shadow-[0_0_4px_var(--app-glow)]" : "bg-app-text-muted opacity-40"}`} />
                 <span className="max-w-[100px] truncate">{tab.name}</span>
                 {tabs.length > 1 && (
                   <button onClick={(e) => { e.stopPropagation(); setClosingTabId(tab.id); }}
                     className={`ml-0.5 p-0.5 hover:bg-[var(--app-hover)] transition-colors shrink-0
                       ${isActive ? "" : "opacity-0 group-hover:opacity-100"}`} title="关闭">
-                    <X size={10} />
+                    <X size={12} />
                   </button>
                 )}
               </div>
@@ -331,8 +331,8 @@ export function TerminalPanel({
           })}
           {/* Right panel: no manual "+" — only profile commands create tabs */}
           {isBottom && (
-            <button onClick={onNewTab} className="px-2.5 h-[28px] text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)] transition-colors shrink-0" title="新建终端">
-              <Plus size={13} />
+            <button onClick={onNewTab} className="px-2.5 h-[32px] text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)] transition-colors shrink-0" title="新建终端">
+              <Plus size={14} />
             </button>
           )}
         </div>
@@ -341,12 +341,12 @@ export function TerminalPanel({
         {!isBottom && (
         <div className="relative shrink-0">
           <button onClick={() => setShowHistory(!showHistory)}
-            className={`px-2 h-[28px] text-app-text-muted hover:text-app-text transition-colors flex items-center gap-1 ${showHistory ? "text-app-accent" : ""}`}
+            className={`px-2 h-[32px] text-app-text-muted hover:text-app-text transition-colors flex items-center gap-1 ${showHistory ? "text-app-accent" : ""}`}
             title="历史会话"
           >
-            <Clock size={12} />
+            <Clock size={14} />
             {history.length > 0 && (
-              <span className="text-2xs tabular-nums">{history.length}</span>
+              <span className="text-xs tabular-nums">{history.length}</span>
             )}
           </button>
 
@@ -354,7 +354,7 @@ export function TerminalPanel({
           {showHistory && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setShowHistory(false)} />
-              <div className="absolute right-0 top-[28px] z-50 w-[380px] max-h-[400px] overflow-y-auto
+              <div className="absolute right-0 top-[32px] z-50 w-[380px] max-h-[400px] overflow-y-auto
                 bg-[var(--app-panel)] border border-app-border shadow-dialog">
                 <div className="px-3 py-2 border-b border-app-border bg-[var(--app-subtle)] space-y-1.5">
                   <div className="flex items-center justify-between">
@@ -462,25 +462,25 @@ export function TerminalPanel({
         {/* Search button (triggers terminal search bar) */}
         <button
           onClick={openSearch}
-          className={`shrink-0 px-2 h-[28px] text-app-text-muted hover:text-app-text transition-colors ${showSearch ? "text-app-accent" : ""}`}
+          className={`shrink-0 px-2 h-[32px] text-app-text-muted hover:text-app-text transition-colors ${showSearch ? "text-app-accent" : ""}`}
           title={`搜索终端输出 (${formatShortcut("mod+F")})`}
         >
-          <Search size={12} />
+          <Search size={14} />
         </button>
 
         {/* Theme selector */}
         <div className="relative shrink-0">
           <button
             onClick={() => setShowThemeMenu(!showThemeMenu)}
-            className={`px-2 h-[28px] text-app-text-muted hover:text-app-text transition-colors ${showThemeMenu ? "text-app-accent" : ""}`}
+            className={`px-2 h-[32px] text-app-text-muted hover:text-app-text transition-colors ${showThemeMenu ? "text-app-accent" : ""}`}
             title="终端配色"
           >
-            <Palette size={12} />
+            <Palette size={14} />
           </button>
           {showThemeMenu && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setShowThemeMenu(false)} />
-              <div className="absolute right-0 top-[28px] z-50 w-[200px] bg-[var(--app-panel)] border border-app-border shadow-dialog py-0.5">
+              <div className="absolute right-0 top-[32px] z-50 w-[200px] bg-[var(--app-panel)] border border-app-border shadow-dialog py-0.5">
                 {TERMINAL_THEMES.map((t) => (
                   <button
                     key={t.name}
@@ -529,11 +529,11 @@ export function TerminalPanel({
         <div className="flex items-center gap-1 px-2 shrink-0">
           {/* Font size */}
           <button onClick={() => onSetFontSize(fontSize - 1)}
-            className="px-1 h-[20px] text-2xs text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors font-mono"
+            className="px-1.5 h-[24px] text-xs text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors font-mono"
             title="缩小字体">A⁻</button>
-          <span className="text-2xs text-app-text-muted tabular-nums w-5 text-center">{fontSize}</span>
+          <span className="text-xs text-app-text-muted tabular-nums w-5 text-center">{fontSize}</span>
           <button onClick={() => onSetFontSize(fontSize + 1)}
-            className="px-1 h-[20px] text-2xs text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors font-mono"
+            className="px-1.5 h-[24px] text-xs text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors font-mono"
             title="放大字体">A⁺</button>
           {/* Pop-out */}
           <button
@@ -541,7 +541,7 @@ export function TerminalPanel({
             className="p-0.5 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
             title="弹出为独立窗口"
           >
-            <ExternalLink size={12} />
+            <ExternalLink size={14} />
           </button>
           {/* Maximize / Restore */}
           {onToggleMaximize && (
@@ -550,7 +550,7 @@ export function TerminalPanel({
               className="p-0.5 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
               title={maximizeTip}
             >
-              {maximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+              {maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
           )}
           {/* Work dir — right panel only */}
@@ -559,10 +559,10 @@ export function TerminalPanel({
               <input type="text" value={activeTab?.workDir || ""}
                 onChange={(e) => activeTabId && onSetWorkDir(activeTabId, e.target.value)}
                 placeholder="工作目录"
-                className="w-[160px] h-[20px] bg-[var(--app-input)] border border-app-border text-2xs font-mono text-app-text-dim px-1.5 py-0 focus:border-app-accent"
+                className="w-[160px] h-[24px] bg-[var(--app-input)] border border-app-border text-xs font-mono text-app-text-dim px-1.5 py-0 focus:border-app-accent"
                 spellCheck={false} />
               <button onClick={browseDir} className="p-0.5 text-app-text-muted hover:text-app-accent transition-colors" title="选择目录">
-                <FolderOpen size={11} />
+                <FolderOpen size={13} />
               </button>
             </>
           )}
@@ -577,7 +577,7 @@ export function TerminalPanel({
             className="p-0.5 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors ml-1"
             title="关闭面板"
           >
-            <X size={13} />
+            <X size={14} />
           </button>
         </div>
       </div>

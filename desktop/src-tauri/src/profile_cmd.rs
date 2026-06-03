@@ -68,16 +68,8 @@ struct ProfileConfig {
 
 // ── Config path ──────────────────────────────────────────────
 
-fn config_dir() -> PathBuf {
-    let base = ".claude-profiles";
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "~".into());
-    PathBuf::from(&home).join(base)
-}
-
 fn config_file() -> PathBuf {
-    config_dir().join("config.yaml")
+    crate::config_dir().join("config.yaml")
 }
 
 // ── File operations ─────────────────────────────────────────
@@ -94,7 +86,7 @@ fn read_config() -> Result<Config, String> {
 }
 
 fn write_config(config: &Config) -> Result<(), String> {
-    let dir = config_dir();
+    let dir = crate::config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
     let path = config_file();
     let backup = dir.join("config.yaml.bak");
@@ -597,7 +589,7 @@ if __name__ == "__main__":
 "##;
 
 pub fn ensure_shell_rc() -> Result<String, String> {
-    let dir = config_dir();
+    let dir = crate::config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();

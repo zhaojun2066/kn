@@ -4,7 +4,16 @@ mod pty;
 mod usage;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+/// Shared config directory — `~/.claude-profiles` on all platforms.
+pub(crate) fn config_dir() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
+    PathBuf::from(&home).join(".claude-profiles")
+}
 
 pub fn run() {
     let pty_state = Arc::new(Mutex::new(pty::PtyState {

@@ -6,7 +6,7 @@ fn config_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("CLAUDE_PROFILES_HOME") {
         return std::path::PathBuf::from(dir);
     }
-    home_dir().join(".claude-profiles")
+    crate::config_dir()
 }
 fn config_file() -> std::path::PathBuf { config_dir().join("config.yaml") }
 fn backup_file() -> std::path::PathBuf { config_dir().join("config.yaml.bak") }
