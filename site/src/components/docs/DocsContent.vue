@@ -11,7 +11,7 @@ const props = defineProps<{
 
 const GROUP_LABELS: Record<string, string> = {
   'getting-started': '入门指南',
-  'cli-reference': 'CLI 参考',
+  'cli-reference': 'CLI 使用',
   'desktop': 'Desktop 应用',
   'scenarios': '场景示例',
   'more': '更多',

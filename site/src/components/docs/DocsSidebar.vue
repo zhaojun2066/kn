@@ -115,7 +115,7 @@ const isActive = (pageId: string) => props.currentPage === pageId
 .sidebar {
   width: 260px;
   min-width: 260px;
-  background: #0d1117;
+  background: var(--clr-bg);
   border-right: 1px solid var(--clr-border);
   display: flex;
   flex-direction: column;
@@ -133,7 +133,7 @@ const isActive = (pageId: string) => props.currentPage === pageId
 .search-input {
   width: 100%;
   padding: 7px 12px;
-  background: #14191f;
+  background: var(--clr-bg-elevated);
   border: 1px solid var(--clr-border);
   border-radius: 6px;
   font-family: var(--font-body);
