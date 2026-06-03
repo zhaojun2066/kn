@@ -4,6 +4,7 @@ import {
   Sun, Moon, Monitor, Copy, HelpCircle, RefreshCw, RotateCw, Search, ChevronDown, Settings,
   PanelLeft, PanelBottom, PanelRight, Save, History, Circle, Info,
 } from "lucide-react";
+import { formatShortcut } from "../utils/shortcut";
 import { Button } from "./common/Button";
 import { useTheme, ThemeMode } from "../hooks/useTheme";
 
@@ -116,14 +117,14 @@ export function Toolbar({
         <button
           onClick={onToggleSidebar}
           className={`p-1 transition-colors duration-fast rounded ${sidebarVisible ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
-          title={sidebarVisible ? "隐藏侧边栏 (⌘B)" : "显示侧边栏 (⌘B)"}
+          title={`${sidebarVisible ? "隐藏侧边栏" : "显示侧边栏"} (${formatShortcut("mod+B")})`}
         >
           <PanelLeft size={14} />
         </button>
         <button
           onClick={onToggleTerminal}
           className={`p-1 transition-colors duration-fast rounded ${terminalVisible ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
-          title={terminalVisible ? "隐藏终端面板 (⌘J)" : "显示终端面板 (⌘J)"}
+          title={`${terminalVisible ? "隐藏终端面板" : "显示终端面板"} (${formatShortcut("mod+J")})`}
         >
           <PanelBottom size={14} />
         </button>
@@ -182,7 +183,7 @@ export function Toolbar({
         { label: "备份配置", icon: <Save size={13} />, onClick: onBackup, hint: "手动备份" },
         { label: "恢复配置", icon: <History size={13} />, onClick: onRestore, hint: backupExists ? "可用" : "无备份" },
         { label: "检查更新", icon: <RotateCw size={13} />, onClick: onCheckUpdate },
-        { label: "快捷键", icon: <HelpCircle size={13} />, onClick: onToggleWelcome, hint: "Cmd+K" },
+        { label: "快捷键", icon: <HelpCircle size={13} />, onClick: onToggleWelcome, hint: formatShortcut("mod+K") },
         { label: "关于", icon: <Info size={13} />, onClick: onAbout },
       ]}>
         <Settings size={13} />

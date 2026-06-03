@@ -7,6 +7,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu } from "./ContextMenu";
 import type { Terminal } from "@xterm/xterm";
 import type { SessionRecord } from "../hooks/useTerminal";
+import { formatShortcut } from "../utils/shortcut";
 import { shortenPath } from "../lib/path-utils";
 import { TERMINAL_THEMES, loadTerminalTheme, saveTerminalTheme, isThemeSync, setThemeSync } from "../lib/terminalThemes";
 
@@ -101,8 +102,7 @@ export function TerminalPanel({
 }: TerminalPanelProps) {
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const runningCount = tabs.filter((t) => t.ptyRunning).length;
-  const modKey = navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl";
-  const maximizeTip = `${maximized ? "还原" : "最大化"} (${modKey}⇧M)`;
+  const maximizeTip = `${maximized ? "还原" : "最大化"} (${formatShortcut("mod+⇧M")})`;
   const [showHistory, setShowHistory] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
@@ -463,7 +463,7 @@ export function TerminalPanel({
         <button
           onClick={openSearch}
           className={`shrink-0 px-2 h-[28px] text-app-text-muted hover:text-app-text transition-colors ${showSearch ? "text-app-accent" : ""}`}
-          title={`搜索终端输出 (${modKey}F)`}
+          title={`搜索终端输出 (${formatShortcut("mod+F")})`}
         >
           <Search size={12} />
         </button>

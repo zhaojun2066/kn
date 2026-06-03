@@ -11,6 +11,7 @@ import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { AboutDialog } from "./components/AboutDialog";
 import { ImportPreview } from "./components/ImportPreview";
 import { ScanPreview, ScanProfile } from "./components/ScanPreview";
+import { formatShortcut } from "./utils/shortcut";
 import { useProfiles } from "./hooks/useProfiles";
 import { useTerminal } from "./hooks/useTerminal";
 import { Command } from "@tauri-apps/plugin-shell";
@@ -180,7 +181,7 @@ export function App() {
           }
         } else {
           // No terminal panel focused — show guidance toast
-          addToast("success", "💡 请先点击终端面板，再使用 ⌘⇧M 最大化");
+          addToast("success", `💡 请先点击终端面板，再使用 ${formatShortcut("mod+⇧M")} 最大化`);
         }
       }
     };

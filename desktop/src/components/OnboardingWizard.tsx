@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { formatShortcut } from "../utils/shortcut";
 import { Terminal, Check, X as XIcon, AlertTriangle, ChevronRight, ChevronLeft, Search, Plus, Play } from "lucide-react";
 import { Button } from "./common/Button";
 
@@ -247,7 +248,7 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
                   <span className="text-app-accent font-bold text-xs w-5 text-right shrink-0 mt-0.5">1</span>
                   <div>
                     <div className="text-app-text">从侧边栏选择一个 profile</div>
-                    <div className="text-xs text-app-text-muted mt-0.5">或按 <kbd className="text-app-amber">⌘N</kbd> 新建</div>
+                    <div className="text-xs text-app-text-muted mt-0.5">或按 <kbd className="text-app-amber">{formatShortcut("mod+N")}</kbd> 新建</div>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
@@ -276,10 +277,10 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
               </div>
               <div className="px-4 py-2 space-y-1 font-mono">
                 {[
-                  [navigator.userAgent.includes("Mac") ? "⌘N" : "Ctrl+N", "新建 Profile"],
-                  [navigator.userAgent.includes("Mac") ? "⌘B" : "Ctrl+B", "切换侧边栏"],
+                  [formatShortcut("mod+N"), "新建 Profile"],
+                  [formatShortcut("mod+B"), "切换侧边栏"],
                   ["Ctrl+`", "打开终端面板"],
-                  [navigator.userAgent.includes("Mac") ? "⌘K" : "Ctrl+K", "查看全部快捷键"],
+                  [formatShortcut("mod+K"), "查看全部快捷键"],
                   ["Esc", "关闭弹窗 / 取消选中"],
                 ].map(([key, desc]) => (
                   <div key={desc} className="flex items-center justify-between text-xs">

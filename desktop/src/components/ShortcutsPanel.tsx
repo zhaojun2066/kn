@@ -1,9 +1,9 @@
 import React from "react";
 import { X, Keyboard, Monitor, Terminal } from "lucide-react";
+import { modKey, isMac } from "../utils/shortcut";
 
 interface ShortcutItem { keys: string[]; desc: string; }
 
-function modKey(): string { return navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl"; }
 const mod = modKey();
 
 const appShortcuts: ShortcutItem[] = [
@@ -63,7 +63,7 @@ export function ShortcutsPanel({ onClose }: { onClose: () => void }) {
           <div className="flex items-center gap-2">
             <Keyboard size={15} className="text-app-accent" />
             <h3 className="font-semibold text-sm font-mono">快捷键</h3>
-            <span className="text-2xs text-app-text-muted font-mono">— {navigator.userAgent.includes("Mac") ? "macOS" : "Windows/Linux"}</span>
+            <span className="text-2xs text-app-text-muted font-mono">— {isMac() ? "macOS" : "Windows/Linux"}</span>
           </div>
           <button onClick={onClose} className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors">
             <X size={14} />

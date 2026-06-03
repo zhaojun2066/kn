@@ -5,6 +5,7 @@ import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock,
 import type { ProfileDetail } from "../lib/types";
 import type { SessionRecord } from "../hooks/useTerminal";
 import { shortenPath } from "../lib/path-utils";
+import { formatShortcut } from "../utils/shortcut";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { OnboardingWizard } from "./OnboardingWizard";
 
@@ -106,7 +107,7 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
           </div>
           <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
             <div className="text-app-text-muted">快速开始：</div>
-            <div>1. 按 <kbd className="text-app-amber">⌘N</kbd> 创建第一个 profile</div>
+            <div>1. 按 <kbd className="text-app-amber">{formatShortcut("mod+N")}</kbd> 创建第一个 profile</div>
             <div>2. 填入 API 密钥和地址</div>
             <div>3. 点击运行，选择项目目录</div>
           </div>
@@ -135,8 +136,8 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
             </div>
             <div className="px-3 py-1.5 space-y-0.5 text-2xs font-mono">
               {[
-                ["⌘N", "新建 Profile"], ["Esc", "关闭弹窗 / 取消选中"], ["⌘F", "搜索"],
-                ["Ctrl+`", "开关终端"], ["Ctrl+K", "快捷键帮助"], ["↑↓", "终端历史命令"],
+                [formatShortcut("mod+N"), "新建 Profile"], ["Esc", "关闭弹窗 / 取消选中"], [formatShortcut("mod+F"), "搜索"],
+                ["Ctrl+`", "开关终端"], [formatShortcut("mod+K"), "快捷键帮助"], ["↑↓", "终端历史命令"],
               ].map(([key, desc]) => (
                 <div key={key} className="flex justify-between">
                   <span className="text-app-text-muted">{desc}</span>
@@ -159,7 +160,7 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
             <span className="animate-cursor-blink">_</span>
           </div>
           <div className="text-sm text-app-text-muted mt-2">
-            从侧边栏选择 profile，或按 <kbd className="text-app-amber">⌘N</kbd> 新建
+            从侧边栏选择 profile，或按 <kbd className="text-app-amber">{formatShortcut("mod+N")}</kbd> 新建
           </div>
         </div>
       </div>

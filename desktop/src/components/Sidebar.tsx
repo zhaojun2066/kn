@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SearchInput } from "./common/SearchInput";
 import { CLIIcon } from "./common/CLIIcon";
+import { formatShortcut } from "../utils/shortcut";
 import { ContextMenu } from "./ContextMenu";
 import { Circle, Hash, ArrowUpDown, Copy, Pencil, Trash2, Star, Tag, ChevronDown, Download, CheckSquare, Square } from "lucide-react";
 import type { ProfileSummary } from "../lib/types";
@@ -143,7 +144,7 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
             <Hash size={22} className="text-app-text-muted opacity-25" />
             <div className="text-xs text-app-text-dim">暂无 profile</div>
             <div className="text-2xs text-app-text-muted leading-relaxed">
-              按 <kbd className="text-app-amber">⌘N</kbd> 新建
+              按 <kbd className="text-app-amber">{formatShortcut("mod+N")}</kbd> 新建
             </div>
           </div>
         ) : (
