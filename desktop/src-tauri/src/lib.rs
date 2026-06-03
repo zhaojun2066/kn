@@ -1,6 +1,7 @@
 mod commands;
 mod profile_cmd;
 mod pty;
+mod usage;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -52,6 +53,12 @@ pub fn run() {
             pty::write_pty,
             pty::resize_pty,
             pty::kill_pty,
+            usage::get_usage,
+            usage::get_daily_usage,
+            usage::get_pricing,
+            usage::set_pricing,
+            usage::get_usage_tracking_enabled,
+            usage::set_usage_tracking_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
