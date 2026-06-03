@@ -31,7 +31,7 @@ Commands:
   unset  <name> <K>       Remove env var from profile
   default [name]          Get/set default profile
 
-  init              Bootstrap from ~/.claude/settings.json
+  init              Bootstrap from existing config (Claude Code + Codex)
 """
 
 # ── Query commands ────────────────────────────────────────────
@@ -108,41 +108,132 @@ def cmd_names(config):
 
 
 def cmd_init(config):
-    """Bootstrap from existing ~/.claude/settings.json."""
-    settings_file = os.path.expanduser("~/.claude/settings.json")
-    if not os.path.exists(settings_file):
-        print("No existing ~/.claude/settings.json found. Creating empty config.")
+    """Bootstrap from existing config files (Claude Code + Codex)."""
+    imported_any = False
+
+    # 1. Import from ~/.claude/settings.json
+    if _import_claude_settings(config):
+        imported_any = True
+
+    # 2. Import from ~/.codex/config.toml
+    if _import_codex_config(config):
+        imported_any = True
+
+    if not imported_any:
+        print("No existing config found. Creating empty config.")
         if not config.get("profiles"):
             config["profiles"] = {}
         cfg.write_config(config)
-        return
+
+    print(f"Config saved to {cfg.CONFIG_FILE}")
+
+
+def _import_claude_settings(config):
+    """Import profile from ~/.claude/settings.json. Returns True on success."""
+    settings_file = os.path.expanduser("~/.claude/settings.json")
+    if not os.path.exists(settings_file):
+        return False
 
     try:
         with open(settings_file, "r") as f:
             settings = json.load(f)
     except (json.JSONDecodeError, PermissionError, OSError) as e:
-        print(f"Error reading {settings_file}: {e}", file=sys.stderr)
-        sys.exit(1)
+        print(f"Warning: error reading {settings_file}: {e}", file=sys.stderr)
+        return False
 
     env = settings.get("env", {})
     if not env:
-        print("No env vars found in settings.json. Creating empty config.")
-        if not config.get("profiles"):
-            config["profiles"] = {}
-        cfg.write_config(config)
-        return
+        return False
 
     base_url = env.get("ANTHROPIC_BASE_URL", "")
     name = "deepseek" if "deepseek" in base_url else "imported"
 
-    config["profiles"][name] = {
-        "desc": f"Imported from ~/.claude/settings.json",
+    config.setdefault("profiles", {})[name] = {
+        "desc": "Imported from ~/.claude/settings.json",
         "env": dict(env),
     }
-    config["default"] = name
+    if not config.get("default"):
+        config["default"] = name
     cfg.write_config(config)
     print(f"Imported {len(env)} env vars from settings.json → profile '{name}'")
-    print(f"Config saved to {cfg.CONFIG_FILE}")
+    return True
+
+
+def _import_codex_config(config):
+    """Import profile from ~/.codex/config.toml. Returns True on success."""
+    codex_file = os.path.expanduser("~/.codex/config.toml")
+    if not os.path.exists(codex_file):
+        return False
+
+    # Parse TOML (requires Python 3.11+)
+    try:
+        import tomllib
+        with open(codex_file, "rb") as f:
+            codex = tomllib.load(f)
+    except ImportError:
+        print("Warning: Python 3.11+ required to read Codex config.toml", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"Warning: error reading {codex_file}: {e}", file=sys.stderr)
+        return False
+
+    env = {}
+
+    # Extract shell_environment_policy.set (env vars injected by Codex)
+    shell_policy = codex.get("shell_environment_policy", {})
+    shell_env = shell_policy.get("set", {})
+    for k, v in shell_env.items():
+        env[str(k)] = str(v)
+
+    # Extract custom model provider — maps to OpenAI-compatible settings
+    providers = codex.get("model_providers", {})
+    if "custom" in providers:
+        custom = providers["custom"]
+        provider_name = custom.get("name", "")
+        base_url = custom.get("base_url", "")
+
+        if provider_name and "ANTHROPIC_BASE_URL" not in env and not _looks_like_anthropic_url(base_url):
+            # Use custom provider base_url as Anthropic endpoint
+            pass
+
+        if base_url and "OPENAI_BASE_URL" not in env:
+            # Strip wire_api path suffix if present (/responses, /chat, etc.)
+            clean_url = re.sub(r'/(responses|chat|completions)/?$', '', base_url.rstrip('/'))
+            env["OPENAI_BASE_URL"] = clean_url
+    else:
+        provider_name = ""
+
+    # Determine profile name
+    if provider_name:
+        name = re.sub(r'[^a-z0-9-]', '-', provider_name.lower()).strip('-')
+    else:
+        name = "codex-imported"
+
+    # Avoid name collisions with existing profiles
+    if name in config.get("profiles", {}):
+        base = name
+        i = 2
+        while f"{base}-{i}" in config.get("profiles", {}):
+            i += 1
+        name = f"{base}-{i}"
+
+    if not env:
+        return False
+
+    config.setdefault("profiles", {})[name] = {
+        "desc": "Imported from ~/.codex/config.toml",
+        "env": env,
+    }
+    if not config.get("default"):
+        config["default"] = name
+    cfg.write_config(config)
+    print(f"Imported {len(env)} env vars from config.toml → profile '{name}'")
+    return True
+
+
+def _looks_like_anthropic_url(url):
+    """Heuristic: does this URL look like an Anthropic API endpoint?"""
+    return bool(re.search(r'anthropic|claude', url, re.IGNORECASE))
 
 
 # ── Mutation commands ─────────────────────────────────────────
@@ -384,14 +475,9 @@ def main():
     elif cmd == "names":
         cmd_names(config)
     elif cmd == "init":
-        try:
-            cmd_init(config)
-            if json_mode:
-                _json_ok(action="init")
-        except SystemExit:
-            if json_mode:
-                _json_err("Failed to initialize from settings.json")
-            raise
+        cmd_init(config)
+        if json_mode:
+            _json_ok(action="init")
     # Mutation commands
     elif cmd == "add":
         interactive = "-i" in rest or "--interactive" in rest
