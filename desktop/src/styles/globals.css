@@ -146,11 +146,15 @@
   box-sizing: border-box;
 }
 
-html, body, #root {
+/* html font-size = rem 基准，由 useFontScale() 动态调整 */
+html {
+  font-size: 13px;
+}
+
+body, #root {
   background-color: var(--app-bg);
   color: var(--app-text);
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
-  font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
