@@ -31,6 +31,7 @@ interface ToolbarProps {
   rightTerminalVisible: boolean;
   onToggleRightTerminal: () => void;
   onAbout: () => void;
+  onSettings: () => void;
 }
 
 const themeIcons: Record<ThemeMode, React.ReactNode> = {
@@ -84,7 +85,7 @@ export function Toolbar({
   onInit, onToggleTerminal, onToggleWelcome, onRefresh, onImport,
   onCopyProfile, hasSelection, onCheckUpdate, onBackup, onRestore, backupExists, envCheck,
   sidebarVisible, onToggleSidebar, terminalVisible, rightTerminalVisible, onToggleRightTerminal,
-  onAbout,
+  onAbout, onSettings,
 }: ToolbarProps) {
   const { mode, setTheme } = useTheme();
   const cycleTheme = () => setTheme(themeNext[mode]);
@@ -184,6 +185,7 @@ export function Toolbar({
         { label: "恢复配置", icon: <History size={13} />, onClick: onRestore, hint: backupExists ? "可用" : "无备份" },
         { label: "检查更新", icon: <RotateCw size={13} />, onClick: onCheckUpdate },
         { label: "快捷键", icon: <HelpCircle size={13} />, onClick: onToggleWelcome, hint: formatShortcut("mod+K") },
+        { label: "设置", icon: <Settings size={13} />, onClick: onSettings },
         { label: "关于", icon: <Info size={13} />, onClick: onAbout },
       ]}>
         <Settings size={13} />

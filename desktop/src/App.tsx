@@ -9,9 +9,11 @@ import { NameDialog } from "./components/NameDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { AboutDialog } from "./components/AboutDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { ImportPreview } from "./components/ImportPreview";
 import { ScanPreview, ScanProfile } from "./components/ScanPreview";
 import { formatShortcut } from "./utils/shortcut";
+import { useFontScale } from "./hooks/useFontScale";
 import { useProfiles } from "./hooks/useProfiles";
 import { useTerminal } from "./hooks/useTerminal";
 import { Command } from "@tauri-apps/plugin-shell";
@@ -28,6 +30,7 @@ export function App() {
   const ctx = useProfiles();
   const rightTerminal = useTerminal("right");     // profile「运行」→ 右侧面板
   const bottomTerminal = useTerminal("bottom");   // 工具栏按钮 → 底部面板 (VS Code 风格)
+  useFontScale();                                 // 初始化全局 UI 字体缩放
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
@@ -47,6 +50,7 @@ export function App() {
   const [backupExists, setBackupExists] = useState(false);
   const [envCheck, setEnvCheck] = useState<EnvCheckResult>(null);
   const [showAbout, setShowAbout] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const batchDeleteNamesRef = useRef<string[]>([]);
 
@@ -545,6 +549,7 @@ export function App() {
         backupExists={backupExists}
         envCheck={envCheck}
         onAbout={() => setShowAbout(true)}
+        onSettings={() => setShowSettings(true)}
       />
 
       {/* Main content — VS Code-style: Sidebar | (MainPanel + BottomTerminal) | RightTerminal */}
@@ -736,6 +741,8 @@ export function App() {
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
 
       <AboutDialog open={showAbout} onClose={() => setShowAbout(false)} />
+
+      <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
 
       <ImportPreview
         open={!!importData}

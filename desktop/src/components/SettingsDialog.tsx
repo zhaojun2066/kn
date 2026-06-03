@@ -1,0 +1,115 @@
+import React from "react";
+import { Settings, X, RotateCcw } from "lucide-react";
+import { useFontScale, MIN_SCALE, MAX_SCALE } from "../hooks/useFontScale";
+
+interface SettingsDialogProps {
+  open: boolean;
+  onClose: () => void;
+}
+
+export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
+  const { scale, setScale } = useFontScale();
+
+  if (!open) return null;
+
+  const pct = Math.round(scale * 100);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="bg-app-panel border border-app-border shadow-dialog w-[420px] select-none animate-[scaleIn_150ms_ease-out]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
+          <div className="flex items-center gap-2">
+            <Settings size={15} className="text-app-accent" />
+            <span className="text-sm font-mono text-app-text font-semibold">设置</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-0.5 text-app-text-dim hover:text-app-text transition-colors"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-4 py-5 space-y-5">
+          {/* Font scale section */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-sm text-app-text font-mono">UI 字体大小</label>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-app-accent font-mono tabular-nums w-10 text-right">
+                  {pct}%
+                </span>
+                {scale !== 1.0 && (
+                  <button
+                    onClick={() => setScale(1.0)}
+                    className="p-0.5 text-app-text-dim hover:text-app-accent transition-colors"
+                    title="重置为 100%"
+                  >
+                    <RotateCcw size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Slider */}
+            <div className="space-y-1">
+              <input
+                type="range"
+                min={Math.round(MIN_SCALE * 100)}
+                max={Math.round(MAX_SCALE * 100)}
+                step="1"
+                value={pct}
+                onChange={(e) => setScale(parseInt(e.target.value) / 100)}
+                className="w-full h-1.5 bg-[var(--app-input)] rounded-full appearance-none cursor-pointer
+                  [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4
+                  [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-app-accent
+                  [&::-webkit-slider-thumb]:shadow-[0_0_6px_var(--app-glow)] [&::-webkit-slider-thumb]:cursor-pointer
+                  [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-110"
+              />
+              <div className="flex justify-between text-2xs text-app-text-muted font-mono">
+                <span>{Math.round(MIN_SCALE * 100)}%</span>
+                <span>{Math.round(MAX_SCALE * 100)}%</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Preview */}
+          <div className="space-y-2">
+            <span className="text-2xs text-app-text-muted uppercase tracking-wider font-mono">预览</span>
+            <div className="border border-app-border bg-[var(--app-cmd-bg)] px-4 py-3 space-y-2 rounded">
+              <p className="text-lg text-app-text font-mono">这是标题文字</p>
+              <p className="text-base text-app-text-dim font-mono">这是正文内容，用于预览字体大小变化效果。</p>
+              <p className="text-xs text-app-text-muted font-mono">这是辅助说明文字 — 拖动上方滑块实时调整。</p>
+            </div>
+          </div>
+
+          {/* Terminal note */}
+          <div className="flex items-start gap-2 text-2xs text-app-text-muted font-mono bg-[var(--app-subtle)] border border-app-border px-3 py-2">
+            <span>💡</span>
+            <span>终端内字体大小请在终端面板中使用 A⁻ / A⁺ 按钮独立调整，不受此处设置影响。</span>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-4 py-2.5 border-t border-app-border bg-[var(--app-subtle)] flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-1 text-xs font-mono text-app-text-dim hover:text-app-text
+              border border-app-border bg-[var(--app-input)] hover:bg-[var(--app-hover)]
+              transition-colors"
+          >
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
