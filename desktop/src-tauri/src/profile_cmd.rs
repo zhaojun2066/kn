@@ -166,6 +166,11 @@ pub fn add_profile_cmd(name: &str, desc: Option<&str>) -> Result<MutationResult,
     {
         return Ok(MutationResult { ok: false, error: Some("profile 名称只能包含小写字母、数字和连字符，不能以连字符开头或结尾".into()), action: None, profile: None, key: None });
     }
+    // Reserved keywords — conflicts with shell wrapper tool routing
+    const RESERVED: &[&str] = &["claude", "codex", "gemini", "qoderclicn", "profile", "ai", "help"];
+    if RESERVED.contains(&name) {
+        return Ok(MutationResult { ok: false, error: Some(format!("'{}' 是系统保留关键字，不能用作 Profile 名称", name)), action: None, profile: None, key: None });
+    }
     let mut config = read_config()?;
     if config.profiles.contains_key(name) {
         return Ok(MutationResult { ok: false, error: Some(format!("profile '{}' 已存在", name)), action: None, profile: None, key: None });
@@ -283,7 +288,13 @@ _profile_env() {
     local name="$1"
     [ ! -f "$CONFIG" ] && return 1
     sed -n "/^  ${name}:/,/^  [a-z]/p" "$CONFIG" | \
-        sed -n 's/^      \([A-Za-z_][A-Za-z0-9_]*\): *\(.*\)/export \1=\2/p'
+        awk -F': ' '/^      [A-Za-z_][A-Za-z0-9_]*:/ {
+            k=$1; sub(/^      /,"",k)
+            v=substr($0,length(k)+9)
+            if (v ~ /^".*"$/) v=substr(v,2,length(v)-2)
+            else if (v ~ /^'"'"'.*'"'"'$/) v=substr(v,2,length(v)-2)
+            print "export " k "='"'"'" v "'"'"'"
+        }'
 }
 
 _profile_list() {
@@ -316,6 +327,8 @@ ai() {
         echo "  Run with profile:"
         echo "    ai claude <profile>       Run Claude Code with profile env"
         echo "    ai codex <profile>        Run Codex CLI with profile env"
+        echo "    ai gemini <profile>       Run Gemini CLI with profile env"
+        echo "    ai qoderclicn <profile>   Run Qoder with profile env"
         echo ""
         echo "  Manage profiles:"
         echo "    ai profile list           List all profiles"
@@ -324,15 +337,58 @@ ai() {
         return
     fi
     case "$cmd" in
-        claude|codex)
+        claude|codex|gemini|qoderclicn)
             local tool="$1"; shift
             if [ $# -gt 0 ]; then
                 local env_output=$(_profile_env "$1")
                 if [ -n "$env_output" ]; then
                     local profile_name="$1"; shift
                     echo "-> Using profile: $profile_name"
-                    (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
-                    return
+                    case "$tool" in
+                        claude)
+                            # Claude Code v2.0.1+ bug: settings.json env overrides shell env.
+                            # Generate temp settings file from profile, pass via --settings flag.
+                            if command -v python3 >/dev/null 2>&1; then
+                                local tmp_settings
+                                tmp_settings=$(mktemp "${TMPDIR:-/tmp}/kn-claude.XXXXXX")
+                                echo "$env_output" | python3 -c "
+import sys, json
+env = {}
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith('export '):
+        continue
+    rest = line[7:]
+    eq = rest.index('=')
+    key = rest[:eq]
+    val = rest[eq+1:]
+    # Strip matching surrounding quotes if present
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in ('\"', \"'\"):
+        val = val[1:-1]
+    env[key] = val
+print(json.dumps({'env': env}))
+" > "$tmp_settings"
+                                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" --settings "$tmp_settings" "$@")
+                                local rc=$?
+                                rm -f "$tmp_settings"
+                                return $rc
+                            else
+                                # python3 not available — fall back to env vars only
+                                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
+                                return
+                            fi
+                            ;;
+                        codex)
+                            # OPENAI_API_KEY env var takes priority over auth.json with
+                            # preferred_auth_method="apikey". Use --config to force it.
+                            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" --config preferred_auth_method="apikey" "$@")
+                            return
+                            ;;
+                        *)
+                            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
+                            return
+                            ;;
+                    esac
                 fi
             fi
             command "$tool" "$@"
@@ -373,13 +429,15 @@ ai() {
             echo "AI Profile Manager"
             echo "  ai claude <profile>       Run Claude Code with profile"
             echo "  ai codex <profile>        Run Codex CLI with profile"
+            echo "  ai gemini <profile>       Run Gemini CLI with profile"
+            echo "  ai qoderclicn <profile>   Run Qoder with profile"
             echo "  ai profile list           List all profiles"
             echo "  ai profile env <name>     Show env vars for profile"
             echo "  ai profile switch <name>  Set default profile"
             ;;
         *)
             echo "Unknown command: $cmd" >&2
-            echo "Supported: claude, codex, profile" >&2
+            echo "Supported: claude, codex, gemini, qoderclicn, profile" >&2
             return 1
             ;;
     esac
@@ -402,7 +460,11 @@ function _profile_env {
     Get-Content $cfg | ForEach-Object {
         if ($_ -match "^  ${escaped}:") { $inProfile = $true; return }
         if ($inProfile -and $_ -match "^    env:") { $inEnv = $true; return }
-        if ($inEnv -and $_ -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*"?([^"]*)"?\s*$') {
+        if ($inEnv -and $_ -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*"(.*)"\s*$') {
+            $env_vars[$Matches[1]] = $Matches[2]
+        } elseif ($inEnv -and $_ -match "^      ([A-Za-z_][A-Za-z0-9_]*):\s*'(.*)'\s*$") {
+            $env_vars[$Matches[1]] = $Matches[2]
+        } elseif ($inEnv -and $_ -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*([^\s].*[^\s]|[^\s])\s*$') {
             $env_vars[$Matches[1]] = $Matches[2]
         }
         if ($inEnv -and $_ -match "^  [a-z]") { $inProfile = $false; $inEnv = $false }
@@ -440,6 +502,8 @@ function ai {
         Write-Host "  Run with profile:"
         Write-Host "    ai claude <profile>       Run Claude Code with profile env"
         Write-Host "    ai codex <profile>        Run Codex CLI with profile env"
+        Write-Host "    ai gemini <profile>       Run Gemini CLI with profile env"
+        Write-Host "    ai qoderclicn <profile>   Run Qoder with profile env"
         Write-Host ""
         Write-Host "  Manage profiles:"
         Write-Host "    ai profile list           List all profiles"
@@ -450,6 +514,53 @@ function ai {
     switch ($cmd) {
         'claude' {
             $tool = 'claude'
+            $rest = @($args | Select-Object -Skip 1)
+            if ($rest.Count -gt 0) {
+                $envs = _profile_env $rest[0]
+                if ($envs -and $envs.Count -gt 0) {
+                    $profileName = $rest[0]
+                    $toolArgs = @($rest | Select-Object -Skip 1)
+                    Write-Host "-> Using profile: $profileName"
+                    # Claude Code v2.0.1+ bug: settings.json env overrides shell env.
+                    # Generate temp settings file via --settings (CLI flag > settings.json).
+                    $tmpSettings = New-TemporaryFile
+                    @{ env = $envs } | ConvertTo-Json -Compress | Set-Content $tmpSettings
+                    foreach ($key in $envs.Keys) {
+                        Set-Item -Path "env:$key" -Value $envs[$key]
+                    }
+                    $env:KN_PROFILE = $profileName
+                    $env:KN_CLI_TOOL = $tool
+                    & $tool --settings $tmpSettings @toolArgs
+                    Remove-Item $tmpSettings -Force -ErrorAction SilentlyContinue
+                    return
+                }
+            }
+            & $tool @rest
+        }
+        'codex' {
+            $tool = 'codex'
+            $rest = @($args | Select-Object -Skip 1)
+            if ($rest.Count -gt 0) {
+                $envs = _profile_env $rest[0]
+                if ($envs -and $envs.Count -gt 0) {
+                    $profileName = $rest[0]
+                    $toolArgs = @($rest | Select-Object -Skip 1)
+                    Write-Host "-> Using profile: $profileName"
+                    # OPENAI_API_KEY env var takes priority over auth.json with
+                    # preferred_auth_method="apikey". Use --config to force it.
+                    foreach ($key in $envs.Keys) {
+                        Set-Item -Path "env:$key" -Value $envs[$key]
+                    }
+                    $env:KN_PROFILE = $profileName
+                    $env:KN_CLI_TOOL = $tool
+                    & $tool --config preferred_auth_method="apikey" @toolArgs
+                    return
+                }
+            }
+            & $tool @rest
+        }
+        'gemini' {
+            $tool = 'gemini'
             $rest = @($args | Select-Object -Skip 1)
             if ($rest.Count -gt 0) {
                 $envs = _profile_env $rest[0]
@@ -468,8 +579,8 @@ function ai {
             }
             & $tool @rest
         }
-        'codex' {
-            $tool = 'codex'
+        'qoderclicn' {
+            $tool = 'qoderclicn'
             $rest = @($args | Select-Object -Skip 1)
             if ($rest.Count -gt 0) {
                 $envs = _profile_env $rest[0]
@@ -502,20 +613,23 @@ function ai {
             Write-Host "AI Profile Manager"
             Write-Host "  ai claude <profile>       Run Claude Code with profile"
             Write-Host "  ai codex <profile>        Run Codex CLI with profile"
+            Write-Host "  ai gemini <profile>       Run Gemini CLI with profile"
+            Write-Host "  ai qoderclicn <profile>   Run Qoder with profile"
             Write-Host "  ai profile list           List all profiles"
             Write-Host "  ai profile env <name>     Show env vars for profile"
         }
         default {
             Write-Host "Unknown command: $cmd"
-            Write-Host "Supported: claude, codex, profile"
+            Write-Host "Supported: claude, codex, gemini, qoderclicn, profile"
         }
     }
 }
 "#;
 
 	const HOOK_RECORDER: &str = r##"#!/usr/bin/env python3
-"""Token usage recorder — called by Claude Code / Codex Stop hooks.
+"""Token usage recorder — called by Stop/SessionEnd hooks.
 Reads structured JSON from stdin, extracts token usage, appends to usage.jsonl.
+Supports Claude Code, Codex, Gemini CLI, Qoder CLI transcripts.
 """
 
 import sys, json, os
@@ -574,7 +688,7 @@ def extract(data):
             "tokens_in": int(u.get("input_tokens", u.get("input", 0))),
             "tokens_out": int(u.get("output_tokens", u.get("output", 0))),
         }
-    # Claude Code Stop hook v2: no usage inline, read transcript file
+    # Gemini / Qoder / Claude Code v2: no usage inline, read transcript file
     if "transcript_path" in data:
         return extract_from_transcript(data["transcript_path"])
     # Generic fallback: top-level tokens_in / tokens_out
@@ -588,28 +702,80 @@ def extract(data):
 
 
 def extract_from_transcript(path):
-    """Read transcript JSONL, sum usage from all assistant messages."""
+    """Read transcript, sum usage from all turns.
+    Handles Claude Code/Codex (JSONL), Gemini (ConversationRecord JSON),
+    Qoder (session JSON / JSONL transcript).
+    """
     total_in = 0
     total_out = 0
     model = ""
+
     try:
         with open(path, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                msg = entry.get("message", {})
-                if msg.get("role") != "assistant":
-                    continue
-                usage = msg.get("usage")
-                if usage:
-                    total_in += int(usage.get("input_tokens", 0))
-                    total_out += int(usage.get("output_tokens", 0))
-                    if not model:
-                        model = msg.get("model", "")
+            raw = f.read()
     except OSError:
         return None
+
+    # ── Single JSON: Gemini ConversationRecord / Qoder session.json ──
+    try:
+        root = json.loads(raw)
+        if isinstance(root, dict):
+            # Gemini: turns[] with usageMetadata.promptTokenCount / candidatesTokenCount
+            for turn in root.get("turns", root.get("messages", [])):
+                um = turn.get("usageMetadata", {})
+                if um:
+                    total_in += int(um.get("promptTokenCount", 0))
+                    total_out += int(um.get("candidatesTokenCount", 0))
+                    if not model:
+                        model = turn.get("model", "")
+            # Qoder session.json: top-level prompt_tokens / completion_tokens
+            if total_in == 0 and total_out == 0:
+                total_in = int(root.get("prompt_tokens", 0))
+                total_out = int(root.get("completion_tokens", 0))
+                if not model:
+                    model = root.get("model", "")
+            if total_in > 0 or total_out > 0:
+                return {"model": str(model), "tokens_in": total_in, "tokens_out": total_out}
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # ── JSONL: Claude Code / Codex / Qoder transcript, one JSON per line ──
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        # Claude Code / Codex: message.role == "assistant" with usage
+        msg = entry.get("message", {})
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            u = msg.get("usage")
+            if u:
+                total_in += _in(u)
+                total_out += _out(u)
+                if not model:
+                    model = msg.get("model", "")
+            continue
+
+        # Qoder / generic: usage at entry level
+        u = entry.get("usage")
+        if isinstance(u, dict):
+            total_in += _in(u)
+            total_out += _out(u)
+            if not model:
+                model = entry.get("model", u.get("model", ""))
+            continue
+
+        # Gemini transcript line: usageMetadata
+        um = entry.get("usageMetadata")
+        if isinstance(um, dict):
+            total_in += int(um.get("promptTokenCount", 0))
+            total_out += int(um.get("candidatesTokenCount", 0))
+            if not model:
+                model = entry.get("model", "")
 
     if total_in == 0 and total_out == 0:
         return None
@@ -619,6 +785,18 @@ def extract_from_transcript(path):
         "tokens_in": total_in,
         "tokens_out": total_out,
     }
+
+
+def _in(u):
+    """Extract input tokens from a usage dict (multiple field name fallbacks)."""
+    return int(u.get("input_tokens", u.get("prompt_tokens",
+           u.get("input", u.get("promptTokenCount", 0)))))
+
+
+def _out(u):
+    """Extract output tokens from a usage dict (multiple field name fallbacks)."""
+    return int(u.get("output_tokens", u.get("completion_tokens",
+           u.get("output", u.get("candidatesTokenCount", 0)))))
 
 
 if __name__ == "__main__":
@@ -669,7 +847,8 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     fs::write(hooks_dir.join("record-usage.py"), HOOK_RECORDER).ok();
 
     // ── Unix: add source line to ~/.zshrc (idempotent) ──
-    let zshrc = PathBuf::from(&home).join(".zshrc");
+    if !cfg!(target_os = "windows") {
+        let zshrc = PathBuf::from(&home).join(".zshrc");
     let source_line = format!("source \"{}/shell-rc\"", dir.display());
     let content = if zshrc.exists() { fs::read_to_string(&zshrc).unwrap_or_default() } else { String::new() };
     let marker = "# AI Profile Manager";
@@ -697,16 +876,38 @@ pub fn ensure_shell_rc() -> Result<String, String> {
             fs::write(&bashrc, new_bash).ok();
         }
     }
+    } // !windows: end Unix shell RC setup
 
     // ── Windows only: PowerShell profile (PS5 + PS7) ──
     if cfg!(target_os = "windows") {
         let dir_str = dir.display().to_string().replace('\\', "/");
         let dot_line = format!(". \"{}/shell-rc.ps1\"", dir_str);
 
-        // PowerShell 7 profile: %HOME%\Documents\PowerShell\Microsoft.PowerShell_profile.ps1
-        let ps7_profile = PathBuf::from(&home).join("Documents").join("PowerShell").join("Microsoft.PowerShell_profile.ps1");
-        // PowerShell 5.1 profile: %HOME%\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1
-        let ps5_profile = PathBuf::from(&home).join("Documents").join("WindowsPowerShell").join("Microsoft.PowerShell_profile.ps1");
+        // Resolve Documents folder via Windows API to handle redirection
+        // (OneDrive, Group Policy, custom locations). Fall back to hardcoded paths.
+        let docs_dir = {
+            let api_result = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", "[Environment]::GetFolderPath('MyDocuments')"])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() { None } else { Some(PathBuf::from(s)) }
+                });
+            api_result.unwrap_or_else(|| {
+                let default_docs = PathBuf::from(&home).join("Documents");
+                if default_docs.exists() {
+                    default_docs
+                } else {
+                    let onedrive_docs = PathBuf::from(&home).join("OneDrive").join("Documents");
+                    if onedrive_docs.exists() { onedrive_docs } else { default_docs }
+                }
+            })
+        };
+        // PowerShell 7 profile
+        let ps7_profile = docs_dir.join("PowerShell").join("Microsoft.PowerShell_profile.ps1");
+        // PowerShell 5.1 profile
+        let ps5_profile = docs_dir.join("WindowsPowerShell").join("Microsoft.PowerShell_profile.ps1");
 
         for ps_profile in &[ps7_profile, ps5_profile] {
             if let Some(parent) = ps_profile.parent() {
@@ -729,11 +930,17 @@ pub fn ensure_shell_rc() -> Result<String, String> {
 // ── Helpers ──────────────────────────────────────────────────
 
 fn detect_cli_type(env: &HashMap<String, String>) -> Option<String> {
-    if let Some(t) = env.get("_KN_CLI_TYPE") { return Some(t.clone()); }
-    let has_a = env.keys().any(|k| k.starts_with("ANTHROPIC_"));
-    let has_o = env.keys().any(|k| k.starts_with("OPENAI_"));
-    if has_a && has_o { Some("both".into()) }
-    else if has_a { Some("claude".into()) }
-    else if has_o { Some("codex".into()) }
-    else { None }
+    if let Some(t) = env.get("_KN_CLI_TYPE") {
+        if t == "both" { return Some("claude".into()); }
+        return Some(t.clone());
+    }
+    if env.keys().any(|k| k.starts_with("GEMINI_API_KEY") || k.starts_with("GOOGLE_CLOUD_")) { return Some("gemini".into()); }
+    // Qoder uses OPENAI_API_KEY + OPENAI_BASE_URL, same as Codex.
+    // Distinguish by checking if base_url points to dashscope (Qwen official endpoint).
+    if let Some(base_url) = env.get("OPENAI_BASE_URL") {
+        if base_url.contains("dashscope") { return Some("qoderclicn".into()); }
+    }
+    if env.keys().any(|k| k.starts_with("ANTHROPIC_")) { return Some("claude".into()); }
+    if env.keys().any(|k| k.starts_with("OPENAI_")) { return Some("codex".into()); }
+    None
 }

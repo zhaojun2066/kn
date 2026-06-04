@@ -46,7 +46,30 @@ function CodexIcon({ size = 16 }: { size: number }) {
   );
 }
 
-/* ── Generic "other" O icon ─────────────────────────────── */
+/* ── Gemini — Google sparkle/star motif ──────────────────── */
+function GeminiIcon({ size = 16 }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="11.5" fill="#e8f0fe" stroke="#4285F4" strokeWidth="0.8" />
+      <path d="M12 4.5C12 8.5 8.5 12 4.5 12C8.5 12 12 15.5 12 19.5C12 15.5 15.5 12 19.5 12C15.5 12 12 8.5 12 4.5Z" fill="#4285F4" />
+      <path d="M17.5 5C17.5 6.5 16.5 7.5 15 7.5C16.5 7.5 17.5 8.5 17.5 10C17.5 8.5 18.5 7.5 20 7.5C18.5 7.5 17.5 6.5 17.5 5Z" fill="#4285F4" opacity="0.55" />
+    </svg>
+  );
+}
+
+/* ── Qoder — code brackets motif ─────────────────────────── */
+function QoderclicnIcon({ size = 16 }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="11.5" fill="#ede9fe" stroke="#6366F1" strokeWidth="0.8" />
+      <path d="M8.5 8L5 12L8.5 16" stroke="#6366F1" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15.5 8L19 12L15.5 16" stroke="#6366F1" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="13" y1="7" x2="11" y2="17" stroke="#6366F1" strokeWidth="1.4" strokeLinecap="round" opacity="0.5" />
+    </svg>
+  );
+}
+
+/* ── Generic "other" icon ────────────────────────────────── */
 function OtherIcon({ size = 16 }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
@@ -56,25 +79,11 @@ function OtherIcon({ size = 16 }: { size: number }) {
   );
 }
 
-/* ── Both — stacked Claude + Codex ──────────────────────── */
-function BothIcon({ size = 16 }: { size: number }) {
-  const half = size * 0.65;
-  return (
-    <span style={{ display: "inline-flex", gap: 0, position: "relative", width: size + 2, height: size }}>
-      <span style={{ position: "absolute", left: 0, top: size - half, zIndex: 2 }}>
-        <ClaudeIcon size={half} />
-      </span>
-      <span style={{ position: "absolute", left: size - half + 2, top: 0, zIndex: 1 }}>
-        <CodexIcon size={half} />
-      </span>
-    </span>
-  );
-}
-
 /* ── Export ──────────────────────────────────────────────── */
 export function CLIIcon({ type, size = 16 }: CLIIconProps) {
   if (type === "claude" || type === "anthropic") return <ClaudeIcon size={size} />;
   if (type === "codex" || type === "openai") return <CodexIcon size={size} />;
-  if (type === "both") return <BothIcon size={size} />;
+  if (type === "gemini") return <GeminiIcon size={size} />;
+  if (type === "qoderclicn") return <QoderclicnIcon size={size} />;
   return <OtherIcon size={size} />;
 }

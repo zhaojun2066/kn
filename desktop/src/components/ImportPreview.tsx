@@ -16,13 +16,23 @@ interface Props {
   onCancel: () => void;
 }
 
+const CLI_LABELS: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex CLI",
+  gemini: "Gemini CLI",
+  qoderclicn: "Qoder CLI (国内版)",
+};
+
 function detectCLI(env: Record<string, string>): string | null {
+  // Explicit stored type takes priority (skip legacy "both")
+  if (env._KN_CLI_TYPE && env._KN_CLI_TYPE !== "both") return env._KN_CLI_TYPE;
+  // Heuristic detection
   const keys = Object.keys(env).map((k) => k.toUpperCase());
-  const hasAnthropic = keys.some((k) => k.startsWith("ANTHROPIC_"));
-  const hasOpenAI = keys.some((k) => k.startsWith("OPENAI_"));
-  if (hasAnthropic && hasOpenAI) return "both";
-  if (hasAnthropic) return "claude";
-  if (hasOpenAI) return "codex";
+  if (keys.some((k) => k === "GEMINI_API_KEY" || k.startsWith("GOOGLE_CLOUD_"))) return "gemini";
+  // Qoder uses OPENAI_API_KEY + OPENAI_BASE_URL; distinguish by dashscope endpoint
+  if (env.OPENAI_BASE_URL?.includes("dashscope")) return "qoderclicn";
+  if (keys.some((k) => k.startsWith("ANTHROPIC_"))) return "claude";
+  if (keys.some((k) => k.startsWith("OPENAI_") || k.startsWith("OPENROUTER_"))) return "codex";
   return null;
 }
 
@@ -88,7 +98,7 @@ export function ImportPreview({ open, data, onConfirm, onCancel }: Props) {
                 <span className="flex items-center gap-1 px-2 py-1 bg-[var(--app-input)] border border-app-border">
                   <CLIIcon type={cli} size={18} />
                   <span className="text-2xs text-app-text-dim font-mono">
-                    {cli === "claude" ? "Claude" : cli === "codex" ? "Codex" : "Both"}
+                    {CLI_LABELS[cli] ?? cli}
                   </span>
                 </span>
               )}

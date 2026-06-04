@@ -222,6 +222,20 @@ pub fn get_usage_tracking_enabled() -> Result<bool, String> {
             return Ok(true);
         }
     }
+    let gemini_settings = PathBuf::from(&home).join(".gemini").join("settings.json");
+    if gemini_settings.exists() {
+        let content = fs::read_to_string(&gemini_settings).unwrap_or_default();
+        if content.contains("record-usage.py") {
+            return Ok(true);
+        }
+    }
+    let qoder_settings = PathBuf::from(&home).join(".qoder-cn").join("settings.json");
+    if qoder_settings.exists() {
+        let content = fs::read_to_string(&qoder_settings).unwrap_or_default();
+        if content.contains("record-usage.py") {
+            return Ok(true);
+        }
+    }
     Ok(false)
 }
 
@@ -242,17 +256,34 @@ pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
         inject_claude_hook(&claude_settings, &hook_cmd)?;
         let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
         inject_codex_hook(&codex_config, &hook_cmd)?;
+        let gemini_settings = PathBuf::from(&home).join(".gemini").join("settings.json");
+        inject_gemini_hook(&gemini_settings, &hook_cmd)?;
+        let qoder_settings = PathBuf::from(&home).join(".qoder-cn").join("settings.json");
+        inject_qoder_hook(&qoder_settings, &hook_cmd)?;
     } else {
         let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
         remove_claude_hook(&claude_settings)?;
         let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
         remove_codex_hook(&codex_config)?;
+        let gemini_settings = PathBuf::from(&home).join(".gemini").join("settings.json");
+        remove_gemini_hook(&gemini_settings)?;
+        let qoder_settings = PathBuf::from(&home).join(".qoder-cn").join("settings.json");
+        remove_qoder_hook(&qoder_settings)?;
     }
 
     Ok("ok".into())
 }
 
-fn inject_claude_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
+#[tauri::command]
+pub fn ensure_usage_hooks() -> Result<(), String> {
+    if !get_usage_tracking_enabled()? {
+        return Ok(());
+    }
+    set_usage_tracking_enabled(true)?;
+    Ok(())
+}
+
+fn inject_json_hook(path: &Path, event_name: &str, hook_cmd: &str) -> Result<(), String> {
     let content = if path.exists() {
         fs::read_to_string(path).unwrap_or_else(|_| "{}".into())
     } else {
@@ -269,10 +300,10 @@ fn inject_claude_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
 
     let hooks = settings.as_object_mut().ok_or("invalid settings.json")?
         .entry("hooks").or_insert(serde_json::json!({}));
-    let stop_hooks = hooks.as_object_mut().ok_or("invalid hooks section")?
-        .entry("Stop").or_insert(serde_json::json!([]));
+    let event_hooks = hooks.as_object_mut().ok_or("invalid hooks section")?
+        .entry(event_name).or_insert(serde_json::json!([]));
 
-    if let Some(arr) = stop_hooks.as_array_mut() {
+    if let Some(arr) = event_hooks.as_array_mut() {
         let cmd_str = hook_cmd.to_string();
         if !arr.iter().any(|h| h["hooks"][0]["command"].as_str() == Some(&cmd_str)) {
             arr.push(hook_entry);
@@ -284,14 +315,14 @@ fn inject_claude_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
     fs::write(path, new_content).map_err(|e| format!("write settings.json: {}", e))
 }
 
-fn remove_claude_hook(path: &Path) -> Result<(), String> {
+fn remove_json_hook(path: &Path, event_name: &str) -> Result<(), String> {
     if !path.exists() { return Ok(()); }
     let content = fs::read_to_string(path).unwrap_or_default();
     let mut settings: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
 
     if let Some(hooks) = settings.get_mut("hooks") {
-        if let Some(stop) = hooks.get_mut("Stop") {
-            if let Some(arr) = stop.as_array_mut() {
+        if let Some(event) = hooks.get_mut(event_name) {
+            if let Some(arr) = event.as_array_mut() {
                 arr.retain(|h| !h["hooks"][0]["command"].as_str().unwrap_or("").contains("record-usage.py"));
             }
         }
@@ -300,6 +331,27 @@ fn remove_claude_hook(path: &Path) -> Result<(), String> {
     let new_content = serde_json::to_string_pretty(&settings)
         .map_err(|e| format!("serialize settings: {}", e))?;
     fs::write(path, new_content).map_err(|e| format!("write settings.json: {}", e))
+}
+
+fn inject_claude_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
+    inject_json_hook(path, "Stop", hook_cmd)
+}
+fn remove_claude_hook(path: &Path) -> Result<(), String> {
+    remove_json_hook(path, "Stop")
+}
+
+fn inject_gemini_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
+    inject_json_hook(path, "SessionEnd", hook_cmd)
+}
+fn remove_gemini_hook(path: &Path) -> Result<(), String> {
+    remove_json_hook(path, "SessionEnd")
+}
+
+fn inject_qoder_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
+    inject_json_hook(path, "SessionEnd", hook_cmd)
+}
+fn remove_qoder_hook(path: &Path) -> Result<(), String> {
+    remove_json_hook(path, "SessionEnd")
 }
 
 fn inject_codex_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {

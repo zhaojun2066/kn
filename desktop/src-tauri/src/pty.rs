@@ -104,23 +104,26 @@ pub fn start_pty(
     // Resolve shell binary.
     // On Windows, prefer Git Bash (provides Unix environment where shell-rc works).
     // Fall back to PowerShell with execution policy relaxed if Git Bash is absent.
-    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".into());
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
         if cfg!(target_os = "windows") {
-            let candidates = [
-                r"C:\Program Files\Git\bin\bash.exe",
-                r"C:\Program Files (x86)\Git\bin\bash.exe",
-                // User-only installs (no admin)
-                &format!(r"{}\AppData\Local\Programs\Git\bin\bash.exe", home),
-                // Scoop / manual installs
-                r"C:\scoop\apps\git\current\bin\bash.exe",
-                // ProgramData (all-users, alternate)
-                r"C:\ProgramData\Git\bin\bash.exe",
+            let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+            let mut candidates: Vec<String> = vec![
+                r"C:\Program Files\Git\bin\bash.exe".into(),
+                r"C:\Program Files (x86)\Git\bin\bash.exe".into(),
+                format!(r"{}\AppData\Local\Programs\Git\bin\bash.exe", home),
+                r"C:\scoop\apps\git\current\bin\bash.exe".into(),
+                r"C:\ProgramData\Git\bin\bash.exe".into(),
             ];
+            if !local_appdata.is_empty() {
+                candidates.push(format!(r"{}\Microsoft\WinGet\Links\bash.exe", local_appdata));
+            }
             candidates
                 .iter()
                 .find(|p| std::path::Path::new(p).exists())
-                .map(|&s| s.to_string())
+                .cloned()
                 .unwrap_or_else(|| "powershell.exe".into())
         } else if cfg!(target_os = "macos") {
             "/bin/zsh".into()
@@ -140,7 +143,11 @@ pub fn start_pty(
         // PowerShell: dot-source shell-rc.ps1 explicitly on startup.
         // Don't depend on $PROFILE — the profile may not be set up yet,
         // or the user may be in a fresh environment.
-        let ps1_path = format!("{}/.claude-profiles/shell-rc.ps1", home);
+        let ps1_path = std::path::PathBuf::from(&home)
+            .join(".claude-profiles")
+            .join("shell-rc.ps1")
+            .display()
+            .to_string();
         let ps1_path_escaped = ps1_path.replace('\'', "''");
         let startup_cmd = format!(
             "$rc = '{}'; if (Test-Path $rc) {{ . $rc }} else {{ Write-Host '[AI Profile Manager] shell-rc.ps1 not found at:' $rc }}",
@@ -164,6 +171,29 @@ pub fn start_pty(
 
     for (k, v) in std::env::vars() {
         cmd.env(&k, &v);
+    }
+
+    // macOS GUI apps launched from Finder/Dock get a minimal PATH
+    // (/usr/bin:/bin:/usr/sbin:/sbin) that misses Homebrew and other
+    // user-installed tools. Append common paths so `claude`, `node`,
+    // `python3`, etc. are found inside the PTY.
+    if cfg!(target_os = "macos") {
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let extra = [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+        ];
+        let missing: Vec<&str> = extra
+            .iter()
+            .filter(|p| !current_path.split(':').any(|seg| seg == **p))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            let augmented = format!("{}:{}", current_path, missing.join(":"));
+            cmd.env("PATH", augmented);
+        }
     }
 
     if std::env::var_os("LANG").is_none() {

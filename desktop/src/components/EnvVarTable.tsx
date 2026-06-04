@@ -16,7 +16,17 @@ export function EnvVarTable({ env, onSet, onDelete }: EnvVarTableProps) {
   const [saving, setSaving] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
-  const entries = Object.entries(env).sort(([a], [b]) => a.localeCompare(b));
+  // System-managed keys — read-only in detail view
+  const PROTECTED_KEYS: ReadonlySet<string> = new Set(["_KN_CLI_TYPE"]);
+
+  // User vars first, protected keys at bottom
+  const entries = Object.entries(env).sort(([a], [b]) => {
+    const aProtected = PROTECTED_KEYS.has(a);
+    const bProtected = PROTECTED_KEYS.has(b);
+    if (aProtected && !bProtected) return 1;
+    if (!aProtected && bProtected) return -1;
+    return a.localeCompare(b);
+  });
 
   const handleAdd = async () => {
     if (!newKey.trim()) return;
@@ -34,7 +44,7 @@ export function EnvVarTable({ env, onSet, onDelete }: EnvVarTableProps) {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--app-subtle)] border-b border-app-border select-none">
-        <span className="text-2xs text-app-text-muted uppercase tracking-[0.2em] w-[180px] shrink-0 font-mono">
+        <span className="text-2xs text-app-text-muted uppercase tracking-[0.2em] w-[240px] shrink-0 font-mono">
           变量名
         </span>
         <span className="text-app-text-muted text-xs w-4 text-center font-mono">=</span>
@@ -81,6 +91,7 @@ export function EnvVarTable({ env, onSet, onDelete }: EnvVarTableProps) {
               onSave={async (k, v) => onSet(k, v)}
               onDelete={async (k) => onDelete(k)}
               showAll={showAll}
+              readonly={PROTECTED_KEYS.has(key)}
             />
           ))
         )}
@@ -91,7 +102,7 @@ export function EnvVarTable({ env, onSet, onDelete }: EnvVarTableProps) {
             <input
               value={newKey}
               onChange={(e) => setNewKey(e.target.value)}
-              className="w-[180px] font-mono text-xs h-[26px] bg-app-input"
+              className="w-[240px] font-mono text-xs h-[26px] bg-app-input"
               placeholder="KEY"
               disabled={saving}
               autoFocus

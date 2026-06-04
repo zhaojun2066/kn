@@ -16,7 +16,8 @@ except ImportError:
     _HAS_FCNTL = False
     import msvcrt
 
-CONFIG_DIR = os.environ.get("CLAUDE_PROFILES_HOME", os.path.expanduser("~/.claude-profiles"))
+_default_config_dir = os.path.join(os.path.expanduser("~"), ".claude-profiles")
+CONFIG_DIR = os.environ.get("CLAUDE_PROFILES_HOME", _default_config_dir)
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.yaml")
 BACKUP_FILE = os.path.join(CONFIG_DIR, "config.yaml.bak")
 LOCK_FILE = os.path.join(CONFIG_DIR, ".config.lock")
@@ -58,7 +59,19 @@ def write_config(config):
                 f.write(text)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_file, CONFIG_FILE)
+            if os.name == 'nt':
+                # Windows: os.replace() fails with PermissionError if the
+                # target file is temporarily locked by antivirus/backup.
+                for attempt in range(5):
+                    try:
+                        os.replace(tmp_file, CONFIG_FILE)
+                        break
+                    except PermissionError:
+                        if attempt == 4:
+                            raise
+                        time.sleep(0.1 * (attempt + 1))
+            else:
+                os.replace(tmp_file, CONFIG_FILE)
         finally:
             _release_lock(lf)
 
@@ -111,7 +124,7 @@ def _acquire_lock(lock_file):
         deadline = time.time() + 5
         while True:
             try:
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 0x7fffffff)
                 return
             except (IOError, OSError):
                 if time.time() > deadline:
@@ -124,7 +137,7 @@ def _release_lock(lock_file):
     if _HAS_FCNTL:
         fcntl.flock(lock_file, fcntl.LOCK_UN)
     else:
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 0x7fffffff)
 
 
 # ── YAML Parser (hand-rolled, zero-dependency) ─────────────────

@@ -68,6 +68,7 @@ pub fn run() {
             usage::replace_pricing,
             usage::get_usage_tracking_enabled,
             usage::set_usage_tracking_enabled,
+            usage::ensure_usage_hooks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

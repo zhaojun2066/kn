@@ -215,8 +215,16 @@ fn home_dir() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("USERPROFILE") {
         return std::path::PathBuf::from(home);
     }
-    // Fallback: try to resolve ~ via shell
-    if let Ok(output) = std::process::Command::new("sh").args(["-c", "echo $HOME"]).output() {
+    // Fallback: try shell to resolve ~
+    if cfg!(target_os = "windows") {
+        if let Ok(output) = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Write-Host $env:USERPROFILE"])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !s.is_empty() { return std::path::PathBuf::from(s); }
+        }
+    } else if let Ok(output) = std::process::Command::new("sh").args(["-c", "echo $HOME"]).output() {
         let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !s.is_empty() { return std::path::PathBuf::from(s); }
     }
@@ -306,6 +314,48 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
         });
     }
 
+    // Scan ~/.gemini/settings.json → has { "apiKey": "..." }
+    let gemini_settings = home.join(".gemini").join("settings.json");
+    let gemini_str = gemini_settings.display().to_string();
+    checked.push(gemini_str.clone());
+    if let Ok(json) = read_json_file(&gemini_settings) {
+        let mut gemini_env = std::collections::HashMap::new();
+        if let Some(key) = json.get("apiKey").and_then(|v| v.as_str()) {
+            gemini_env.insert("GEMINI_API_KEY".into(), key.to_string());
+        }
+        if !gemini_env.is_empty() {
+            profiles.push(ScanProfile {
+                name: "gemini".into(),
+                cli_type: "gemini".into(),
+                env: gemini_env,
+                source: gemini_str,
+            });
+        }
+    }
+
+    // Scan ~/.qoder-cn/ (Qoder CN CLI) — PAT token set via env var, not in config files
+    let qoder_dir = home.join(".qoder-cn");
+    let qoder_str = qoder_dir.display().to_string();
+    checked.push(qoder_str.clone());
+    if qoder_dir.exists() {
+        let mut qoder_env = std::collections::HashMap::new();
+        // Qoder CN uses QODERCN_PERSONAL_ACCESS_TOKEN env var (not stored in config)
+        // Try settings.json for any hints, but primarily just mark as installed
+        let settings_path = qoder_dir.join("settings.json");
+        if let Ok(json) = read_json_file(&settings_path) {
+            if let Some(token) = json.get("personalAccessToken").and_then(|v| v.as_str()) {
+                qoder_env.insert("QODERCN_PERSONAL_ACCESS_TOKEN".into(), token.to_string());
+            }
+        }
+        // Always include Qoder CN if the directory exists (even without extracted env vars)
+        profiles.push(ScanProfile {
+            name: "qoder-cn".into(),
+            cli_type: "qoderclicn".into(),
+            env: qoder_env,
+            source: qoder_str,
+        });
+    }
+
     if profiles.is_empty() {
         return Err(format!("未找到配置。\n已检查:\n{}", checked.join("\n")));
     }
@@ -348,12 +398,19 @@ pub fn get_app_version(app: tauri::AppHandle) -> String {
 fn find_binary(names: &[&str]) -> Option<String> {
     for name in names {
         // Try full paths first
-        let paths = if cfg!(target_os = "macos") {
+        let paths: Vec<String> = if cfg!(target_os = "macos") {
             vec![format!("/usr/bin/{}", name), format!("/opt/homebrew/bin/{}", name), format!("/usr/local/bin/{}", name)]
         } else if cfg!(target_os = "linux") {
             vec![format!("/usr/bin/{}", name), format!("/bin/{}", name), format!("/usr/local/bin/{}", name)]
         } else {
-            vec![name.to_string()]
+            // Windows: check common system paths with .exe suffix
+            let exe_name = if name.ends_with(".exe") { name.to_string() } else { format!("{}.exe", name) };
+            let system32 = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+            vec![
+                format!(r"{}\System32\{}", system32, exe_name),
+                format!(r"C:\Program Files\{}", exe_name),
+                format!(r"C:\Program Files (x86)\{}", exe_name),
+            ]
         };
         for p in &paths {
             if std::path::Path::new(p).exists() {
@@ -490,6 +547,9 @@ pub struct EnvCheckItem {
     pub label: String,
     pub status: String,  // "ok" | "warn" | "missing"
     pub detail: String,
+    /// Executable install command (only populated when status == "missing")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_cmd: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -506,13 +566,17 @@ fn check_binary_on_path(name: &str) -> Option<String> {
         }
     }
     // Use login shell to resolve user PATH (brew, npx, etc.)
-    let shell = if cfg!(target_os = "windows") { "powershell.exe" } else { "/bin/bash" };
+    let shell = if cfg!(target_os = "windows") {
+        "powershell.exe".to_string()
+    } else {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+    };
     let shell_args: &[&str] = if cfg!(target_os = "windows") {
         &["-Command", &format!("Get-Command {} -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object Source", name)]
     } else {
         &["-lc", &format!("command -v {} 2>/dev/null || type {} 2>/dev/null", name, name)]
     };
-    if let Ok(output) = std::process::Command::new(shell).args(shell_args).output() {
+    if let Ok(output) = std::process::Command::new(&shell).args(shell_args).output() {
         let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !s.is_empty() { return Some(s); }
     }
@@ -531,13 +595,22 @@ pub fn check_environment() -> EnvCheckResult {
             label: "Claude Code".into(),
             status: "ok".into(),
             detail: path,
+            install_cmd: None,
         }),
-        None => items.push(EnvCheckItem {
-            name: "claude".into(),
-            label: "Claude Code".into(),
-            status: "missing".into(),
-            detail: "未安装 (npm i -g @anthropic-ai/claude-code)".into(),
-        }),
+        None => {
+            let (hint, install_cmd) = if cfg!(target_os = "windows") {
+                ("未安装 (npm i -g @anthropic-ai/claude-code)", "npm i -g @anthropic-ai/claude-code")
+            } else {
+                ("未安装 (curl -fsSL https://claude.ai/install.sh | bash)", "curl -fsSL https://claude.ai/install.sh | bash")
+            };
+            items.push(EnvCheckItem {
+                name: "claude".into(),
+                label: "Claude Code".into(),
+                status: "missing".into(),
+                detail: hint.into(),
+                install_cmd: Some(install_cmd.into()),
+            })
+        }
     }
 
     // 2. Codex
@@ -547,18 +620,57 @@ pub fn check_environment() -> EnvCheckResult {
             label: "Codex".into(),
             status: "ok".into(),
             detail: path,
+            install_cmd: None,
         }),
         None => items.push(EnvCheckItem {
             name: "codex".into(),
             label: "Codex".into(),
             status: "missing".into(),
             detail: "未安装 (npm i -g @openai/codex)".into(),
+            install_cmd: Some("npm i -g @openai/codex".into()),
         }),
     }
 
-    // 3. Shell wrapper
+    // 3. Gemini CLI
+    match check_binary_on_path("gemini") {
+        Some(path) => items.push(EnvCheckItem {
+            name: "gemini".into(),
+            label: "Gemini CLI".into(),
+            status: "ok".into(),
+            detail: path,
+            install_cmd: None,
+        }),
+        None => items.push(EnvCheckItem {
+            name: "gemini".into(),
+            label: "Gemini CLI".into(),
+            status: "missing".into(),
+            detail: "未安装 (npm i -g @google/gemini-cli)".into(),
+            install_cmd: Some("npm i -g @google/gemini-cli".into()),
+        }),
+    }
+
+    // 5. Qoder
+    match check_binary_on_path("qoderclicn") {
+        Some(path) => items.push(EnvCheckItem {
+            name: "qoderclicn".into(),
+            label: "Qoder".into(),
+            status: "ok".into(),
+            detail: path,
+            install_cmd: None,
+        }),
+        None => items.push(EnvCheckItem {
+            name: "qoderclicn".into(),
+            label: "Qoder".into(),
+            status: "missing".into(),
+            detail: "未安装 (npm i -g @qodercn-ai/qoderclicn)".into(),
+            install_cmd: Some("npm i -g @qodercn-ai/qoderclicn".into()),
+        }),
+    }
+
+    // 6. Shell wrapper
     let shell_rc = home.join(".claude-profiles").join("shell-rc");
-    if shell_rc.exists() {
+    let shell_rc_ps1 = home.join(".claude-profiles").join("shell-rc.ps1");
+    if shell_rc.exists() || shell_rc_ps1.exists() {
         let in_rc = if let Ok(zshrc) = std::fs::read_to_string(home.join(".zshrc")) {
             zshrc.contains("shell-rc") || zshrc.contains(".claude-profiles")
         } else { false };
@@ -568,23 +680,41 @@ pub fn check_environment() -> EnvCheckResult {
                 bashrc.contains("shell-rc") || bashrc.contains(".claude-profiles")
             } else { false }
         };
-        let activated = in_rc || in_bashrc;
+        // On Windows also check PowerShell profile for shell-rc.ps1
+        let in_ps_profile = cfg!(target_os = "windows") && {
+            let docs = home.join("Documents");
+            let ps7 = docs.join("PowerShell").join("Microsoft.PowerShell_profile.ps1");
+            let ps5 = docs.join("WindowsPowerShell").join("Microsoft.PowerShell_profile.ps1");
+            let check = |p: &std::path::Path| -> bool {
+                std::fs::read_to_string(p)
+                    .map(|c| c.contains("shell-rc") || c.contains(".claude-profiles"))
+                    .unwrap_or(false)
+            };
+            check(&ps7) || check(&ps5)
+        };
+        let activated = in_rc || in_bashrc || in_ps_profile;
         items.push(EnvCheckItem {
             name: "shell-wrapper".into(),
             label: "Shell 集成".into(),
             status: if activated { "ok".into() } else { "warn".into() },
             detail: if activated { "已激活".into() } else { "已安装但未激活".into() },
+            install_cmd: None,
         });
     } else {
         items.push(EnvCheckItem {
             name: "shell-wrapper".into(),
             label: "Shell 集成".into(),
             status: "missing".into(),
-            detail: "未安装，请在终端运行 install.sh".into(),
+            detail: if cfg!(target_os = "windows") {
+                "未安装，请在终端运行 install.ps1".into()
+            } else {
+                "未安装，请在终端运行 install.sh".into()
+            },
+            install_cmd: None,
         });
     }
 
-    // 4. Config directory
+    // 7. Config directory
     let config_dir = home.join(".claude-profiles");
     let config_file = config_dir.join("config.yaml");
     if config_dir.exists() {
@@ -594,6 +724,7 @@ pub fn check_environment() -> EnvCheckResult {
                 label: "配置文件".into(),
                 status: "ok".into(),
                 detail: config_file.display().to_string(),
+                install_cmd: None,
             });
         } else {
             items.push(EnvCheckItem {
@@ -601,6 +732,7 @@ pub fn check_environment() -> EnvCheckResult {
                 label: "配置文件".into(),
                 status: "warn".into(),
                 detail: "目录存在但无配置文件".into(),
+                install_cmd: None,
             });
         }
     } else {
@@ -609,6 +741,7 @@ pub fn check_environment() -> EnvCheckResult {
             label: "配置文件".into(),
             status: "missing".into(),
             detail: "目录不存在".into(),
+            install_cmd: None,
         });
     }
 

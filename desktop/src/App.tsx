@@ -27,7 +27,7 @@ import { X, AlertCircle, CheckCircle2 } from "lucide-react";
 
 type Toast = { id: number; type: "error" | "success"; message: string };
 
-interface EnvCheckItem { name: string; label: string; status: "ok" | "warn" | "missing"; detail: string; }
+interface EnvCheckItem { name: string; label: string; status: "ok" | "warn" | "missing"; detail: string; install_cmd?: string; }
 type EnvCheckResult = { items: EnvCheckItem[]; all_ok: boolean } | null;
 
 export function App() {
@@ -80,10 +80,16 @@ export function App() {
     bottomTerminal.setValidProfileNames(names);
   }, [ctx.profiles]);
 
-  // Run environment check on mount
-  useEffect(() => {
+  // Environment check — refresh on mount, on panel open, on dialog open
+  const refreshEnvCheck = useCallback(() => {
     invoke<EnvCheckResult>("check_environment").then(setEnvCheck).catch(() => {});
   }, []);
+  useEffect(() => { refreshEnvCheck(); }, [refreshEnvCheck]);
+
+  // Re-check tools when ProfileDialog opens (user may have installed since last open)
+  useEffect(() => {
+    if (showAddDialog) refreshEnvCheck();
+  }, [showAddDialog, refreshEnvCheck]);
 
   // Check backup status on mount + after profile changes
   useEffect(() => {
@@ -99,9 +105,10 @@ export function App() {
     return merged;
   }, [rightTerminal.usageCounts, bottomTerminal.usageCounts]);
 
-  // Ensure shell wrapper is installed (ai command)
+  // Ensure shell wrapper and usage hooks are installed
   useEffect(() => {
     invoke("ensure_shell_rc").catch(() => {});
+    invoke("ensure_usage_hooks").catch(() => {});
   }, []);
 
   // Auto-open terminal for pop-out windows (?terminal=1)
@@ -211,6 +218,11 @@ export function App() {
 
   const isDefault = ctx.selectedProfile?.is_default ?? false;
 
+  const handleInstallTool = useCallback(async (cmd: string) => {
+    // Open bottom terminal and auto-execute the install command
+    bottomTerminal.runInTerminal(cmd, "");
+  }, [bottomTerminal]);
+
   const handlePasteCommand = useCallback(async (cmd: string) => {
     const isAiCmd = /^ai\s/.test(cmd);
 
@@ -301,9 +313,8 @@ export function App() {
         for (const [k, v] of Object.entries(item.env)) {
           if (v) await ctx.setEnvVar(item.name, k, v);
         }
-        const cliMap: Record<string, string> = { claude: "claude", codex: "codex" };
-        if (cliMap[item.cli_type]) {
-          await ctx.setEnvVar(item.name, "_KN_CLI_TYPE", cliMap[item.cli_type]);
+        if (item.cli_type) {
+          await ctx.setEnvVar(item.name, "_KN_CLI_TYPE", item.cli_type);
         }
         imported++;
       } catch { /* individual profile import failed, continue with others */ }
@@ -601,6 +612,8 @@ export function App() {
         onRestore={handleRestore}
         backupExists={backupExists}
         envCheck={envCheck}
+        onInstallTool={handleInstallTool}
+        onRefreshEnvCheck={refreshEnvCheck}
         onAbout={() => setShowAbout(true)}
         onSettings={() => setShowSettings(true)}
       />
@@ -797,7 +810,10 @@ export function App() {
         open={showAddDialog}
         onClose={() => setShowAddDialog(false)}
         onRunCommand={handlePasteCommand}
+        onInstallTool={handleInstallTool}
         allTags={Array.from(new Set(ctx.profiles.flatMap((p) => p.tags || []))).sort()}
+        envCheck={envCheck}
+        existingNames={ctx.profiles.map((p) => p.name)}
         onAdd={async (name, desc, env) => {
           await ctx.addProfile(name, desc);
           for (const [k, v] of Object.entries(env)) {

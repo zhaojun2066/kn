@@ -1,7 +1,7 @@
 {
   "name": "ai-profile-manager",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,11 +9,11 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build:debug": "cp update/update.prod.json update/update.json && tauri build --debug",
-    "tauri:build:prod": "cp update/update.prod.json update/update.json && tauri build",
-    "tauri:build:prod:intel": "cp update/update.prod.json update/update.json && tauri build --target x86_64-apple-darwin",
-    "tauri:build:prod:arm": "cp update/update.prod.json update/update.json && tauri build --target aarch64-apple-darwin",
-    "tauri:build:staging": "cp update/update.staging.json update/update.json && tauri build --debug"
+    "tauri:build:debug": "node -e \"require('fs').copyFileSync('update/update.prod.json','update/update.json')\" && tauri build --debug",
+    "tauri:build:prod": "node -e \"require('fs').copyFileSync('update/update.prod.json','update/update.json')\" && tauri build",
+    "tauri:build:prod:intel": "node -e \"require('fs').copyFileSync('update/update.prod.json','update/update.json')\" && tauri build --target x86_64-apple-darwin",
+    "tauri:build:prod:arm": "node -e \"require('fs').copyFileSync('update/update.prod.json','update/update.json')\" && tauri build --target aarch64-apple-darwin",
+    "tauri:build:staging": "node -e \"require('fs').copyFileSync('update/update.staging.json','update/update.json')\" && tauri build --debug"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

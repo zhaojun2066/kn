@@ -3,6 +3,7 @@ import { EnvVarTable } from "./EnvVarTable";
 import { Badge } from "./common/Badge";
 import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock, FolderOpen, Trash2 } from "lucide-react";
 import type { ProfileDetail } from "../lib/types";
+import { parseAiCmd } from "../hooks/useTerminal";
 import type { SessionRecord } from "../hooks/useTerminal";
 import { shortenPath } from "../lib/path-utils";
 import { formatShortcut } from "../utils/shortcut";
@@ -29,12 +30,6 @@ interface MainPanelProps {
 }
 
 /* ── Helpers ─────────────────────────────────────────────── */
-function parseAiCmd(cmd: string): { tool: string; profile: string } | null {
-  const m = cmd.match(/^ai\s+(claude|codex)\s+(\S+)/);
-  if (!m) return null;
-  return { tool: m[1], profile: m[2] };
-}
-
 function formatTime(ts: number): string {
   const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);
@@ -47,22 +42,35 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleDateString("zh-CN");
 }
 
-/* ── Detect tools ────────────────────────────────────────── */
-function detectTools(env: Record<string, string>): { claude: boolean; codex: boolean } {
+/* ── Tool name mapping ──────────────────────────────────── */
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex CLI",
+  gemini: "Gemini CLI",
+  qoderclicn: "Qoder CLI (国内版)",
+};
+
+/* ── Detect tool from env vars ──────────────────────────── */
+function detectTools(env: Record<string, string>): string | null {
+  // Explicit stored type takes priority
+  if (env._KN_CLI_TYPE && env._KN_CLI_TYPE !== "both") return env._KN_CLI_TYPE;
+  // Heuristic fallback
   const keys = Object.keys(env).map((k) => k.toUpperCase());
-  const hasAnthropic = keys.some((k) => k.startsWith("ANTHROPIC_"));
-  const hasOpenAI = keys.some((k) => k.startsWith("OPENAI_"));
-  return {
-    claude: hasAnthropic,
-    codex: hasOpenAI,
-  };
+  if (keys.some((k) => k === "GEMINI_API_KEY" || k.startsWith("GOOGLE_CLOUD_"))) return "gemini";
+  // Qoder uses OPENAI_API_KEY + OPENAI_BASE_URL; distinguish by dashscope endpoint
+  if (env.OPENAI_BASE_URL?.includes("dashscope")) return "qoderclicn";
+  if (keys.some((k) => k.startsWith("ANTHROPIC_"))) return "claude";
+  if (keys.some((k) => k.startsWith("OPENAI_") || k.startsWith("OPENROUTER_"))) return "codex";
+  return null;
 }
 
-function buildCommands(name: string, env: Record<string, string>): string[] {
-  const tools = detectTools(env);
-  const cmds: string[] = [];
-  if (tools.claude) cmds.push(`ai claude ${name}`);
-  if (tools.codex) cmds.push(`ai codex ${name}`);
+function buildCommands(name: string, env: Record<string, string>): { label: string; cmd: string }[] {
+  const toolId = detectTools(env);
+  const cmds: { label: string; cmd: string }[] = [];
+  if (toolId) {
+    const displayName = TOOL_DISPLAY_NAMES[toolId] ?? toolId;
+    cmds.push({ label: displayName, cmd: `ai ${toolId} ${name}` });
+  }
   return cmds;
 }
 
@@ -174,11 +182,15 @@ function CommandBlock({
   profileName,
   onPaste,
 }: {
-  commands: string[];
+  commands: { label: string; cmd: string }[];
   profileName: string;
   onPaste: (cmd: string) => void;
 }) {
   const { copied, copy } = useCopy();
+
+  // Extract tool ID from first command for breakdown display
+  const toolId = commands.length > 0 ? commands[0].cmd.split(/\s+/)[1] ?? null : null;
+  const toolDisplayName = toolId ? (TOOL_DISPLAY_NAMES[toolId] ?? toolId) : null;
 
   return (
     <div className="mt-3 bg-[var(--app-cmd-bg)] select-none border-y border-app-border">
@@ -191,18 +203,21 @@ function CommandBlock({
       </div>
 
       <div className="px-3 py-2 space-y-1">
-        {commands.map((cmd) => {
+        {commands.map(({ label, cmd }) => {
           const isCopied = copied === cmd;
           return (
             <div key={cmd}
               className="flex items-center justify-between group/item px-2 py-1.5
                 hover:bg-[var(--app-hover)] transition-colors duration-fast"
             >
-              <code className="text-sm text-app-text font-mono select-all">
-                <span className="text-app-accent opacity-70 mr-1">$</span>
-                {cmd}
-              </code>
-              <div className="flex items-center gap-0.5">
+              <div className="min-w-0 flex items-center gap-2">
+                <span className="text-2xs text-app-text-muted shrink-0">{label}</span>
+                <code className="text-sm text-app-text font-mono select-all truncate">
+                  <span className="text-app-accent opacity-70 mr-1">$</span>
+                  {cmd}
+                </code>
+              </div>
+              <div className="flex items-center gap-0.5 shrink-0 ml-2">
                 <button
                   onClick={() => onPaste(cmd)}
                   className="flex items-center gap-1 px-2 py-0.5 text-2xs
@@ -234,44 +249,52 @@ function CommandBlock({
         })}
       </div>
 
-      {/* Command breakdown */}
-      <div className="border-t border-app-border bg-[var(--app-subtle)]">
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-app-border bg-[var(--app-cmd-header)]">
-          <span className="text-2xs text-app-text-muted font-mono uppercase tracking-wider">命令拆解</span>
+      {/* Command breakdown — inline annotation style */}
+      {toolId && (
+        <div className="border-t border-app-border bg-[var(--app-subtle)]">
+          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-app-border bg-[var(--app-cmd-header)]">
+            <span className="text-2xs text-app-text-muted font-mono uppercase tracking-wider">命令拆解</span>
+          </div>
+          <div className="px-4 py-3">
+            {/* The command with color-coded parts */}
+            <code className="text-sm text-app-text font-mono block mb-2.5">
+              <span className="text-app-accent opacity-70">$ </span>
+              <span className="text-app-accent">ai</span>
+              {" "}
+              <span className="text-app-green">{toolId}</span>
+              {" "}
+              <span className="text-app-amber">{profileName}</span>
+            </code>
+            {/* Tree annotations */}
+            <div className="space-y-1 font-mono text-2xs text-app-text-dim leading-relaxed">
+              <div className="flex items-center gap-1.5">
+                <span className="text-app-text-muted shrink-0 select-none">├─</span>
+                <span className="inline-flex items-center px-1.5 py-px text-[10px] font-mono
+                  bg-[var(--app-selected)] text-app-accent border border-app-accent/20 shrink-0">
+                  shell 函数
+                </span>
+                <span>注入 profile 环境变量后启动 AI 工具</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-app-text-muted shrink-0 select-none">├─</span>
+                <span className="inline-flex items-center px-1.5 py-px text-[10px] font-mono
+                  bg-[var(--app-selected)] text-app-green border border-app-green/20 shrink-0">
+                  AI 工具
+                </span>
+                <span>{toolDisplayName}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-app-text-muted shrink-0 select-none">╰─</span>
+                <span className="inline-flex items-center px-1.5 py-px text-[10px] font-mono
+                  bg-[var(--app-selected)] text-app-amber border border-app-amber/20 shrink-0">
+                  Profile 名
+                </span>
+                <span>加载此 profile 的环境变量（API Key、Base URL 等）</span>
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="px-4 py-3 space-y-1.5">
-          {/* Arrow line */}
-          <div className="flex items-center font-mono text-xs">
-            <span className="text-app-text-muted w-16 text-center">↓</span>
-            <span className="text-app-text-muted w-[72px] text-center">↓</span>
-            <span className="text-app-text-muted text-center">↓</span>
-          </div>
-          {/* Parts line */}
-          <div className="flex items-center font-mono text-xs">
-            <code className="text-app-accent w-16 text-center">ai</code>
-            <code className="text-app-accent w-[72px] text-center">{commands.some(c => c.includes("claude")) ? "claude" : ""}{commands.some(c => c.includes("claude")) && commands.some(c => c.includes("codex")) ? "/" : ""}{commands.some(c => c.includes("codex")) ? "codex" : ""}</code>
-            <code className="text-app-accent text-center ml-1">{profileName}</code>
-          </div>
-          {/* Explanation lines */}
-          <div className="flex items-start font-mono text-2xs text-app-text-muted">
-            <span className="text-app-text-dim w-4 text-center shrink-0 mr-1.5">│</span>
-            <span className="w-[60px] shrink-0 mr-3">shell 函数</span>
-            <span className="text-app-text-dim mr-2">注入 profile 环境变量后启动 AI 工具</span>
-          </div>
-          <div className="flex items-start font-mono text-2xs text-app-text-muted">
-            <span className="text-app-text-dim w-4 text-center shrink-0 mr-1.5">│</span>
-            <span className="w-[60px] shrink-0 mr-3">AI 工具</span>
-            <span className="text-app-text-dim">
-              Claude Code（Anthropic）/ Codex（OpenAI）
-            </span>
-          </div>
-          <div className="flex items-start font-mono text-2xs text-app-text-muted">
-            <span className="text-app-text-dim w-4 text-center shrink-0 mr-1.5">└</span>
-            <span className="w-[60px] shrink-0 mr-3">Profile 名</span>
-            <span className="text-app-text-dim">加载此 profile 的环境变量（API Key、Base URL 等）</span>
-          </div>
-        </div>
-      </div>
+      )}
 
       <div className="px-3 py-1.5 border-t border-app-border bg-[var(--app-cmd-header)]">
         <span className="text-2xs text-app-text-muted">
@@ -316,7 +339,14 @@ function TagsRow({ profile, allTags, onSetTags }: { profile: ProfileDetail; allT
   };
 
   const save = async () => {
-    await onSetTags(profile.name, newTags.join(","));
+    // Flush pending input before saving
+    const t = input.trim();
+    const final = t && !newTags.includes(t) && newTags.length < 3
+      ? [...newTags, t]
+      : newTags;
+    await onSetTags(profile.name, final.join(","));
+    setNewTags([]);
+    setInput("");
     setEditing(false);
   };
 

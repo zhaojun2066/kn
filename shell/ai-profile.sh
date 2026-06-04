@@ -24,12 +24,14 @@ ai() {
     if [ $# -eq 0 ]; then
         echo "Usage: ai <tool> [profile] [args...]"
         echo ""
-        echo "  Supported tools: claude, codex"
+        echo "  Supported tools: claude, codex, gemini, qoderclicn"
         echo ""
         echo "Examples:"
         echo "  ai claude deepseek      # Claude Code + deepseek profile"
         echo "  ai claude               # Interactive pick → Claude Code"
         echo "  ai codex codex-default  # Codex + codex-default profile"
+        echo "  ai gemini my-profile    # Gemini CLI + profile env"
+        echo "  ai qoderclicn my-profile      #Qoder + profile env"
         echo ""
         echo "Available profiles:"
         "$PROFILE_CMD" list 2>/dev/null
@@ -41,9 +43,9 @@ ai() {
 
     # Validate tool
     case "$tool" in
-        claude|codex) ;;
+        claude|codex|gemini|qoderclicn) ;;
         *)
-            echo "Unknown tool: $tool (supported: claude, codex)" >&2
+            echo "Unknown tool: $tool (supported: claude, codex, gemini, qoderclicn)" >&2
             return 1
             ;;
     esac
@@ -108,6 +110,32 @@ _ai_launch_with_profile() {
         eval "$env_output"
         export KN_PROFILE="$profile_name"
         export KN_CLI_TOOL="$tool"
-        command "$tool" "$@"
+
+        case "$tool" in
+            claude)
+                # Claude Code v2.0.1+ bug: settings.json env overrides shell env vars.
+                # Workaround: write profile env to temp JSON, pass via --settings (CLI flag
+                # priority > settings.json). Temp file cleaned up on session exit.
+                if command -v python3 >/dev/null 2>&1; then
+                    _tmp_settings=$(mktemp "${TMPDIR:-/tmp}/kn-claude.XXXXXX")
+                    "$PROFILE_CMD" --json env "$profile_name" 2>/dev/null | \
+                        python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps({'env':d['env']}))" \
+                        > "$_tmp_settings"
+                    command "$tool" --settings "$_tmp_settings" "$@"
+                    rm -f "$_tmp_settings"
+                else
+                    command "$tool" "$@"
+                fi
+                ;;
+            codex)
+                # OPENAI_API_KEY env var (set via eval above) takes priority over
+                # auth.json when preferred_auth_method="apikey". Use --config to
+                # force apikey mode in case user's config.toml has "chatgpt" (OAuth).
+                command "$tool" --config preferred_auth_method="apikey" "$@"
+                ;;
+            *)
+                command "$tool" "$@"
+                ;;
+        esac
     )
 }
