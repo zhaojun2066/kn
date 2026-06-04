@@ -35,7 +35,7 @@ export function NameDialog({
       setError("名称只能包含小写字母、数字和连字符");
       return false;
     }
-    const reserved = ["claude", "codex", "gemini", "qoderclicn", "profile", "ai", "help"];
+    const reserved = ["claude", "codex", "qoderclicn", "profile", "ai", "help"];
     if (reserved.includes(trimmed)) {
       setError(`"${trimmed}" 是系统保留关键字，不能用作 Profile 名称`);
       return false;

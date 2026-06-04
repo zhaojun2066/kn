@@ -52,7 +52,6 @@ function ai {
         Write-Host "  Run with profile:"
         Write-Host "    ai claude <profile>       Run Claude Code with profile env"
         Write-Host "    ai codex <profile>        Run Codex CLI with profile env"
-        Write-Host "    ai gemini <profile>       Run Gemini CLI with profile env"
         Write-Host "    ai qoderclicn <profile>   Run Qoder with profile env"
         Write-Host ""
         Write-Host "  Manage profiles:"
@@ -114,28 +113,6 @@ function ai {
             }
             & $tool @rest
         }
-        'gemini' {
-            $tool = 'gemini'
-            $rest = @($args | Select-Object -Skip 1)
-            if ($rest.Count -gt 0) {
-                $envs = _profile_env $rest[0]
-                if ($envs -and $envs.Count -gt 0) {
-                    $profileName = $rest[0]
-                    $toolArgs = @($rest | Select-Object -Skip 1)
-                    Write-Host "-> Using profile: $profileName"
-                    & {
-                        foreach ($key in $envs.Keys) {
-                            Set-Item -Path "env:$key" -Value $envs[$key]
-                        }
-                        $env:KN_PROFILE = $profileName
-                        $env:KN_CLI_TOOL = $tool
-                        & $tool @toolArgs
-                    }
-                    return
-                }
-            }
-            & $tool @rest
-        }
         'qoderclicn' {
             $tool = 'qoderclicn'
             $rest = @($args | Select-Object -Skip 1)
@@ -172,14 +149,13 @@ function ai {
             Write-Host "AI Profile Manager"
             Write-Host "  ai claude <profile>       Run Claude Code with profile"
             Write-Host "  ai codex <profile>        Run Codex CLI with profile"
-            Write-Host "  ai gemini <profile>       Run Gemini CLI with profile"
             Write-Host "  ai qoderclicn <profile>   Run Qoder with profile"
             Write-Host "  ai profile list           List all profiles"
             Write-Host "  ai profile env <name>     Show env vars for profile"
         }
         default {
             Write-Host "Unknown command: $cmd"
-            Write-Host "Supported: claude, codex, gemini, qoderclicn, profile"
+            Write-Host "Supported: claude, codex, qoderclicn, profile"
         }
     }
 }

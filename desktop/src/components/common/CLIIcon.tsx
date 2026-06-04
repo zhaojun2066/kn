@@ -46,17 +46,6 @@ function CodexIcon({ size = 16 }: { size: number }) {
   );
 }
 
-/* ── Gemini — Google sparkle/star motif ──────────────────── */
-function GeminiIcon({ size = 16 }: { size: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <circle cx="12" cy="12" r="11.5" fill="#e8f0fe" stroke="#4285F4" strokeWidth="0.8" />
-      <path d="M12 4.5C12 8.5 8.5 12 4.5 12C8.5 12 12 15.5 12 19.5C12 15.5 15.5 12 19.5 12C15.5 12 12 8.5 12 4.5Z" fill="#4285F4" />
-      <path d="M17.5 5C17.5 6.5 16.5 7.5 15 7.5C16.5 7.5 17.5 8.5 17.5 10C17.5 8.5 18.5 7.5 20 7.5C18.5 7.5 17.5 6.5 17.5 5Z" fill="#4285F4" opacity="0.55" />
-    </svg>
-  );
-}
-
 /* ── Qoder — code brackets motif ─────────────────────────── */
 function QoderclicnIcon({ size = 16 }: { size: number }) {
   return (
@@ -83,7 +72,6 @@ function OtherIcon({ size = 16 }: { size: number }) {
 export function CLIIcon({ type, size = 16 }: CLIIconProps) {
   if (type === "claude" || type === "anthropic") return <ClaudeIcon size={size} />;
   if (type === "codex" || type === "openai") return <CodexIcon size={size} />;
-  if (type === "gemini") return <GeminiIcon size={size} />;
   if (type === "qoderclicn") return <QoderclicnIcon size={size} />;
   return <OtherIcon size={size} />;
 }

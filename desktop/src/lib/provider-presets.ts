@@ -203,18 +203,6 @@ const codexProviders: ProviderPreset[] = [
     ],
   },
   {
-    id: "google-gemini-compat",
-    name: "Google Gemini (OpenAI 兼容)",
-    description: "通过 Gemini 的 OpenAI 兼容端点",
-    envVars: [
-      { key: "GEMINI_API_KEY", required: true, placeholder: "AIzaSy..." },
-      {
-        key: "OPENAI_BASE_URL", required: false,
-        defaultValue: "https://generativelanguage.googleapis.com/v1beta/openai",
-      },
-    ],
-  },
-  {
     id: "ollama",
     name: "Ollama (本地)",
     description: "本地运行的开源模型",
@@ -229,45 +217,6 @@ const codexProviders: ProviderPreset[] = [
     envVars: [
       { key: "OPENAI_API_KEY", required: true, placeholder: "sk-..." },
       { key: "OPENAI_BASE_URL", required: true, placeholder: "https://your-gateway.com/v1" },
-    ],
-  },
-];
-
-// --- Gemini CLI ---
-
-const geminiProviders: ProviderPreset[] = [
-  {
-    id: "google-ai-studio",
-    name: "Google AI Studio",
-    description: "免费额度 1000 次/天 (Flash 模型)",
-    envVars: [
-      { key: "GEMINI_API_KEY", required: true, placeholder: "AIzaSy..." },
-    ],
-  },
-  {
-    id: "google-vertex",
-    name: "Google Vertex AI",
-    description: "企业级 Vertex AI",
-    envVars: [
-      { key: "GOOGLE_CLOUD_PROJECT", required: true, placeholder: "my-project-id" },
-      { key: "GOOGLE_CLOUD_LOCATION", required: false, defaultValue: "us-central1" },
-    ],
-  },
-  {
-    id: "community-fork",
-    name: "社区 Fork (多模型)",
-    description: "使用 llxprt-code 等社区版，兼容 OpenAI API",
-    envVars: [
-      { key: "OPENAI_API_KEY", required: true, placeholder: "sk-..." },
-      { key: "OPENAI_BASE_URL", required: true, placeholder: "https://your-gateway.com/v1" },
-    ],
-  },
-  {
-    id: "gemini-custom",
-    name: "自定义",
-    description: "自由配置环境变量",
-    envVars: [
-      { key: "GEMINI_API_KEY", required: false, placeholder: "AIzaSy..." },
     ],
   },
 ];
@@ -302,13 +251,6 @@ export const CLI_TOOLS: CLIToolDef[] = [
     description: "OpenAI 协议 — 兼容 OpenAI、Azure、OpenRouter、DeepSeek、Groq 等",
     iconLetter: "O",
     providers: codexProviders,
-  },
-  {
-    id: "gemini",
-    name: "Gemini CLI",
-    description: "Google Gemini 模型 — AI Studio 免费额度 + Vertex AI 企业版",
-    iconLetter: "G",
-    providers: geminiProviders,
   },
   {
     id: "qoderclicn",

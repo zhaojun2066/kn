@@ -19,7 +19,6 @@ interface Props {
 const CLI_LABELS: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex CLI",
-  gemini: "Gemini CLI",
   qoderclicn: "Qoder CLI (国内版)",
 };
 
@@ -28,7 +27,6 @@ function detectCLI(env: Record<string, string>): string | null {
   if (env._KN_CLI_TYPE && env._KN_CLI_TYPE !== "both") return env._KN_CLI_TYPE;
   // Heuristic detection
   const keys = Object.keys(env).map((k) => k.toUpperCase());
-  if (keys.some((k) => k === "GEMINI_API_KEY" || k.startsWith("GOOGLE_CLOUD_"))) return "gemini";
   // Qoder uses OPENAI_API_KEY + OPENAI_BASE_URL; distinguish by dashscope endpoint
   if (env.OPENAI_BASE_URL?.includes("dashscope")) return "qoderclicn";
   if (keys.some((k) => k.startsWith("ANTHROPIC_"))) return "claude";

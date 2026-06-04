@@ -24,13 +24,12 @@ ai() {
     if [ $# -eq 0 ]; then
         echo "Usage: ai <tool> [profile] [args...]"
         echo ""
-        echo "  Supported tools: claude, codex, gemini, qoderclicn"
+        echo "  Supported tools: claude, codex, qoderclicn"
         echo ""
         echo "Examples:"
         echo "  ai claude deepseek      # Claude Code + deepseek profile"
         echo "  ai claude               # Interactive pick → Claude Code"
         echo "  ai codex codex-default  # Codex + codex-default profile"
-        echo "  ai gemini my-profile    # Gemini CLI + profile env"
         echo "  ai qoderclicn my-profile      #Qoder + profile env"
         echo ""
         echo "Available profiles:"
@@ -43,9 +42,9 @@ ai() {
 
     # Validate tool
     case "$tool" in
-        claude|codex|gemini|qoderclicn) ;;
+        claude|codex|qoderclicn) ;;
         *)
-            echo "Unknown tool: $tool (supported: claude, codex, gemini, qoderclicn)" >&2
+            echo "Unknown tool: $tool (supported: claude, codex, qoderclicn)" >&2
             return 1
             ;;
     esac

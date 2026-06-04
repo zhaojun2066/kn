@@ -314,25 +314,6 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
         });
     }
 
-    // Scan ~/.gemini/settings.json → has { "apiKey": "..." }
-    let gemini_settings = home.join(".gemini").join("settings.json");
-    let gemini_str = gemini_settings.display().to_string();
-    checked.push(gemini_str.clone());
-    if let Ok(json) = read_json_file(&gemini_settings) {
-        let mut gemini_env = std::collections::HashMap::new();
-        if let Some(key) = json.get("apiKey").and_then(|v| v.as_str()) {
-            gemini_env.insert("GEMINI_API_KEY".into(), key.to_string());
-        }
-        if !gemini_env.is_empty() {
-            profiles.push(ScanProfile {
-                name: "gemini".into(),
-                cli_type: "gemini".into(),
-                env: gemini_env,
-                source: gemini_str,
-            });
-        }
-    }
-
     // Scan ~/.qoder-cn/ (Qoder CN CLI) — PAT token set via env var, not in config files
     let qoder_dir = home.join(".qoder-cn");
     let qoder_str = qoder_dir.display().to_string();
@@ -631,25 +612,7 @@ pub fn check_environment() -> EnvCheckResult {
         }),
     }
 
-    // 3. Gemini CLI
-    match check_binary_on_path("gemini") {
-        Some(path) => items.push(EnvCheckItem {
-            name: "gemini".into(),
-            label: "Gemini CLI".into(),
-            status: "ok".into(),
-            detail: path,
-            install_cmd: None,
-        }),
-        None => items.push(EnvCheckItem {
-            name: "gemini".into(),
-            label: "Gemini CLI".into(),
-            status: "missing".into(),
-            detail: "未安装 (npm i -g @google/gemini-cli)".into(),
-            install_cmd: Some("npm i -g @google/gemini-cli".into()),
-        }),
-    }
-
-    // 5. Qoder
+    // 4. Qoder
     match check_binary_on_path("qoderclicn") {
         Some(path) => items.push(EnvCheckItem {
             name: "qoderclicn".into(),

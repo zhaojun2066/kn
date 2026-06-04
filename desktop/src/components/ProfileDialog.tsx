@@ -64,7 +64,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onInstallToo
       setError("名称只能包含小写字母、数字和连字符（如 my-provider）");
       return false;
     }
-    const reserved = ["claude", "codex", "gemini", "qoderclicn", "profile", "ai", "help"];
+    const reserved = ["claude", "codex", "qoderclicn", "profile", "ai", "help"];
     if (reserved.includes(trimmed)) {
       setError(`"${trimmed}" 是系统保留关键字，不能用作 Profile 名称`);
       return false;
@@ -373,7 +373,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onInstallToo
               </p>
               <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
                 {filteredProviders.map((provider) => {
-                  const isCustom = provider.id === "custom" || provider.id === "gemini-custom";
+                  const isCustom = provider.id === "custom";
                   const isSelected = providerId === provider.id;
                   // Preview first 2 env var key names
                   const keyPreview = provider.envVars.slice(0, 2).map((v) => v.key).join(", ");

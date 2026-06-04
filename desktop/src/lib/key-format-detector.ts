@@ -26,11 +26,6 @@ const KEY_HINTS: { pattern: RegExp; label: string; compatibleTools: string[] }[]
     compatibleTools: ["codex"],
   },
   {
-    pattern: /^AIzaSy/,
-    label: "Google Key — compatible with Gemini CLI",
-    compatibleTools: ["gemini"],
-  },
-  {
     pattern: /^gsk_/i,
     label: "Groq Key — compatible with Codex CLI",
     compatibleTools: ["codex"],

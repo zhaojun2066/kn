@@ -167,7 +167,7 @@ pub fn add_profile_cmd(name: &str, desc: Option<&str>) -> Result<MutationResult,
         return Ok(MutationResult { ok: false, error: Some("profile 名称只能包含小写字母、数字和连字符，不能以连字符开头或结尾".into()), action: None, profile: None, key: None });
     }
     // Reserved keywords — conflicts with shell wrapper tool routing
-    const RESERVED: &[&str] = &["claude", "codex", "gemini", "qoderclicn", "profile", "ai", "help"];
+    const RESERVED: &[&str] = &["claude", "codex", "qoderclicn", "profile", "ai", "help"];
     if RESERVED.contains(&name) {
         return Ok(MutationResult { ok: false, error: Some(format!("'{}' 是系统保留关键字，不能用作 Profile 名称", name)), action: None, profile: None, key: None });
     }
@@ -327,7 +327,6 @@ ai() {
         echo "  Run with profile:"
         echo "    ai claude <profile>       Run Claude Code with profile env"
         echo "    ai codex <profile>        Run Codex CLI with profile env"
-        echo "    ai gemini <profile>       Run Gemini CLI with profile env"
         echo "    ai qoderclicn <profile>   Run Qoder with profile env"
         echo ""
         echo "  Manage profiles:"
@@ -337,7 +336,7 @@ ai() {
         return
     fi
     case "$cmd" in
-        claude|codex|gemini|qoderclicn)
+        claude|codex|qoderclicn)
             local tool="$1"; shift
             if [ $# -gt 0 ]; then
                 local env_output=$(_profile_env "$1")
@@ -429,7 +428,6 @@ print(json.dumps({'env': env}))
             echo "AI Profile Manager"
             echo "  ai claude <profile>       Run Claude Code with profile"
             echo "  ai codex <profile>        Run Codex CLI with profile"
-            echo "  ai gemini <profile>       Run Gemini CLI with profile"
             echo "  ai qoderclicn <profile>   Run Qoder with profile"
             echo "  ai profile list           List all profiles"
             echo "  ai profile env <name>     Show env vars for profile"
@@ -437,7 +435,7 @@ print(json.dumps({'env': env}))
             ;;
         *)
             echo "Unknown command: $cmd" >&2
-            echo "Supported: claude, codex, gemini, qoderclicn, profile" >&2
+            echo "Supported: claude, codex, qoderclicn, profile" >&2
             return 1
             ;;
     esac
@@ -502,7 +500,6 @@ function ai {
         Write-Host "  Run with profile:"
         Write-Host "    ai claude <profile>       Run Claude Code with profile env"
         Write-Host "    ai codex <profile>        Run Codex CLI with profile env"
-        Write-Host "    ai gemini <profile>       Run Gemini CLI with profile env"
         Write-Host "    ai qoderclicn <profile>   Run Qoder with profile env"
         Write-Host ""
         Write-Host "  Manage profiles:"
@@ -559,26 +556,6 @@ function ai {
             }
             & $tool @rest
         }
-        'gemini' {
-            $tool = 'gemini'
-            $rest = @($args | Select-Object -Skip 1)
-            if ($rest.Count -gt 0) {
-                $envs = _profile_env $rest[0]
-                if ($envs -and $envs.Count -gt 0) {
-                    $profileName = $rest[0]
-                    $toolArgs = @($rest | Select-Object -Skip 1)
-                    Write-Host "-> Using profile: $profileName"
-                    foreach ($key in $envs.Keys) {
-                        Set-Item -Path "env:$key" -Value $envs[$key]
-                    }
-                    $env:KN_PROFILE = $profileName
-                    $env:KN_CLI_TOOL = $tool
-                    & $tool @toolArgs
-                    return
-                }
-            }
-            & $tool @rest
-        }
         'qoderclicn' {
             $tool = 'qoderclicn'
             $rest = @($args | Select-Object -Skip 1)
@@ -613,14 +590,13 @@ function ai {
             Write-Host "AI Profile Manager"
             Write-Host "  ai claude <profile>       Run Claude Code with profile"
             Write-Host "  ai codex <profile>        Run Codex CLI with profile"
-            Write-Host "  ai gemini <profile>       Run Gemini CLI with profile"
             Write-Host "  ai qoderclicn <profile>   Run Qoder with profile"
             Write-Host "  ai profile list           List all profiles"
             Write-Host "  ai profile env <name>     Show env vars for profile"
         }
         default {
             Write-Host "Unknown command: $cmd"
-            Write-Host "Supported: claude, codex, gemini, qoderclicn, profile"
+            Write-Host "Supported: claude, codex, qoderclicn, profile"
         }
     }
 }
@@ -629,7 +605,7 @@ function ai {
 	const HOOK_RECORDER: &str = r##"#!/usr/bin/env python3
 """Token usage recorder — called by Stop/SessionEnd hooks.
 Reads structured JSON from stdin, extracts token usage, appends to usage.jsonl.
-Supports Claude Code, Codex, Gemini CLI, Qoder CLI transcripts.
+Supports Claude Code, Codex transcripts.
 """
 
 import sys, json, os
@@ -688,7 +664,7 @@ def extract(data):
             "tokens_in": int(u.get("input_tokens", u.get("input", 0))),
             "tokens_out": int(u.get("output_tokens", u.get("output", 0))),
         }
-    # Gemini / Qoder / Claude Code v2: no usage inline, read transcript file
+    # Claude Code v2: no usage inline, read transcript file
     if "transcript_path" in data:
         return extract_from_transcript(data["transcript_path"])
     # Generic fallback: top-level tokens_in / tokens_out
@@ -703,8 +679,7 @@ def extract(data):
 
 def extract_from_transcript(path):
     """Read transcript, sum usage from all turns.
-    Handles Claude Code/Codex (JSONL), Gemini (ConversationRecord JSON),
-    Qoder (session JSON / JSONL transcript).
+    Handles Claude Code/Codex (JSONL).
     """
     total_in = 0
     total_out = 0
@@ -716,30 +691,7 @@ def extract_from_transcript(path):
     except OSError:
         return None
 
-    # ── Single JSON: Gemini ConversationRecord / Qoder session.json ──
-    try:
-        root = json.loads(raw)
-        if isinstance(root, dict):
-            # Gemini: turns[] with usageMetadata.promptTokenCount / candidatesTokenCount
-            for turn in root.get("turns", root.get("messages", [])):
-                um = turn.get("usageMetadata", {})
-                if um:
-                    total_in += int(um.get("promptTokenCount", 0))
-                    total_out += int(um.get("candidatesTokenCount", 0))
-                    if not model:
-                        model = turn.get("model", "")
-            # Qoder session.json: top-level prompt_tokens / completion_tokens
-            if total_in == 0 and total_out == 0:
-                total_in = int(root.get("prompt_tokens", 0))
-                total_out = int(root.get("completion_tokens", 0))
-                if not model:
-                    model = root.get("model", "")
-            if total_in > 0 or total_out > 0:
-                return {"model": str(model), "tokens_in": total_in, "tokens_out": total_out}
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # ── JSONL: Claude Code / Codex / Qoder transcript, one JSON per line ──
+    # ── JSONL: Claude Code / Codex transcript, one JSON per line ──
     for line in raw.splitlines():
         line = line.strip()
         if not line:
@@ -760,7 +712,7 @@ def extract_from_transcript(path):
                     model = msg.get("model", "")
             continue
 
-        # Qoder / generic: usage at entry level
+        # Generic: usage at entry level
         u = entry.get("usage")
         if isinstance(u, dict):
             total_in += _in(u)
@@ -768,14 +720,6 @@ def extract_from_transcript(path):
             if not model:
                 model = entry.get("model", u.get("model", ""))
             continue
-
-        # Gemini transcript line: usageMetadata
-        um = entry.get("usageMetadata")
-        if isinstance(um, dict):
-            total_in += int(um.get("promptTokenCount", 0))
-            total_out += int(um.get("candidatesTokenCount", 0))
-            if not model:
-                model = entry.get("model", "")
 
     if total_in == 0 and total_out == 0:
         return None
@@ -934,7 +878,6 @@ fn detect_cli_type(env: &HashMap<String, String>) -> Option<String> {
         if t == "both" { return Some("claude".into()); }
         return Some(t.clone());
     }
-    if env.keys().any(|k| k.starts_with("GEMINI_API_KEY") || k.starts_with("GOOGLE_CLOUD_")) { return Some("gemini".into()); }
     // Qoder uses OPENAI_API_KEY + OPENAI_BASE_URL, same as Codex.
     // Distinguish by checking if base_url points to dashscope (Qwen official endpoint).
     if let Some(base_url) = env.get("OPENAI_BASE_URL") {

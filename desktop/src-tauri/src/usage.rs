@@ -222,20 +222,6 @@ pub fn get_usage_tracking_enabled() -> Result<bool, String> {
             return Ok(true);
         }
     }
-    let gemini_settings = PathBuf::from(&home).join(".gemini").join("settings.json");
-    if gemini_settings.exists() {
-        let content = fs::read_to_string(&gemini_settings).unwrap_or_default();
-        if content.contains("record-usage.py") {
-            return Ok(true);
-        }
-    }
-    let qoder_settings = PathBuf::from(&home).join(".qoder-cn").join("settings.json");
-    if qoder_settings.exists() {
-        let content = fs::read_to_string(&qoder_settings).unwrap_or_default();
-        if content.contains("record-usage.py") {
-            return Ok(true);
-        }
-    }
     Ok(false)
 }
 
@@ -256,19 +242,11 @@ pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
         inject_claude_hook(&claude_settings, &hook_cmd)?;
         let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
         inject_codex_hook(&codex_config, &hook_cmd)?;
-        let gemini_settings = PathBuf::from(&home).join(".gemini").join("settings.json");
-        inject_gemini_hook(&gemini_settings, &hook_cmd)?;
-        let qoder_settings = PathBuf::from(&home).join(".qoder-cn").join("settings.json");
-        inject_qoder_hook(&qoder_settings, &hook_cmd)?;
     } else {
         let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
         remove_claude_hook(&claude_settings)?;
         let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
         remove_codex_hook(&codex_config)?;
-        let gemini_settings = PathBuf::from(&home).join(".gemini").join("settings.json");
-        remove_gemini_hook(&gemini_settings)?;
-        let qoder_settings = PathBuf::from(&home).join(".qoder-cn").join("settings.json");
-        remove_qoder_hook(&qoder_settings)?;
     }
 
     Ok("ok".into())
@@ -338,20 +316,6 @@ fn inject_claude_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
 }
 fn remove_claude_hook(path: &Path) -> Result<(), String> {
     remove_json_hook(path, "Stop")
-}
-
-fn inject_gemini_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
-    inject_json_hook(path, "SessionEnd", hook_cmd)
-}
-fn remove_gemini_hook(path: &Path) -> Result<(), String> {
-    remove_json_hook(path, "SessionEnd")
-}
-
-fn inject_qoder_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
-    inject_json_hook(path, "SessionEnd", hook_cmd)
-}
-fn remove_qoder_hook(path: &Path) -> Result<(), String> {
-    remove_json_hook(path, "SessionEnd")
 }
 
 fn inject_codex_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {

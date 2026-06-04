@@ -106,13 +106,11 @@ export function ScanPreview({ open, profiles, onImport, onCancel }: Props) {
                     <span className={`text-2xs px-1 py-px font-mono shrink-0 ${
                       p.cli_type === "claude" ? "text-app-accent bg-app-green-bg" :
                       p.cli_type === "codex" ? "text-app-blue bg-[var(--app-selected)]" :
-                      p.cli_type === "gemini" ? "text-[#4285F4] bg-[#e8f0fe] bg-opacity-20" :
                       p.cli_type === "qoderclicn" ? "text-[#FF6A00] bg-[#fff3e6] bg-opacity-20" :
                       "text-app-text-dim bg-[var(--app-input)]"
                     }`}>
                       {p.cli_type === "claude" ? "Claude Code" :
                        p.cli_type === "codex" ? "Codex CLI" :
-                       p.cli_type === "gemini" ? "Gemini CLI" :
                        p.cli_type === "qoderclicn" ? "Qoder CLI (国内版)" :
                        p.cli_type}
                     </span>
