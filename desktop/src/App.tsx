@@ -59,14 +59,19 @@ export function App() {
   const [showUsage, setShowUsage] = useState(false);
   const usage = useUsage();
   const batchDeleteNamesRef = useRef<string[]>([]);
+  // Platform info (fetched once, used for download path construction)
+  const platformRef = useRef<{ os: string; arch: string }>({ os: "macos", arch: "x86_64" });
   // Update dialog: store manifest + platform data when new version found
   const [updateDialog, setUpdateDialog] = useState<{ version: string; notes: string; url: string; sha256: string } | null>(null);
   const [downloadState, setDownloadState] = useState<{ phase: "idle" | "downloading" | "verifying"; progress: number; error: string | null }>({
     phase: "idle", progress: 0, error: null,
   });
 
-  // Load profiles on mount
+  // Load profiles + platform info on mount
   useEffect(() => { ctx.loadProfiles(); }, []);
+  useEffect(() => {
+    invoke<{ os: string; arch: string }>("get_platform_info").then((info) => { platformRef.current = info; }).catch(() => {});
+  }, []);
 
   // Keep terminals aware of valid profile names (for history restore validation)
   useEffect(() => {
@@ -386,8 +391,14 @@ export function App() {
     try {
       const tmpDir: string = await invoke("temp_dir");
       const pathPart = url.split('?')[0];
-      const ext = pathPart.split('.').pop() || 'dmg';
-      const tmpPath = `${tmpDir}/ai-profile-manager-update-${Date.now()}.${ext}`;
+      const urlExt = pathPart.split('.').pop() || "";
+      // Platform-aware: .dmg on macOS, .exe on Windows, .deb on Linux
+      const defaultExt = platformRef.current.os === "windows" ? "exe"
+        : platformRef.current.os === "linux" ? "deb"
+        : "dmg";
+      const ext = urlExt || defaultExt;
+      const sep = platformRef.current.os === "windows" ? "\\" : "/";
+      const tmpPath = `${tmpDir}${sep}ai-profile-manager-update-${Date.now()}.${ext}`;
       await invoke("download_file", { url, path: tmpPath });
 
       // Download complete — 100%

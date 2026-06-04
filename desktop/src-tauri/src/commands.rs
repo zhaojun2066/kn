@@ -164,8 +164,12 @@ pub fn read_app_config() -> Result<AppConfig, String> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| cwd.clone());
     let paths = vec![
-        // Bundled resource (production) — Tauri v2 copies to Resources/
-        exe_dir.join("../Resources/update.json"),
+        // Bundled resource (production):
+        //   macOS .app:  Contents/Resources/ (relative to exe: ../Resources/)
+        //   Windows/MSI: next to .exe
+        //   Linux:        next to binary
+        exe_dir.join("../Resources/update.json"),  // macOS
+        exe_dir.join("update.json"),               // Windows / Linux
         // Development fallback
         cwd.join("update.json"),
         // Global fallback
@@ -392,27 +396,39 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
         let stderr = child.stderr.take()
             .ok_or_else(|| "无法获取 stderr".to_string())?;
 
-        // Read curl stderr for progress.  curl's default progress meter
-        // writes a status line to stderr, updating it in-place with \r.
-        // We split on \r and look for a percentage token in each fragment.
+        // Read curl stderr for progress.
+        //
+        // Curl's progress meter format (when stderr is piped / not a TTY):
+        //   % Total    % Received % Xferd  ...
+        //                                  Dload ...
+        //   \r  PERCENT  bytes1  PERCENT2 bytes2  PERCENT3 bytes3 ...
+        //
+        // The first numeric field after whitespace is the *total* completion
+        // percentage (0–100) — a bare integer, **without** a '%' suffix.
+        // The '%' symbol only appears in the column headers.
+        //
+        // We split on \r and extract the leading integer from each fragment,
+        // skipping the header and separator lines.
         use std::io::{BufRead, BufReader};
         let reader = BufReader::new(stderr);
-        let mut accumulated = String::new();
         for line_result in reader.split(b'\r') {
             let chunk = line_result.unwrap_or_default();
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            accumulated.push_str(&chunk_str);
-            // Find the last percentage in the accumulated buffer
-            for part in accumulated.split_whitespace().rev() {
-                if part.ends_with('%') && part.len() >= 2 {
-                    let pct_str = &part[..part.len()-1];
-                    if let Ok(pct) = pct_str.parse::<u8>() {
-                        let _ = app.emit("download-progress", pct);
-                    }
-                    break;
+            let trimmed = String::from_utf8_lossy(&chunk);
+            let trimmed = trimmed.trim();
+            // Skip headers, separators, and empty lines
+            if trimmed.is_empty()
+                || trimmed.contains('%')
+                || trimmed.contains("Dload")
+                || trimmed.contains("----")
+            {
+                continue;
+            }
+            // First whitespace-delimited token is the progress percentage
+            if let Some(first) = trimmed.split_whitespace().next() {
+                if let Ok(pct) = first.parse::<u8>() {
+                    let _ = app.emit("download-progress", pct);
                 }
             }
-            accumulated.clear();
         }
 
         let status = child.wait().map_err(|e| format!("curl 等待失败: {}", e))?;
@@ -437,9 +453,11 @@ pub fn verify_sha256(path: String, expected: String) -> Result<bool, String> {
             .map_err(|e| format!("shasum 执行失败: {}", e))?;
         String::from_utf8_lossy(&output.stdout).split_whitespace().next().unwrap_or("").to_string()
     } else if cfg!(target_os = "windows") {
-        // Use PowerShell Get-FileHash (locale-independent, unlike certutil)
+        // Use PowerShell Get-FileHash (locale-independent, unlike certutil).
+        // Escape single quotes in path: PowerShell single-quoted strings use '' for literal '
+        let escaped_path = path.replace('\'', "''");
         let output = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &format!("(Get-FileHash -Path '{}' -Algorithm SHA256).Hash", path)])
+            .args(["-NoProfile", "-Command", &format!("(Get-FileHash -Path '{}' -Algorithm SHA256).Hash", escaped_path)])
             .output()
             .map_err(|e| format!("powershell 执行失败: {}", e))?;
         String::from_utf8_lossy(&output.stdout).trim().to_lowercase()

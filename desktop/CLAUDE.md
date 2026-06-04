@@ -30,7 +30,7 @@ AI Profile Manager — a Tauri v2 desktop app (React + Tailwind + TypeScript fro
 
 ### Key Technology Stack
 - **Desktop shell**: Tauri v2 with `tauri-plugin-shell` (for `Command.create` from frontend), `tauri-plugin-dialog` (file open/save dialogs), `tauri-plugin-fs`, `tauri-plugin-updater`
-- **Terminal**: xterm.js (`@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-webgl`) in the frontend, `portable-pty` crate in Rust for real PTY-backed shell sessions. **Two independent terminal panels** coexist:
+- **Terminal**: xterm.js (`@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-search`) with **canvas renderer** (WebGL disabled — caused rendering glitches with CJK + box-drawing), `portable-pty` crate in Rust for real PTY-backed shell sessions. **Two independent terminal panels** coexist:
   - **Right terminal** (`panelId="right"`): opens on the right side when user clicks「运行」on a profile. Width-based sizing.
   - **Bottom terminal** (`panelId="bottom"`): VS Code-style bottom panel, toggled via toolbar button or Ctrl+`. Height-based sizing.
   - Each has its own tabs, history, PTY sessions — fully independent.
@@ -47,7 +47,7 @@ desktop/
 │   │   ├── Sidebar.tsx     # Profile list with search, sort, right-click menu, CLI type icons
 │   │   ├── MainPanel.tsx   # Profile detail: env var table + command reference block + session history
 │   │   ├── TerminalPanel.tsx # Tab bar + xterm terminals + work dir + history dropdown. mode="right"|"bottom" adapts sizing
-│   │   ├── XTerm.tsx       # xterm.js + WebGL + FitAddon wrapper (forwardRef)
+│   │   ├── XTerm.tsx       # xterm.js + FitAddon + SearchAddon wrapper (forwardRef, canvas renderer)
 │   │   ├── ProfileDialog.tsx # 4-step create wizard: name → CLI type → env vars → done
 │   │   ├── ImportPreview.tsx  # JSON import preview with CLI detection
 │   │   ├── ScanPreview.tsx    # System scan results with checkboxes + editable names
@@ -88,8 +88,11 @@ User types → xterm.onData → invoke("write_pty", {sessionId, data})
   → Rust write_pty → PTY stdin
   → Shell output → PTY stdout
   → Rust reader thread → Channel.send(PtyEvent::Data)
-  → Frontend Channel.onmessage → term.write(data)
+  → Frontend Channel.onmessage → RAF-batched write (accumulate within frame)
+  → term.write(data)  ← single flush per animation frame
 ```
+
+PTY output is **RAF-batched** in `useTerminal.ts`: data from multiple IPC messages within the same animation frame is accumulated into a buffer and written to xterm.js in a single `term.write()` call. This prevents parser overload when the PTY produces many small chunks rapidly (e.g. Claude Code TUI streaming with ANSI escape sequences).
 
 ### Dual Terminal Instances
 `App.tsx` creates two independent `useTerminal` instances:
@@ -121,8 +124,14 @@ Container resize → ResizeObserver → RAF coalescing → fit()
 ```
 **Important**: `term.onResize` is intentionally NOT used for PTY resize — it fires internally during `fitAddon.fit()` and would cause a duplicate `resize_pty` call.
 
-### Font Rendering
-`xterm.js` uses WebGL addon for best Unicode support (required for Claude Code TUI box-drawing characters). Font stack includes CJK fonts: `ui-monospace, SF Mono, Cascadia Code, Menlo, Monaco, JetBrains Mono, PingFang SC, Microsoft YaHei, Noto Sans CJK SC`. The `FitAddon` handles automatic terminal resizing with RAF (requestAnimationFrame) coalescing — no artificial delay. PTY resize signal is sent immediately in the same frame.
+### Font Rendering & Resize
+Uses **canvas renderer** (default) for maximum stability — WebGL was disabled because it caused rendering glitches with CJK fonts, box-drawing characters (`╭─│├`), and Braille spinners (`⠋⠙⠹`) heavily used by Claude Code's TUI. The canvas renderer supports the same Unicode characters.
+
+Font stack: `ui-monospace, SF Mono, Cascadia Code, Menlo, Monaco, JetBrains Mono, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Consolas, Courier New, monospace`.
+
+Font size changes force an XTerm remount (xterm.js doesn't support hot-reloading `fontSize`). The PTY session stays alive; `resize_pty` (via fit → onResize) sends SIGWINCH to the child, triggering TUI redraw. **No ANSI text replay** — raw escape sequences replayed into a fresh terminal would corrupt the display.
+
+`FitAddon` handles automatic terminal resizing with RAF (requestAnimationFrame) coalescing — no artificial delay. PTY resize signal is sent immediately in the same frame.
 
 ### Profile Config & Shell Wrapper
 - Config file: `~/.claude-profiles/config.yaml`. Single source of truth — no separate dev/prod split.
