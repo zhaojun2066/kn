@@ -376,7 +376,7 @@ pub fn get_app_version(app: tauri::AppHandle) -> String {
 }
 
 /// Find a system binary across common platform paths
-fn find_binary(names: &[&str]) -> Option<String> {
+pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
     for name in names {
         // Try full paths first
         let paths: Vec<String> = if cfg!(target_os = "macos") {

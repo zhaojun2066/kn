@@ -1,6 +1,5 @@
 // agent_manager.rs — Agent scanning, toggling, and dependency graph construction
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 // ── Agent data types ──
 
@@ -215,7 +214,8 @@ fn scan_md_agents_in_dir(cli: &str, dir: &std::path::PathBuf, source: &str) -> V
         let path = entry.path();
         let file_name = path.file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_string(); // owned String — ends borrow on path
 
         // Check if it's an .md file (both active and .disabled)
         let is_agent_file = file_name.ends_with(".md")
@@ -242,9 +242,9 @@ fn scan_md_agents_in_dir(cli: &str, dir: &std::path::PathBuf, source: &str) -> V
                 // Strip .md or .md.disabled suffix
                 file_name
                     .strip_suffix(".disabled")
-                    .unwrap_or(file_name)
+                    .unwrap_or(&file_name)
                     .strip_suffix(".md")
-                    .unwrap_or(file_name)
+                    .unwrap_or(&file_name)
             );
 
         agents.push(agent_from_frontmatter(cli, name, path, source, &frontmatter));
@@ -301,7 +301,7 @@ pub fn scan_agents() -> AgentManagerData {
             .and_modify(|existing: &mut AgentEntry| {
                 // Non-builtin overrides builtin
                 if existing.source == "builtin" && agent.source != "builtin" {
-                    *existing = agent;
+                    *existing = agent.clone();
                 }
             })
             .or_insert(agent);
