@@ -7,6 +7,7 @@ import {
 import { ConfirmDialog } from "./ConfirmDialog";
 import { AgentDetail } from "./AgentDetail";
 import type { SelectedItem, CliKind, PluginUpdateInfo } from "./SkillManager";
+import type { DependencyGraphData } from "./DependencyGraph";
 
 interface ConfirmState {
   title: string;
@@ -22,6 +23,7 @@ interface SkillDetailProps {
   data: {
     plugins: { id: string; name: string; marketplace: string; version?: string; source: string; skills: { name: string; path: string; description?: string }[] }[];
   } | null;
+  graphData?: DependencyGraphData | null;
   onTogglePlugin: (cli: CliKind, pluginId: string, enabled: boolean) => void;
   onToggleStandaloneSkill: (cli: CliKind, skillId: string, enabled: boolean) => void;
   updateInfos: PluginUpdateInfo[];
@@ -406,7 +408,7 @@ function EmptyState() {
 
 /* ──────────────────── Main ──────────────────── */
 
-export function SkillDetail({ item, onTogglePlugin, onToggleStandaloneSkill, updateInfos, onUpdatePlugin, onUninstallPlugin, onUninstallStandaloneSkill }: SkillDetailProps) {
+export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandaloneSkill, updateInfos, onUpdatePlugin, onUninstallPlugin, onUninstallStandaloneSkill }: SkillDetailProps) {
   if (!item) return <EmptyState />;
 
   if (item.type === "plugin") {
@@ -441,6 +443,7 @@ export function SkillDetail({ item, onTogglePlugin, onToggleStandaloneSkill, upd
     return (
       <AgentDetail
         agent={item.data}
+        graphData={graphData}
         onToggle={() => {}}
         onDelete={() => {}}
       />

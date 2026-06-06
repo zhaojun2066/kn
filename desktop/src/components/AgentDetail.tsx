@@ -1,14 +1,72 @@
+import { useState } from "react";
 import { Bot, Lock, Shield, Wrench } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import type { AgentEntry } from "./SkillManager";
+import type { DependencyGraphData } from "./DependencyGraph";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface AgentDetailProps {
   agent: AgentEntry;
+  graphData?: DependencyGraphData | null;
   onToggle?: (agent: AgentEntry, enabled: boolean) => void;
   onDelete?: (agent: AgentEntry) => void;
 }
 
-export function AgentDetail({ agent, onToggle, onDelete }: AgentDetailProps) {
+export function AgentDetail({ agent, graphData, onToggle, onDelete }: AgentDetailProps) {
   const isBuiltin = agent.source === "builtin";
+  const [impactNodes, setImpactNodes] = useState<string[]>([]);
+  const [showImpactConfirm, setShowImpactConfirm] = useState(false);
+  const [pendingAction, setPendingAction] = useState<"toggle" | "delete" | null>(null);
+
+  async function handleToggle() {
+    if (graphData) {
+      try {
+        const impacted = await invoke<string[]>("analyze_impact", {
+          targetId: agent.id,
+          graph: graphData,
+        });
+        if (impacted.length > 0) {
+          setImpactNodes(impacted);
+          setPendingAction("toggle");
+          setShowImpactConfirm(true);
+          return;
+        }
+      } catch (e) {
+        console.error("Impact analysis failed:", e);
+      }
+    }
+    onToggle?.(agent, !agent.enabled);
+  }
+
+  async function handleDelete() {
+    if (graphData) {
+      try {
+        const impacted = await invoke<string[]>("analyze_impact", {
+          targetId: agent.id,
+          graph: graphData,
+        });
+        if (impacted.length > 0) {
+          setImpactNodes(impacted);
+          setPendingAction("delete");
+          setShowImpactConfirm(true);
+          return;
+        }
+      } catch (e) {
+        console.error("Impact analysis failed:", e);
+      }
+    }
+    onDelete?.(agent);
+  }
+
+  function confirmAction() {
+    if (pendingAction === "toggle") {
+      onToggle?.(agent, !agent.enabled);
+    } else if (pendingAction === "delete") {
+      onDelete?.(agent);
+    }
+    setShowImpactConfirm(false);
+    setPendingAction(null);
+  }
 
   return (
     <div className="flex flex-col h-full animate-fadeIn">
@@ -38,7 +96,6 @@ export function AgentDetail({ agent, onToggle, onDelete }: AgentDetailProps) {
 
       {/* Metadata */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        {/* Status */}
         <MetaSection title="Status">
           <MetaRow label="CLI" value={agent.cli} />
           <MetaRow label="Source" value={agent.source} />
@@ -60,7 +117,6 @@ export function AgentDetail({ agent, onToggle, onDelete }: AgentDetailProps) {
           )}
         </MetaSection>
 
-        {/* Tools */}
         {agent.tools.length > 0 && (
           <MetaSection title="Tools" icon={<Wrench size={12} />}>
             <div className="flex flex-wrap gap-1">
@@ -76,7 +132,6 @@ export function AgentDetail({ agent, onToggle, onDelete }: AgentDetailProps) {
           </MetaSection>
         )}
 
-        {/* Referenced Skills */}
         {agent.skills.length > 0 && (
           <MetaSection title="Referenced Skills">
             <div className="flex flex-wrap gap-1">
@@ -92,7 +147,6 @@ export function AgentDetail({ agent, onToggle, onDelete }: AgentDetailProps) {
           </MetaSection>
         )}
 
-        {/* Path (only for file-based agents) */}
         {agent.path && (
           <MetaSection title="Location">
             <div className="text-2xs text-[var(--app-text-dim)] font-mono break-all">
@@ -101,7 +155,6 @@ export function AgentDetail({ agent, onToggle, onDelete }: AgentDetailProps) {
           </MetaSection>
         )}
 
-        {/* Codex sandbox */}
         {agent.sandboxMode && (
           <MetaSection title="Sandbox" icon={<Shield size={12} />}>
             <MetaRow label="Mode" value={agent.sandboxMode} />
@@ -113,13 +166,13 @@ export function AgentDetail({ agent, onToggle, onDelete }: AgentDetailProps) {
       {!isBuiltin && (
         <div className="px-4 py-3 border-t border-[var(--app-border)] space-y-2">
           <button
-            onClick={() => onToggle?.(agent, !agent.enabled)}
+            onClick={handleToggle}
             className="w-full px-3 py-1.5 rounded text-xs font-mono transition-colors bg-[var(--app-accent)]/10 hover:bg-[var(--app-accent)]/20 text-[var(--app-accent)]"
           >
             {agent.enabled ? "Disable Agent" : "Enable Agent"}
           </button>
           <button
-            onClick={() => onDelete?.(agent)}
+            onClick={handleDelete}
             className="w-full px-3 py-1.5 rounded text-xs font-mono transition-colors bg-red-500/10 hover:bg-red-500/20 text-red-400"
           >
             Delete Agent
@@ -127,7 +180,6 @@ export function AgentDetail({ agent, onToggle, onDelete }: AgentDetailProps) {
         </div>
       )}
 
-      {/* Builtin notice */}
       {isBuiltin && (
         <div className="px-4 py-3 border-t border-[var(--app-border)]">
           <div className="flex items-center gap-2 text-2xs text-[var(--app-text-dim)]">
@@ -136,11 +188,24 @@ export function AgentDetail({ agent, onToggle, onDelete }: AgentDetailProps) {
           </div>
         </div>
       )}
+
+      {/* Impact confirmation dialog */}
+      {showImpactConfirm && (
+        <ConfirmDialog
+          open={showImpactConfirm}
+          title={pendingAction === "toggle" ? "Confirm Disable" : "Confirm Delete"}
+          message={`${pendingAction === "toggle" ? "Disabling" : "Deleting"} ${agent.name} will affect:\n\n${impactNodes.map((n) => "• " + n).join("\n")}`}
+          confirmLabel={pendingAction === "toggle" ? "Disable Anyway" : "Delete Anyway"}
+          onConfirm={confirmAction}
+          onCancel={() => {
+            setShowImpactConfirm(false);
+            setPendingAction(null);
+          }}
+        />
+      )}
     </div>
   );
 }
-
-// ── Sub-components ──
 
 function MetaSection({
   title,

@@ -1000,6 +1000,7 @@ export function App() {
                 <SkillDetail
                   item={selectedSkillItem}
                   data={skillData}
+                  graphData={graphData}
                   onTogglePlugin={handleTogglePlugin}
                   onToggleStandaloneSkill={handleToggleStandaloneSkill}
                   updateInfos={updateInfos}
