@@ -14,6 +14,7 @@ import { SkillManager, type SkillManagerData, type SelectedItem, type BatchToggl
 import type { PluginUpdateInfo } from "./components/SkillManager";
 import type { AgentManagerData } from "./components/SkillManager";
 import { SkillDetail } from "./components/SkillDetail";
+import { DependencyGraph, type DependencyGraphData } from "./components/DependencyGraph";
 import { MarketplaceBrowser } from "./components/MarketplaceBrowser";
 import { AboutDialog } from "./components/AboutDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -66,6 +67,8 @@ export function App() {
   const [activeActivity, setActiveActivity] = useState<ActivityKey>("profile");
   const [skillData, setSkillData] = useState<SkillManagerData | null>(null);
   const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
+  const [showGraph, setShowGraph] = useState(false);
+  const [graphData, setGraphData] = useState<DependencyGraphData | null>(null);
   const [skillDataLoading, setSkillDataLoading] = useState(false);
   const [selectedSkillItem, setSelectedSkillItem] = useState<SelectedItem | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
@@ -202,6 +205,34 @@ export function App() {
     const found = agents.agents.find((a) => a.id === (prev.data as any).id);
     return found ? { type: "agent" as const, data: found } : null;
   }, []);
+
+  // Load dependency graph
+  const loadGraph = useCallback(async () => {
+    if (!skillData || !agentData) return;
+    try {
+      const graph = await invoke<DependencyGraphData>("build_dependency_graph", {
+        skillsData: skillData,
+        agentsData: agentData,
+      });
+      setGraphData(graph);
+      setShowGraph(true);
+    } catch (e) {
+      console.error("Failed to build dependency graph:", e);
+    }
+  }, [skillData, agentData]);
+
+  // Show detail for a graph node
+  const showNodeDetail = useCallback((nodeId: string) => {
+    const parts = nodeId.split(":");
+    const kind = parts[1];
+    if (kind === "agent" && agentData) {
+      const agent = agentData.agents.find((a) => a.id === nodeId);
+      if (agent) {
+        setSelectedSkillItem({ type: "agent", data: agent });
+        setShowGraph(false);
+      }
+    }
+  }, [agentData]);
 
   // Skill toggle handlers
   const handleTogglePlugin = useCallback(
@@ -942,6 +973,7 @@ export function App() {
                 onCheckUpdates={handleCheckUpdates}
                 onCancelCheckUpdates={handleCancelCheckUpdates}
                 onOpenMarketplace={() => setMarketplaceOpen(true)}
+                onOpenGraph={loadGraph}
               />
             </div>
           )}
@@ -950,7 +982,20 @@ export function App() {
           {!rightMaximized && (
           <div className="flex-1 flex flex-col overflow-hidden min-h-0">
             {/* MainPanel / SkillDetail — hidden when either panel is maximized */}
-            {!rightMaximized && !bottomMaximized && activeActivity === "skills" && (
+            {!rightMaximized && !bottomMaximized && activeActivity === "skills" && showGraph && graphData && (
+              <div className="flex-1 flex flex-col bg-[var(--app-bg)]">
+                <div className="flex items-center px-3 py-1 border-b border-[var(--app-border)]">
+                  <button
+                    onClick={() => setShowGraph(false)}
+                    className="text-2xs text-[var(--app-text-dim)] hover:text-[var(--app-text)] font-mono"
+                  >
+                    ← Back to list
+                  </button>
+                </div>
+                <DependencyGraph data={graphData} onNodeClick={showNodeDetail} />
+              </div>
+            )}
+            {!rightMaximized && !bottomMaximized && activeActivity === "skills" && !showGraph && (
               <div className="flex-1 overflow-y-auto bg-[var(--app-bg)]">
                 <SkillDetail
                   item={selectedSkillItem}

@@ -4,7 +4,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import {
   ChevronRight, ChevronDown, Circle, Filter, Puzzle,
   FileText, Lock, CheckSquare, Square, Play, Ban, X,
-  RefreshCw, Ellipsis, Trash2, Bot,
+  RefreshCw, Ellipsis, Trash2, Bot, GitGraph,
 } from "lucide-react";
 
 /* ──────────────────── Data Types ──────────────────── */
@@ -114,6 +114,7 @@ interface SkillManagerProps {
   onCheckUpdates: () => void;
   onCancelCheckUpdates: () => void;
   onOpenMarketplace: () => void;
+  onOpenGraph?: () => void;
 }
 
 /* ──────────────────── Helpers ──────────────────── */
@@ -336,6 +337,7 @@ export function SkillManager({
   onCheckUpdates,
   onCancelCheckUpdates,
   onOpenMarketplace,
+  onOpenGraph,
 }: SkillManagerProps) {
   const [search, setSearch] = useState("");
   const [cliFilter, setCliFilter] = useState("all");
@@ -572,6 +574,17 @@ export function SkillManager({
             <circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
           </svg>
         </button>
+
+        {/* Dependency Graph — always visible */}
+        {onOpenGraph && (
+          <button
+            onClick={onOpenGraph}
+            className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-accent)] hover:bg-[var(--app-hover)] transition-colors shrink-0"
+            title="Dependency Graph"
+          >
+            <GitGraph size={13} />
+          </button>
+        )}
 
         {/* Update check — always visible */}
         {checkingUpdates ? (
