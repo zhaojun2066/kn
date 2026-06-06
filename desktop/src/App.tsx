@@ -9,6 +9,12 @@ import { NameDialog } from "./components/NameDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { UsagePanel } from "./components/UsagePanel";
+import { ActivityBar, type ActivityKey } from "./components/ActivityBar";
+import { SkillManager, type SkillManagerData, type SelectedItem, type BatchToggleItem } from "./components/SkillManager";
+import type { PluginUpdateInfo } from "./components/SkillManager";
+import type { AgentManagerData } from "./components/SkillManager";
+import { SkillDetail } from "./components/SkillDetail";
+import { MarketplaceBrowser } from "./components/MarketplaceBrowser";
 import { AboutDialog } from "./components/AboutDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { UpdateDialog } from "./components/UpdateDialog";
@@ -57,6 +63,14 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
+  const [activeActivity, setActiveActivity] = useState<ActivityKey>("profile");
+  const [skillData, setSkillData] = useState<SkillManagerData | null>(null);
+  const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
+  const [skillDataLoading, setSkillDataLoading] = useState(false);
+  const [selectedSkillItem, setSelectedSkillItem] = useState<SelectedItem | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateInfos, setUpdateInfos] = useState<PluginUpdateInfo[]>([]);
+  const [marketplaceOpen, setMarketplaceOpen] = useState(false);
   const usage = useUsage();
   const batchDeleteNamesRef = useRef<string[]>([]);
   // Platform info (fetched once, used for download path construction)
@@ -111,6 +125,22 @@ export function App() {
     invoke("ensure_usage_hooks").catch(() => {});
   }, []);
 
+  // Load skill/plugin data when switching to skills view
+  useEffect(() => {
+    if (activeActivity !== "skills") {
+      setSelectedSkillItem(null);
+      return;
+    }
+    setSkillDataLoading(true);
+    Promise.all([
+      invoke<SkillManagerData>("scan_skills"),
+      invoke<AgentManagerData>("scan_agents"),
+    ])
+      .then(([skills, agents]) => { setSkillData(skills); setAgentData(agents); setSelectedSkillItem(null); })
+      .catch(() => { setSkillData(null); setAgentData(null); })
+      .finally(() => setSkillDataLoading(false));
+  }, [activeActivity]);
+
   // Auto-open terminal for pop-out windows (?terminal=1)
   useEffect(() => {
     if (window.location.search.includes("terminal=1")) {
@@ -147,6 +177,250 @@ export function App() {
   }, []);
 
   const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
+
+  // After re-scanning, sync selectedSkillItem to the matching item in fresh data
+  const syncSelection = useCallback((data: SkillManagerData, prev: SelectedItem | null) => {
+    if (!prev) return null;
+    if (prev.type === "plugin") {
+      const found = data.plugins.find((p) => p.id === (prev.data as any).id);
+      return found ? { type: "plugin" as const, data: found } : null;
+    }
+    if (prev.type === "standalone") {
+      const found = data.standaloneSkills.find((s) => s.id === (prev.data as any).id);
+      return found ? { type: "standalone" as const, data: found } : null;
+    }
+    if (prev.type === "system") {
+      const found = data.systemSkills.find((s) => s.id === (prev.data as any).id);
+      return found ? { type: "system" as const, data: found } : null;
+    }
+    return null;
+  }, []);
+
+  // Agent selection sync (separate since agent data comes from agentData, not skillData)
+  const syncAgentSelection = useCallback((agents: AgentManagerData, prev: SelectedItem | null) => {
+    if (!prev || prev.type !== "agent") return null;
+    const found = agents.agents.find((a) => a.id === (prev.data as any).id);
+    return found ? { type: "agent" as const, data: found } : null;
+  }, []);
+
+  // Skill toggle handlers
+  const handleTogglePlugin = useCallback(
+    async (cli: string, pluginId: string, enabled: boolean) => {
+      try {
+        await invoke("toggle_plugin", { cli, pluginId, enabled });
+        setSkillDataLoading(true);
+        const data = await invoke<SkillManagerData>("scan_skills");
+        setSkillData(data);
+        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        setSkillDataLoading(false);
+      } catch (e) {
+        addToast("error", `操作失败: ${e}`);
+      }
+    },
+    [addToast, syncSelection],
+  );
+
+  const handleToggleStandaloneSkill = useCallback(
+    async (cli: string, skillId: string, enabled: boolean) => {
+      try {
+        await invoke("toggle_standalone_skill", { cli, skillId, enabled });
+        setSkillDataLoading(true);
+        const data = await invoke<SkillManagerData>("scan_skills");
+        setSkillData(data);
+        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        setSkillDataLoading(false);
+      } catch (e) {
+        addToast("error", `操作失败: ${e}`);
+      }
+    },
+    [addToast, syncSelection],
+  );
+
+  // Batch toggle: fires all toggles, then does ONE scan
+  const handleBatchToggle = useCallback(
+    async (items: BatchToggleItem[], enabled: boolean) => {
+      try {
+        for (const item of items) {
+          if (item.id.includes(":plugin:")) {
+            await invoke("toggle_plugin", { cli: item.cli, pluginId: item.id, enabled });
+          } else {
+            await invoke("toggle_standalone_skill", { cli: item.cli, skillId: item.id, enabled });
+          }
+        }
+        // Single re-scan after all toggles
+        setSkillDataLoading(true);
+        const data = await invoke<SkillManagerData>("scan_skills");
+        setSkillData(data);
+        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        setSkillDataLoading(false);
+      } catch (e) {
+        addToast("error", `批量操作失败: ${e}`);
+      }
+    },
+    [addToast, syncSelection],
+  );
+
+  const handleBatchUninstall = useCallback(
+    async (items: BatchToggleItem[]) => {
+      try {
+        for (const item of items) {
+          if (item.id.includes(":plugin:")) {
+            await invoke("uninstall_plugin", { cli: item.cli, pluginId: item.id });
+          } else {
+            await invoke("uninstall_standalone_skill", { cli: item.cli, skillId: item.id });
+          }
+        }
+        // Single re-scan after all uninstalls
+        setSkillDataLoading(true);
+        const data = await invoke<SkillManagerData>("scan_skills");
+        setSkillData(data);
+        setSelectedSkillItem(null);
+        setSkillDataLoading(false);
+        addToast("success", `已卸载 ${items.length} 项`);
+      } catch (e) {
+        addToast("error", `批量卸载失败: ${e}`);
+      }
+    },
+    [addToast],
+  );
+
+  // Track whether check was user-initiated (show toast) or auto (silent)
+  const checkSilentRef = useRef(false);
+
+  // Plugin update check — fires background thread, result arrives via event
+  const handleCheckUpdates = useCallback(async () => {
+    if (checkingUpdates) return; // already running
+    checkSilentRef.current = false; // user-initiated → show toast
+    setCheckingUpdates(true);
+    setUpdateInfos([]);
+    try {
+      await invoke("check_updates");
+    } catch (e) {
+      addToast("error", `检查更新失败: ${e}`);
+      setCheckingUpdates(false);
+    }
+  }, [addToast, checkingUpdates]);
+
+  // Listen for update-check-complete event from background thread
+  useEffect(() => {
+    const unlisten = listen<PluginUpdateInfo[]>("update-check-complete", (event) => {
+      setUpdateInfos(event.payload);
+      setCheckingUpdates(false);
+      // Only toast when user-initiated, not for auto re-checks
+      if (!checkSilentRef.current) {
+        const count = event.payload.filter((u) => u.hasUpdate).length;
+        if (count > 0) addToast("success", `发现 ${count} 个可用更新`);
+        else addToast("success", "所有插件均为最新版本");
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [addToast]);
+
+  const handleCancelCheckUpdates = useCallback(async () => {
+    try {
+      await invoke("cancel_check_updates");
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleUpdatePlugin = useCallback(async (cli: string, pluginId: string) => {
+    try {
+      await invoke("update_plugin", { cli, pluginId });
+      addToast("success", "正在后台更新...");
+    } catch (e) {
+      addToast("error", `更新失败: ${e}`);
+    }
+  }, [addToast]);
+
+  // Listen for update-plugin-complete event from background thread
+  useEffect(() => {
+    const unlisten = listen<{ pluginId: string; success: boolean; message: string }>("update-plugin-complete", async (event) => {
+      const { success, message } = event.payload;
+      if (success) {
+        addToast("success", message);
+        // Re-scan skills
+        const data = await invoke<SkillManagerData>("scan_skills");
+        setSkillData(data);
+        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        // Re-check silently (no toast) — result arrives via update-check-complete event
+        checkSilentRef.current = true;
+        invoke("check_updates").catch(() => {});
+      } else {
+        addToast("error", message);
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [addToast, syncSelection]);
+
+  // Plugin uninstall handler
+  const handleUninstallPlugin = useCallback(
+    async (cli: string, pluginId: string) => {
+      try {
+        const msg = await invoke<string>("uninstall_plugin", { cli, pluginId });
+        addToast("success", msg);
+        // Re-scan after uninstall
+        const data = await invoke<SkillManagerData>("scan_skills");
+        setSkillData(data);
+        setSelectedSkillItem((prev) => syncSelection(data, prev));
+      } catch (e) {
+        addToast("error", `卸载失败: ${e}`);
+      }
+    },
+    [addToast, syncSelection],
+  );
+
+  const handleUninstallStandaloneSkill = useCallback(
+    async (cli: string, skillId: string) => {
+      try {
+        const msg = await invoke<string>("uninstall_standalone_skill", { cli, skillId });
+        addToast("success", msg);
+        const data = await invoke<SkillManagerData>("scan_skills");
+        setSkillData(data);
+        setSelectedSkillItem(null);
+      } catch (e) {
+        addToast("error", `卸载失败: ${e}`);
+      }
+    },
+    [addToast],
+  );
+
+  // Listen for plugin-install-complete event
+  useEffect(() => {
+    const unlisten = listen<{ name: string; cli: string; success: boolean; message: string }>("plugin-install-complete", (event) => {
+      const { success, message } = event.payload;
+      if (success) {
+        addToast("success", message);
+        // Re-scan skills and marketplace
+        invoke<SkillManagerData>("scan_skills").then(setSkillData).catch(() => {});
+      } else {
+        addToast("error", message);
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [addToast]);
+
+  // Listen for plugin-uninstall-complete event
+  useEffect(() => {
+    const unlisten = listen<{ pluginId: string; cli: string; success: boolean; message: string }>("plugin-uninstall-complete", (event) => {
+      const { success, message } = event.payload;
+      if (success) {
+        addToast("success", message);
+        // Re-scan
+        invoke<SkillManagerData>("scan_skills").then((data) => {
+          setSkillData(data);
+          setSelectedSkillItem((prev) => syncSelection(data, prev));
+        }).catch(() => {});
+      } else {
+        addToast("error", message);
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [addToast, syncSelection]);
+
+  // Refresh skills after marketplace install
+  const handleMarketplaceInstalled = useCallback(async () => {
+    const data = await invoke<SkillManagerData>("scan_skills");
+    setSkillData(data);
+  }, []);
 
   // Show errors as toasts (dedup: track last shown error)
   const lastErrorRef = useRef<string | null>(null);
@@ -307,6 +581,7 @@ export function App() {
   // Import scanned profiles
   const handleScanImport = useCallback(async (items: ScanProfile[]) => {
     let imported = 0;
+    let failed = 0;
     for (const item of items) {
       try {
         await ctx.addProfile(item.name, "");
@@ -317,11 +592,15 @@ export function App() {
           await ctx.setEnvVar(item.name, "_KN_CLI_TYPE", item.cli_type);
         }
         imported++;
-      } catch { /* individual profile import failed, continue with others */ }
+      } catch (e) {
+        failed++;
+        addToast("error", `导入 "${item.name}" 失败: ${e}`);
+      }
     }
     await ctx.loadProfiles();
     setScanData(null);
-    if (imported > 0) addToast("success", `已导入 ${imported}/${items.length} 个 profile`);
+    if (imported > 0 && failed === 0) addToast("success", `已导入 ${imported}/${items.length} 个 profile`);
+    else if (imported > 0) addToast("success", `已导入 ${imported}/${items.length} 个 profile，${failed} 个失败`);
     else addToast("error", "导入失败，请检查配置");
   }, [ctx]);
 
@@ -580,49 +859,29 @@ export function App() {
     <div className="h-screen flex flex-col bg-app-bg">
       {/* Toolbar */}
       <Toolbar
-        selectedName={ctx.selectedName}
-        isDefault={isDefault}
-        onAdd={() => setShowAddDialog(true)}
-        onSetDefault={(name) => ctx.setDefault(name)}
-        onInit={async () => {
-          try {
-            const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
-            if (result.profiles.length === 0) {
-              addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
-              return;
-            }
-            setScanData(result.profiles);
-          } catch (e) {
-            addToast("error", `扫描失败: ${e}`);
-          }
-        }}
+        onToggleTerminal={bottomTerminal.toggle}
+        onToggleWelcome={() => { setShowWelcome(!showWelcome); if (ctx.selectedName) ctx.deselect(); }}
+        onCheckUpdate={handleCheckUpdate}
+        onAbout={() => setShowAbout(true)}
+        onSettings={() => setShowSettings(true)}
         sidebarVisible={sidebarVisible}
         onToggleSidebar={() => setSidebarVisible((v) => !v)}
         terminalVisible={bottomTerminal.isOpen}
         rightTerminalVisible={rightTerminal.isOpen}
         onToggleRightTerminal={() => rightTerminal.isOpen ? rightTerminal.hide() : rightTerminal.open()}
-        onToggleTerminal={bottomTerminal.toggle}
-        onToggleWelcome={() => { setShowWelcome(!showWelcome); if (ctx.selectedName) ctx.deselect(); }}
-        onRefresh={() => ctx.loadProfiles()}
-        onImport={handleImport}
-        onCopyProfile={handleCopyProfile}
-        hasSelection={!!ctx.selectedName}
-        onCheckUpdate={handleCheckUpdate}
-        onBackup={handleBackup}
-        onRestore={handleRestore}
-        backupExists={backupExists}
         envCheck={envCheck}
         onInstallTool={handleInstallTool}
         onRefreshEnvCheck={refreshEnvCheck}
-        onAbout={() => setShowAbout(true)}
-        onSettings={() => setShowSettings(true)}
       />
 
-      {/* Main content — VS Code-style: Sidebar | (MainPanel + BottomTerminal) | RightTerminal */}
+      {/* Main content — ActivityBar | Sidebar/SkillManager | (MainPanel + BottomTerminal) | RightTerminal */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="flex-1 flex overflow-hidden min-h-0">
-          {/* Sidebar — hidden when either panel is maximized, or toggled off */}
-          {sidebarVisible && !rightMaximized && !bottomMaximized && (
+          {/* Activity Bar — VS Code-style left icon strip */}
+          <ActivityBar active={activeActivity} onChange={setActiveActivity} />
+
+          {/* Sidebar (Profile) / SkillManager — switch based on active activity */}
+          {sidebarVisible && !rightMaximized && !bottomMaximized && activeActivity === "profile" && (
             <Sidebar
               profiles={ctx.filteredProfiles}
               selectedName={ctx.selectedName}
@@ -634,16 +893,78 @@ export function App() {
               onDelete={(name) => { ctx.selectProfile(name); setShowDeleteConfirm(true); }}
               onSetDefault={(name) => ctx.setDefault(name)}
               usageCounts={usageCounts}
+              // ExpandableToolbar props
+              isDefault={isDefault}
+              hasSelection={!!ctx.selectedName}
+              backupExists={backupExists}
+              onAdd={() => setShowAddDialog(true)}
+              onCopyProfile={handleCopyProfile}
+              onInit={async () => {
+                try {
+                  const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
+                  if (result.profiles.length === 0) {
+                    addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
+                    return;
+                  }
+                  setScanData(result.profiles);
+                } catch (e) {
+                  addToast("error", `扫描失败: ${e}`);
+                }
+              }}
+              onImport={handleImport}
+              onExport={handleExport}
               onBatchDelete={handleBatchDelete}
               onBatchExport={handleBatchExport}
+              onRefresh={() => ctx.loadProfiles()}
+              onBackup={handleBackup}
+              onRestore={handleRestore}
             />
+          )}
+
+          {sidebarVisible && !rightMaximized && !bottomMaximized && activeActivity === "skills" && (
+            <div className="w-[300px] shrink-0 flex flex-col border-r border-[var(--app-border)]">
+              <SkillManager
+                data={skillData}
+                agentData={agentData}
+                loading={skillDataLoading}
+                selectedId={selectedSkillItem && selectedSkillItem.type !== "agent"
+                  ? (selectedSkillItem.data as any).id
+                  : selectedSkillItem?.type === "agent"
+                    ? (selectedSkillItem.data as any).id
+                    : null}
+                onSelect={setSelectedSkillItem}
+                onTogglePlugin={handleTogglePlugin}
+                onToggleStandaloneSkill={handleToggleStandaloneSkill}
+                onBatchToggle={handleBatchToggle}
+                onBatchUninstall={handleBatchUninstall}
+                checkingUpdates={checkingUpdates}
+                updateInfos={updateInfos}
+                onCheckUpdates={handleCheckUpdates}
+                onCancelCheckUpdates={handleCancelCheckUpdates}
+                onOpenMarketplace={() => setMarketplaceOpen(true)}
+              />
+            </div>
           )}
 
           {/* Middle column: MainPanel + Bottom terminal — hidden when right panel is maximized */}
           {!rightMaximized && (
           <div className="flex-1 flex flex-col overflow-hidden min-h-0">
-            {/* MainPanel — hidden when either panel is maximized */}
-            {!rightMaximized && !bottomMaximized && (
+            {/* MainPanel / SkillDetail — hidden when either panel is maximized */}
+            {!rightMaximized && !bottomMaximized && activeActivity === "skills" && (
+              <div className="flex-1 overflow-y-auto bg-[var(--app-bg)]">
+                <SkillDetail
+                  item={selectedSkillItem}
+                  data={skillData}
+                  onTogglePlugin={handleTogglePlugin}
+                  onToggleStandaloneSkill={handleToggleStandaloneSkill}
+                  updateInfos={updateInfos}
+                  onUpdatePlugin={handleUpdatePlugin}
+                  onUninstallPlugin={handleUninstallPlugin}
+                  onUninstallStandaloneSkill={handleUninstallStandaloneSkill}
+                />
+              </div>
+            )}
+            {!rightMaximized && !bottomMaximized && activeActivity !== "skills" && (
               <MainPanel
                 profile={ctx.selectedProfile}
                 hasProfiles={ctx.profiles.length > 0}
@@ -729,7 +1050,7 @@ export function App() {
       </div>
 
       {/* Status bar */}
-      <div className="flex items-center h-[22px] px-3 bg-app-statusbar border-t border-app-border select-none shrink-0">
+      <div className="flex items-center h-[26px] px-3 bg-app-statusbar border-t border-app-border select-none shrink-0">
         <span className="text-2xs text-app-text-muted font-mono">
           {ctx.loading ? "..." : ctx.profiles.length > 0 ? `[${ctx.profiles.length} 个 profile]` : "[就绪]"}
         </span>
@@ -890,6 +1211,13 @@ export function App() {
           onCancel={() => setShowDeleteConfirm(false)}
         />
       )}
+
+      {/* Marketplace Browser */}
+      <MarketplaceBrowser
+        open={marketplaceOpen}
+        onClose={() => setMarketplaceOpen(false)}
+        onInstalled={handleMarketplaceInstalled}
+      />
 
       {/* Batch delete confirmation */}
       <ConfirmDialog
