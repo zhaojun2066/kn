@@ -128,6 +128,8 @@ pub fn run() {
             skill_manager::add_marketplace,
             skill_manager::remove_marketplace,
             agent_manager::scan_agents,
+            agent_manager::build_dependency_graph,
+            agent_manager::analyze_impact,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -316,3 +316,154 @@ pub fn scan_agents() -> AgentManagerData {
 
     AgentManagerData { agents }
 }
+
+// ── Dependency graph builder ──
+
+use crate::skill_manager::{SkillManagerData, PluginEntry, StandaloneSkill};
+
+/// Build a complete dependency graph from skills and agents data.
+/// Returns nodes (plugins, skills, agents, tools, mcp servers) and
+/// edges (contains, references, spawns, needsTool, needsModel).
+#[tauri::command]
+pub fn build_dependency_graph(
+    skills_data: SkillManagerData,
+    agents_data: AgentManagerData,
+) -> DependencyGraph {
+    let mut nodes: Vec<DepNode> = Vec::new();
+    let mut edges: Vec<DepEdge> = Vec::new();
+
+    // ── Add Plugin nodes + contains → Skill edges (edge type 1) ──
+    for plugin in &skills_data.plugins {
+        let plugin_id = format!("{}:plugin:{}", plugin.cli, plugin.name);
+        nodes.push(DepNode {
+            id: plugin_id.clone(),
+            kind: "plugin".into(),
+            label: plugin.name.clone(),
+            cli: plugin.cli.clone(),
+            source: plugin.source.clone(),
+            locked: false,
+        });
+        for skill in &plugin.skills {
+            let skill_id = format!("{}:skill:{}", plugin.cli, skill.name);
+            edges.push(DepEdge {
+                from: plugin_id.clone(),
+                to: skill_id,
+                kind: "contains".into(),
+                label: "contains".into(),
+            });
+        }
+    }
+
+    // ── Add Skill nodes (standalone + system) ──
+    let mut add_skills = |skills: &[StandaloneSkill], source: &str| {
+        for skill in skills {
+            let skill_id = format!("{}:skill:{}", skill.cli, skill.name);
+            nodes.push(DepNode {
+                id: skill_id.clone(),
+                kind: "skill".into(),
+                label: skill.name.clone(),
+                cli: skill.cli.clone(),
+                source: source.into(),
+                locked: source == "system",
+            });
+        }
+    };
+    add_skills(&skills_data.standalone_skills, "user");
+    add_skills(&skills_data.system_skills, "system");
+
+    // ── Add Agent nodes + edges ──
+    for agent in &agents_data.agents {
+        let agent_id = agent.id.clone();
+        nodes.push(DepNode {
+            id: agent_id.clone(),
+            kind: "agent".into(),
+            label: agent.name.clone(),
+            cli: agent.cli.clone(),
+            source: agent.source.clone(),
+            locked: agent.source == "builtin",
+        });
+
+        // Edge type 2: Agent → Skill references
+        for skill_name in &agent.skills {
+            let skill_id = format!("{}:skill:{}", agent.cli, skill_name);
+            edges.push(DepEdge {
+                from: agent_id.clone(),
+                to: skill_id,
+                kind: "references".into(),
+                label: format!("references skill:{}", skill_name),
+            });
+        }
+
+        // Edge type 4: Agent → Tool needs
+        for tool in &agent.tools {
+            if tool == "*" {
+                continue; // wildcard — skip individual edges
+            }
+            let tool_id = format!("tool:{}", tool);
+            if !nodes.iter().any(|n| n.id == tool_id) {
+                nodes.push(DepNode {
+                    id: tool_id.clone(),
+                    kind: "tool".into(),
+                    label: tool.clone(),
+                    cli: agent.cli.clone(),
+                    source: "builtin".into(),
+                    locked: true,
+                });
+            }
+            edges.push(DepEdge {
+                from: agent_id.clone(),
+                to: tool_id,
+                kind: "needsTool".into(),
+                label: format!("needs {}", tool),
+            });
+        }
+
+        // Edge type 5: Agent → Model
+        if let Some(ref model) = agent.model {
+            let model_id = format!("model:{}", model);
+            if !nodes.iter().any(|n| n.id == model_id) {
+                nodes.push(DepNode {
+                    id: model_id.clone(),
+                    kind: "tool".into(),
+                    label: model.clone(),
+                    cli: agent.cli.clone(),
+                    source: "builtin".into(),
+                    locked: true,
+                });
+            }
+            edges.push(DepEdge {
+                from: agent_id.clone(),
+                to: model_id,
+                kind: "needsModel".into(),
+                label: format!("model:{}", model),
+            });
+        }
+    }
+
+    DependencyGraph { nodes, edges }
+}
+
+/// Given a node ID, find all nodes that depend on it (reverse BFS).
+#[tauri::command]
+pub fn analyze_impact(
+    target_id: String,
+    graph: DependencyGraph,
+) -> Vec<String> {
+    let mut impacted: Vec<String> = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut queue: Vec<&str> = vec![&target_id];
+
+    while let Some(current) = queue.pop() {
+        if !visited.insert(current.to_string()) {
+            continue;
+        }
+        for edge in &graph.edges {
+            if edge.to == current && !visited.contains(edge.from.as_str()) {
+                impacted.push(edge.from.clone());
+                queue.push(&edge.from);
+            }
+        }
+    }
+
+    impacted
+}
