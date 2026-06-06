@@ -208,7 +208,7 @@ pub struct ScanProfile {
     pub source: String,
 }
 
-fn home_dir() -> std::path::PathBuf {
+pub(crate) fn home_dir() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         return std::path::PathBuf::from(home);
     }

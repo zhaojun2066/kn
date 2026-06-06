@@ -101,3 +101,218 @@ fn builtin(cli: &str, name: &str, desc: &str, tools: &[&str], model: Option<&str
         sandbox_mode: None,
     }
 }
+
+// ── YAML frontmatter parsing ──
+
+/// Parse YAML frontmatter from a markdown file.
+/// Returns a serde_yaml::Value if frontmatter is found between --- delimiters.
+fn parse_frontmatter(content: &str) -> Option<serde_yaml::Value> {
+    let mut lines = content.lines();
+    // First line must be exactly "---"
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    let mut yaml_str = String::new();
+    for line in &mut lines {
+        if line.trim() == "---" {
+            break;
+        }
+        yaml_str.push_str(line);
+        yaml_str.push('\n');
+    }
+    serde_yaml::from_str(&yaml_str).ok()
+}
+
+/// Create an AgentEntry from a frontmatter Value + file path metadata.
+fn agent_from_frontmatter(
+    cli: &str,
+    name: &str,
+    path: std::path::PathBuf,
+    source: &str,     // "user" | "project"
+    frontmatter: &serde_yaml::Value,
+) -> AgentEntry {
+    let description = frontmatter.get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let model = frontmatter.get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let tools: Vec<String> = frontmatter.get("tools")
+        .and_then(|v| v.as_sequence())
+        .map(|seq| seq.iter()
+            .filter_map(|t| t.as_str().map(String::from))
+            .collect())
+        .unwrap_or_default();
+
+    let color = frontmatter.get("color")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let skills: Vec<String> = frontmatter.get("skills")
+        .and_then(|v| v.as_sequence())
+        .map(|seq| seq.iter()
+            .filter_map(|s| s.as_str().map(String::from))
+            .collect())
+        .unwrap_or_default();
+
+    let sandbox_mode = frontmatter.get("sandbox_mode")
+        .or_else(|| frontmatter.get("sandboxMode"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let enabled = !path.to_string_lossy().ends_with(".disabled");
+
+    AgentEntry {
+        id: format!("{}:agent:{}", cli, name),
+        cli: cli.to_string(),
+        name: name.to_string(),
+        description,
+        enabled,
+        source: source.to_string(),
+        model,
+        tools,
+        color,
+        path: path.to_string_lossy().to_string(),
+        skills,
+        sandbox_mode,
+    }
+}
+
+// ── Claude agent scanning ──
+
+fn claude_agents_dir() -> std::path::PathBuf {
+    let home = crate::commands::home_dir();
+    home.join(".claude").join("agents")
+}
+
+fn scan_claude_user_agents() -> Vec<AgentEntry> {
+    let dir = claude_agents_dir();
+    scan_md_agents_in_dir("claude", &dir, "user")
+}
+
+fn scan_claude_project_agents() -> Vec<AgentEntry> {
+    // Scan .claude/agents/ in current directory
+    let dir = std::env::current_dir()
+        .unwrap_or_default()
+        .join(".claude")
+        .join("agents");
+    scan_md_agents_in_dir("claude", &dir, "project")
+}
+
+/// Scan a directory for .md agent files (Claude/Qoder format).
+fn scan_md_agents_in_dir(cli: &str, dir: &std::path::PathBuf, source: &str) -> Vec<AgentEntry> {
+    let mut agents = Vec::new();
+
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return agents,
+    };
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        // Check if it's an .md file (both active and .disabled)
+        let is_agent_file = file_name.ends_with(".md")
+            && !file_name.starts_with('.');
+
+        if !is_agent_file {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let frontmatter = match parse_frontmatter(&content) {
+            Some(fm) => fm,
+            None => continue,
+        };
+
+        // Get agent name: prefer frontmatter 'name', fall back to filename
+        let name = frontmatter.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(
+                // Strip .md or .md.disabled suffix
+                file_name
+                    .strip_suffix(".disabled")
+                    .unwrap_or(file_name)
+                    .strip_suffix(".md")
+                    .unwrap_or(file_name)
+            );
+
+        agents.push(agent_from_frontmatter(cli, name, path, source, &frontmatter));
+    }
+
+    agents
+}
+
+// ── Qoder agent scanning ──
+
+fn qoder_agents_dir() -> std::path::PathBuf {
+    let home = crate::commands::home_dir();
+    home.join(".qoder-cn").join("agents")
+}
+
+fn scan_qoder_user_agents() -> Vec<AgentEntry> {
+    let dir = qoder_agents_dir();
+    scan_md_agents_in_dir("qoder", &dir, "user")
+}
+
+fn scan_qoder_project_agents() -> Vec<AgentEntry> {
+    let dir = std::env::current_dir()
+        .unwrap_or_default()
+        .join(".qoder")
+        .join("agents");
+    scan_md_agents_in_dir("qoder", &dir, "project")
+}
+
+// ── Main scan entry point ──
+
+#[tauri::command]
+pub fn scan_agents() -> AgentManagerData {
+    let mut agents = Vec::new();
+
+    // 1. Builtin agents (always present, read-only)
+    agents.extend(builtin_agents("claude"));
+    agents.extend(builtin_agents("qoder"));
+    agents.extend(builtin_agents("codex"));
+
+    // 2. Claude user + project agents
+    agents.extend(scan_claude_user_agents());
+    agents.extend(scan_claude_project_agents());
+
+    // 3. Qoder user + project agents
+    agents.extend(scan_qoder_user_agents());
+    agents.extend(scan_qoder_project_agents());
+
+    // NOTE: Codex .toml agent scanning deferred to Phase 4
+
+    // Deduplicate: file-based agents override builtins with same id
+    let mut seen = std::collections::HashMap::new();
+    for agent in agents {
+        seen.entry(agent.id.clone())
+            .and_modify(|existing: &mut AgentEntry| {
+                // Non-builtin overrides builtin
+                if existing.source == "builtin" && agent.source != "builtin" {
+                    *existing = agent;
+                }
+            })
+            .or_insert(agent);
+    }
+
+    let mut agents: Vec<AgentEntry> = seen.into_values().collect();
+    // Sort: builtins first, then by name
+    agents.sort_by(|a, b| {
+        a.source.cmp(&b.source)
+            .then(a.name.cmp(&b.name))
+    });
+
+    AgentManagerData { agents }
+}
