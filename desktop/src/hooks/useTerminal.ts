@@ -131,8 +131,6 @@ export function useTerminal(panelId: string = "right") {
   const writeBufRef = useRef<Map<string, string>>(new Map());
   const rafWriteRef = useRef<Map<string, number>>(new Map());
 
-  // Track which tabs have mounted XTerm
-  const mountedTabs = useRef<Set<string>>(new Set());
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
   const sessionsRef = useRef(tabs);
@@ -339,7 +337,6 @@ export function useTerminal(panelId: string = "right") {
     writeBufRef.current.clear();
     for (const [, id] of rafWriteRef.current) { cancelAnimationFrame(id); }
     rafWriteRef.current.clear();
-    mountedTabs.current.clear();
 
     // 4. Kill PTY sessions in background — fire-and-forget.
     //    Don't await: even if kill_pty blocks, the UI is already closed.
@@ -484,7 +481,6 @@ export function useTerminal(panelId: string = "right") {
     writeBufRef.current.delete(tabId);
     const rafId = rafWriteRef.current.get(tabId);
     if (rafId) { cancelAnimationFrame(rafId); rafWriteRef.current.delete(tabId); }
-    mountedTabs.current.delete(tabId);
 
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
@@ -521,7 +517,6 @@ export function useTerminal(panelId: string = "right") {
         writeBufRef.current.delete(tab.id);
         const rid = rafWriteRef.current.get(tab.id);
         if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(tab.id); }
-        mountedTabs.current.delete(tab.id);
       }
     }
     const kept = allTabs.find((t) => t.id === tabId);
@@ -543,7 +538,6 @@ export function useTerminal(panelId: string = "right") {
       writeBufRef.current.delete(tab.id);
       const rid = rafWriteRef.current.get(tab.id);
       if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(tab.id); }
-      mountedTabs.current.delete(tab.id);
     }
     setTabs((prev) => prev.slice(0, idx + 1));
     // If active tab was among closed ones, switch to the right-clicked tab

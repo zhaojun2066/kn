@@ -218,7 +218,7 @@ function CommandBlock({
               <div className="flex items-center gap-0.5 shrink-0 ml-2">
                 <button
                   onClick={() => onPaste(cmd)}
-                  className="flex items-center gap-1 px-2 py-0.5 text-2xs
+                  className="flex items-center justify-center gap-1 w-[52px] py-0.5 text-2xs
                     text-app-text-dim hover:text-app-green
                     border border-transparent hover:border-app-border
                     bg-transparent hover:bg-[var(--app-hover)]"
@@ -229,7 +229,7 @@ function CommandBlock({
                 </button>
                 <button
                   onClick={() => copy(cmd)}
-                  className="flex items-center gap-1 px-2 py-0.5 text-2xs
+                  className="flex items-center justify-center gap-1 w-[52px] py-0.5 text-2xs
                     text-app-text-dim hover:text-app-accent
                     border border-transparent hover:border-app-border
                     bg-transparent hover:bg-[var(--app-hover)]"

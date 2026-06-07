@@ -1,39 +1,26 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
-  Plus, Star, Download,
-  Sun, Moon, Monitor, Copy, HelpCircle, RefreshCw, RotateCw, Search, ChevronDown, Settings,
-  PanelLeft, PanelBottom, PanelRight, Save, History, Circle, Info, Palette, Check, Terminal,
+  Sun, Moon, Monitor, HelpCircle, RotateCw, ChevronDown, Settings,
+  PanelLeft, PanelBottom, PanelRight, Circle, Info, Palette, Check, Terminal,
 } from "lucide-react";
 import { formatShortcut } from "../utils/shortcut";
 import { Button } from "./common/Button";
 import { useTheme, ThemeMode, COLOR_SCHEMES } from "../hooks/useTheme";
 
 interface ToolbarProps {
-  selectedName: string | null;
-  isDefault: boolean;
-  onAdd: () => void;
-  onSetDefault: (name: string) => void;
-  onInit: () => void;
   onToggleTerminal: () => void;
   onToggleWelcome: () => void;
-  onRefresh: () => void;
-  onImport: () => void;
-  onCopyProfile: () => void;
-  hasSelection: boolean;
   onCheckUpdate: () => void;
-  onBackup: () => void;
-  onRestore: () => void;
-  backupExists: boolean;
-  envCheck: { items: { name: string; label: string; status: string; detail: string; install_cmd?: string }[]; all_ok: boolean } | null;
-  onInstallTool?: (cmd: string) => void;
-  onRefreshEnvCheck?: () => void;
+  onAbout: () => void;
+  onSettings: () => void;
   sidebarVisible: boolean;
   onToggleSidebar: () => void;
   terminalVisible: boolean;
   rightTerminalVisible: boolean;
   onToggleRightTerminal: () => void;
-  onAbout: () => void;
-  onSettings: () => void;
+  envCheck: { items: { name: string; label: string; status: string; detail: string; install_cmd?: string }[]; all_ok: boolean } | null;
+  onInstallTool?: (cmd: string) => void;
+  onRefreshEnvCheck?: () => void;
 }
 
 const themeIcons: Record<ThemeMode, React.ReactNode> = {
@@ -83,35 +70,18 @@ function DropMenu({ items, children }: { items: { label: string; icon?: React.Re
 }
 
 export function Toolbar({
-  selectedName, isDefault, onAdd, onSetDefault,
-  onInit, onToggleTerminal, onToggleWelcome, onRefresh, onImport,
-  onCopyProfile, hasSelection, onCheckUpdate, onBackup, onRestore, backupExists, envCheck, onInstallTool, onRefreshEnvCheck,
-  sidebarVisible, onToggleSidebar, terminalVisible, rightTerminalVisible, onToggleRightTerminal,
+  onToggleTerminal, onToggleWelcome,
+  onCheckUpdate,
   onAbout, onSettings,
+  sidebarVisible, onToggleSidebar,
+  terminalVisible, rightTerminalVisible, onToggleRightTerminal,
+  envCheck, onInstallTool, onRefreshEnvCheck,
 }: ToolbarProps) {
   const { mode, colorScheme, setColorScheme, setTheme } = useTheme();
   const cycleTheme = () => setTheme(themeNext[mode]);
 
   return (
     <div className="flex items-center gap-1.5 h-[38px] px-3 bg-app-toolbar border-b border-app-border select-none shrink-0 overflow-visible">
-      {/* ── Profile actions ────────────────────────── */}
-      <Button variant="primary" size="sm" onClick={onAdd}><Plus size={13} /><span>新增</span></Button>
-      <Button variant="secondary" size="sm" disabled={!selectedName || isDefault}
-        onClick={() => selectedName && onSetDefault(selectedName)} title="设为默认"><Star size={13} /><span>默认</span></Button>
-      <Button variant="secondary" size="sm" disabled={!hasSelection}
-        onClick={onCopyProfile} title="复制"><Copy size={13} /><span>复制</span></Button>
-
-      <div className="w-px h-5 bg-app-border mx-1" />
-
-      {/* ── Import dropdown ────────────────────────── */}
-      <DropMenu items={[
-        { label: "扫描系统配置", icon: <Search size={13} />, onClick: onInit, hint: "Claude/Codex" },
-        { label: "从文件导入", icon: <Download size={13} />, onClick: onImport, hint: "JSON" },
-      ]}>
-        <Download size={13} />
-        <span>导入</span>
-      </DropMenu>
-
       {/* Spacer */}
       <div className="flex-1" />
 
@@ -119,24 +89,27 @@ export function Toolbar({
       <div className="flex items-center gap-0.5 mr-1">
         <button
           onClick={onToggleSidebar}
+          aria-label={`${sidebarVisible ? "隐藏侧边栏" : "显示侧边栏"}`}
           className={`p-1 transition-colors duration-fast rounded ${sidebarVisible ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
           title={`${sidebarVisible ? "隐藏侧边栏" : "显示侧边栏"} (${formatShortcut("mod+B")})`}
         >
-          <PanelLeft size={14} />
+          <PanelLeft size={14} aria-hidden="true" />
         </button>
         <button
           onClick={onToggleTerminal}
+          aria-label={`${terminalVisible ? "隐藏终端面板" : "显示终端面板"}`}
           className={`p-1 transition-colors duration-fast rounded ${terminalVisible ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
           title={`${terminalVisible ? "隐藏终端面板" : "显示终端面板"} (${formatShortcut("mod+J")})`}
         >
-          <PanelBottom size={14} />
+          <PanelBottom size={14} aria-hidden="true" />
         </button>
         <button
           onClick={onToggleRightTerminal}
+          aria-label={rightTerminalVisible ? "隐藏右侧终端" : "显示右侧终端"}
           className={`p-1 transition-colors duration-fast rounded ${rightTerminalVisible ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
           title={rightTerminalVisible ? "隐藏右侧终端" : "显示右侧终端"}
         >
-          <PanelRight size={14} />
+          <PanelRight size={14} aria-hidden="true" />
         </button>
       </div>
 
@@ -168,9 +141,6 @@ export function Toolbar({
 
       {/* Gear menu */}
       <DropMenu items={[
-        { label: "刷新配置", icon: <RefreshCw size={13} />, onClick: onRefresh },
-        { label: "备份配置", icon: <Save size={13} />, onClick: onBackup, hint: "手动备份" },
-        { label: "恢复配置", icon: <History size={13} />, onClick: onRestore, hint: backupExists ? "可用" : "无备份" },
         { label: "检查更新", icon: <RotateCw size={13} />, onClick: onCheckUpdate },
         { label: "快捷键", icon: <HelpCircle size={13} />, onClick: onToggleWelcome, hint: formatShortcut("mod+K") },
         { label: "设置", icon: <Settings size={13} />, onClick: onSettings },

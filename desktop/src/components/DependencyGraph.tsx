@@ -10,6 +10,7 @@ export interface DepNode {
   cli: string;
   source: string;
   locked: boolean;
+  parent?: string;
 }
 
 export interface DepEdge {
@@ -31,11 +32,8 @@ interface DependencyGraphProps {
 
 // ── Visual styling constants ──
 
-const CLI_COLORS: Record<string, string> = {
-  claude: "#D97706",
-  codex: "#7C3AED",
-  qoder: "#059669",
-};
+import { CLI_HEX_COLORS } from "../lib/cli-constants";
+const CLI_COLORS = CLI_HEX_COLORS;
 
 const NODE_SHAPES: Record<string, string> = {
   plugin: "hexagon",
@@ -58,6 +56,8 @@ const EDGE_STYLES: Record<string, { style: string; color: string }> = {
 export function DependencyGraph({ data, onNodeClick }: DependencyGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
+  const onNodeClickRef = useRef(onNodeClick);
+  onNodeClickRef.current = onNodeClick;
 
   const initCytoscape = useCallback(() => {
     if (!containerRef.current || !data) return;
@@ -65,6 +65,7 @@ export function DependencyGraph({ data, onNodeClick }: DependencyGraphProps) {
     // Destroy existing instance
     cyRef.current?.destroy();
 
+    const nodeIds = new Set(data.nodes.map((n) => n.id));
     const elements: cytoscape.ElementDefinition[] = [
       ...data.nodes.map((n) => ({
         data: {
@@ -73,10 +74,13 @@ export function DependencyGraph({ data, onNodeClick }: DependencyGraphProps) {
           kind: n.kind,
           cli: n.cli,
           source: n.source,
-          locked: n.locked,
+          locked: n.locked ? "yes" : "no",
+          ...(n.parent && nodeIds.has(n.parent) ? { parent: n.parent } : {}),
         },
       })),
-      ...data.edges.map((e) => ({
+      ...data.edges
+        .filter((e) => nodeIds.has(e.from) && nodeIds.has(e.to))
+        .map((e) => ({
         data: {
           id: `${e.from}->${e.to}:${e.kind}`,
           source: e.from,
@@ -99,18 +103,20 @@ export function DependencyGraph({ data, onNodeClick }: DependencyGraphProps) {
               return CLI_COLORS[cli] || "#6B7280";
             },
             label: "data(label)",
-            "font-size": "9px",
+            "font-size": "8px",
             "font-family": "ui-monospace, monospace",
             color: "#E5E7EB",
             "text-valign": "bottom",
             "text-halign": "center",
-            "text-margin-y": 6,
-            width: 24,
-            height: 24,
-            "border-width": 2,
+            "text-margin-y": 4,
+            "text-max-width": "60px",
+            "text-wrap": "ellipsis",
+            width: 14,
+            height: 14,
+            "border-width": 1.5,
             "border-color": (el) => {
-              const locked = el.data("locked") as boolean;
-              return locked ? "#6B7280" : "transparent";
+              const locked = el.data("locked") as string;
+              return locked === "yes" ? "#6B7280" : "transparent";
             },
             "border-opacity": 0.5,
             shape: (el) => {
@@ -120,10 +126,38 @@ export function DependencyGraph({ data, onNodeClick }: DependencyGraphProps) {
           },
         },
         {
-          selector: "node[locked=true]",
+          selector: 'node[locked="yes"]',
           style: {
             "border-style": "dashed",
             "background-opacity": 0.6,
+          },
+        },
+        {
+          selector: "node:parent",
+          style: {
+            "background-color": (el) => {
+              const cli = el.data("cli") as string;
+              return CLI_COLORS[cli] || "#6B7280";
+            },
+            "background-opacity": 0.08,
+            "border-width": 2,
+            "border-color": (el) => {
+              const cli = el.data("cli") as string;
+              return CLI_COLORS[cli] || "#6B7280";
+            },
+            "border-opacity": 0.4,
+            "padding-top": 18,
+            "padding-left": 8,
+            "padding-right": 8,
+            "padding-bottom": 8,
+            shape: "round-rectangle",
+            label: "data(label)",
+            "text-valign": "top",
+            "text-halign": "center",
+            "text-margin-y": -4,
+            "font-size": "10px",
+            "font-weight": "bold",
+            color: "#E5E7EB",
           },
         },
         ...Object.entries(EDGE_STYLES).map(([kind, { style, color }]) => ({
@@ -133,51 +167,84 @@ export function DependencyGraph({ data, onNodeClick }: DependencyGraphProps) {
             "line-style": style,
             "target-arrow-color": color,
             "target-arrow-shape": "triangle",
-            width: 1.5,
-            "arrow-scale": 0.8,
-            opacity: 0.6,
+            width: 0.8,
+            "arrow-scale": 0.6,
+            opacity: 0.3,
             label: "data(label)",
-            "font-size": "7px",
+            "font-size": "6px",
             color: "#9CA3AF",
           },
         })),
       ],
       layout: {
         name: "cose",
-        animate: true,
-        animationDuration: 500,
-        nodeRepulsion: () => 4000,
+        animate: false,
+        nodeRepulsion: 8000,
+        idealEdgeLength: 50,
+        edgeElasticity: 100,
         gravity: 0.25,
-        idealEdgeLength: () => 100,
+        numIter: 500,
+        tile: true,
+        tilingPaddingVertical: 20,
+        tilingPaddingHorizontal: 20,
+        initialTemp: 200,
+        coolingFactor: 0.95,
+        minTemp: 1.0,
       },
       minZoom: 0.3,
       maxZoom: 3,
     });
 
+    // Fit the graph AFTER layout completes (layout is async even with animate:false)
+    cy.one("layoutstop", () => {
+      cy.fit(undefined, 50);
+    });
+
+    // Zoom-based label visibility
+    const updateLabels = () => {
+      const zoom = cy.zoom();
+      cy.batch(() => {
+        cy.nodes().style("text-opacity", zoom > 1.0 ? 1 : 0);
+        cy.edges().style("text-opacity", zoom > 1.5 ? 0.8 : 0);
+      });
+    };
+    cy.on("zoom", updateLabels);
+    updateLabels();
+
     // Highlight neighbors on hover
     cy.on("mouseover", "node", (evt: EventObject) => {
       const node = evt.target;
+      if (node.isParent()) return;
       const neighborhood = node.closedNeighborhood();
-      cy.elements().not(neighborhood).style("opacity", "0.2");
-      neighborhood.style("opacity", "1");
+      cy.elements().not(neighborhood).style("opacity", "0.1");
+      neighborhood.style({ opacity: "1", "text-opacity": "1" });
+      node.style({ width: 20, height: 20 });
     });
 
-    cy.on("mouseout", "node", () => {
+    cy.on("mouseout", "node", (evt: EventObject) => {
+      const node = evt.target;
+      if (node.isParent()) return;
+      const zoom = cy.zoom();
       cy.elements().style("opacity", "1");
+      cy.nodes().not(":parent").style({ width: 14, height: 14 });
+      cy.nodes().not(":parent").style("text-opacity", zoom > 1.0 ? 1 : 0);
+      cy.edges().style("text-opacity", zoom > 1.5 ? 0.8 : 0);
     });
 
     // Click → select node
     cy.on("tap", "node", (evt: EventObject) => {
       const nodeId = evt.target.id();
-      onNodeClick?.(nodeId);
+      onNodeClickRef.current?.(nodeId);
     });
 
     cyRef.current = cy;
-  }, [data, onNodeClick]);
+  }, [data]);
 
   useEffect(() => {
-    initCytoscape();
+    // Small delay to ensure container has dimensions
+    const timer = setTimeout(() => initCytoscape(), 100);
     return () => {
+      clearTimeout(timer);
       cyRef.current?.destroy();
     };
   }, [initCytoscape]);
@@ -191,15 +258,37 @@ export function DependencyGraph({ data, onNodeClick }: DependencyGraphProps) {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--app-border)]">
+    <div className="flex flex-col h-full" style={{ flex: 1, minHeight: 0 }}>
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--app-border)] shrink-0">
         <span className="text-2xs text-[var(--app-text-dim)] font-mono uppercase tracking-wider">
           Dependency Graph
         </span>
         <div className="flex-1" />
+        <span className="text-2xs text-[var(--app-text-muted)] font-mono">
+          {data.nodes.length} nodes · {data.edges.length} edges
+        </span>
         <Legend />
       </div>
-      <div ref={containerRef} className="flex-1 bg-[var(--app-bg)]" />
+      <div
+        style={{
+          flex: 1,
+          width: "100%",
+          minHeight: 400,
+          background: "#16162a",
+          position: "relative",
+        }}
+      >
+        <div
+          ref={containerRef}
+          style={{
+            width: "100%",
+            height: "100%",
+            position: "absolute",
+            top: 0,
+            left: 0,
+          }}
+        />
+      </div>
     </div>
   );
 }

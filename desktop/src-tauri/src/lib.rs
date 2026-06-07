@@ -1,9 +1,12 @@
+mod agent_manager;
 mod commands;
+mod hook_manager;
+mod hook_meta;
+mod hook_store;
 mod profile_cmd;
 mod pty;
-mod usage;
 mod skill_manager;
-mod agent_manager;
+mod usage;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,6 +29,18 @@ pub(crate) fn config_dir() -> PathBuf {
     PathBuf::from(&home).join(".claude-profiles")
 }
 
+/// Resolve the user home directory across platforms.
+///
+/// Reads `HOME` first, falling back to `USERPROFILE` on Windows (where
+/// GUI apps launched from Explorer typically lack `HOME`). Returns `.`
+/// as a last resort.
+pub(crate) fn home_dir() -> PathBuf {
+    let raw = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
+    PathBuf::from(&raw)
+}
+
 /// Resolve the user's Documents folder on Windows.
 ///
 /// Uses `[Environment]::GetFolderPath('MyDocuments')` to handle folder
@@ -38,12 +53,20 @@ pub(crate) fn windows_documents_dir() -> PathBuf {
     let home_path = std::path::Path::new(&home);
 
     let api_result = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", "[Environment]::GetFolderPath('MyDocuments')"])
+        .args([
+            "-NoProfile",
+            "-Command",
+            "[Environment]::GetFolderPath('MyDocuments')",
+        ])
         .output()
         .ok()
         .and_then(|o| {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(PathBuf::from(s)) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(s))
+            }
         });
     api_result.unwrap_or_else(|| {
         let default_docs = home_path.join("Documents");
@@ -51,7 +74,11 @@ pub(crate) fn windows_documents_dir() -> PathBuf {
             default_docs
         } else {
             let onedrive_docs = home_path.join("OneDrive").join("Documents");
-            if onedrive_docs.exists() { onedrive_docs } else { default_docs }
+            if onedrive_docs.exists() {
+                onedrive_docs
+            } else {
+                default_docs
+            }
         }
     })
 }
@@ -86,6 +113,8 @@ pub fn run() {
             commands::ensure_shell_rc,
             commands::write_file,
             commands::read_file,
+            commands::read_file_base64,
+            commands::list_directory_tree,
             commands::scan_system_configs,
             commands::read_app_config,
             commands::temp_dir,
@@ -125,11 +154,26 @@ pub fn run() {
             skill_manager::uninstall_plugin,
             skill_manager::install_standalone_skill,
             skill_manager::uninstall_standalone_skill,
+            skill_manager::toggle_command,
+            skill_manager::uninstall_command,
             skill_manager::add_marketplace,
             skill_manager::remove_marketplace,
             agent_manager::scan_agents,
             agent_manager::build_dependency_graph,
             agent_manager::analyze_impact,
+            agent_manager::toggle_agent,
+            agent_manager::read_agent_content,
+            skill_manager::read_skill_content,
+            hook_manager::scan_hooks,
+            hook_manager::toggle_hook,
+            hook_manager::delete_hook,
+            hook_manager::create_hook,
+            hook_meta::get_hook_meta,
+            hook_meta::set_hook_meta,
+            hook_meta::delete_hook_meta,
+            hook_store::list_store_hooks,
+            hook_store::install_store_hook,
+            hook_store::uninstall_store_hook,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

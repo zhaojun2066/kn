@@ -1,13 +1,21 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
-  Box, Puzzle, FileText, Lock, Circle, ExternalLink,
+  Bot, Box, Puzzle, FileText, Lock, Circle, ExternalLink,
   Layers, FolderOpen, Link2, File, Cpu, ArrowUpCircle,
-  Play, Ban, Trash2,
+  Play, Ban, Trash2, Wrench, Sparkles, ArrowUpRight, Terminal,
+  FolderTree, List, Image,
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { Button } from "./common/Button";
 import { AgentDetail } from "./AgentDetail";
-import type { SelectedItem, CliKind, PluginUpdateInfo } from "./SkillManager";
+import { FileTree } from "./FileTree";
+import type { FileTreeNode } from "./FileTree";
+import type { SelectedItem, CliKind, PluginUpdateInfo, CommandEntry } from "./SkillManager";
 import type { DependencyGraphData } from "./DependencyGraph";
+import { CLI_LABELS, CLI_CSS_COLORS } from "../lib/cli-constants";
+import { basename, dirname } from "../lib/path-utils";
+import { FileContentBlock, isImagePath, isPdfPath, langFromPath } from "./common/FileContentBlock";
 
 interface ConfirmState {
   title: string;
@@ -30,12 +38,17 @@ interface SkillDetailProps {
   onUpdatePlugin: (cli: CliKind, pluginId: string) => void;
   onUninstallPlugin: (cli: CliKind, pluginId: string) => void;
   onUninstallStandaloneSkill: (cli: CliKind, skillId: string) => void;
+  onToggleAgent: (cli: CliKind, name: string, enabled: boolean) => void;
+  onDeleteAgent: (cli: CliKind, name: string) => void;
+  onToggleCommand?: (cli: CliKind, name: string, enabled: boolean) => void;
+  onUninstallCommand?: (cli: CliKind, name: string) => void;
+  onNodeClick?: (nodeId: string) => void;
+  onSelect?: (item: SelectedItem) => void;
 }
 
 /* ──────────────────── Helpers ──────────────────── */
 
-const CLI_LABEL: Record<CliKind, string> = { claude: "Claude", codex: "Codex", qoder: "Qoder" };
-const CLI_COLOR: Record<CliKind, string> = { claude: "var(--app-accent)", codex: "var(--app-blue)", qoder: "var(--app-purple)" };
+/* CLI_LABELS and CLI_CSS_COLORS are now imported from lib/cli-constants */
 
 function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -60,6 +73,8 @@ function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }
   );
 }
 
+/* FileContentBlock + helpers now imported from common/FileContentBlock */
+
 /* ──────────────────── Plugin Detail ──────────────────── */
 
 function PluginDetail({
@@ -68,20 +83,68 @@ function PluginDetail({
   updateInfo,
   onUpdate,
   onUninstall,
+  onSkillClick,
+  onAgentClick,
+  onCommandClick,
 }: {
   plugin: NonNullable<SkillDetailProps["item"]>["data"];
   onToggle: (enabled: boolean) => void;
   updateInfo?: PluginUpdateInfo;
   onUpdate: (cli: CliKind, pluginId: string) => void;
   onUninstall: (cli: CliKind, pluginId: string) => void;
+  onSkillClick?: (skill: { name: string; path: string; description?: string }, cli: string) => void;
+  onAgentClick?: (agent: any) => void;
+  onCommandClick?: (command: CommandEntry) => void;
 }) {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  const [tab, setTab] = useState<"skills" | "agents" | "commands">("skills");
+  const [viewMode, setViewMode] = useState<"list" | "file">("list");
+  const [fileActivePath, setFileActivePath] = useState<string>("");
+  const [fileContent, setFileContent] = useState<string>("");
+  const [fileError, setFileError] = useState<string>("");
   if (!("marketplace" in plugin)) return null;
+  const p = plugin as Extract<typeof plugin, { marketplace: string }>;
+
+  // Derive plugin root dir from first skill/agent/command path
+  const pluginRootDir = useMemo(() => {
+    const firstPath = p.skills[0]?.path || p.agents[0]?.path || p.commands?.[0]?.path;
+    if (!firstPath) return "";
+    return dirname(firstPath);
+  }, [p.skills, p.agents, p.commands]);
+
+  // Reset file state when plugin changes
+  useEffect(() => {
+    setFileActivePath("");
+    setFileContent("");
+    setFileError("");
+  }, [p.id]);
+
+  // Race-condition-safe file reader
+  const loadIdRef = useRef(0);
+  const handleFileSelect = useCallback((node: FileTreeNode) => {
+    if (node.is_dir) return;
+    const id = ++loadIdRef.current;
+    setFileActivePath(node.path);
+    setFileError("");
+    invoke<string>("read_file", { path: node.path })
+      .then((c) => { if (id === loadIdRef.current) setFileContent(c); })
+      .catch((e) => { if (id === loadIdRef.current) setFileError(`读取失败: ${String(e).slice(0, 80)}`); });
+  }, []);
+
+  // Build color → agent names mapping for the legend
+  const colorMap = new Map<string, string[]>();
+  p.agents.forEach((a) => {
+    if (a.color) {
+      const names = colorMap.get(a.color) || [];
+      names.push(a.name);
+      colorMap.set(a.color, names);
+    }
+  });
 
   return (
     <div className="flex flex-col h-full animate-[fadeIn_150ms_ease-out]">
       {/* Hero */}
-      <div className="px-6 pt-8 pb-5 border-b border-[var(--app-border-light)]">
+      <div className="px-6 pt-8 pb-4 border-b border-[var(--app-border-light)]">
         <div className="flex items-start gap-3">
           <div
             className="w-10 h-10 flex items-center justify-center shrink-0 border"
@@ -90,15 +153,44 @@ function PluginDetail({
               borderColor: "var(--app-border)",
             }}
           >
-            <Puzzle size={18} style={{ color: plugin.enabled ? "var(--app-accent)" : "var(--app-text-muted)" }} />
+            <Puzzle size={18} style={{ color: p.enabled ? "var(--app-accent)" : "var(--app-text-muted)" }} />
           </div>
-          <div className="min-w-0">
-            <h2 className="text-base font-mono text-[var(--app-text)] truncate">
-              {plugin.name}
-            </h2>
-            <p className="text-xs text-[var(--app-text-muted)] font-mono mt-0.5">
-              @{plugin.marketplace}
-            </p>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <h2 className="text-base font-mono font-semibold text-[var(--app-text)] truncate">
+                  {p.name}
+                </h2>
+                <p className="text-xs text-[var(--app-text-muted)] font-mono mt-0.5">
+                  @{p.marketplace}
+                </p>
+              </div>
+              {/* View mode toggle */}
+              <div className="flex items-center border border-[var(--app-border)] rounded overflow-hidden shrink-0 ml-3">
+                <button
+                  onClick={() => setViewMode("list")}
+                  className={`px-2.5 py-1 text-2xs font-mono transition-colors ${
+                    viewMode === "list"
+                      ? "bg-[var(--app-accent)] text-[var(--app-bg)]"
+                      : "text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-hover)]"
+                  }`}
+                  title="列表视图"
+                >
+                  <List size={12} />
+                </button>
+                <button
+                  onClick={() => setViewMode("file")}
+                  className={`px-2.5 py-1 text-2xs font-mono transition-colors ${
+                    viewMode === "file"
+                      ? "bg-[var(--app-accent)] text-[var(--app-bg)]"
+                      : "text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-hover)]"
+                  }`}
+                  title="文件视图"
+                >
+                  <FolderTree size={12} />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -107,64 +199,60 @@ function PluginDetail({
       <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
         <div className="space-y-1">
           <MetaRow label="CLI">
-            <span style={{ color: CLI_COLOR[plugin.cli as CliKind] }}>{CLI_LABEL[plugin.cli as CliKind]}</span>
+            <span style={{ color: CLI_CSS_COLORS[p.cli as CliKind] }}>{CLI_LABELS[p.cli as CliKind]}</span>
           </MetaRow>
-          {plugin.version && <MetaRow label="版本">v{plugin.version}</MetaRow>}
-          <MetaRow label="来源">{plugin.source}</MetaRow>
+          {p.version && <MetaRow label="版本">v{p.version}</MetaRow>}
+          <MetaRow label="来源">{p.source}</MetaRow>
           <MetaRow label="状态">
             <span className="flex items-center gap-1.5">
               <Circle
                 size={5}
-                className={`shrink-0 ${plugin.enabled ? "fill-[var(--app-accent)] text-[var(--app-accent)]" : "fill-[var(--app-text-muted)] text-[var(--app-text-muted)]"}`}
-                style={plugin.enabled ? { boxShadow: "0 0 4px var(--app-glow)" } : undefined}
+                className={`shrink-0 ${p.enabled ? "fill-[var(--app-accent)] text-[var(--app-accent)]" : "fill-[var(--app-text-muted)] text-[var(--app-text-muted)]"}`}
+                style={p.enabled ? { boxShadow: "0 0 4px var(--app-glow)" } : undefined}
               />
-              {plugin.enabled ? "已启用" : "已禁用"}
+              {p.enabled ? "已启用" : "已禁用"}
             </span>
           </MetaRow>
         </div>
 
-        {plugin.skills.length > 0 && (
+        {(p.skills.length > 0 || p.agents.length > 0) && (
           <p className="mt-2 text-2xs text-[var(--app-text-muted)] font-mono leading-relaxed">
-            {plugin.enabled
-              ? `启用后，此 Plugin 下的 ${plugin.skills.length} 个 Skill 均可用。`
-              : `禁用后，此 Plugin 下的 ${plugin.skills.length} 个 Skill 都将不可用。`
+            {p.enabled
+              ? `启用后，此 Plugin 下的 ${p.skills.length} 个 Skill、${p.agents.length} 个智能体均可用。`
+              : `禁用后，此 Plugin 下的 ${p.skills.length} 个 Skill、${p.agents.length} 个智能体都将不可用。`
             }
             <br />
-            子 Skill 不支持单独启用/禁用，跟随 Plugin 统一管理。
+            子项目不支持单独启用/禁用，跟随 Plugin 统一管理。
           </p>
         )}
 
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => onToggle(!plugin.enabled)}
-            className={`mt-3 p-1.5 border transition-all duration-fast
-              ${plugin.enabled
-                ? "text-[var(--app-text-muted)] border-[var(--app-border)] hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
-                : "text-[var(--app-text-muted)] border-[var(--app-border)] hover:text-[var(--app-accent)] hover:border-[var(--app-accent)] hover:bg-[var(--app-green-bg)]"
-              }`}
-            title={plugin.enabled ? "禁用" : "启用"}
-          >
-            {plugin.enabled ? <Ban size={14} /> : <Play size={14} />}
-          </button>
-          <button
+        <div className="flex items-center gap-1 mt-3">
+          {p.enabled ? (
+            <Button variant="icon" size="sm" onClick={() => onToggle(false)} title="禁用" prompt="!">
+              <Ban size={14} />
+            </Button>
+          ) : (
+            <Button variant="icon" size="sm" onClick={() => onToggle(true)} title="启用" prompt=">">
+              <Play size={14} />
+            </Button>
+          )}
+          <Button variant="icon" size="sm"
             onClick={() => {
               setConfirm({
-                title: "卸载 Plugin",
-                message: `确定要卸载 "${plugin.name}" 吗？Plugin 下的所有 Skill 将不可用。`,
-                confirmLabel: "卸载",
+                title: "删除 Plugin",
+                message: `确定要删除 "${p.name}" 吗？Plugin 下的所有 Skill 将不可用。`,
+                confirmLabel: "删除",
                 onConfirm: () => {
-                  onUninstall(plugin.cli as CliKind, plugin.id);
+                  onUninstall(p.cli as CliKind, p.id);
                   setConfirm(null);
                 },
               });
             }}
-            className="mt-3 p-1.5 border border-[var(--app-border)] text-[var(--app-text-muted)]
-              hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]
-              transition-all duration-fast"
-            title="卸载"
+            title="删除"
+            className="hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
           >
             <Trash2 size={14} />
-          </button>
+          </Button>
         </div>
 
         {updateInfo?.hasUpdate && (
@@ -177,7 +265,7 @@ function PluginDetail({
               {updateInfo.currentVersion} → <span className="text-[var(--app-amber)]">{updateInfo.latestSha}</span>
             </p>
             <button
-              onClick={() => onUpdate(plugin.cli as CliKind, plugin.id)}
+              onClick={() => onUpdate(p.cli as CliKind, p.id)}
               className="mt-2 p-1.5 border border-[var(--app-amber)] text-[var(--app-amber)]
                 hover:bg-[var(--app-amber)] hover:text-[var(--app-bg)] transition-all duration-fast"
               title="更新到最新版本"
@@ -188,46 +276,257 @@ function PluginDetail({
         )}
       </div>
 
-      {/* Skills list */}
-      {plugin.skills.length > 0 && (
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          <SectionHeader
-            icon={<Layers size={12} className="text-[var(--app-text-muted)]" />}
-            label={`包含 ${plugin.skills.length} 个 Skill`}
-          />
+      {viewMode === "list" && (
+        <>
+          {/* Tab bar */}
+          <div className="flex border-b border-[var(--app-border-light)]" role="tablist">
+        <button
+          role="tab"
+          aria-selected={tab === "skills"}
+          onClick={() => setTab("skills")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-mono transition-colors duration-fast
+            ${tab === "skills"
+              ? "text-[var(--app-accent)] border-b-[2px] border-b-[var(--app-accent)] -mb-px"
+              : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+            }`}
+        >
+          <Layers size={12} aria-hidden="true" />
+          Skills
+          <span className="text-2xs opacity-50 ml-0.5">{p.skills.length}</span>
+        </button>
+        <button
+          role="tab"
+          aria-selected={tab === "agents"}
+          onClick={() => setTab("agents")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-mono transition-colors duration-fast
+            ${tab === "agents"
+              ? "text-[var(--app-accent)] border-b-[2px] border-b-[var(--app-accent)] -mb-px"
+              : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+            }`}
+        >
+          <Bot size={12} aria-hidden="true" />
+          Agents
+          <span className="text-2xs opacity-50 ml-0.5">{p.agents.length}</span>
+        </button>
+        {(p.commands?.length > 0) && (
+          <button
+            role="tab"
+            aria-selected={tab === "commands"}
+            onClick={() => setTab("commands")}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-mono transition-colors duration-fast
+              ${tab === "commands"
+                ? "text-[var(--app-accent)] border-b-[2px] border-b-[var(--app-accent)] -mb-px"
+                : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+              }`}
+          >
+            <Terminal size={12} aria-hidden="true" />
+            Commands
+            <span className="text-2xs opacity-50 ml-0.5">{p.commands.length}</span>
+          </button>
+        )}
+      </div>
 
-          <div className="space-y-1.5">
-            {plugin.skills.map((sk) => (
-              <div
-                key={sk.name}
-                className="group px-3 py-2 border border-[var(--app-border-light)]
-                  bg-[var(--app-bg)] hover:bg-[var(--app-hover)]
-                  transition-colors duration-fast"
-              >
-                <div className="flex items-center gap-2">
-                  <FileText size={12} className="shrink-0 text-[var(--app-accent)] opacity-60" />
-                  <span className="text-sm font-mono text-[var(--app-text)]">{sk.name}</span>
+      {/* Tab content */}
+      <div className="flex-1 overflow-y-auto px-6 py-4">
+        {tab === "skills" ? (
+          p.skills.length > 0 ? (
+            <div className="space-y-1.5">
+              {p.skills.map((sk) => (
+                <button
+                  key={sk.name}
+                  onClick={() => onSkillClick?.(sk, p.cli)}
+                  className="group w-full text-left px-3 py-2 border border-[var(--app-border-light)]
+                    bg-[var(--app-bg)] hover:bg-[var(--app-hover)] hover:border-[var(--app-accent)]/30
+                    transition-colors duration-fast"
+                >
+                  <div className="flex items-center gap-2">
+                    <FileText size={12} className="shrink-0 text-[var(--app-accent)] opacity-60" />
+                    <span className="text-sm font-mono text-[var(--app-text)]">{sk.name}</span>
+                  </div>
+                  {sk.description && (
+                    <p className="mt-1 ml-5 text-xs text-[var(--app-text-muted)] leading-relaxed line-clamp-2">
+                      {sk.description}
+                    </p>
+                  )}
+                  <div className="mt-1.5 ml-5 flex items-center gap-1 text-2xs text-[var(--app-text-muted)] font-mono opacity-0 group-hover:opacity-60 transition-opacity">
+                    <FolderOpen size={9} />
+                    <span className="truncate">{shortenPath(sk.path)}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center h-full">
+              <div className="text-center">
+                <Box size={24} className="mx-auto text-[var(--app-text-muted)] opacity-20 mb-2" />
+                <p className="text-xs text-[var(--app-text-muted)] font-mono">此 Plugin 不包含 Skill</p>
+              </div>
+            </div>
+          )
+        ) : tab === "agents" ? (
+          p.agents.length > 0 ? (
+            <div className="space-y-3">
+              {/* Color legend */}
+              {colorMap.size > 0 && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 border border-[var(--app-border-light)] bg-[var(--app-bg)]">
+                  <span className="text-2xs text-[var(--app-text-muted)] font-mono mr-0.5">
+                    色点说明
+                  </span>
+                  {[...colorMap.entries()].map(([color, names]) => (
+                    <span
+                      key={color}
+                      className="inline-flex items-center gap-1 text-2xs text-[var(--app-text-dim)] font-mono"
+                      title={names.join(", ")}
+                    >
+                      <span
+                        className="inline-block w-2 h-2 rounded-full border border-white/20 shrink-0"
+                        style={{ backgroundColor: color }}
+                      />
+                      {names.join("/")}
+                    </span>
+                  ))}
                 </div>
-                {sk.description && (
-                  <p className="mt-1 ml-5 text-xs text-[var(--app-text-muted)] leading-relaxed line-clamp-2">
-                    {sk.description}
-                  </p>
+              )}
+              <div className="space-y-1.5">
+              {p.agents.map((agent) => (
+                <button
+                  key={agent.id}
+                  onClick={() => onAgentClick?.(agent)}
+                  className="group w-full text-left px-3 py-2 border border-[var(--app-border-light)]
+                    bg-[var(--app-bg)] hover:bg-[var(--app-hover)] hover:border-[var(--app-accent)]/30
+                    transition-colors duration-fast"
+                >
+                  <div className="flex items-center gap-2">
+                    <Bot size={12} className="shrink-0 text-[var(--app-accent)] opacity-60" />
+                    <span className="text-sm font-mono text-[var(--app-text)]">{agent.name}</span>
+                    {agent.color && (
+                      <span
+                        className="inline-block w-2 h-2 rounded-full border border-white/20 shrink-0"
+                        style={{ backgroundColor: agent.color }}
+                      />
+                    )}
+                  </div>
+                  {agent.description && (
+                    <p className="mt-1 ml-5 text-xs text-[var(--app-text-muted)] leading-relaxed line-clamp-2">
+                      {agent.description}
+                    </p>
+                  )}
+                  <div className="mt-1.5 ml-5 flex items-center gap-2 flex-wrap">
+                    {agent.model && (
+                      <span className="text-2xs text-[var(--app-text-muted)] font-mono opacity-60">
+                        model:{agent.model}
+                      </span>
+                    )}
+                    {agent.tools.length > 0 && (
+                      <span className="flex items-center gap-1 text-2xs text-[var(--app-text-muted)] font-mono opacity-60">
+                        <Wrench size={9} />
+                        {agent.tools.join(", ")}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center h-full">
+              <div className="text-center">
+                <Box size={24} className="mx-auto text-[var(--app-text-muted)] opacity-20 mb-2" />
+                <p className="text-xs text-[var(--app-text-muted)] font-mono">此 Plugin 不包含 Agent</p>
+              </div>
+            </div>
+          )
+        ) : (
+          /* Commands tab */
+          (p.commands?.length > 0) ? (
+            <div className="space-y-1.5">
+              {p.commands.map((cmd: CommandEntry) => (
+                <button
+                  key={cmd.id}
+                  onClick={() => onCommandClick?.(cmd)}
+                  className="group w-full text-left px-3 py-2 border border-[var(--app-border-light)]
+                    bg-[var(--app-bg)] hover:bg-[var(--app-hover)] hover:border-[var(--app-accent)]/30
+                    transition-colors duration-fast"
+                >
+                  <div className="flex items-center gap-2">
+                    <Terminal size={12} className="shrink-0 text-[var(--app-accent)] opacity-60" />
+                    <span className="text-sm font-mono text-[var(--app-text)]">/{cmd.name}</span>
+                  </div>
+                  {cmd.description && (
+                    <p className="mt-1 ml-5 text-xs text-[var(--app-text-muted)] leading-relaxed line-clamp-2">
+                      {cmd.description}
+                    </p>
+                  )}
+                  <div className="mt-1.5 ml-5 flex items-center gap-1 text-2xs text-[var(--app-text-muted)] font-mono opacity-0 group-hover:opacity-60 transition-opacity">
+                    <FolderOpen size={9} />
+                    <span className="truncate">{cmd.path}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center h-full">
+              <div className="text-center">
+                <Box size={24} className="mx-auto text-[var(--app-text-muted)] opacity-20 mb-2" />
+                <p className="text-xs text-[var(--app-text-muted)] font-mono">此 Plugin 不包含 Commands</p>
+              </div>
+            </div>
+          )
+        )}
+      </div>
+        </>
+      )}
+
+      {/* File mode */}
+      {viewMode === "file" && pluginRootDir && (
+        <div className="flex flex-row flex-1 min-h-0">
+          {/* Left: FileTree */}
+          <div className="w-56 shrink-0 border-r border-[var(--app-border-light)] overflow-y-auto bg-[var(--app-sidebar)]">
+            <FileTree
+              rootPath={pluginRootDir}
+              onSelect={handleFileSelect}
+              activePath={fileActivePath}
+            />
+          </div>
+          {/* Right: file content */}
+          <div className="flex-1 overflow-y-auto">
+            {fileActivePath ? (
+              <>
+                <div className="px-6 pt-3 pb-1 flex items-center gap-1.5">
+                  <File size={10} className="text-[var(--app-text-muted)] shrink-0" />
+                  <span className="text-2xs text-[var(--app-text-muted)] font-mono truncate">
+                    {basename(fileActivePath) || fileActivePath}
+                  </span>
+                </div>
+                {fileError ? (
+                  <div className="px-6 pb-6">
+                    <div className="p-3 border border-[var(--app-red)] bg-[var(--app-red-bg)] text-xs text-[var(--app-red)] font-mono">
+                      {fileError}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="px-6 pb-6">
+                    <FileContentBlock content={fileContent} filePath={fileActivePath} />
+                  </div>
                 )}
-                <div className="mt-1.5 ml-5 flex items-center gap-1 text-2xs text-[var(--app-text-muted)] font-mono opacity-0 group-hover:opacity-60 transition-opacity">
-                  <FolderOpen size={9} />
-                  <span className="truncate">{shortenPath(sk.path)}</span>
+              </>
+            ) : (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center">
+                  <FolderOpen size={24} className="mx-auto text-[var(--app-text-muted)] opacity-20 mb-2" />
+                  <p className="text-xs text-[var(--app-text-muted)] font-mono">从左侧文件树选择一个文件查看</p>
                 </div>
               </div>
-            ))}
+            )}
           </div>
         </div>
       )}
 
-      {plugin.skills.length === 0 && (
+      {viewMode === "file" && !pluginRootDir && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <Box size={24} className="mx-auto text-[var(--app-text-muted)] opacity-20 mb-2" />
-            <p className="text-xs text-[var(--app-text-muted)] font-mono">此 Plugin 不包含 Skill</p>
+            <p className="text-xs text-[var(--app-text-muted)] font-mono">此 Plugin 没有可浏览的文件目录</p>
           </div>
         </div>
       )}
@@ -246,21 +545,189 @@ function PluginDetail({
   );
 }
 
+/* ──────────────────── Plugin Skill Detail (read-only) ──────────────────── */
+
+function PluginSkillDetail({
+  skill,
+  cli,
+  onBack,
+}: {
+  skill: { name: string; path: string; description?: string };
+  cli: string;
+  onBack?: () => void;
+}) {
+  const [skillContent, setSkillContent] = useState<{ description: string; body: string } | null>(null);
+  const [contentError, setContentError] = useState<string>("");
+  const [activePath, setActivePath] = useState<string>(skill.path);
+  const [fileContent, setFileContent] = useState<string>("");
+  const loadRef = useRef(0);
+
+  useEffect(() => {
+    if (skill.path) {
+      setContentError("");
+      invoke<{ description: string; body: string }>("read_skill_content", { path: skill.path })
+        .then(setSkillContent)
+        .catch(() => setContentError("无法读取 Skill 内容"));
+    }
+  }, [skill.path]);
+
+  const handleFileSelect = useCallback((node: FileTreeNode) => {
+    if (node.is_dir) return;
+    const id = ++loadRef.current;
+    setActivePath(node.path);
+    invoke<string>("read_file", { path: node.path })
+      .then((c) => { if (id === loadRef.current) setFileContent(c); })
+      .catch(() => { if (id === loadRef.current) setFileContent(""); });
+  }, []);
+
+  const displayDesc = skillContent?.description || skill.description || "";
+  const coreFileName = skill.path.split("/").pop() || "";
+
+  return (
+    <div className="flex flex-col h-full animate-[fadeIn_150ms_ease-out]">
+      {onBack && (
+        <div className="px-6 pt-3">
+          <button onClick={onBack} className="text-2xs text-[var(--app-text-muted)] hover:text-[var(--app-text)] font-mono transition-colors">
+            ← 返回 Plugin
+          </button>
+        </div>
+      )}
+      {/* Hero */}
+      <div className={`px-6 ${onBack ? "pt-4" : "pt-8"} pb-5 border-b border-[var(--app-border-light)]`}>
+        <div className="flex items-start gap-3">
+          <div
+            className="w-10 h-10 flex items-center justify-center shrink-0 border"
+            style={{ background: "var(--app-input)", borderColor: "var(--app-border)" }}
+          >
+            <FileText size={18} style={{ color: CLI_CSS_COLORS[cli as CliKind] || "var(--app-text-muted)" }} />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-base font-mono font-semibold text-[var(--app-text)] truncate">{skill.name}</h2>
+            <p className="text-xs text-[var(--app-text-muted)] font-mono mt-0.5">Plugin Skill（只读）</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Metadata */}
+      <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
+        <div className="space-y-1">
+          <MetaRow label="CLI">
+            <span style={{ color: CLI_CSS_COLORS[cli as CliKind] }}>{CLI_LABELS[cli as CliKind]}</span>
+          </MetaRow>
+          <MetaRow label="状态">
+            <span className="flex items-center gap-1.5">
+              <Circle size={5} className="shrink-0 fill-[var(--app-accent)] text-[var(--app-accent)]" />
+              跟随 Plugin
+            </span>
+          </MetaRow>
+        </div>
+      </div>
+
+      {/* FileTree + Content */}
+      <div className="flex flex-row flex-1 min-h-0">
+        {/* Left: FileTree */}
+        <div className="w-56 shrink-0 border-r border-[var(--app-border-light)] overflow-y-auto bg-[var(--app-sidebar)]">
+          <FileTree
+            rootPath={skill.path}
+            onSelect={handleFileSelect}
+            activePath={activePath}
+            defaultOpenFile={coreFileName}
+          />
+        </div>
+        {/* Right: Content */}
+        <div className="flex-1 overflow-y-auto">
+          {displayDesc && (
+            <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
+              <SectionHeader icon={<FileText size={12} className="text-[var(--app-text-muted)]" />} label="描述" />
+              <p className="text-xs text-[var(--app-text-dim)] font-mono leading-relaxed">{displayDesc}</p>
+            </div>
+          )}
+
+          {/* Current file indicator */}
+          <div className="px-6 pt-3 pb-1 flex items-center gap-1.5">
+            <File size={10} className="text-[var(--app-text-muted)] shrink-0" />
+            <span className="text-2xs text-[var(--app-text-muted)] font-mono truncate">
+              {activePath === (skill as any).path ? coreFileName : (basename(activePath) || activePath)}
+            </span>
+          </div>
+
+          {/* File content */}
+          <div className="px-6 pb-6">
+            <FileContentBlock
+              content={activePath === (skill as any).path ? (skillContent?.body || "") : fileContent}
+              filePath={activePath}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ──────────────────── Standalone Skill Detail ──────────────────── */
 
 function StandaloneDetail({
   skill,
   readonly,
+  graphData,
   onToggle,
   onUninstall,
+  onNodeClick,
 }: {
   skill: NonNullable<SkillDetailProps["item"]>["data"];
   readonly: boolean;
+  graphData?: DependencyGraphData | null;
   onToggle: (enabled: boolean) => void;
   onUninstall: (cli: CliKind, skillId: string) => void;
+  onNodeClick?: (nodeId: string) => void;
 }) {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
-  if (!("linkType" in skill)) return null;
+  const [skillContent, setSkillContent] = useState<{ description: string; body: string } | null>(null);
+  const [contentError, setContentError] = useState<string | null>(null);
+  const [activePath, setActivePath] = useState<string>("");
+  const [fileContent, setFileContent] = useState<string>("");
+  const loadRef2 = useRef(0);
+
+  const hasLinkType = "linkType" in skill;
+
+  useEffect(() => {
+    if (hasLinkType && (skill as any).path) {
+      setActivePath((skill as any).path);
+      setContentError(null);
+      invoke<{ description: string; body: string }>("read_skill_content", { path: (skill as any).path })
+        .then((c) => {
+          setSkillContent(c);
+          if (!c.description && !c.body) setContentError("Skill 文件为空");
+        })
+        .catch((e) => setContentError(`无法读取 Skill 内容: ${String(e).slice(0, 80)}`));
+    }
+  }, [hasLinkType, (skill as any)?.path]);
+
+  const handleFileSelect = useCallback((node: FileTreeNode) => {
+    if (node.is_dir) return;
+    const id = ++loadRef2.current;
+    setActivePath(node.path);
+    invoke<string>("read_file", { path: node.path })
+      .then((c) => { if (id === loadRef2.current) setFileContent(c); })
+      .catch(() => { if (id === loadRef2.current) setFileContent(""); });
+  }, []);
+
+  // Reverse references from graph
+  const reverseRefs = useMemo(() => {
+    if (!graphData || !hasLinkType) return [];
+    const skillId = `${(skill as any).cli}:skill:${(skill as any).name}`;
+    return graphData.edges
+      .filter((e) => e.to === skillId)
+      .map((e) => {
+        const node = graphData.nodes.find((n) => n.id === e.from);
+        return node ? { id: node.id, label: node.label, kind: node.kind, cli: node.cli } : null;
+      })
+      .filter(Boolean) as { id: string; label: string; kind: string; cli: string }[];
+  }, [graphData, skill, hasLinkType]);
+
+  if (!hasLinkType) return null;
+
+  const coreFileName = (skill as any).path ? basename((skill as any).path) : "";
 
   const iconMap: Record<string, React.ReactNode> = {
     symlink: <Link2 size={18} />,
@@ -286,7 +753,7 @@ function StandaloneDetail({
             }
           </div>
           <div className="min-w-0">
-            <h2 className="text-base font-mono text-[var(--app-text)] truncate">
+            <h2 className="text-base font-mono font-semibold text-[var(--app-text)] truncate">
               {skill.name}
             </h2>
             <p className="text-xs text-[var(--app-text-muted)] font-mono mt-0.5">
@@ -300,7 +767,7 @@ function StandaloneDetail({
       <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
         <div className="space-y-1">
           <MetaRow label="CLI">
-            <span style={{ color: CLI_COLOR[skill.cli as CliKind] }}>{CLI_LABEL[skill.cli as CliKind]}</span>
+            <span style={{ color: CLI_CSS_COLORS[skill.cli as CliKind] }}>{CLI_LABELS[skill.cli as CliKind]}</span>
           </MetaRow>
           <MetaRow label="类型">{skill.linkType}</MetaRow>
           <MetaRow label="状态">
@@ -336,9 +803,9 @@ function StandaloneDetail({
             <button
               onClick={() => {
                 setConfirm({
-                  title: "卸载 Skill",
-                  message: `确定要卸载 "${skill.name}" 吗？将从 skills 目录中移除。`,
-                  confirmLabel: "卸载",
+                  title: "删除 Skill",
+                  message: `确定要删除 "${skill.name}" 吗？将从 skills 目录中移除。`,
+                  confirmLabel: "删除",
                   onConfirm: () => {
                     onUninstall(skill.cli as CliKind, skill.id);
                     setConfirm(null);
@@ -348,7 +815,7 @@ function StandaloneDetail({
               className="mt-3 p-1.5 border border-[var(--app-border)] text-[var(--app-text-muted)]
                 hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]
                 transition-all duration-fast"
-              title="卸载"
+              title="删除"
             >
               <Trash2 size={14} />
             </button>
@@ -361,8 +828,265 @@ function StandaloneDetail({
         )}
       </div>
 
-      {/* Empty space for future: file preview, usage stats */}
-      <div className="flex-1" />
+      {/* FileTree + Content */}
+      <div className="flex flex-row flex-1 min-h-0">
+        {/* Left: FileTree */}
+        <div className="w-56 shrink-0 border-r border-[var(--app-border-light)] overflow-y-auto bg-[var(--app-sidebar)]">
+          <FileTree
+            rootPath={(skill as any).path}
+            onSelect={handleFileSelect}
+            activePath={activePath}
+            defaultOpenFile={coreFileName}
+          />
+        </div>
+        {/* Right: Content */}
+        <div className="flex-1 overflow-y-auto">
+          {/* Content load error */}
+          {contentError && (
+            <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
+              <div className="p-3 border border-[var(--app-amber)] bg-[var(--app-amber-bg)]">
+                <p className="text-xs text-[var(--app-text-dim)] font-mono">{contentError}</p>
+                <p className="text-2xs text-[var(--app-text-muted)] font-mono mt-1">
+                  路径: {(skill as any).path}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Description */}
+          {skillContent?.description && (
+            <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
+              <SectionHeader
+                icon={<FileText size={12} className="text-[var(--app-text-muted)]" />}
+                label="描述"
+              />
+              <p className="text-xs text-[var(--app-text-dim)] font-mono leading-relaxed">
+                {skillContent.description}
+              </p>
+            </div>
+          )}
+
+          {/* Current file indicator */}
+          <div className="px-6 pt-3 pb-1 flex items-center gap-1.5">
+            <File size={10} className="text-[var(--app-text-muted)] shrink-0" />
+            <span className="text-2xs text-[var(--app-text-muted)] font-mono truncate">
+              {activePath === (skill as any).path ? coreFileName : (basename(activePath) || activePath)}
+            </span>
+          </div>
+
+          {/* File content */}
+          <div className="px-6 pb-6">
+            <FileContentBlock
+              content={activePath === (skill as any).path ? (skillContent?.body || "") : fileContent}
+              filePath={activePath}
+            />
+          </div>
+
+          {/* Reverse References */}
+          {reverseRefs.length > 0 && (
+            <div className="px-6 py-4 border-t border-[var(--app-border-light)]">
+              <SectionHeader
+                icon={<ArrowUpRight size={12} className="text-[var(--app-text-muted)]" />}
+                label={`被 ${reverseRefs.length} 个节点引用`}
+              />
+              <div className="space-y-1">
+                {reverseRefs.map((ref) => (
+                  <button
+                    key={ref.id}
+                    onClick={() => onNodeClick?.(ref.id)}
+                    className="flex items-center gap-2 w-full px-2 py-1 text-left hover:bg-[var(--app-hover)] transition-colors group"
+                  >
+                    <span className="text-xs font-mono truncate" style={{ color: CLI_CSS_COLORS[ref.cli as CliKind] || "#6B7280" }}>
+                      {ref.label}
+                    </span>
+                    <span className="text-2xs text-[var(--app-text-muted)] font-mono opacity-0 group-hover:opacity-60 transition-opacity">
+                      {ref.kind}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {confirm && (
+        <ConfirmDialog
+          open={true}
+          title={confirm.title}
+          message={confirm.message}
+          confirmLabel={confirm.confirmLabel}
+          onConfirm={confirm.onConfirm}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ──────────────────── Command Detail (read-only) ──────────────────── */
+
+function CommandDetail({
+  command,
+  onBack,
+  onToggle,
+  onUninstall,
+}: {
+  command: CommandEntry;
+  onBack?: () => void;
+  onToggle?: (enabled: boolean) => void;
+  onUninstall?: () => void;
+}) {
+  const [content, setContent] = useState<string>("");
+  const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; onConfirm: () => void } | null>(null);
+  const [activePath, setActivePath] = useState<string>(command.path);
+  const [fileContent, setFileContent] = useState<string>("");
+  const isPluginCommand = !!onBack;
+  const coreFileName = basename(command.path);
+  const loadRef3 = useRef(0);
+
+  useEffect(() => {
+    if (command.path) {
+      invoke<string>("read_agent_content", { path: command.path })
+        .then(setContent)
+        .catch(() => setContent(""));
+    }
+  }, [command.path]);
+
+  const handleFileSelect = useCallback((node: FileTreeNode) => {
+    if (node.is_dir) return;
+    const id = ++loadRef3.current;
+    setActivePath(node.path);
+    invoke<string>("read_file", { path: node.path })
+      .then((c) => { if (id === loadRef3.current) setFileContent(c); })
+      .catch(() => { if (id === loadRef3.current) setFileContent(""); });
+  }, []);
+
+  return (
+    <div className="flex flex-col h-full animate-[fadeIn_150ms_ease-out]">
+      {onBack && (
+        <div className="px-6 pt-3">
+          <button onClick={onBack} className="text-2xs text-[var(--app-text-muted)] hover:text-[var(--app-text)] font-mono transition-colors">
+            ← 返回 Plugin
+          </button>
+        </div>
+      )}
+      {/* Hero */}
+      <div className={`px-6 ${onBack ? "pt-4" : "pt-8"} pb-5 border-b border-[var(--app-border-light)]`}>
+        <div className="flex items-start gap-3">
+          <div
+            className="w-10 h-10 flex items-center justify-center shrink-0 border"
+            style={{ background: "var(--app-input)", borderColor: "var(--app-border)" }}
+          >
+            <Terminal size={18} style={{ color: CLI_CSS_COLORS[command.cli as CliKind] || "var(--app-text-muted)" }} />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-base font-mono font-semibold text-[var(--app-text)] truncate">/{command.name}</h2>
+            <p className="text-xs text-[var(--app-text-muted)] font-mono mt-0.5">
+              {isPluginCommand ? "Plugin Command（只读）" : "独立 Command"}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Metadata */}
+      <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
+        <div className="space-y-1">
+          <MetaRow label="CLI">
+            <span style={{ color: CLI_CSS_COLORS[command.cli as CliKind] }}>{CLI_LABELS[command.cli as CliKind]}</span>
+          </MetaRow>
+          <MetaRow label="状态">
+            <span className="flex items-center gap-1.5">
+              <Circle
+                size={5}
+                className={`shrink-0 ${command.enabled ? "fill-[var(--app-accent)] text-[var(--app-accent)]" : "fill-[var(--app-text-muted)] text-[var(--app-text-muted)]"}`}
+                style={command.enabled ? { boxShadow: "0 0 4px var(--app-glow)" } : undefined}
+              />
+              {isPluginCommand ? "跟随 Plugin" : command.enabled ? "已启用" : "已禁用"}
+            </span>
+          </MetaRow>
+        </div>
+
+        {/* Action buttons — only for standalone commands */}
+        {!isPluginCommand && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => onToggle?.(!command.enabled)}
+              className={`mt-3 p-1.5 border transition-all duration-fast
+                ${command.enabled
+                  ? "text-[var(--app-text-muted)] border-[var(--app-border)] hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
+                  : "text-[var(--app-text-muted)] border-[var(--app-border)] hover:text-[var(--app-accent)] hover:border-[var(--app-accent)] hover:bg-[var(--app-green-bg)]"
+                }`}
+              title={command.enabled ? "禁用" : "启用"}
+            >
+              {command.enabled ? <Ban size={14} /> : <Play size={14} />}
+            </button>
+            <button
+              onClick={() => {
+                setConfirm({
+                  title: "删除 Command",
+                  message: `确定要删除 "/${command.name}" 吗？`,
+                  confirmLabel: "删除",
+                  onConfirm: () => {
+                    onUninstall?.();
+                    setConfirm(null);
+                  },
+                });
+              }}
+              className="mt-3 p-1.5 border border-[var(--app-border)] text-[var(--app-text-muted)]
+                hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]
+                transition-all duration-fast"
+              title="删除"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        )}
+        {isPluginCommand && (
+          <div className="mt-3">
+            <span className="text-2xs text-[var(--app-text-muted)] font-mono">Plugin Command，不可单独操作</span>
+          </div>
+        )}
+      </div>
+
+      {/* FileTree + Content */}
+      <div className="flex flex-row flex-1 min-h-0">
+        {/* Left: FileTree */}
+        <div className="w-56 shrink-0 border-r border-[var(--app-border-light)] overflow-y-auto bg-[var(--app-sidebar)]">
+          <FileTree
+            rootPath={command.path}
+            onSelect={handleFileSelect}
+            activePath={activePath}
+            defaultOpenFile={coreFileName}
+          />
+        </div>
+        {/* Right: Content */}
+        <div className="flex-1 overflow-y-auto">
+          {/* Description */}
+          {command.description && (
+            <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
+              <SectionHeader icon={<FileText size={12} className="text-[var(--app-text-muted)]" />} label="描述" />
+              <p className="text-xs text-[var(--app-text-dim)] font-mono leading-relaxed">{command.description}</p>
+            </div>
+          )}
+
+          {/* Current file indicator */}
+          <div className="px-6 pt-3 pb-1 flex items-center gap-1.5">
+            <File size={10} className="text-[var(--app-text-muted)] shrink-0" />
+            <span className="text-2xs text-[var(--app-text-muted)] font-mono truncate">
+              {activePath === command.path ? coreFileName : (basename(activePath) || activePath)}
+            </span>
+          </div>
+
+          {/* File content */}
+          <div className="px-6 pb-6">
+            <FileContentBlock
+              content={activePath === command.path ? content : fileContent}
+              filePath={activePath}
+            />
+          </div>
+        </div>
+      </div>
 
       {confirm && (
         <ConfirmDialog
@@ -382,25 +1106,27 @@ function StandaloneDetail({
 
 function EmptyState() {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-8">
-      <div
-        className="w-16 h-16 flex items-center justify-center border border-dashed"
-        style={{
-          borderColor: "var(--app-border)",
-          background: "var(--app-bg)",
-        }}
-      >
-        <Cpu size={24} className="text-[var(--app-text-muted)] opacity-25" />
-      </div>
-      <div>
-        <h3 className="text-sm font-mono text-[var(--app-text-dim)] mb-1">
-          Skill & Plugin Manager
-        </h3>
-        <p className="text-xs text-[var(--app-text-muted)] leading-relaxed max-w-xs">
-          从左侧列表选择一个 Plugin 或 Skill 查看详情。
-          <br />
-          你可以在这里启用 / 禁用插件和技能。
-        </p>
+    <div className="flex-1 flex items-center justify-center bg-[var(--app-bg)]">
+      <div className="flex flex-col items-center gap-5 text-center max-w-sm px-4">
+        <div className="w-16 h-16 rounded-full bg-[var(--app-selected)] flex items-center justify-center">
+          <Cpu size={28} className="text-[var(--app-accent)]" />
+        </div>
+        <div>
+          <div className="text-base font-mono font-semibold text-[var(--app-text)] mb-1">
+            Skill &amp; Plugin Manager
+          </div>
+          <div className="text-xs text-[var(--app-text-dim)] leading-relaxed">
+            从左侧列表选择一个 Plugin 或 Skill 查看详情
+            <br />
+            你可以在这里启用 / 禁用 Plugin 和 Skill
+          </div>
+        </div>
+        <div className="text-xs text-[var(--app-text-dim)] font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-[var(--app-border)] p-3 w-full">
+          <div className="text-[var(--app-text-muted)]">快速操作：</div>
+          <div>• 点击左侧展开分组浏览 Plugin / Skill</div>
+          <div>• 使用搜索过滤 (Ctrl+F)</div>
+          <div>• 右侧面板查看详情和文件</div>
+        </div>
       </div>
     </div>
   );
@@ -408,7 +1134,7 @@ function EmptyState() {
 
 /* ──────────────────── Main ──────────────────── */
 
-export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandaloneSkill, updateInfos, onUpdatePlugin, onUninstallPlugin, onUninstallStandaloneSkill }: SkillDetailProps) {
+export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandaloneSkill, updateInfos, onUpdatePlugin, onUninstallPlugin, onUninstallStandaloneSkill, onToggleAgent, onDeleteAgent, onToggleCommand, onUninstallCommand, onNodeClick, onSelect }: SkillDetailProps) {
   if (!item) return <EmptyState />;
 
   if (item.type === "plugin") {
@@ -422,6 +1148,12 @@ export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandalon
         updateInfo={updateInfo}
         onUpdate={onUpdatePlugin}
         onUninstall={onUninstallPlugin}
+        onSkillClick={(skill, cli) => onSelect?.({ type: "plugin-skill", data: { skill, cli, parentPlugin: item.data as any } })}
+        onAgentClick={(agent) => onSelect?.({ type: "plugin-agent", data: { ...agent, parentPlugin: item.data as any } })}
+        onCommandClick={(cmd) => {
+          console.log("[DEBUG] plugin command clicked:", cmd);
+          onSelect?.({ type: "plugin-command", data: { ...cmd, parentPlugin: item.data as any } });
+        }}
       />
     );
   }
@@ -431,10 +1163,12 @@ export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandalon
       <StandaloneDetail
         skill={item.data}
         readonly={false}
+        graphData={graphData}
         onToggle={(enabled) =>
           onToggleStandaloneSkill((item.data as any).cli, (item.data as any).id, enabled)
         }
         onUninstall={onUninstallStandaloneSkill}
+        onNodeClick={onNodeClick}
       />
     );
   }
@@ -444,8 +1178,9 @@ export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandalon
       <AgentDetail
         agent={item.data}
         graphData={graphData}
-        onToggle={() => {}}
-        onDelete={() => {}}
+        onToggle={(agent, enabled) => onToggleAgent(agent.cli, agent.name, enabled)}
+        onDelete={(agent) => onDeleteAgent(agent.cli, agent.name)}
+        onNodeClick={onNodeClick}
       />
     );
   }
@@ -455,10 +1190,59 @@ export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandalon
       <StandaloneDetail
         skill={item.data}
         readonly
+        graphData={graphData}
         onToggle={() => {}}
         onUninstall={() => {}}
+        onNodeClick={onNodeClick}
       />
     );
+  }
+
+  if (item.type === "plugin-skill") {
+    const goBack = () => onSelect?.({ type: "plugin", data: item.data.parentPlugin });
+    return (
+      <PluginSkillDetail
+        skill={item.data.skill}
+        cli={item.data.cli}
+        onBack={goBack}
+      />
+    );
+  }
+
+  if (item.type === "plugin-agent") {
+    const goBack = () => onSelect?.({ type: "plugin", data: item.data.parentPlugin });
+    return (
+      <div className="flex flex-col h-full">
+        <div className="px-6 pt-3">
+          <button onClick={goBack} className="text-2xs text-[var(--app-text-muted)] hover:text-[var(--app-text)] font-mono transition-colors">
+            ← 返回 Plugin
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <AgentDetail
+            agent={item.data}
+            graphData={graphData}
+            onNodeClick={onNodeClick}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (item.type === "command") {
+    return (
+      <CommandDetail
+        command={item.data}
+        onToggle={(enabled) => onToggleCommand?.(item.data.cli, item.data.name, enabled)}
+        onUninstall={() => onUninstallCommand?.(item.data.cli, item.data.name)}
+      />
+    );
+  }
+
+  if (item.type === "plugin-command") {
+    console.log("[DEBUG] rendering plugin-command detail:", item.data.name);
+    const goBack = () => onSelect?.({ type: "plugin", data: item.data.parentPlugin });
+    return <CommandDetail command={item.data} onBack={goBack} />;
   }
 
   return <EmptyState />;

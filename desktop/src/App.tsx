@@ -15,6 +15,10 @@ import type { PluginUpdateInfo } from "./components/SkillManager";
 import type { AgentManagerData } from "./components/SkillManager";
 import { SkillDetail } from "./components/SkillDetail";
 import { DependencyGraph, type DependencyGraphData } from "./components/DependencyGraph";
+import { HookList, type HookManagerData } from "./components/HookList";
+import { HookDetail, type HookEntry } from "./components/HookDetail";
+import { HookWizard } from "./components/HookWizard";
+import { HookStore } from "./components/HookStore";
 import { MarketplaceBrowser } from "./components/MarketplaceBrowser";
 import { AboutDialog } from "./components/AboutDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -26,6 +30,7 @@ import { useFontScale } from "./hooks/useFontScale";
 import { useProfiles } from "./hooks/useProfiles";
 import { useTerminal } from "./hooks/useTerminal";
 import { useUsage } from "./hooks/useUsage";
+import { useTheme } from "./hooks/useTheme";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -69,12 +74,18 @@ export function App() {
   const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
   const [showGraph, setShowGraph] = useState(false);
   const [graphData, setGraphData] = useState<DependencyGraphData | null>(null);
+  const [hookData, setHookData] = useState<HookManagerData | null>(null);
+  const [hookDataLoading, setHookDataLoading] = useState(false);
+  const [selectedHook, setSelectedHook] = useState<HookEntry | null>(null);
+  const [hookWizardOpen, setHookWizardOpen] = useState(false);
+  const [hookStoreOpen, setHookStoreOpen] = useState(false);
   const [skillDataLoading, setSkillDataLoading] = useState(false);
   const [selectedSkillItem, setSelectedSkillItem] = useState<SelectedItem | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updateInfos, setUpdateInfos] = useState<PluginUpdateInfo[]>([]);
   const [marketplaceOpen, setMarketplaceOpen] = useState(false);
   const usage = useUsage();
+  const { colorScheme } = useTheme();
   const batchDeleteNamesRef = useRef<string[]>([]);
   // Platform info (fetched once, used for download path construction)
   const platformRef = useRef<{ os: string; arch: string }>({ os: "macos", arch: "x86_64" });
@@ -139,10 +150,87 @@ export function App() {
       invoke<SkillManagerData>("scan_skills"),
       invoke<AgentManagerData>("scan_agents"),
     ])
-      .then(([skills, agents]) => { setSkillData(skills); setAgentData(agents); setSelectedSkillItem(null); })
+      .then(async ([skills, agents]) => {
+        setSkillData(skills);
+        setAgentData(agents);
+        setSelectedSkillItem(null);
+        // Pre-load dependency graph for impact analysis & call chain panel
+        try {
+          const graph = await invoke<DependencyGraphData>("build_dependency_graph", {
+            skillsData: skills,
+            agentsData: agents,
+          });
+          setGraphData(graph);
+        } catch (e) {
+          console.error("Failed to pre-load dependency graph:", e);
+          addToast("error", `依赖图预加载失败: ${String(e).slice(0, 120)}`);
+        }
+      })
       .catch(() => { setSkillData(null); setAgentData(null); })
       .finally(() => setSkillDataLoading(false));
   }, [activeActivity]);
+
+  // Load hook data when switching to hooks view
+  const refreshHooks = useCallback(() => {
+    return invoke<HookManagerData>("scan_hooks")
+      .then((data) => {
+        setHookData(data);
+        setSelectedHook((prev) => {
+          if (!prev) return null;
+          return data.hooks.find((h) => h.id === prev.id) || null;
+        });
+        return data;
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (activeActivity !== "hooks") {
+      setSelectedHook(null);
+      return;
+    }
+    setHookDataLoading(true);
+    invoke<HookManagerData>("scan_hooks")
+      .then((data) => {
+        setHookData(data);
+        setSelectedHook(null);
+      })
+      .catch((e) => {
+        console.error("Failed to scan hooks:", e);
+        setHookData(null);
+      })
+      .finally(() => setHookDataLoading(false));
+  }, [activeActivity]);
+
+  // Batch hook operations
+  const handleToggleHook = useCallback(async (hook: HookEntry, enabled: boolean) => {
+    try {
+      await invoke("toggle_hook", {
+        cli: hook.cli,
+        eventType: hook.eventType,
+        groupIdx: hook.groupIdx,
+        hookIdx: hook.hookIdx,
+        enabled,
+      });
+      refreshHooks();
+    } catch (e) {
+      console.error("Toggle hook failed:", e);
+    }
+  }, [refreshHooks]);
+
+  const handleDeleteHook = useCallback(async (hook: HookEntry) => {
+    try {
+      await invoke("delete_hook", {
+        cli: hook.cli,
+        eventType: hook.eventType,
+        groupIdx: hook.groupIdx,
+        hookIdx: hook.hookIdx,
+      });
+      refreshHooks();
+    } catch (e) {
+      console.error("Delete hook failed:", e);
+    }
+  }, [refreshHooks]);
 
   // Auto-open terminal for pop-out windows (?terminal=1)
   useEffect(() => {
@@ -196,6 +284,10 @@ export function App() {
       const found = data.systemSkills.find((s) => s.id === (prev.data as any).id);
       return found ? { type: "system" as const, data: found } : null;
     }
+    if (prev.type === "command") {
+      const found = data.commands.find((c) => c.id === (prev.data as any).id);
+      return found ? { type: "command" as const, data: found } : null;
+    }
     return null;
   }, []);
 
@@ -206,19 +298,35 @@ export function App() {
     return found ? { type: "agent" as const, data: found } : null;
   }, []);
 
-  // Load dependency graph
-  const loadGraph = useCallback(async () => {
-    if (!skillData || !agentData) return;
-    try {
-      const graph = await invoke<DependencyGraphData>("build_dependency_graph", {
+  // Toggle dependency graph view (data pre-loaded when entering skills view)
+  const loadGraph = useCallback(() => {
+    if (!graphData) {
+      // graphData not loaded yet — fetch it first
+      if (!skillData || !agentData) return;
+      invoke<DependencyGraphData>("build_dependency_graph", {
         skillsData: skillData,
         agentsData: agentData,
+      }).then((g) => {
+        setGraphData(g);
+        setShowGraph(true);
+      }).catch((e) => {
+        console.error("Failed to build dependency graph:", e);
+        addToast("error", `依赖图加载失败: ${String(e).slice(0, 120)}`);
       });
-      setGraphData(graph);
-      setShowGraph(true);
-    } catch (e) {
-      console.error("Failed to build dependency graph:", e);
+      return;
     }
+    setShowGraph((prev) => !prev);
+  }, [graphData, skillData, agentData, addToast]);
+
+  // Keep graphData in sync when skills/agents change (e.g. after toggle)
+  useEffect(() => {
+    if (!skillData || !agentData) return;
+    invoke<DependencyGraphData>("build_dependency_graph", {
+      skillsData: skillData,
+      agentsData: agentData,
+    }).then(setGraphData).catch((e) => {
+      console.error("Failed to sync dependency graph:", e);
+    });
   }, [skillData, agentData]);
 
   // Show detail for a graph node
@@ -267,6 +375,63 @@ export function App() {
     [addToast, syncSelection],
   );
 
+  // Agent toggle
+  const handleToggleAgent = useCallback(
+    async (cli: string, name: string, enabled: boolean) => {
+      try {
+        await invoke("toggle_agent", { cli, name, enabled });
+        // Re-scan both agents and skills
+        setSkillDataLoading(true);
+        const [skills, agents] = await Promise.all([
+          invoke<SkillManagerData>("scan_skills"),
+          invoke<AgentManagerData>("scan_agents"),
+        ]);
+        setSkillData(skills);
+        setAgentData(agents);
+        setSelectedSkillItem((prev) => {
+          if (prev?.type === "agent" && (prev.data as any).name === name) {
+            const found = agents.agents.find((a) => a.name === name && a.cli === cli);
+            return found ? { type: "agent", data: found } : null;
+          }
+          return prev;
+        });
+        setSkillDataLoading(false);
+      } catch (e) {
+        addToast("error", `操作失败: ${e}`);
+      }
+    },
+    [addToast],
+  );
+
+  // Agent delete = disable (rename to .disabled)
+  const handleDeleteAgent = useCallback(
+    async (cli: string, name: string) => {
+      try {
+        await invoke("toggle_agent", { cli, name, enabled: false });
+        // Re-scan
+        setSkillDataLoading(true);
+        const [skills, agents] = await Promise.all([
+          invoke<SkillManagerData>("scan_skills"),
+          invoke<AgentManagerData>("scan_agents"),
+        ]);
+        setSkillData(skills);
+        setAgentData(agents);
+        setSelectedSkillItem((prev) => {
+          if (prev?.type === "agent" && (prev.data as any).name === name) {
+            const found = agents.agents.find((a) => a.name === name && a.cli === cli);
+            return found ? { type: "agent", data: found } : null;
+          }
+          return prev;
+        });
+        setSkillDataLoading(false);
+        addToast("success", `已禁用 Agent "${name}"`);
+      } catch (e) {
+        addToast("error", `操作失败: ${e}`);
+      }
+    },
+    [addToast],
+  );
+
   // Batch toggle: fires all toggles, then does ONE scan
   const handleBatchToggle = useCallback(
     async (items: BatchToggleItem[], enabled: boolean) => {
@@ -274,14 +439,25 @@ export function App() {
         for (const item of items) {
           if (item.id.includes(":plugin:")) {
             await invoke("toggle_plugin", { cli: item.cli, pluginId: item.id, enabled });
+          } else if (item.id.includes(":agent:")) {
+            // Extract agent name from id "cli:agent:name"
+            const name = item.id.split(":").slice(2).join(":");
+            await invoke("toggle_agent", { cli: item.cli, name, enabled });
+          } else if (item.id.includes(":command:")) {
+            const name = item.id.split(":").slice(2).join(":");
+            await invoke("toggle_command", { cli: item.cli, name, enabled });
           } else {
             await invoke("toggle_standalone_skill", { cli: item.cli, skillId: item.id, enabled });
           }
         }
-        // Single re-scan after all toggles
+        // Single re-scan after all toggles (both skills and agents)
         setSkillDataLoading(true);
-        const data = await invoke<SkillManagerData>("scan_skills");
+        const [data, agents] = await Promise.all([
+          invoke<SkillManagerData>("scan_skills"),
+          invoke<AgentManagerData>("scan_agents"),
+        ]);
         setSkillData(data);
+        setAgentData(agents);
         setSelectedSkillItem((prev) => syncSelection(data, prev));
         setSkillDataLoading(false);
       } catch (e) {
@@ -297,6 +473,9 @@ export function App() {
         for (const item of items) {
           if (item.id.includes(":plugin:")) {
             await invoke("uninstall_plugin", { cli: item.cli, pluginId: item.id });
+          } else if (item.id.includes(":command:")) {
+            const name = item.id.split(":").slice(2).join(":");
+            await invoke("uninstall_command", { cli: item.cli, name });
           } else {
             await invoke("uninstall_standalone_skill", { cli: item.cli, skillId: item.id });
           }
@@ -307,9 +486,9 @@ export function App() {
         setSkillData(data);
         setSelectedSkillItem(null);
         setSkillDataLoading(false);
-        addToast("success", `已卸载 ${items.length} 项`);
+        addToast("success", `已删除 ${items.length} 项`);
       } catch (e) {
-        addToast("error", `批量卸载失败: ${e}`);
+        addToast("error", `批量删除失败: ${e}`);
       }
     },
     [addToast],
@@ -393,7 +572,7 @@ export function App() {
         setSkillData(data);
         setSelectedSkillItem((prev) => syncSelection(data, prev));
       } catch (e) {
-        addToast("error", `卸载失败: ${e}`);
+        addToast("error", `删除失败: ${e}`);
       }
     },
     [addToast, syncSelection],
@@ -408,7 +587,38 @@ export function App() {
         setSkillData(data);
         setSelectedSkillItem(null);
       } catch (e) {
-        addToast("error", `卸载失败: ${e}`);
+        addToast("error", `删除失败: ${e}`);
+      }
+    },
+    [addToast],
+  );
+
+  // Command toggle handler
+  const handleToggleCommand = useCallback(
+    async (cli: string, name: string, enabled: boolean) => {
+      try {
+        await invoke("toggle_command", { cli, name, enabled });
+        const data = await invoke<SkillManagerData>("scan_skills");
+        setSkillData(data);
+        setSelectedSkillItem((prev) => syncSelection(data, prev));
+      } catch (e) {
+        addToast("error", `操作失败: ${e}`);
+      }
+    },
+    [addToast, syncSelection],
+  );
+
+  // Command uninstall handler
+  const handleUninstallCommand = useCallback(
+    async (cli: string, name: string) => {
+      try {
+        const msg = await invoke<string>("uninstall_command", { cli, name });
+        addToast("success", msg);
+        const data = await invoke<SkillManagerData>("scan_skills");
+        setSkillData(data);
+        setSelectedSkillItem(null);
+      } catch (e) {
+        addToast("error", `删除失败: ${e}`);
       }
     },
     [addToast],
@@ -958,22 +1168,42 @@ export function App() {
                 data={skillData}
                 agentData={agentData}
                 loading={skillDataLoading}
-                selectedId={selectedSkillItem && selectedSkillItem.type !== "agent"
+                selectedId={selectedSkillItem
+                  && selectedSkillItem.type !== "plugin-skill"
+                  && selectedSkillItem.type !== "plugin-agent"
+                  && selectedSkillItem.type !== "command"
+                  && selectedSkillItem.type !== "plugin-command"
                   ? (selectedSkillItem.data as any).id
-                  : selectedSkillItem?.type === "agent"
-                    ? (selectedSkillItem.data as any).id
-                    : null}
+                  : null}
                 onSelect={setSelectedSkillItem}
                 onTogglePlugin={handleTogglePlugin}
                 onToggleStandaloneSkill={handleToggleStandaloneSkill}
                 onBatchToggle={handleBatchToggle}
                 onBatchUninstall={handleBatchUninstall}
+                onDeleteAgent={handleDeleteAgent}
                 checkingUpdates={checkingUpdates}
                 updateInfos={updateInfos}
                 onCheckUpdates={handleCheckUpdates}
                 onCancelCheckUpdates={handleCancelCheckUpdates}
                 onOpenMarketplace={() => setMarketplaceOpen(true)}
                 onOpenGraph={loadGraph}
+              />
+            </div>
+          )}
+
+          {/* Hooks sidebar */}
+          {sidebarVisible && !rightMaximized && !bottomMaximized && activeActivity === "hooks" && (
+            <div className="w-[300px] shrink-0 flex flex-col border-r border-[var(--app-border)]">
+              <HookList
+                data={hookData}
+                loading={hookDataLoading}
+                selectedId={selectedHook?.id ?? null}
+                onSelect={setSelectedHook}
+                onAddHook={() => setHookWizardOpen(true)}
+                onOpenStore={() => setHookStoreOpen(true)}
+                onRefresh={refreshHooks}
+                onToggleHook={handleToggleHook}
+                onDeleteHook={handleDeleteHook}
               />
             </div>
           )}
@@ -1007,10 +1237,24 @@ export function App() {
                   onUpdatePlugin={handleUpdatePlugin}
                   onUninstallPlugin={handleUninstallPlugin}
                   onUninstallStandaloneSkill={handleUninstallStandaloneSkill}
+                  onToggleAgent={handleToggleAgent}
+                  onDeleteAgent={handleDeleteAgent}
+                  onToggleCommand={handleToggleCommand}
+                  onUninstallCommand={handleUninstallCommand}
+                  onNodeClick={showNodeDetail}
+                  onSelect={setSelectedSkillItem}
                 />
               </div>
             )}
-            {!rightMaximized && !bottomMaximized && activeActivity !== "skills" && (
+            {!rightMaximized && !bottomMaximized && activeActivity === "hooks" && (
+              <div className="flex-1 overflow-y-auto bg-[var(--app-bg)]">
+                <HookDetail
+                  hook={selectedHook}
+                  onRefresh={refreshHooks}
+                />
+              </div>
+            )}
+            {!rightMaximized && !bottomMaximized && activeActivity !== "skills" && activeActivity !== "hooks" && (
               <MainPanel
                 profile={ctx.selectedProfile}
                 hasProfiles={ctx.profiles.length > 0}
@@ -1096,47 +1340,57 @@ export function App() {
       </div>
 
       {/* Status bar */}
-      <div className="flex items-center h-[26px] px-3 bg-app-statusbar border-t border-app-border select-none shrink-0">
-        <span className="text-2xs text-app-text-muted font-mono">
-          {ctx.loading ? "..." : ctx.profiles.length > 0 ? `[${ctx.profiles.length} 个 profile]` : "[就绪]"}
+      <div className="flex items-center h-[26px] px-3 bg-app-statusbar border-t border-app-border select-none shrink-0 gap-3">
+        <span className="text-2xs text-app-text-muted font-mono shrink-0">
+          {ctx.loading ? "..." : ctx.profiles.length > 0 ? `${ctx.profiles.length} 个 profile` : "就绪"}
         </span>
-        <span className="flex-1" />
+        {/* PTY session indicator */}
         {isAnyTerminalOpen && (
-          <span className="text-2xs text-app-accent font-mono mr-3">
-            终端已连接
+          <span className="text-2xs text-app-accent font-mono shrink-0 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-app-accent" style={{ boxShadow: "0 0 4px var(--app-glow)" }} />
+            终端
           </span>
         )}
+        {!isAnyTerminalOpen && (
+          <span className="text-2xs text-app-text-muted font-mono shrink-0 flex items-center gap-1 opacity-50">
+            <span className="w-1.5 h-1.5 rounded-full bg-app-text-muted" />
+            终端
+          </span>
+        )}
+        <span className="flex-1" />
+        <span className="text-2xs text-app-text-muted font-mono shrink-0">
+          {colorScheme ? colorScheme.charAt(0).toUpperCase() + colorScheme.slice(1) : ""}
+        </span>
         {usage.todayTokens > 0 && (
           <span
-            className="text-2xs text-app-amber font-mono mr-3 cursor-pointer hover:text-app-amber-glow transition-colors"
+            className="text-2xs text-app-amber font-mono shrink-0 cursor-pointer hover:text-app-amber-glow transition-colors"
             onClick={() => setShowUsage(true)}
             title="查看 Token 用量"
           >
-            ◉ {usage.todayTokens >= 1000 ? `${(usage.todayTokens / 1000).toFixed(1)}K` : usage.todayTokens} 今天
+            ◉ {usage.todayTokens >= 1000 ? `${(usage.todayTokens / 1000).toFixed(1)}K` : usage.todayTokens}
           </span>
         )}
         {usage.todayTokens === 0 && !usage.loading && (
           <span
-            className="text-2xs text-app-text-dim font-mono mr-3 cursor-pointer hover:text-app-text-muted transition-colors"
+            className="text-2xs text-app-text-dim font-mono shrink-0 cursor-pointer hover:text-app-text-muted transition-colors"
             onClick={() => setShowUsage(true)}
             title="查看 Token 用量"
           >
-            ◉ 用量
+            ◉ 0
           </span>
         )}
-        <span className="text-2xs text-app-text-muted font-mono">
-          {ctx.selectedName && (
+        <span className="text-2xs text-app-text-muted font-mono shrink-0">
+          {ctx.selectedName ? (
             <>
               <span className="text-app-text-dim">{ctx.selectedName}</span>
               {ctx.defaultProfile === ctx.selectedName && (
-                <span className="text-app-accent ml-2">(default)</span>
+                <span className="text-app-accent ml-1.5">(默认)</span>
               )}
             </>
-          )}
-          {!ctx.selectedName && "-- 未选择 --"}
+          ) : "--"}
         </span>
         {appVersion && (
-          <span className="text-2xs text-app-text-dim font-mono ml-3 pl-3 border-l border-app-border">
+          <span className="text-2xs text-app-text-dim font-mono shrink-0 pl-3 border-l border-app-border">
             v{appVersion}
           </span>
         )}
@@ -1199,6 +1453,48 @@ export function App() {
       <AboutDialog open={showAbout} onClose={() => setShowAbout(false)} />
 
       <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
+
+      <HookWizard
+        open={hookWizardOpen}
+        onClose={() => setHookWizardOpen(false)}
+        onCreated={(name, desc) => {
+          invoke<HookManagerData>("scan_hooks")
+            .then(async (data) => {
+              setHookData(data);
+              if (data.hooks.length > 0) {
+                const last = data.hooks[data.hooks.length - 1];
+                setSelectedHook(last);
+                // Save metadata if name or description provided
+                if (name || desc) {
+                  await invoke("set_hook_meta", {
+                    cli: last.cli,
+                    eventType: last.eventType,
+                    groupIdx: last.groupIdx,
+                    hookIdx: last.hookIdx,
+                    name: name || last.eventType,
+                    description: desc || null,
+                  });
+                  // Re-scan with metadata merged
+                  refreshHooks();
+                }
+              }
+            })
+            .catch(() => {});
+        }}
+      />
+
+      <HookStore
+        open={hookStoreOpen}
+        onClose={() => setHookStoreOpen(false)}
+        onInstalled={() => {
+          invoke<HookManagerData>("scan_hooks")
+            .then((data) => {
+              setHookData(data);
+              setSelectedHook(null);
+            })
+            .catch(() => {});
+        }}
+      />
 
       {updateDialog && (
         <UpdateDialog

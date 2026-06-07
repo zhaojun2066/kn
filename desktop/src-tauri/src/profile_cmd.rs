@@ -77,12 +77,13 @@ fn config_file() -> PathBuf {
 fn read_config() -> Result<Config, String> {
     let path = config_file();
     if !path.exists() {
-        return Ok(Config { default: String::new(), profiles: HashMap::new() });
+        return Ok(Config {
+            default: String::new(),
+            profiles: HashMap::new(),
+        });
     }
-    let content = fs::read_to_string(&path)
-        .map_err(|e| format!("读取配置失败: {}", e))?;
-    serde_yaml::from_str(&content)
-        .map_err(|e| format!("解析配置失败: {}", e))
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取配置失败: {}", e))?;
+    serde_yaml::from_str(&content).map_err(|e| format!("解析配置失败: {}", e))
 }
 
 fn write_config(config: &Config) -> Result<(), String> {
@@ -120,29 +121,45 @@ fn write_config(config: &Config) -> Result<(), String> {
 
 pub fn list_profiles_cmd() -> Result<ProfileList, String> {
     let config = read_config()?;
-    let mut profiles: Vec<ProfileSummary> = config.profiles.iter().map(|(name, p)| {
-        let cli_type = detect_cli_type(&p.env);
-        let mut summary = ProfileSummary {
-            name: name.clone(),
-            desc: p.desc.clone(),
-            env_count: p.env.len(),
-            is_default: config.default == *name,
-            cli_type,
-            tags: None,
-        };
-        if let Some(tags_str) = p.env.get("_KN_TAGS") {
-            let tags: Vec<String> = tags_str.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
-            if !tags.is_empty() { summary.tags = Some(tags); }
-        }
-        summary
-    }).collect();
+    let mut profiles: Vec<ProfileSummary> = config
+        .profiles
+        .iter()
+        .map(|(name, p)| {
+            let cli_type = detect_cli_type(&p.env);
+            let mut summary = ProfileSummary {
+                name: name.clone(),
+                desc: p.desc.clone(),
+                env_count: p.env.len(),
+                is_default: config.default == *name,
+                cli_type,
+                tags: None,
+            };
+            if let Some(tags_str) = p.env.get("_KN_TAGS") {
+                let tags: Vec<String> = tags_str
+                    .split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                if !tags.is_empty() {
+                    summary.tags = Some(tags);
+                }
+            }
+            summary
+        })
+        .collect();
     profiles.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(ProfileList { default: config.default, profiles })
+    Ok(ProfileList {
+        default: config.default,
+        profiles,
+    })
 }
 
 pub fn show_profile_cmd(name: &str) -> Result<ProfileDetail, String> {
     let config = read_config()?;
-    let p = config.profiles.get(name).ok_or_else(|| format!("profile '{}' 不存在", name))?;
+    let p = config
+        .profiles
+        .get(name)
+        .ok_or_else(|| format!("profile '{}' 不存在", name))?;
     Ok(ProfileDetail {
         name: name.to_string(),
         desc: p.desc.clone(),
@@ -153,72 +170,160 @@ pub fn show_profile_cmd(name: &str) -> Result<ProfileDetail, String> {
 
 pub fn get_env_cmd(name: &str) -> Result<EnvOutput, String> {
     let config = read_config()?;
-    let p = config.profiles.get(name).ok_or_else(|| format!("profile '{}' 不存在", name))?;
-    Ok(EnvOutput { name: name.to_string(), env: p.env.clone() })
+    let p = config
+        .profiles
+        .get(name)
+        .ok_or_else(|| format!("profile '{}' 不存在", name))?;
+    Ok(EnvOutput {
+        name: name.to_string(),
+        env: p.env.clone(),
+    })
 }
 
 pub fn add_profile_cmd(name: &str, desc: Option<&str>) -> Result<MutationResult, String> {
     // Validate name: must match [a-z0-9]([a-z0-9-]*[a-z0-9])?
     // This prevents shell injection in sed / regex-based YAML parsing in shell-rc.
     if name.is_empty()
-        || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        || name.starts_with('-') || name.ends_with('-')
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || name.starts_with('-')
+        || name.ends_with('-')
     {
-        return Ok(MutationResult { ok: false, error: Some("profile 名称只能包含小写字母、数字和连字符，不能以连字符开头或结尾".into()), action: None, profile: None, key: None });
+        return Ok(MutationResult {
+            ok: false,
+            error: Some(
+                "profile 名称只能包含小写字母、数字和连字符，不能以连字符开头或结尾".into(),
+            ),
+            action: None,
+            profile: None,
+            key: None,
+        });
     }
     // Reserved keywords — conflicts with shell wrapper tool routing
     const RESERVED: &[&str] = &["claude", "codex", "qoderclicn", "profile", "ai", "help"];
     if RESERVED.contains(&name) {
-        return Ok(MutationResult { ok: false, error: Some(format!("'{}' 是系统保留关键字，不能用作 Profile 名称", name)), action: None, profile: None, key: None });
+        return Ok(MutationResult {
+            ok: false,
+            error: Some(format!(
+                "'{}' 是系统保留关键字，不能用作 Profile 名称",
+                name
+            )),
+            action: None,
+            profile: None,
+            key: None,
+        });
     }
     let mut config = read_config()?;
     if config.profiles.contains_key(name) {
-        return Ok(MutationResult { ok: false, error: Some(format!("profile '{}' 已存在", name)), action: None, profile: None, key: None });
+        return Ok(MutationResult {
+            ok: false,
+            error: Some(format!("profile '{}' 已存在", name)),
+            action: None,
+            profile: None,
+            key: None,
+        });
     }
     let desc = desc.unwrap_or("").to_string();
-    config.profiles.insert(name.to_string(), ProfileConfig { desc, env: HashMap::new() });
-    if config.default.is_empty() { config.default = name.to_string(); }
+    config.profiles.insert(
+        name.to_string(),
+        ProfileConfig {
+            desc,
+            env: HashMap::new(),
+        },
+    );
+    if config.default.is_empty() {
+        config.default = name.to_string();
+    }
     write_config(&config)?;
-    Ok(MutationResult { ok: true, error: None, action: Some("add".into()), profile: Some(name.into()), key: None })
+    Ok(MutationResult {
+        ok: true,
+        error: None,
+        action: Some("add".into()),
+        profile: Some(name.into()),
+        key: None,
+    })
 }
 
 pub fn remove_profile_cmd(name: &str) -> Result<MutationResult, String> {
     let mut config = read_config()?;
     if !config.profiles.contains_key(name) {
-        return Ok(MutationResult { ok: false, error: Some(format!("profile '{}' 不存在", name)), action: None, profile: None, key: None });
+        return Ok(MutationResult {
+            ok: false,
+            error: Some(format!("profile '{}' 不存在", name)),
+            action: None,
+            profile: None,
+            key: None,
+        });
     }
     config.profiles.remove(name);
     if config.default == name {
         config.default = config.profiles.keys().next().cloned().unwrap_or_default();
     }
     write_config(&config)?;
-    Ok(MutationResult { ok: true, error: None, action: Some("remove".into()), profile: Some(name.into()), key: None })
+    Ok(MutationResult {
+        ok: true,
+        error: None,
+        action: Some("remove".into()),
+        profile: Some(name.into()),
+        key: None,
+    })
 }
 
 pub fn set_env_var_cmd(name: &str, key: &str, value: &str) -> Result<MutationResult, String> {
     let mut config = read_config()?;
-    let p = config.profiles.get_mut(name).ok_or_else(|| format!("profile '{}' 不存在", name))?;
+    let p = config
+        .profiles
+        .get_mut(name)
+        .ok_or_else(|| format!("profile '{}' 不存在", name))?;
     p.env.insert(key.to_string(), value.to_string());
     write_config(&config)?;
-    Ok(MutationResult { ok: true, error: None, action: Some("set".into()), profile: Some(name.into()), key: Some(key.into()) })
+    Ok(MutationResult {
+        ok: true,
+        error: None,
+        action: Some("set".into()),
+        profile: Some(name.into()),
+        key: Some(key.into()),
+    })
 }
 
 pub fn unset_env_var_cmd(name: &str, key: &str) -> Result<MutationResult, String> {
     let mut config = read_config()?;
-    let p = config.profiles.get_mut(name).ok_or_else(|| format!("profile '{}' 不存在", name))?;
+    let p = config
+        .profiles
+        .get_mut(name)
+        .ok_or_else(|| format!("profile '{}' 不存在", name))?;
     p.env.remove(key);
     write_config(&config)?;
-    Ok(MutationResult { ok: true, error: None, action: Some("unset".into()), profile: Some(name.into()), key: Some(key.into()) })
+    Ok(MutationResult {
+        ok: true,
+        error: None,
+        action: Some("unset".into()),
+        profile: Some(name.into()),
+        key: Some(key.into()),
+    })
 }
 
 pub fn set_default_profile_cmd(name: &str) -> Result<MutationResult, String> {
     let mut config = read_config()?;
     if !config.profiles.contains_key(name) {
-        return Ok(MutationResult { ok: false, error: Some(format!("profile '{}' 不存在", name)), action: None, profile: None, key: None });
+        return Ok(MutationResult {
+            ok: false,
+            error: Some(format!("profile '{}' 不存在", name)),
+            action: None,
+            profile: None,
+            key: None,
+        });
     }
     config.default = name.to_string();
     write_config(&config)?;
-    Ok(MutationResult { ok: true, error: None, action: Some("default".into()), profile: Some(name.into()), key: None })
+    Ok(MutationResult {
+        ok: true,
+        error: None,
+        action: Some("default".into()),
+        profile: Some(name.into()),
+        key: None,
+    })
 }
 
 pub fn get_default_profile_cmd() -> Result<String, String> {
@@ -227,15 +332,24 @@ pub fn get_default_profile_cmd() -> Result<String, String> {
 }
 
 pub fn init_profiles_cmd() -> Result<MutationResult, String> {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
     let settings_path = PathBuf::from(&home).join(".claude").join("settings.json");
 
     if !settings_path.exists() {
-        return Ok(MutationResult { ok: false, error: Some("未找到 ~/.claude/settings.json".into()), action: None, profile: None, key: None });
+        return Ok(MutationResult {
+            ok: false,
+            error: Some("未找到 ~/.claude/settings.json".into()),
+            action: None,
+            profile: None,
+            key: None,
+        });
     }
 
     let content = fs::read_to_string(&settings_path).map_err(|e| format!("读取失败: {}", e))?;
-    let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| format!("解析失败: {}", e))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("解析失败: {}", e))?;
 
     let mut config = read_config()?;
     let mut imported = 0;
@@ -244,10 +358,18 @@ pub fn init_profiles_cmd() -> Result<MutationResult, String> {
     if let Some(env_obj) = json.get("env").and_then(|v| v.as_object()) {
         let mut env = HashMap::new();
         for (k, v) in env_obj {
-            if let Some(s) = v.as_str() { env.insert(k.clone(), s.to_string()); }
+            if let Some(s) = v.as_str() {
+                env.insert(k.clone(), s.to_string());
+            }
         }
         if !env.is_empty() && !config.profiles.contains_key("claude") {
-            config.profiles.insert("claude".into(), ProfileConfig { desc: "从 settings.json 导入".into(), env });
+            config.profiles.insert(
+                "claude".into(),
+                ProfileConfig {
+                    desc: "从 settings.json 导入".into(),
+                    env,
+                },
+            );
             imported += 1;
         }
     }
@@ -255,25 +377,51 @@ pub fn init_profiles_cmd() -> Result<MutationResult, String> {
     // Profiles section
     if let Some(profiles_obj) = json.get("profiles").and_then(|v| v.as_object()) {
         for (name, val) in profiles_obj {
-            if config.profiles.contains_key(name) { continue; }
+            if config.profiles.contains_key(name) {
+                continue;
+            }
             let mut env = HashMap::new();
             if let Some(e) = val.get("env").and_then(|v| v.as_object()) {
-                for (k, v) in e { if let Some(s) = v.as_str() { env.insert(k.clone(), s.to_string()); } }
+                for (k, v) in e {
+                    if let Some(s) = v.as_str() {
+                        env.insert(k.clone(), s.to_string());
+                    }
+                }
             }
-            let desc = val.get("desc").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let desc = val
+                .get("desc")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if !env.is_empty() {
-                config.profiles.insert(name.clone(), ProfileConfig { desc, env });
+                config
+                    .profiles
+                    .insert(name.clone(), ProfileConfig { desc, env });
                 imported += 1;
             }
         }
     }
 
     if imported == 0 {
-        return Ok(MutationResult { ok: false, error: Some("未找到可导入的配置".into()), action: None, profile: None, key: None });
+        return Ok(MutationResult {
+            ok: false,
+            error: Some("未找到可导入的配置".into()),
+            action: None,
+            profile: None,
+            key: None,
+        });
     }
-    if config.default.is_empty() { config.default = "claude".into(); }
+    if config.default.is_empty() {
+        config.default = "claude".into();
+    }
     write_config(&config)?;
-    Ok(MutationResult { ok: true, error: None, action: Some("init".into()), profile: None, key: None })
+    Ok(MutationResult {
+        ok: true,
+        error: None,
+        action: Some("init".into()),
+        profile: None,
+        key: None,
+    })
 }
 
 // ── Shell wrapper setup ─────────────────────────────────────
@@ -378,9 +526,26 @@ print(json.dumps({'env': env}))
                             fi
                             ;;
                         codex)
-                            # OPENAI_API_KEY env var takes priority over auth.json with
-                            # preferred_auth_method="apikey". Use --config to force it.
-                            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" --config preferred_auth_method="apikey" "$@")
+                            # Codex ignores OPENAI_API_KEY env var; reads only ~/.codex/auth.json.
+                            # Write the profile's key to auth.json, pass base_url/model via -c.
+                            # Use set -- (not string var) for arg accumulation — zsh does NOT
+                            # word-split unquoted variables, so $_kn_extra would become one arg.
+                            local _kn_apikey=$(echo "$env_output" | sed -n "s/^export OPENAI_API_KEY='\\(.*\\)'/\\1/p")
+                            local _kn_base=$(echo "$env_output" | sed -n "s/^export OPENAI_BASE_URL='\\(.*\\)'/\\1/p")
+                            local _kn_model=$(echo "$env_output" | sed -n "s/^export OPENAI_MODEL='\\(.*\\)'/\\1/p")
+                            local _kn_auth="$HOME/.codex/auth.json"
+                            [ -n "$_kn_model" ] && set -- -c "model=$_kn_model" "$@"
+                            [ -n "$_kn_base" ] && set -- -c "model_providers.custom.base_url=$_kn_base" "$@"
+                            if [ -n "$_kn_apikey" ]; then
+                                [ -d "$HOME/.codex" ] || mkdir -p "$HOME/.codex"
+                                [ -f "$_kn_auth" ] && cp "$_kn_auth" "$_kn_auth.kn-bak"
+                                printf '{"auth_mode":"apikey","OPENAI_API_KEY":"%s"}\n' "$_kn_apikey" > "$_kn_auth"
+                                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
+                                local _kn_rc=$?
+                                [ -f "$_kn_auth.kn-bak" ] && mv "$_kn_auth.kn-bak" "$_kn_auth"
+                                return $_kn_rc
+                            fi
+                            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
                             return
                             ;;
                         *)
@@ -543,14 +708,39 @@ function ai {
                     $profileName = $rest[0]
                     $toolArgs = @($rest | Select-Object -Skip 1)
                     Write-Host "-> Using profile: $profileName"
-                    # OPENAI_API_KEY env var takes priority over auth.json with
-                    # preferred_auth_method="apikey". Use --config to force it.
+                    # Codex ignores OPENAI_API_KEY env var; reads only ~/.codex/auth.json.
+                    # Write the profile's key to auth.json, pass base_url/model via -c.
+                    $apiKey = $envs['OPENAI_API_KEY']
+                    $baseUrl = $envs['OPENAI_BASE_URL']
+                    $model = $envs['OPENAI_MODEL']
+                    $authFile = "$env:USERPROFILE\.codex\auth.json"
+                    $extraArgs = @()
+                    if ($model) { $extraArgs += '-c', "model=$model" }
+                    if ($baseUrl) { $extraArgs += '-c', "model_providers.custom.base_url=$baseUrl" }
+                    if ($apiKey) {
+                        $codexDir = Split-Path $authFile -Parent
+                        if (-not (Test-Path $codexDir)) { New-Item -ItemType Directory -Force $codexDir | Out-Null }
+                        $oldAuth = $null
+                        if (Test-Path $authFile) { $oldAuth = Get-Content $authFile -Raw }
+                        @{ auth_mode = "apikey"; OPENAI_API_KEY = $apiKey } | ConvertTo-Json -Compress | Set-Content $authFile
+                        try {
+                            foreach ($key in $envs.Keys) {
+                                Set-Item -Path "env:$key" -Value $envs[$key]
+                            }
+                            $env:KN_PROFILE = $profileName
+                            $env:KN_CLI_TOOL = $tool
+                            & $tool @extraArgs @toolArgs
+                        } finally {
+                            if ($oldAuth) { Set-Content $authFile $oldAuth }
+                        }
+                        return
+                    }
                     foreach ($key in $envs.Keys) {
                         Set-Item -Path "env:$key" -Value $envs[$key]
                     }
                     $env:KN_PROFILE = $profileName
                     $env:KN_CLI_TOOL = $tool
-                    & $tool --config preferred_auth_method="apikey" @toolArgs
+                    & $tool @extraArgs @toolArgs
                     return
                 }
             }
@@ -602,7 +792,7 @@ function ai {
 }
 "#;
 
-	const HOOK_RECORDER: &str = r##"#!/usr/bin/env python3
+const HOOK_RECORDER: &str = r##"#!/usr/bin/env python3
 """Token usage recorder — called by Stop/SessionEnd hooks.
 Reads structured JSON from stdin, extracts token usage, appends to usage.jsonl.
 Supports Claude Code, Codex transcripts.
@@ -648,6 +838,10 @@ def main():
 
 def extract(data):
     """Extract token usage from hook payload. Returns dict or None."""
+    # Codex session/event payload: event_msg token_count carries cumulative usage.
+    codex_usage = extract_codex_token_count(data)
+    if codex_usage:
+        return codex_usage
     # Codex: TurnComplete carries token_usage
     if "token_usage" in data:
         u = data["token_usage"]
@@ -664,9 +858,11 @@ def extract(data):
             "tokens_in": int(u.get("input_tokens", u.get("input", 0))),
             "tokens_out": int(u.get("output_tokens", u.get("output", 0))),
         }
-    # Claude Code v2: no usage inline, read transcript file
+    # Claude Code / Codex: no usage inline, read transcript file
     if "transcript_path" in data:
         return extract_from_transcript(data["transcript_path"])
+    if "transcriptPath" in data:
+        return extract_from_transcript(data["transcriptPath"])
     # Generic fallback: top-level tokens_in / tokens_out
     if "tokens_in" in data or "tokens_out" in data:
         return {
@@ -677,6 +873,32 @@ def extract(data):
     return None
 
 
+def extract_codex_token_count(entry):
+    """Extract cumulative Codex token usage from an event_msg/token_count entry."""
+    payload = entry.get("payload", {})
+    if not isinstance(payload, dict) or payload.get("type") != "token_count":
+        return None
+
+    info = payload.get("info", {})
+    if not isinstance(info, dict):
+        return None
+
+    u = info.get("total_token_usage") or info.get("last_token_usage")
+    if not isinstance(u, dict):
+        return None
+
+    tokens_in = _in(u)
+    tokens_out = _out(u)
+    if tokens_in == 0 and tokens_out == 0:
+        return None
+
+    return {
+        "model": str(u.get("model", entry.get("model", default_model()))),
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+    }
+
+
 def extract_from_transcript(path):
     """Read transcript, sum usage from all turns.
     Handles Claude Code/Codex (JSONL).
@@ -684,6 +906,7 @@ def extract_from_transcript(path):
     total_in = 0
     total_out = 0
     model = ""
+    latest_codex_usage = None
 
     try:
         with open(path, encoding="utf-8") as f:
@@ -699,6 +922,11 @@ def extract_from_transcript(path):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
+            continue
+
+        codex_usage = extract_codex_token_count(entry)
+        if codex_usage:
+            latest_codex_usage = codex_usage
             continue
 
         # Claude Code / Codex: message.role == "assistant" with usage
@@ -720,6 +948,10 @@ def extract_from_transcript(path):
             if not model:
                 model = entry.get("model", u.get("model", ""))
             continue
+
+    # Codex token_count entries are cumulative; use the last one, do not sum.
+    if latest_codex_usage:
+        return latest_codex_usage
 
     if total_in == 0 and total_out == 0:
         return None
@@ -743,6 +975,10 @@ def _out(u):
            u.get("output", u.get("candidatesTokenCount", 0)))))
 
 
+def default_model():
+    return os.environ.get("OPENAI_MODEL") or os.environ.get("CODEX_MODEL") or ""
+
+
 if __name__ == "__main__":
     main()
 "##;
@@ -751,10 +987,14 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     let dir = crate::config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
 
     // ── Migration: merge old dev config into unified config (one-time) ──
-    let dev_config = PathBuf::from(&home).join(".claude-profiles-dev").join("config.yaml");
+    let dev_config = PathBuf::from(&home)
+        .join(".claude-profiles-dev")
+        .join("config.yaml");
     if dev_config.exists() {
         if let Ok(content) = fs::read_to_string(&dev_config) {
             if let Ok(dev_cfg) = serde_yaml::from_str::<Config>(&content) {
@@ -793,33 +1033,41 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     // ── Unix: add source line to ~/.zshrc (idempotent) ──
     if !cfg!(target_os = "windows") {
         let zshrc = PathBuf::from(&home).join(".zshrc");
-    let source_line = format!("source \"{}/shell-rc\"", dir.display());
-    let content = if zshrc.exists() { fs::read_to_string(&zshrc).unwrap_or_default() } else { String::new() };
-    let marker = "# AI Profile Manager";
-    if !content.contains(&source_line) {
-        let new_content = if content.ends_with('\n') || content.is_empty() {
-            format!("{}{}\n{}\n", content, marker, source_line)
+        let source_line = format!("source \"{}/shell-rc\"", dir.display());
+        let content = if zshrc.exists() {
+            fs::read_to_string(&zshrc).unwrap_or_default()
         } else {
-            format!("{}\n{}\n{}\n", content, marker, source_line)
+            String::new()
         };
-        fs::write(&zshrc, new_content).map_err(|e| format!("写入 .zshrc 失败: {}", e))?;
-    }
-
-    // ── Unix: also add to ~/.bashrc (Linux default, also harmless on macOS) ──
-    {
-        let bashrc = PathBuf::from(&home).join(".bashrc");
-        let bash_source_line = format!("source \"{}/shell-rc\"", dir.display());
-        let bash_content = if bashrc.exists() { fs::read_to_string(&bashrc).unwrap_or_default() } else { String::new() };
-        let bash_marker = "# AI Profile Manager (bash)";
-        if !bash_content.contains(&bash_source_line) {
-            let new_bash = if bash_content.ends_with('\n') || bash_content.is_empty() {
-                format!("{}{}\n{}\n", bash_content, bash_marker, bash_source_line)
+        let marker = "# AI Profile Manager";
+        if !content.contains(&source_line) {
+            let new_content = if content.ends_with('\n') || content.is_empty() {
+                format!("{}{}\n{}\n", content, marker, source_line)
             } else {
-                format!("{}\n{}\n{}\n", bash_content, bash_marker, bash_source_line)
+                format!("{}\n{}\n{}\n", content, marker, source_line)
             };
-            fs::write(&bashrc, new_bash).ok();
+            fs::write(&zshrc, new_content).map_err(|e| format!("写入 .zshrc 失败: {}", e))?;
         }
-    }
+
+        // ── Unix: also add to ~/.bashrc (Linux default, also harmless on macOS) ──
+        {
+            let bashrc = PathBuf::from(&home).join(".bashrc");
+            let bash_source_line = format!("source \"{}/shell-rc\"", dir.display());
+            let bash_content = if bashrc.exists() {
+                fs::read_to_string(&bashrc).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let bash_marker = "# AI Profile Manager (bash)";
+            if !bash_content.contains(&bash_source_line) {
+                let new_bash = if bash_content.ends_with('\n') || bash_content.is_empty() {
+                    format!("{}{}\n{}\n", bash_content, bash_marker, bash_source_line)
+                } else {
+                    format!("{}\n{}\n{}\n", bash_content, bash_marker, bash_source_line)
+                };
+                fs::write(&bashrc, new_bash).ok();
+            }
+        }
     } // !windows: end Unix shell RC setup
 
     // ── Windows only: PowerShell profile (PS5 + PS7) ──
@@ -827,31 +1075,15 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         let dir_str = dir.display().to_string().replace('\\', "/");
         let dot_line = format!(". \"{}/shell-rc.ps1\"", dir_str);
 
-        // Resolve Documents folder via Windows API to handle redirection
-        // (OneDrive, Group Policy, custom locations). Fall back to hardcoded paths.
-        let docs_dir = {
-            let api_result = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", "[Environment]::GetFolderPath('MyDocuments')"])
-                .output()
-                .ok()
-                .and_then(|o| {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if s.is_empty() { None } else { Some(PathBuf::from(s)) }
-                });
-            api_result.unwrap_or_else(|| {
-                let default_docs = PathBuf::from(&home).join("Documents");
-                if default_docs.exists() {
-                    default_docs
-                } else {
-                    let onedrive_docs = PathBuf::from(&home).join("OneDrive").join("Documents");
-                    if onedrive_docs.exists() { onedrive_docs } else { default_docs }
-                }
-            })
-        };
+        let docs_dir = crate::windows_documents_dir();
         // PowerShell 7 profile
-        let ps7_profile = docs_dir.join("PowerShell").join("Microsoft.PowerShell_profile.ps1");
+        let ps7_profile = docs_dir
+            .join("PowerShell")
+            .join("Microsoft.PowerShell_profile.ps1");
         // PowerShell 5.1 profile
-        let ps5_profile = docs_dir.join("WindowsPowerShell").join("Microsoft.PowerShell_profile.ps1");
+        let ps5_profile = docs_dir
+            .join("WindowsPowerShell")
+            .join("Microsoft.PowerShell_profile.ps1");
 
         for ps_profile in &[ps7_profile, ps5_profile] {
             if let Some(parent) = ps_profile.parent() {
@@ -860,7 +1092,11 @@ pub fn ensure_shell_rc() -> Result<String, String> {
             if ps_profile.exists() {
                 let content = fs::read_to_string(&ps_profile).unwrap_or_default();
                 if !content.contains(&dot_line) {
-                    fs::write(&ps_profile, format!("{}\n# AI Profile Manager\n{}\n", content, dot_line)).ok();
+                    fs::write(
+                        &ps_profile,
+                        format!("{}\n# AI Profile Manager\n{}\n", content, dot_line),
+                    )
+                    .ok();
                 }
             } else {
                 fs::write(&ps_profile, format!("# AI Profile Manager\n{}\n", dot_line)).ok();
@@ -875,15 +1111,23 @@ pub fn ensure_shell_rc() -> Result<String, String> {
 
 fn detect_cli_type(env: &HashMap<String, String>) -> Option<String> {
     if let Some(t) = env.get("_KN_CLI_TYPE") {
-        if t == "both" { return Some("claude".into()); }
+        if t == "both" {
+            return Some("claude".into());
+        }
         return Some(t.clone());
     }
     // Qoder uses OPENAI_API_KEY + OPENAI_BASE_URL, same as Codex.
     // Distinguish by checking if base_url points to dashscope (Qwen official endpoint).
     if let Some(base_url) = env.get("OPENAI_BASE_URL") {
-        if base_url.contains("dashscope") { return Some("qoderclicn".into()); }
+        if base_url.contains("dashscope") {
+            return Some("qoderclicn".into());
+        }
     }
-    if env.keys().any(|k| k.starts_with("ANTHROPIC_")) { return Some("claude".into()); }
-    if env.keys().any(|k| k.starts_with("OPENAI_")) { return Some("codex".into()); }
+    if env.keys().any(|k| k.starts_with("ANTHROPIC_")) {
+        return Some("claude".into());
+    }
+    if env.keys().any(|k| k.starts_with("OPENAI_")) {
+        return Some("codex".into());
+    }
     None
 }

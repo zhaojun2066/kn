@@ -6,17 +6,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEntry {
-    pub id: String,           // "claude:agent:security-auditor"
-    pub cli: String,          // "claude" | "codex" | "qoder"
+    pub id: String,  // "claude:agent:security-auditor"
+    pub cli: String, // "claude" | "codex" | "qoder"
     pub name: String,
     pub description: String,
     pub enabled: bool,
-    pub source: String,       // "builtin" | "user" | "project" | "plugin"
+    pub source: String, // "builtin" | "user" | "project" | "plugin"
     pub model: Option<String>,
     pub tools: Vec<String>,
     pub color: Option<String>,
     pub path: String,
-    pub skills: Vec<String>,  // Agent → Skill references from frontmatter
+    pub skills: Vec<String>, // Agent → Skill references from frontmatter
     pub sandbox_mode: Option<String>, // Codex only
 }
 
@@ -38,12 +38,14 @@ pub struct DependencyGraph {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DepNode {
-    pub id: String,           // "claude:agent:security-auditor"
-    pub kind: String,         // "plugin" | "agent" | "skill" | "tool" | "mcp"
+    pub id: String,   // "claude:agent:security-auditor"
+    pub kind: String, // "plugin" | "agent" | "skill" | "tool" | "mcp"
     pub label: String,
     pub cli: String,
     pub source: String,
-    pub locked: bool,         // source == "builtin" → true
+    pub locked: bool, // source == "builtin" → true
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>, // plugin node ID for compound grouping
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,7 +53,7 @@ pub struct DepNode {
 pub struct DepEdge {
     pub from: String,
     pub to: String,
-    pub kind: String,         // "contains" | "references" | "spawns" | "needsTool" | "needsModel"
+    pub kind: String, // "contains" | "references" | "spawns" | "needsTool" | "needsModel"
     pub label: String,
 }
 
@@ -59,32 +61,132 @@ pub struct DepEdge {
 
 /// Returns builtin agents for a given CLI. These are never on disk —
 /// we synthesize them from known lists so the user can see what's available.
+#[allow(dead_code)]
 fn builtin_agents(cli: &str) -> Vec<AgentEntry> {
     match cli {
         "claude" => vec![
-            builtin("claude", "Explore", "Fast read-only code exploration agent", &["Read", "Grep", "WebSearch", "WebFetch"], Some("haiku"), "#10B981"),
-            builtin("claude", "Plan", "Software architect for designing implementation plans", &["Read", "Grep", "Glob", "WebSearch", "WebFetch"], None, "#3B82F6"),
-            builtin("claude", "general-purpose", "Catch-all agent for complex multi-step tasks", &["*"], None, "#6B7280"),
-            builtin("claude", "statusline-setup", "Configures the Claude Code status line", &["Read", "Edit"], None, "#8B5CF6"),
-            builtin("claude", "claude-code-guide", "Answers questions about Claude Code features", &["Read", "Bash", "WebFetch", "WebSearch"], None, "#F59E0B"),
+            builtin(
+                "claude",
+                "Explore",
+                "Fast read-only code exploration agent",
+                &["Read", "Grep", "WebSearch", "WebFetch"],
+                Some("haiku"),
+                "#10B981",
+            ),
+            builtin(
+                "claude",
+                "Plan",
+                "Software architect for designing implementation plans",
+                &["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
+                None,
+                "#3B82F6",
+            ),
+            builtin(
+                "claude",
+                "general-purpose",
+                "Catch-all agent for complex multi-step tasks",
+                &["*"],
+                None,
+                "#6B7280",
+            ),
+            builtin(
+                "claude",
+                "statusline-setup",
+                "Configures the Claude Code status line",
+                &["Read", "Edit"],
+                None,
+                "#8B5CF6",
+            ),
+            builtin(
+                "claude",
+                "claude-code-guide",
+                "Answers questions about Claude Code features",
+                &["Read", "Bash", "WebFetch", "WebSearch"],
+                None,
+                "#F59E0B",
+            ),
         ],
         "qoder" => vec![
-            builtin("qoder", "Explore", "Fast read-only code exploration agent", &["Read", "Grep", "WebSearch", "WebFetch"], Some("haiku"), "#10B981"),
-            builtin("qoder", "Plan", "Software architect for designing implementation plans", &["Read", "Grep", "Glob", "WebSearch", "WebFetch"], None, "#3B82F6"),
-            builtin("qoder", "general-purpose", "Catch-all agent for complex multi-step tasks", &["*"], None, "#6B7280"),
-            builtin("qoder", "qoder-guide", "Answers questions about Qoder CLI features", &["Read", "Bash", "WebFetch", "WebSearch"], None, "#F59E0B"),
-            builtin("qoder", "statusline-setup", "Configures the Qoder status line", &["Read", "Edit"], None, "#8B5CF6"),
+            builtin(
+                "qoder",
+                "Explore",
+                "Fast read-only code exploration agent",
+                &["Read", "Grep", "WebSearch", "WebFetch"],
+                Some("haiku"),
+                "#10B981",
+            ),
+            builtin(
+                "qoder",
+                "Plan",
+                "Software architect for designing implementation plans",
+                &["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
+                None,
+                "#3B82F6",
+            ),
+            builtin(
+                "qoder",
+                "general-purpose",
+                "Catch-all agent for complex multi-step tasks",
+                &["*"],
+                None,
+                "#6B7280",
+            ),
+            builtin(
+                "qoder",
+                "qoder-guide",
+                "Answers questions about Qoder CLI features",
+                &["Read", "Bash", "WebFetch", "WebSearch"],
+                None,
+                "#F59E0B",
+            ),
+            builtin(
+                "qoder",
+                "statusline-setup",
+                "Configures the Qoder status line",
+                &["Read", "Edit"],
+                None,
+                "#8B5CF6",
+            ),
         ],
         "codex" => vec![
-            builtin("codex", "default", "Default general-purpose agent", &["*"], None, "#6B7280"),
-            builtin("codex", "worker", "Worker agent for parallel task execution", &["*"], None, "#6B7280"),
-            builtin("codex", "explorer", "Read-only code exploration agent", &["Read", "Grep"], Some("haiku"), "#10B981"),
+            builtin(
+                "codex",
+                "default",
+                "Default general-purpose agent",
+                &["*"],
+                None,
+                "#6B7280",
+            ),
+            builtin(
+                "codex",
+                "worker",
+                "Worker agent for parallel task execution",
+                &["*"],
+                None,
+                "#6B7280",
+            ),
+            builtin(
+                "codex",
+                "explorer",
+                "Read-only code exploration agent",
+                &["Read", "Grep"],
+                Some("haiku"),
+                "#10B981",
+            ),
         ],
         _ => vec![],
     }
 }
 
-fn builtin(cli: &str, name: &str, desc: &str, tools: &[&str], model: Option<&str>, color: &str) -> AgentEntry {
+#[allow(dead_code)]
+fn builtin(
+    cli: &str,
+    name: &str,
+    desc: &str,
+    tools: &[&str],
+    model: Option<&str>,
+    color: &str,
+) -> AgentEntry {
     AgentEntry {
         id: format!("{}:agent:{}", cli, name),
         cli: cli.to_string(),
@@ -127,37 +229,47 @@ fn agent_from_frontmatter(
     cli: &str,
     name: &str,
     path: std::path::PathBuf,
-    source: &str,     // "user" | "project"
+    source: &str, // "user" | "project"
     frontmatter: &serde_yaml::Value,
 ) -> AgentEntry {
-    let description = frontmatter.get("description")
+    let description = frontmatter
+        .get("description")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    let model = frontmatter.get("model")
+    let model = frontmatter
+        .get("model")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let tools: Vec<String> = frontmatter.get("tools")
+    let tools: Vec<String> = frontmatter
+        .get("tools")
         .and_then(|v| v.as_sequence())
-        .map(|seq| seq.iter()
-            .filter_map(|t| t.as_str().map(String::from))
-            .collect())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|t| t.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
-    let color = frontmatter.get("color")
+    let color = frontmatter
+        .get("color")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let skills: Vec<String> = frontmatter.get("skills")
+    let skills: Vec<String> = frontmatter
+        .get("skills")
         .and_then(|v| v.as_sequence())
-        .map(|seq| seq.iter()
-            .filter_map(|s| s.as_str().map(String::from))
-            .collect())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
-    let sandbox_mode = frontmatter.get("sandbox_mode")
+    let sandbox_mode = frontmatter
+        .get("sandbox_mode")
         .or_else(|| frontmatter.get("sandboxMode"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
@@ -202,7 +314,11 @@ fn scan_claude_project_agents() -> Vec<AgentEntry> {
 }
 
 /// Scan a directory for .md agent files (Claude/Qoder format).
-fn scan_md_agents_in_dir(cli: &str, dir: &std::path::PathBuf, source: &str) -> Vec<AgentEntry> {
+pub(crate) fn scan_md_agents_in_dir(
+    cli: &str,
+    dir: &std::path::PathBuf,
+    source: &str,
+) -> Vec<AgentEntry> {
     let mut agents = Vec::new();
 
     let read_dir = match std::fs::read_dir(dir) {
@@ -212,13 +328,14 @@ fn scan_md_agents_in_dir(cli: &str, dir: &std::path::PathBuf, source: &str) -> V
 
     for entry in read_dir.flatten() {
         let path = entry.path();
-        let file_name = path.file_name()
+        let file_name = path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string(); // owned String — ends borrow on path
 
-        // Check if it's an .md file (both active and .disabled)
-        let is_agent_file = file_name.ends_with(".md")
+        // Check if it's an .md file (both active .md and disabled .md.disabled)
+        let is_agent_file = (file_name.ends_with(".md") || file_name.ends_with(".md.disabled"))
             && !file_name.starts_with('.');
 
         if !is_agent_file {
@@ -236,18 +353,22 @@ fn scan_md_agents_in_dir(cli: &str, dir: &std::path::PathBuf, source: &str) -> V
         };
 
         // Get agent name: prefer frontmatter 'name', fall back to filename
-        let name = frontmatter.get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(
-                // Strip .md or .md.disabled suffix
-                file_name
-                    .strip_suffix(".disabled")
-                    .unwrap_or(&file_name)
-                    .strip_suffix(".md")
-                    .unwrap_or(&file_name)
-            );
+        let name = frontmatter.get("name").and_then(|v| v.as_str()).unwrap_or(
+            // Strip .md or .md.disabled suffix
+            file_name
+                .strip_suffix(".disabled")
+                .unwrap_or(&file_name)
+                .strip_suffix(".md")
+                .unwrap_or(&file_name),
+        );
 
-        agents.push(agent_from_frontmatter(cli, name, path, source, &frontmatter));
+        agents.push(agent_from_frontmatter(
+            cli,
+            name,
+            path,
+            source,
+            &frontmatter,
+        ));
     }
 
     agents
@@ -273,18 +394,76 @@ fn scan_qoder_project_agents() -> Vec<AgentEntry> {
     scan_md_agents_in_dir("qoder", &dir, "project")
 }
 
+// ── Codex .toml agent scanning ──
+
+fn codex_agents_dir() -> std::path::PathBuf {
+    let home = crate::commands::home_dir();
+    home.join(".codex").join("agents")
+}
+
+fn scan_codex_user_agents() -> Vec<AgentEntry> {
+    let dir = codex_agents_dir();
+    let mut agents = Vec::new();
+
+    let read_dir = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(_) => return agents,
+    };
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+
+        // Only scan .toml files
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+
+        let file_name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+        if file_name.is_empty() || file_name.starts_with('.') {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Parse TOML to extract description
+        let description = toml::from_str::<toml::Value>(&content)
+            .ok()
+            .and_then(|v| {
+                v.get("description")
+                    .and_then(|d| d.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+
+        agents.push(AgentEntry {
+            id: format!("codex:agent:{}", file_name),
+            cli: "codex".to_string(),
+            name: file_name.to_string(),
+            description,
+            enabled: true,
+            source: "user".to_string(),
+            model: None,
+            tools: vec![],
+            color: None,
+            path: path.to_string_lossy().to_string(),
+            skills: vec![],
+            sandbox_mode: None,
+        });
+    }
+
+    agents
+}
+
 // ── Main scan entry point ──
 
 #[tauri::command]
 pub fn scan_agents() -> AgentManagerData {
     let mut agents = Vec::new();
 
-    // 1. Builtin agents (always present, read-only)
-    agents.extend(builtin_agents("claude"));
-    agents.extend(builtin_agents("qoder"));
-    agents.extend(builtin_agents("codex"));
-
-    // 2. Claude user + project agents
+    // 1. Claude user + project agents
     agents.extend(scan_claude_user_agents());
     agents.extend(scan_claude_project_agents());
 
@@ -292,7 +471,8 @@ pub fn scan_agents() -> AgentManagerData {
     agents.extend(scan_qoder_user_agents());
     agents.extend(scan_qoder_project_agents());
 
-    // NOTE: Codex .toml agent scanning deferred to Phase 4
+    // 4. Codex user agents (.toml format)
+    agents.extend(scan_codex_user_agents());
 
     // Deduplicate: file-based agents override builtins with same id
     let mut seen = std::collections::HashMap::new();
@@ -309,17 +489,14 @@ pub fn scan_agents() -> AgentManagerData {
 
     let mut agents: Vec<AgentEntry> = seen.into_values().collect();
     // Sort: builtins first, then by name
-    agents.sort_by(|a, b| {
-        a.source.cmp(&b.source)
-            .then(a.name.cmp(&b.name))
-    });
+    agents.sort_by(|a, b| a.source.cmp(&b.source).then(a.name.cmp(&b.name)));
 
     AgentManagerData { agents }
 }
 
 // ── Dependency graph builder ──
 
-use crate::skill_manager::{SkillManagerData, PluginEntry, StandaloneSkill};
+use crate::skill_manager::{SkillManagerData, StandaloneSkill};
 
 /// Build a complete dependency graph from skills and agents data.
 /// Returns nodes (plugins, skills, agents, tools, mcp servers) and
@@ -332,7 +509,7 @@ pub fn build_dependency_graph(
     let mut nodes: Vec<DepNode> = Vec::new();
     let mut edges: Vec<DepEdge> = Vec::new();
 
-    // ── Add Plugin nodes + contains → Skill edges (edge type 1) ──
+    // ── Add Plugin nodes + internal skill/agent nodes (compound grouping) ──
     for plugin in &skills_data.plugins {
         let plugin_id = format!("{}:plugin:{}", plugin.cli, plugin.name);
         nodes.push(DepNode {
@@ -342,17 +519,40 @@ pub fn build_dependency_graph(
             cli: plugin.cli.clone(),
             source: plugin.source.clone(),
             locked: false,
+            parent: None,
         });
         for skill in &plugin.skills {
             let skill_id = format!("{}:skill:{}", plugin.cli, skill.name);
-            edges.push(DepEdge {
-                from: plugin_id.clone(),
-                to: skill_id,
-                kind: "contains".into(),
-                label: "contains".into(),
+            nodes.push(DepNode {
+                id: skill_id,
+                kind: "skill".into(),
+                label: skill.name.clone(),
+                cli: plugin.cli.clone(),
+                source: "plugin".into(),
+                locked: false,
+                parent: Some(plugin_id.clone()),
+            });
+        }
+        for agent in &plugin.agents {
+            let agent_id = format!("{}:agent:{}", plugin.cli, agent.name);
+            nodes.push(DepNode {
+                id: agent_id,
+                kind: "agent".into(),
+                label: agent.name.clone(),
+                cli: plugin.cli.clone(),
+                source: "plugin".into(),
+                locked: false,
+                parent: Some(plugin_id.clone()),
             });
         }
     }
+
+    // ── Collect plugin-internal agent names (to skip in Phase 3) ──
+    let plugin_agent_names: std::collections::HashSet<String> = skills_data
+        .plugins
+        .iter()
+        .flat_map(|p| p.agents.iter().map(|a| a.name.clone()))
+        .collect();
 
     // ── Add Skill nodes (standalone + system) ──
     let mut add_skills = |skills: &[StandaloneSkill], source: &str| {
@@ -365,14 +565,18 @@ pub fn build_dependency_graph(
                 cli: skill.cli.clone(),
                 source: source.into(),
                 locked: source == "system",
+                parent: None,
             });
         }
     };
     add_skills(&skills_data.standalone_skills, "user");
     add_skills(&skills_data.system_skills, "system");
 
-    // ── Add Agent nodes + edges ──
+    // ── Add Agent nodes + edges (skip plugin-internal agents) ──
     for agent in &agents_data.agents {
+        if plugin_agent_names.contains(&agent.name) {
+            continue;
+        }
         let agent_id = agent.id.clone();
         nodes.push(DepNode {
             id: agent_id.clone(),
@@ -381,6 +585,7 @@ pub fn build_dependency_graph(
             cli: agent.cli.clone(),
             source: agent.source.clone(),
             locked: agent.source == "builtin",
+            parent: None,
         });
 
         // Edge type 2: Agent → Skill references
@@ -408,6 +613,7 @@ pub fn build_dependency_graph(
                     cli: agent.cli.clone(),
                     source: "builtin".into(),
                     locked: true,
+                    parent: None,
                 });
             }
             edges.push(DepEdge {
@@ -429,6 +635,7 @@ pub fn build_dependency_graph(
                     cli: agent.cli.clone(),
                     source: "builtin".into(),
                     locked: true,
+                    parent: None,
                 });
             }
             edges.push(DepEdge {
@@ -440,15 +647,16 @@ pub fn build_dependency_graph(
         }
     }
 
+    // ── Deduplicate nodes by ID ──
+    let mut seen = std::collections::HashSet::new();
+    nodes.retain(|n| seen.insert(n.id.clone()));
+
     DependencyGraph { nodes, edges }
 }
 
 /// Given a node ID, find all nodes that depend on it (reverse BFS).
 #[tauri::command]
-pub fn analyze_impact(
-    target_id: String,
-    graph: DependencyGraph,
-) -> Vec<String> {
+pub fn analyze_impact(target_id: String, graph: DependencyGraph) -> Vec<String> {
     let mut impacted: Vec<String> = Vec::new();
     let mut visited = std::collections::HashSet::new();
     let mut queue: Vec<&str> = vec![&target_id];
@@ -466,4 +674,75 @@ pub fn analyze_impact(
     }
 
     impacted
+}
+
+// ── Agent toggle (enable/disable) ──
+
+/// Toggle agent enabled state by renaming file: `name.{ext}` ↔ `name.{ext}.disabled`.
+#[tauri::command]
+pub fn toggle_agent(cli: String, name: String, enabled: bool) -> Result<(), String> {
+    let (dir, ext) = match cli.as_str() {
+        "claude" => (claude_agents_dir(), "md"),
+        "qoder" => (qoder_agents_dir(), "md"),
+        "codex" => (codex_agents_dir(), "toml"),
+        _ => return Err(format!("不支持的 CLI: {}", cli)),
+    };
+
+    let active_path = dir.join(format!("{}.{}", name, ext));
+    let disabled_path = dir.join(format!("{}.{}.disabled", name, ext));
+
+    if enabled {
+        if disabled_path.exists() {
+            std::fs::rename(&disabled_path, &active_path)
+                .map_err(|e| format!("启用失败: {}", e))?;
+        } else if !active_path.exists() {
+            return Err(format!("Agent '{}' 不存在", name));
+        }
+    } else {
+        if active_path.exists() {
+            std::fs::rename(&active_path, &disabled_path)
+                .map_err(|e| format!("禁用失败: {}", e))?;
+        } else if !disabled_path.exists() {
+            return Err(format!("Agent '{}' 不存在", name));
+        }
+    }
+
+    Ok(())
+}
+
+/// Read the body content (system prompt) of an agent file.
+/// Returns the markdown content after the YAML frontmatter.
+#[tauri::command]
+pub fn read_agent_content(path: String) -> Result<String, String> {
+    if path.is_empty() {
+        return Ok(String::new());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))?;
+
+    let mut lines = content.lines();
+    let mut body_started = false;
+    let mut frontmatter_count = 0;
+    let mut body = String::new();
+
+    for line in &mut lines {
+        if !body_started {
+            if line.trim() == "---" {
+                frontmatter_count += 1;
+                if frontmatter_count == 2 {
+                    body_started = true;
+                }
+                continue;
+            }
+            if frontmatter_count == 0 {
+                body_started = true;
+                body.push_str(line);
+                body.push('\n');
+            }
+        } else {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+
+    Ok(body.trim().to_string())
 }

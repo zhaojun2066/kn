@@ -55,7 +55,10 @@ fn drain_utf8_stream(buf: &mut Vec<u8>, on_event: &Channel<PtyEvent>) -> bool {
                 if valid_up_to > 0 {
                     let valid = &buf[..valid_up_to];
                     let valid_str = unsafe { std::str::from_utf8_unchecked(valid) };
-                    if on_event.send(PtyEvent::Data(valid_str.to_string())).is_err() {
+                    if on_event
+                        .send(PtyEvent::Data(valid_str.to_string()))
+                        .is_err()
+                    {
                         return false;
                     }
                 }
@@ -63,7 +66,8 @@ fn drain_utf8_stream(buf: &mut Vec<u8>, on_event: &Channel<PtyEvent>) -> bool {
                 match err.error_len() {
                     Some(len) => {
                         let invalid_end = valid_up_to + len;
-                        let invalid = String::from_utf8_lossy(&buf[valid_up_to..invalid_end]).to_string();
+                        let invalid =
+                            String::from_utf8_lossy(&buf[valid_up_to..invalid_end]).to_string();
                         if !invalid.is_empty() && on_event.send(PtyEvent::Data(invalid)).is_err() {
                             return false;
                         }
@@ -118,7 +122,10 @@ pub fn start_pty(
                 r"C:\ProgramData\Git\bin\bash.exe".into(),
             ];
             if !local_appdata.is_empty() {
-                candidates.push(format!(r"{}\Microsoft\WinGet\Links\bash.exe", local_appdata));
+                candidates.push(format!(
+                    r"{}\Microsoft\WinGet\Links\bash.exe",
+                    local_appdata
+                ));
             }
             candidates
                 .iter()
@@ -133,7 +140,8 @@ pub fn start_pty(
     });
 
     let is_git_bash = cfg!(target_os = "windows") && shell.ends_with("bash.exe");
-    let is_powershell = cfg!(target_os = "windows") && (shell.ends_with("powershell.exe") || shell.ends_with("pwsh.exe"));
+    let is_powershell = cfg!(target_os = "windows")
+        && (shell.ends_with("powershell.exe") || shell.ends_with("pwsh.exe"));
 
     let mut cmd = CommandBuilder::new(&shell);
     if is_git_bash {
@@ -155,9 +163,11 @@ pub fn start_pty(
         );
         cmd.args([
             "-NoExit",
-            "-ExecutionPolicy", "Bypass",
+            "-ExecutionPolicy",
+            "Bypass",
             "-NoLogo",
-            "-Command", &startup_cmd,
+            "-Command",
+            &startup_cmd,
         ]);
     } else {
         cmd.args(["-i", "-l"]);

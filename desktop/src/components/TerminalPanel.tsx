@@ -147,7 +147,6 @@ export function TerminalPanel({
   const [showSearch, setShowSearch] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
-  const [searchMatchCount, setSearchMatchCount] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const xtermHandlesRef = useRef<Map<string, XTermHandle>>(new Map());
 
@@ -183,7 +182,6 @@ export function TerminalPanel({
     if (!searchAddon) return;
     setShowSearch(true);
     setSearchMatchIndex(0);
-    setSearchMatchCount(0);
     setTimeout(() => searchInputRef.current?.focus(), 50);
   }, [activeTabId]);
 
@@ -194,14 +192,12 @@ export function TerminalPanel({
     if (!term) {
       searchAddon.clearDecorations();
       setSearchMatchIndex(0);
-      setSearchMatchCount(0);
       return;
     }
     // findNext with { incremental: true } for live highlighting
     try {
       const result = searchAddon.findNext(term, { incremental: true });
       setSearchMatchIndex(result ? 1 : 0);
-      setSearchMatchCount(result ? 1 : 0);
     } catch { /* search addon may throw on empty/invalid patterns */ }
   }, [activeTabId]);
 
@@ -241,7 +237,6 @@ export function TerminalPanel({
     try { handle?.getSearchAddon()?.clearDecorations(); } catch { /* */ }
     setSearchTerm("");
     setSearchMatchIndex(0);
-    setSearchMatchCount(0);
   }, [activeTabId]);
 
   // ── Keyboard listener for Cmd/Ctrl+F ────────────────────
@@ -286,10 +281,22 @@ export function TerminalPanel({
     }
   }, [activeTabId]);
 
+  // When panel size or maximize state changes, force the terminal to re-fit.
+  // Double requestAnimationFrame ensures the browser has finished layout before
+  // we read getBoundingClientRect() inside fit().  This is more reliable than
+  // dispatching a synthetic "resize" event, which can fire before layout settles.
   useEffect(() => {
-    const timer = setTimeout(() => window.dispatchEvent(new Event("resize")), 100);
-    return () => clearTimeout(timer);
-  }, [size]);
+    let cancelled = false;
+    requestAnimationFrame(() => {
+      if (cancelled) return;
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        const handle = xtermHandlesRef.current.get(activeTabId);
+        handle?.fit();
+      });
+    });
+    return () => { cancelled = true; };
+  }, [size, maximized, activeTabId]);
 
   const isBottom = mode === "bottom";
   const containerStyle: React.CSSProperties = maximized

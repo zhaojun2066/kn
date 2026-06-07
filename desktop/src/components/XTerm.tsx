@@ -28,6 +28,15 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
   const initRef = useRef(false);
   const readyFiredRef = useRef(false);
 
+  // Store onResize and onReady in refs so that `fit` doesn't depend on them.
+  // Parents create new arrow functions on every render (inline in JSX),
+  // which would otherwise cause fit → ResizeObserver teardown/recreate cycles,
+  // making the observer miss resize events during drag/maximize transitions.
+  const onResizeRef = useRef(onResize);
+  onResizeRef.current = onResize;
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+
   const rafRef = useRef<number | null>(null);
 
   const fit = useCallback(() => {
@@ -40,19 +49,19 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
       // below the visible TUI area — the canvas resizes but doesn't fully sync.
       termRef.current?.refresh(0, termRef.current.rows - 1);
       // Fire onReady once after first successful fit
-      if (!readyFiredRef.current && onReady) {
+      if (!readyFiredRef.current && onReadyRef.current) {
         readyFiredRef.current = true;
-        onReady();
+        onReadyRef.current();
       }
       // Notify PTY immediately — same frame, like Tabby / Terminal.app.
       // The kernel handles coalescing of frequent TIOCSWINSZ calls during rapid resize.
-      if (onResize && termRef.current) {
+      if (onResizeRef.current && termRef.current) {
         const cols = termRef.current.cols;
         const rows = termRef.current.rows;
-        if (cols > 0 && rows > 0) onResize(cols, rows);
+        if (cols > 0 && rows > 0) onResizeRef.current(cols, rows);
       }
     }
-  }, [onReady, onResize]);
+  }, []);  // deps via refs — fit stays stable across renders, ResizeObserver never torn down
 
   useImperativeHandle(ref, () => ({ fit, getSearchAddon: () => searchAddonRef.current }), [fit]);
 

@@ -3,8 +3,9 @@ import { SearchInput } from "./common/SearchInput";
 import { CLIIcon } from "./common/CLIIcon";
 import { formatShortcut } from "../utils/shortcut";
 import { ContextMenu } from "./ContextMenu";
-import { Circle, Hash, ArrowUpDown, Copy, Pencil, Trash2, Star, Tag, ChevronDown, Download, CheckSquare, Square } from "lucide-react";
+import { Circle, Hash, ArrowUpDown, Copy, Pencil, Trash2, Star, Tag, ChevronDown, CheckSquare, Square } from "lucide-react";
 import type { ProfileSummary } from "../lib/types";
+import { ExpandableToolbar } from "./ExpandableToolbar";
 
 interface SidebarProps {
   profiles: ProfileSummary[];
@@ -17,12 +18,24 @@ interface SidebarProps {
   onDelete: (name: string) => void;
   onSetDefault: (name: string) => void;
   usageCounts?: Record<string, number>;
+  // ExpandableToolbar props
+  isDefault?: boolean;
+  hasSelection?: boolean;
+  backupExists?: boolean;
+  onAdd?: () => void;
+  onCopyProfile?: () => void;
+  onInit?: () => void;
+  onImport?: () => void;
+  onExport?: () => void;
   onBatchDelete?: (names: string[]) => void;
   onBatchExport?: (names: string[]) => void;
+  onRefresh?: () => void;
+  onBackup?: () => void;
+  onRestore?: () => void;
 }
 
 /* ── Sidebar ────────────────────────────────────────────── */
-export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearch, onCopy, onRename, onDelete, onSetDefault, usageCounts, onBatchDelete, onBatchExport }: SidebarProps) {
+export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearch, onCopy, onRename, onDelete, onSetDefault, usageCounts, isDefault = false, hasSelection = false, backupExists = false, onAdd, onCopyProfile, onInit, onImport, onExport, onBatchDelete, onBatchExport, onRefresh, onBackup, onRestore }: SidebarProps) {
   // Tag filter
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const allTags = useMemo(() => {
@@ -48,31 +61,18 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
   // Multi-select
   const [selectedSet, setSelectedSet] = useState<Set<string>>(new Set());
   const lastClickedRef = useRef<number>(-1);
-
-  // Clear multi-select when profiles change (e.g. after delete)
   useEffect(() => { setSelectedSet(new Set()); }, [profiles.length]);
 
   const toggleSelect = useCallback((name: string, index: number, shiftKey: boolean, metaKey: boolean) => {
     if (shiftKey && lastClickedRef.current >= 0) {
-      // Range select
       const start = Math.min(lastClickedRef.current, index);
       const end = Math.max(lastClickedRef.current, index);
       const rangeNames = sortedProfiles.slice(start, end + 1).map((p) => p.name);
-      setSelectedSet((prev) => {
-        const next = new Set(prev);
-        rangeNames.forEach((n) => next.add(n));
-        return next;
-      });
+      setSelectedSet((prev) => { const next = new Set(prev); rangeNames.forEach((n) => next.add(n)); return next; });
     } else if (metaKey) {
-      // Toggle single
-      setSelectedSet((prev) => {
-        const next = new Set(prev);
-        if (next.has(name)) next.delete(name); else next.add(name);
-        return next;
-      });
+      setSelectedSet((prev) => { const next = new Set(prev); if (next.has(name)) next.delete(name); else next.add(name); return next; });
       lastClickedRef.current = index;
     } else {
-      // Normal click — single select, clear batch
       setSelectedSet(new Set());
       lastClickedRef.current = index;
       onSelect(name);
@@ -82,7 +82,6 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
   const handleClick = useCallback((name: string, index: number, e: React.MouseEvent) => {
     const isCheckbox = (e.target as HTMLElement).closest("[data-checkbox]");
     if (isCheckbox) {
-      // Checkbox click always toggles (no modifier needed)
       e.preventDefault();
       toggleSelect(name, index, e.shiftKey, true);
     } else if (e.metaKey || e.ctrlKey || e.shiftKey) {
@@ -94,7 +93,7 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
     }
   }, [toggleSelect, onSelect]);
 
-  const clearSelection = () => setSelectedSet(new Set());
+  const batchNames = useMemo(() => Array.from(selectedSet), [selectedSet]);
 
   // Context menu
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; name: string } | null>(null);
@@ -107,36 +106,61 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
   const [pendingName, setPendingName] = useState<string | null>(null);
   useEffect(() => { setPendingName(null); }, [selectedName]);
 
-  const batchCount = selectedSet.size;
-  const showBatch = batchCount > 0;
-
   return (
-    <div className="w-[230px] shrink-0 flex flex-col bg-app-sidebar border-r border-app-border select-none">
-      <div className="px-2 pt-2 pb-1.5">
+    <div className="w-[300px] shrink-0 flex flex-col bg-app-sidebar border-r border-app-border select-none">
+      <div className="px-2.5 pt-2.5 pb-2">
+        <div className="flex items-center gap-1.5 mb-2.5">
+          <Hash size={13} className="text-[var(--app-accent)] shrink-0" />
+          <span className="text-2xs text-[var(--app-text)] font-mono tracking-[0.15em] uppercase flex-1">
+            Profiles
+          </span>
+        </div>
         <SearchInput value={searchQuery} onChange={onSearch} placeholder="搜索 profile..." />
       </div>
-      <div className="mx-2 border-b border-app-border-light" />
+      <div className="mx-2.5 border-b border-app-border-light" />
 
       {/* Tag filter dropdown */}
       {allTags.length > 0 && <TagFilter tags={allTags} active={activeTag} onChange={setActiveTag} />}
 
-      <div className="flex items-center justify-between px-3 pt-2.5 pb-1.5">
-        <span className="text-2xs text-app-text-muted uppercase tracking-[0.2em]">Profiles</span>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => {
-              const keys: SortKey[] = ["name", "type", "count"];
-              const idx = keys.indexOf(sortKey);
-              setSortKey(keys[(idx + 1) % keys.length]);
-            }}
-            className="flex items-center gap-0.5 text-2xs text-app-text-muted hover:text-app-text transition-colors font-mono"
-            title={`排序: ${sortLabels[sortKey]}`}
-          >
-            <ArrowUpDown size={9} />
-            {sortLabels[sortKey]}
-          </button>
-          <span className="text-2xs text-app-text-muted tabular-nums">[{profiles.length}]</span>
-        </div>
+      {/* Expandable toolbar — profile actions + config management */}
+      {onAdd && onCopyProfile && onInit && onImport && onExport && onRefresh && onBackup && onRestore && (
+        <ExpandableToolbar
+          selectedName={selectedName}
+          isDefault={isDefault}
+          hasSelection={hasSelection}
+          backupExists={backupExists}
+          onAdd={onAdd}
+          onSetDefault={onSetDefault}
+          onCopyProfile={onCopyProfile}
+          onInit={onInit}
+          onImport={onImport}
+          onExport={onExport}
+          onDelete={onDelete}
+          batchNames={batchNames}
+          onBatchDelete={onBatchDelete}
+          onBatchExport={onBatchExport}
+          onRefresh={onRefresh}
+          onBackup={onBackup}
+          onRestore={onRestore}
+        />
+      )}
+
+      <div className="flex items-center gap-1 px-3 pt-2.5 pb-1.5">
+        <span className="text-2xs text-app-text-muted uppercase tracking-[0.2em] font-mono flex-1">
+          Profiles
+        </span>
+        <span className="text-2xs text-app-text-muted tabular-nums">[{profiles.length}]</span>
+        <button
+          onClick={() => {
+            const keys: SortKey[] = ["name", "type", "count"];
+            const idx = keys.indexOf(sortKey);
+            setSortKey(keys[(idx + 1) % keys.length]);
+          }}
+          className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-hover)] transition-colors"
+          title={`排序: ${sortLabels[sortKey]}`}
+        >
+          <ArrowUpDown size={13} />
+        </button>
       </div>
       <div className="flex-1 overflow-y-auto overflow-x-hidden py-0.5">
         {profiles.length === 0 ? (
@@ -170,7 +194,7 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
                 <span
                   data-checkbox
                   className={`shrink-0 cursor-pointer transition-opacity duration-fast
-                    ${isChecked || showBatch ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+                    ${isChecked ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
                 >
                   {isChecked
                     ? <CheckSquare size={13} className="text-app-amber" />
@@ -192,15 +216,6 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
                 <span className={`truncate text-sm font-mono ${isSelected ? "font-medium" : "font-normal"}`}>
                   {p.name}
                 </span>
-                {/* Tags */}
-                {p.tags && p.tags.length > 0 && (
-                  <span className="hidden group-hover:flex items-center gap-0.5 shrink-0">
-                    {p.tags.slice(0, 2).map((t) => (
-                      <span key={t} className="text-2xs px-1 py-px bg-[var(--app-input)] text-app-text-muted font-mono leading-none">{t}</span>
-                    ))}
-                    {p.tags.length > 2 && <span className="text-2xs text-app-text-muted">+{p.tags.length - 2}</span>}
-                  </span>
-                )}
                 {/* Env count */}
                 <span className={`text-2xs px-1.5 py-0.5 font-mono tabular-nums transition-colors duration-fast
                   ${isSelected
@@ -227,33 +242,6 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
         )}
       </div>
 
-      {/* Batch action bar */}
-      {showBatch && onBatchDelete && onBatchExport && (
-        <div className="shrink-0 border-t border-app-border bg-app-panel px-2 py-2 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-2xs text-app-text-dim font-mono">已选 {batchCount} 项</span>
-            <button onClick={clearSelection} className="text-2xs text-app-text-muted hover:text-app-text font-mono">取消</button>
-          </div>
-          <div className="flex gap-1">
-            <button
-              onClick={() => { onBatchExport(Array.from(selectedSet)); clearSelection(); }}
-              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-2xs font-mono
-                text-app-text-dim hover:text-app-text border border-app-border hover:border-app-accent
-                bg-[var(--app-input)] hover:bg-[var(--app-hover)] transition-colors"
-            >
-              <Download size={10} />导出
-            </button>
-            <button
-              onClick={() => onBatchDelete(Array.from(selectedSet))}
-              className="flex-1 flex items-center justify-center gap-1 px-2 py-1 text-2xs font-mono
-                text-app-red hover:bg-app-red-bg border border-app-border hover:border-app-red
-                bg-[var(--app-input)] transition-colors"
-            >
-              <Trash2 size={10} />删除
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Context menu */}
       {ctxMenu && (

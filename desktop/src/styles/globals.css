@@ -1,3 +1,4 @@
+@import 'highlight.js/styles/github-dark.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -893,6 +894,23 @@ button, a, input, select {
   100% { transform: translateX(400%); }
 }
 
+/* ── Soft radius on interactive elements ─────────────── */
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+textarea,
+select,
+button:not(.hljs):not([class*="rounded-full"]) {
+  border-radius: 2px;
+}
+
+/* ── Form input focus ring ───────────────────────────── */
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--app-accent);
+  box-shadow: 0 0 0 1px var(--app-accent), 0 0 8px var(--app-glow);
+}
+
 /* ── kbd ─────────────────────────────────────────────── */
 kbd {
   font-family: "JetBrains Mono", "Fira Code", monospace;
@@ -901,3 +919,87 @@ kbd {
   padding: 1px 5px;
   font-size: 11px;
 }
+
+/* ── Syntax highlighting (highlight.js) ───────────────── */
+
+/* Blend hljs background into our panels */
+.hljs {
+  background: transparent !important;
+  color: var(--app-text-dim) !important;
+  padding: 0 !important;
+}
+
+/* Light mode: use github (light) variant overrides */
+:root .hljs {
+  color: #24292e;
+}
+:root .hljs-comment,
+:root .hljs-quote { color: #6a737d; }
+:root .hljs-keyword,
+:root .hljs-selector-tag,
+:root .hljs-subst { color: #d73a49; }
+:root .hljs-string,
+:root .hljs-doctag { color: #032f62; }
+:root .hljs-title,
+:root .hljs-section,
+:root .hljs-selector-id { color: #6f42c1; }
+:root .hljs-type,
+:root .hljs-class .hljs-title { color: #6f42c1; }
+:root .hljs-number,
+:root .hljs-literal { color: #005cc5; }
+:root .hljs-attr,
+:root .hljs-variable,
+:root .hljs-template-variable { color: #e36209; }
+:root .hljs-built_in,
+:root .hljs-builtin-name { color: #6f42c1; }
+:root .hljs-meta { color: #005cc5; }
+:root .hljs-symbol { color: #032f62; }
+
+/* ── Markdown preview ─────────────────────────────────── */
+.md-preview { font-family: "JetBrains Mono", "Fira Code", monospace; }
+.md-preview h1,
+.md-preview h2,
+.md-preview h3,
+.md-preview h4 { color: var(--app-text); font-weight: 600; margin: 1.2em 0 0.5em; }
+.md-preview h1 { font-size: 1.25rem; border-bottom: 1px solid var(--app-border-light); padding-bottom: 0.3em; }
+.md-preview h2 { font-size: 1.1rem; }
+.md-preview h3 { font-size: 1rem; }
+.md-preview h4 { font-size: 0.9rem; }
+.md-preview p { margin: 0.5em 0; }
+.md-preview a { color: var(--app-accent); text-decoration: underline; }
+.md-preview strong { color: var(--app-text); font-weight: 600; }
+.md-preview em { color: var(--app-text-dim); }
+.md-preview code {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+  background: var(--app-hover);
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: var(--app-accent);
+}
+.md-preview pre {
+  background: var(--app-sidebar);
+  border: 1px solid var(--app-border-light);
+  padding: 12px;
+  overflow-x: auto;
+  border-radius: 2px;
+}
+.md-preview pre code { background: transparent; padding: 0; color: var(--app-text-dim); }
+.md-preview blockquote {
+  border-left: 3px solid var(--app-accent);
+  padding-left: 12px;
+  color: var(--app-text-dim);
+  margin: 0.5em 0;
+}
+.md-preview ul, .md-preview ol { padding-left: 1.5em; margin: 0.5em 0; }
+.md-preview li { margin: 0.15em 0; }
+.md-preview table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+.md-preview th, .md-preview td {
+  border: 1px solid var(--app-border-light);
+  padding: 4px 8px;
+  text-align: left;
+  font-size: 0.85em;
+}
+.md-preview th { background: var(--app-sidebar); color: var(--app-text); font-weight: 600; }
+.md-preview img { max-width: 100%; border-radius: 4px; }
+.md-preview hr { border: none; border-top: 1px solid var(--app-border-light); margin: 1em 0; }

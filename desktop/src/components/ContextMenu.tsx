@@ -1,5 +1,4 @@
-import React, { useEffect, useRef } from "react";
-import { Copy, Pencil, Trash2, Star, ExternalLink } from "lucide-react";
+import { useEffect, useRef, useCallback } from "react";
 
 export interface ContextMenuItem {
   label: string;
@@ -7,58 +6,94 @@ export interface ContextMenuItem {
   onClick: () => void;
   danger?: boolean;
   disabled?: boolean;
-  hint?: string;
 }
 
+export interface SeparatorItem {
+  separator: true;
+}
+
+export type MenuItem = ContextMenuItem | SeparatorItem;
+
 interface ContextMenuProps {
-  items: ContextMenuItem[];
   x: number;
   y: number;
+  items: MenuItem[];
   onClose: () => void;
 }
 
-export function ContextMenu({ items, x, y, onClose }: ContextMenuProps) {
+export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const keyHandler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("mousedown", handler);
-    document.addEventListener("keydown", keyHandler);
-    return () => {
-      document.removeEventListener("mousedown", handler);
-      document.removeEventListener("keydown", keyHandler);
-    };
+  const close = useCallback(() => {
+    onClose();
   }, [onClose]);
 
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        close();
+      }
+    };
+    // Delay listener to avoid closing immediately from the same right-click
+    const t = setTimeout(() => {
+      document.addEventListener("mousedown", h);
+      document.addEventListener("contextmenu", h);
+    }, 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("mousedown", h);
+      document.removeEventListener("contextmenu", h);
+    };
+  }, [close]);
+
   return (
-    <div className="fixed inset-0 z-50" onClick={onClose}>
-      <div
-        ref={ref}
-        className="absolute bg-app-panel border border-app-border shadow-dialog min-w-[180px] py-0.5"
-        style={{ left: Math.min(x, window.innerWidth - 200), top: Math.min(y, window.innerHeight - items.length * 32 - 20) }}
-      >
-        {items.map((item, i) => (
+    <div
+      ref={ref}
+      style={{
+        position: "fixed",
+        left: `${x}px`,
+        top: `${y}px`,
+        zIndex: 1000,
+      }}
+      className="bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog py-1 min-w-[140px] animate-[fadeIn_100ms_ease-out]"
+    >
+      {items.map((item, i) => {
+        if ("separator" in item && item.separator) {
+          return (
+            <div
+              key={`sep-${i}`}
+              className="my-1 border-t border-[var(--app-border-light)]"
+            />
+          );
+        }
+        const mi = item as ContextMenuItem;
+        return (
           <button
-            key={i}
-            onClick={() => { item.onClick(); onClose(); }}
-            disabled={item.disabled}
-            className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm font-mono transition-colors duration-fast
-              ${item.disabled
-                ? "text-app-text-muted cursor-not-allowed opacity-40"
-                : item.danger
-                  ? "text-app-red hover:bg-app-red-bg"
-                  : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"
+            key={`${mi.label}-${i}`}
+            onClick={() => {
+              if (!mi.disabled) {
+                mi.onClick();
+                close();
+              }
+            }}
+            disabled={mi.disabled}
+            className={`w-full text-left px-3 py-1.5 text-xs font-mono flex items-center gap-2 transition-colors
+              ${mi.disabled
+                ? "text-[var(--app-text-muted)] opacity-40 cursor-not-allowed"
+                : mi.danger
+                  ? "text-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
+                  : "text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]"
               }`}
           >
-            {item.icon && <span className="shrink-0">{item.icon}</span>}
-            <span className="flex-1 text-left">{item.label}</span>
-            {item.hint && <span className="text-2xs text-app-text-muted">{item.hint}</span>}
+            {mi.icon && (
+              <span className="shrink-0 w-4 flex items-center justify-center">
+                {mi.icon}
+              </span>
+            )}
+            <span>{mi.label}</span>
           </button>
-        ))}
-      </div>
+        );
+      })}
     </div>
   );
 }

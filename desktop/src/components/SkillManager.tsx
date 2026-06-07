@@ -1,10 +1,16 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { SearchInput } from "./common/SearchInput";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { ListRow } from "./common/ListRow";
+import { SectionHeader } from "./common/SectionHeader";
+import { CliBadge } from "./common/CliBadge";
+import { FilterDropdown } from "./common/FilterDropdown";
+import { CLI_CSS_COLORS, CLI_LABELS, CLI_HEX_COLORS, CLI_FILTER_OPTIONS } from "../lib/cli-constants";
 import {
-  ChevronRight, ChevronDown, Circle, Filter, Puzzle,
+  ChevronRight, Circle, Filter, Puzzle,
   FileText, Lock, CheckSquare, Square, Play, Ban, X,
-  RefreshCw, Ellipsis, Trash2, Bot, GitGraph,
+  RefreshCw, Ellipsis, Trash2, Bot, GitGraph, Terminal,
 } from "lucide-react";
 
 /* ──────────────────── Data Types ──────────────────── */
@@ -26,6 +32,8 @@ export interface PluginEntry {
   version?: string;
   source: "marketplace" | "bundled" | "user";
   skills: SkillEntry[];
+  agents: AgentEntry[];
+  commands: CommandEntry[];
 }
 
 export interface StandaloneSkill {
@@ -37,10 +45,20 @@ export interface StandaloneSkill {
   path: string;
 }
 
+export interface CommandEntry {
+  id: string;
+  cli: CliKind;
+  name: string;
+  path: string;
+  description: string;
+  enabled: boolean;
+}
+
 export interface SkillManagerData {
   plugins: PluginEntry[];
   standaloneSkills: StandaloneSkill[];
   systemSkills: StandaloneSkill[];
+  commands: CommandEntry[];
 }
 
 // ── Agent types ──
@@ -68,7 +86,11 @@ export type SelectedItem =
   | { type: "plugin"; data: PluginEntry }
   | { type: "standalone"; data: StandaloneSkill }
   | { type: "system"; data: StandaloneSkill }
-  | { type: "agent"; data: AgentEntry };
+  | { type: "agent"; data: AgentEntry }
+  | { type: "plugin-skill"; data: { skill: { name: string; path: string; description?: string }; cli: string; parentPlugin: PluginEntry } }
+  | { type: "plugin-agent"; data: AgentEntry & { parentPlugin: PluginEntry } }
+  | { type: "command"; data: CommandEntry }
+  | { type: "plugin-command"; data: CommandEntry & { parentPlugin: PluginEntry } };
 
 export interface BatchToggleItem {
   cli: CliKind;
@@ -109,6 +131,7 @@ interface SkillManagerProps {
   onToggleStandaloneSkill: (cli: CliKind, skillId: string, enabled: boolean) => void;
   onBatchToggle: (items: BatchToggleItem[], enabled: boolean) => void;
   onBatchUninstall: (items: BatchToggleItem[]) => void;
+  onDeleteAgent?: (cli: CliKind, name: string) => void;
   checkingUpdates: boolean;
   updateInfos: PluginUpdateInfo[];
   onCheckUpdates: () => void;
@@ -117,206 +140,14 @@ interface SkillManagerProps {
   onOpenGraph?: () => void;
 }
 
-/* ──────────────────── Helpers ──────────────────── */
+/* ── CliBadge, SectionHeader, ListRow, DropFilter are now imported from common/ ── */
+/* ── CLI constants are now imported from lib/cli-constants ── */
 
-const CLI_LABEL: Record<CliKind, string> = { claude: "Claude", codex: "Codex", qoder: "Qoder" };
-const CLI_COLOR: Record<CliKind, string> = { claude: "var(--app-accent)", codex: "var(--app-blue)", qoder: "var(--app-purple)" };
-const CLI_OPTIONS: { value: string; label: string }[] = [
-  { value: "all", label: "全部 CLI" },
-  { value: "claude", label: "Claude" },
-  { value: "codex", label: "Codex" },
-  { value: "qoder", label: "Qoder" },
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "all", label: "全部状态" },
+  { value: "enabled", label: "已启用" },
+  { value: "disabled", label: "已禁用" },
 ];
-
-function CliBadge({ cli }: { cli: CliKind }) {
-  return (
-    <span
-      className="text-2xs font-mono px-1 py-0 leading-none border whitespace-nowrap shrink-0"
-      style={{ color: CLI_COLOR[cli], borderColor: CLI_COLOR[cli], opacity: 0.75 }}
-    >
-      {CLI_LABEL[cli]}
-    </span>
-  );
-}
-
-/* ──────────────────── DropFilter ──────────────────── */
-
-function DropFilter({
-  active,
-  options,
-  onChange,
-}: {
-  active: string;
-  options: { value: string; label: string }[];
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [open]);
-
-  const activeLabel = options.find((o) => o.value === active)?.label || active;
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 w-full px-2 py-1 text-2xs font-mono
-          border border-[var(--app-border)] bg-[var(--app-input)]
-          text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition-colors"
-      >
-        <Filter size={9} className="shrink-0" />
-        <span className="flex-1 text-left truncate">{activeLabel}</span>
-        {active !== "all" && (
-          <span
-            onClick={(e) => { e.stopPropagation(); onChange("all"); }}
-            className="text-[var(--app-text-muted)] hover:text-[var(--app-red)] shrink-0"
-          >✕</span>
-        )}
-        <ChevronDown size={9} className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 right-0 z-50 bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog py-0.5 max-h-[200px] overflow-y-auto">
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => { onChange(opt.value); setOpen(false); }}
-              className={`w-full text-left px-3 py-1 text-2xs font-mono transition-colors ${
-                active === opt.value
-                  ? "bg-[var(--app-accent)] text-[var(--app-bg)]"
-                  : "text-[var(--app-text-dim)] hover:bg-[var(--app-hover)]"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ──────────────────── Collapsible Section ──────────────────── */
-
-function SectionHeader({
-  label,
-  count,
-  collapsed,
-  onToggle,
-}: {
-  label: string;
-  count: number;
-  collapsed: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-1 pl-2 pr-1 pt-2.5 pb-1">
-      <button
-        onClick={onToggle}
-        className="flex items-center gap-1.5 flex-1 min-w-0 text-left
-          hover:bg-[var(--app-hover)] transition-colors duration-fast"
-      >
-        <ChevronRight
-          size={10}
-          className={`shrink-0 text-[var(--app-text-muted)] transition-transform duration-200
-            ${collapsed ? "" : "rotate-90"}`}
-        />
-        <span className="text-2xs text-[var(--app-text-muted)] uppercase tracking-[0.2em] font-mono flex-1">
-          {label}
-        </span>
-        <span className="text-2xs text-[var(--app-text-muted)] font-mono tabular-nums">
-          {count}
-        </span>
-      </button>
-    </div>
-  );
-}
-
-/* ──────────────────── List Row ──────────────────── */
-
-function ListRow({
-  icon,
-  label,
-  badge,
-  enabled,
-  selected,
-  checked,
-  showCheck,
-  noCheck,
-  indent,
-  readonly,
-  onClick,
-}: {
-  icon?: React.ReactNode;
-  label: string;
-  badge?: React.ReactNode;
-  enabled: boolean;
-  selected: boolean;
-  checked: boolean;
-  showCheck: boolean;
-  noCheck?: boolean;
-  indent?: boolean;
-  readonly?: boolean;
-  onClick: (e: React.MouseEvent) => void;
-}) {
-  return (
-    <div
-      onClick={onClick}
-      className={`flex items-center gap-2 h-8 cursor-pointer select-none
-        transition-all duration-100 ease-out group
-        ${selected
-          ? "bg-[var(--app-selected)] border-l-[3px] border-l-[var(--app-accent)] text-[var(--app-text)]"
-          : checked
-            ? "bg-[var(--app-hover)] border-l-[3px] border-l-[var(--app-amber)] text-[var(--app-text)]"
-            : "border-l-[3px] border-l-transparent text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]"
-        }
-        ${indent ? "pl-10" : "pl-3"}
-        pr-2`}
-      style={selected ? { boxShadow: "inset 0 0 8px var(--app-glow)" } : undefined}
-    >
-      {/* Checkbox — hidden for system/readonly rows */}
-      {!noCheck && (
-        <span
-          data-checkbox
-          className={`shrink-0 cursor-pointer transition-opacity duration-fast
-            ${checked || showCheck ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
-        >
-          {checked
-            ? <CheckSquare size={12} className="text-[var(--app-amber)]" />
-            : <Square size={12} className="text-[var(--app-text-muted)]" />
-          }
-        </span>
-      )}
-
-      {/* Status dot or icon */}
-      {icon || (
-        <Circle
-          size={5}
-          className={`shrink-0 ${
-            readonly
-              ? "fill-[var(--app-text-muted)] text-[var(--app-text-muted)]"
-              : enabled
-                ? "fill-[var(--app-accent)] text-[var(--app-accent)]"
-                : "fill-[var(--app-text-muted)] text-[var(--app-text-muted)] opacity-50"
-          }`}
-          style={!readonly && enabled ? { boxShadow: "0 0 4px var(--app-glow)" } : undefined}
-        />
-      )}
-
-      <span className={`flex-1 text-xs font-mono truncate ${!enabled && !readonly ? "opacity-60" : ""}`}>
-        {label}
-      </span>
-      {badge}
-    </div>
-  );
-}
 
 /* ═══════════════════════════════════════════════════════════════
    MAIN COMPONENT
@@ -332,6 +163,7 @@ export function SkillManager({
   onToggleStandaloneSkill,
   onBatchToggle,
   onBatchUninstall,
+  onDeleteAgent,
   checkingUpdates,
   updateInfos,
   onCheckUpdates,
@@ -341,10 +173,12 @@ export function SkillManager({
 }: SkillManagerProps) {
   const [search, setSearch] = useState("");
   const [cliFilter, setCliFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [selectedSet, setSelectedSet] = useState<Set<string>>(new Set());
   const [toolbarExpanded, setToolbarExpanded] = useState(false);
   const [batchUninstallConfirm, setBatchUninstallConfirm] = useState<BatchToggleItem[] | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const lastClickedRef = useRef<{ id: string; section: string } | null>(null);
 
   const toggleSection = (key: string) => {
@@ -356,6 +190,9 @@ export function SkillManager({
     });
   };
 
+  const filterByStatus = (enabled: boolean) =>
+    statusFilter === "all" || (statusFilter === "enabled" ? enabled : !enabled);
+
   const filtered = useMemo(() => {
     if (!data) return null;
     const q = search.toLowerCase();
@@ -364,31 +201,62 @@ export function SkillManager({
 
     return {
       plugins: data.plugins.filter(
-        (p) => filterByCli(p.cli) && (filterBySearch(p.name) || p.skills.some((s) => filterBySearch(s.name)))
+        (p) => filterByCli(p.cli) && filterByStatus(p.enabled) && (filterBySearch(p.name) || p.skills.some((s) => filterBySearch(s.name)))
       ),
       standaloneSkills: data.standaloneSkills.filter(
-        (s) => filterByCli(s.cli) && filterBySearch(s.name)
+        (s) => filterByCli(s.cli) && filterByStatus(s.enabled) && filterBySearch(s.name)
       ),
       systemSkills: data.systemSkills.filter(
-        (s) => filterByCli(s.cli) && filterBySearch(s.name)
+        (s) => filterByCli(s.cli) && (statusFilter === "all" || statusFilter === "enabled") && filterBySearch(s.name)
+      ),
+      commands: (data.commands || []).filter(
+        (c) => filterByCli(c.cli) && filterByStatus(c.enabled) && filterBySearch(c.name)
       ),
     };
-  }, [data, search, cliFilter]);
+  }, [data, search, cliFilter, statusFilter]);
 
   // Filter agents based on search and CLI filter
+  // Build a set of agent names that belong to installed plugins (any CLI).
+  // A plugin may install Claude agents (e.g. ecc/agents/*.md) while the
+  // same plugin also drops Codex agents into ~/.codex/agents/*.toml.
+  // We hide standalone agents whose name matches any plugin agent name.
+  const pluginAgentNames = useMemo(() => {
+    const set = new Set<string>();
+    if (data) {
+      for (const plugin of data.plugins) {
+        for (const agent of (plugin as any).agents || []) {
+          set.add(agent.name);
+        }
+      }
+    }
+    return set;
+  }, [data]);
+
   const filteredAgents = useMemo(() => {
     if (!agentData) return [];
     const q = search.toLowerCase();
     return agentData.agents.filter((a) => {
+      // Exclude agents whose name matches a plugin-provided agent
+      if (pluginAgentNames.has(a.name)) return false;
       if (cliFilter !== "all" && a.cli !== cliFilter) return false;
       if (q && !a.name.toLowerCase().includes(q) &&
           !a.description.toLowerCase().includes(q)) return false;
+      if (!filterByStatus(a.enabled)) return false;
       return true;
     });
-  }, [agentData, search, cliFilter]);
+  }, [agentData, search, cliFilter, pluginAgentNames, statusFilter]);
+
+  const agentSourceCounts = useMemo(() => {
+    if (!agentData) return { user: 0, project: 0, builtin: 0 };
+    return {
+      user: filteredAgents.filter((a) => a.source === "user").length,
+      project: filteredAgents.filter((a) => a.source === "project").length,
+      builtin: filteredAgents.filter((a) => a.source === "builtin").length,
+    };
+  }, [agentData, filteredAgents]);
 
   // Reset batch selection when data/filter changes
-  useEffect(() => { setSelectedSet(new Set()); }, [data, search, cliFilter]);
+  useEffect(() => { setSelectedSet(new Set()); }, [data, search, cliFilter, statusFilter]);
 
   // Multi-select logic
   const toggleSelect = useCallback((id: string, section: string, shiftKey: boolean, metaKey: boolean) => {
@@ -456,6 +324,8 @@ export function SkillManager({
     const allItems = [
       ...filtered.plugins.map((p) => ({ id: p.id, cli: p.cli })),
       ...filtered.standaloneSkills.map((s) => ({ id: s.id, cli: s.cli })),
+      ...filteredAgents.filter((a) => a.source !== "builtin").map((a) => ({ id: a.id, cli: a.cli })),
+      ...filtered.commands.map((c) => ({ id: c.id, cli: c.cli })),
     ];
     const allIds = allItems.map((it) => it.id);
     const allSelected = allIds.length > 0 && allIds.every((id) => selectedSet.has(id));
@@ -478,7 +348,11 @@ export function SkillManager({
         const plugin = filtered.plugins.find((p) => p.id === id);
         if (plugin) { items.push({ cli: plugin.cli, id: plugin.id, enabled: true }); return; }
         const skill = filtered.standaloneSkills.find((s) => s.id === id);
-        if (skill) items.push({ cli: skill.cli, id: skill.id, enabled: true });
+        if (skill) { items.push({ cli: skill.cli, id: skill.id, enabled: true }); return; }
+        const agent = filteredAgents.find((a) => a.id === id);
+        if (agent && agent.source !== "builtin") { items.push({ cli: agent.cli, id: agent.id, enabled: true }); return; }
+        const command = filtered.commands.find((c) => c.id === id);
+        if (command) { items.push({ cli: command.cli, id: command.id, enabled: true }); }
       });
       if (items.length > 0) { onBatchToggle(items, true); setSelectedSet(new Set()); }
     };
@@ -489,7 +363,11 @@ export function SkillManager({
         const plugin = filtered.plugins.find((p) => p.id === id);
         if (plugin) { items.push({ cli: plugin.cli, id: plugin.id, enabled: false }); return; }
         const skill = filtered.standaloneSkills.find((s) => s.id === id);
-        if (skill) items.push({ cli: skill.cli, id: skill.id, enabled: false });
+        if (skill) { items.push({ cli: skill.cli, id: skill.id, enabled: false }); return; }
+        const agent = filteredAgents.find((a) => a.id === id);
+        if (agent && agent.source !== "builtin") { items.push({ cli: agent.cli, id: agent.id, enabled: false }); return; }
+        const command = filtered.commands.find((c) => c.id === id);
+        if (command) { items.push({ cli: command.cli, id: command.id, enabled: false }); }
       });
       if (items.length > 0) { onBatchToggle(items, false); setSelectedSet(new Set()); }
     };
@@ -500,12 +378,14 @@ export function SkillManager({
         const plugin = filtered.plugins.find((p) => p.id === id);
         if (plugin) { items.push({ cli: plugin.cli, id: plugin.id, enabled: plugin.enabled }); return; }
         const skill = filtered.standaloneSkills.find((s) => s.id === id);
-        if (skill) items.push({ cli: skill.cli, id: skill.id, enabled: skill.enabled });
+        if (skill) { items.push({ cli: skill.cli, id: skill.id, enabled: skill.enabled }); return; }
+        const command = filtered.commands.find((c) => c.id === id);
+        if (command) { items.push({ cli: command.cli, id: command.id, enabled: command.enabled }); }
       });
       if (items.length > 0) { setBatchUninstallConfirm(items); }
     };
     return { selectAll, allSelected, anySelected, enableAll, disableAll, uninstallAll };
-  }, [filtered, selectedSet, onBatchToggle, onBatchUninstall]);
+  }, [filtered, filteredAgents, selectedSet, onBatchToggle, onBatchUninstall]);
 
   const clearSelection = () => setSelectedSet(new Set());
 
@@ -554,11 +434,24 @@ export function SkillManager({
 
         <div className="flex flex-col gap-1.5">
           <SearchInput value={search} onChange={setSearch} placeholder="搜索..." />
-          <DropFilter
-            active={cliFilter}
-            options={CLI_OPTIONS}
-            onChange={setCliFilter}
-          />
+          <div className="flex gap-1.5">
+            <div className="flex-1">
+              <FilterDropdown
+                value={cliFilter}
+                options={CLI_FILTER_OPTIONS}
+                onChange={setCliFilter}
+                bordered
+              />
+            </div>
+            <div className="flex-1">
+              <FilterDropdown
+                value={statusFilter}
+                options={STATUS_OPTIONS}
+                onChange={setStatusFilter}
+                bordered
+              />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -660,7 +553,7 @@ export function SkillManager({
               <button
                 onClick={globalBatchHandlers.uninstallAll}
                 className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-red)] hover:bg-[var(--app-red-bg)] transition-colors shrink-0"
-                title={`卸载已选的 ${selectedSet.size} 项`}
+                title={`删除已选的 ${selectedSet.size} 项`}
               >
                 <Trash2 size={13} />
               </button>
@@ -738,6 +631,27 @@ export function SkillManager({
                     checked={selectedSet.has(p.id)}
                     showCheck={showBatch}
                     onClick={(e) => handleClick(p.id, "plugins", e, () => onSelect({ type: "plugin", data: p }))}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        items: [
+                          {
+                            label: p.enabled ? "禁用" : "启用",
+                            icon: p.enabled ? <Ban size={13} /> : <Play size={13} />,
+                            onClick: () => onTogglePlugin(p.cli, p.id, !p.enabled),
+                          },
+                          { separator: true },
+                          {
+                            label: "删除",
+                            icon: <Trash2 size={13} />,
+                            danger: true,
+                            onClick: () => onBatchUninstall([{ cli: p.cli, id: p.id, enabled: p.enabled }]),
+                          },
+                        ],
+                      });
+                    }}
                   />
                 );
               })}
@@ -770,6 +684,27 @@ export function SkillManager({
                     checked={selectedSet.has(s.id)}
                     showCheck={showBatch}
                     onClick={(e) => handleClick(s.id, "standalone", e, () => onSelect({ type: "standalone", data: s }))}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        items: [
+                          {
+                            label: s.enabled ? "禁用" : "启用",
+                            icon: s.enabled ? <Ban size={13} /> : <Play size={13} />,
+                            onClick: () => onToggleStandaloneSkill(s.cli, s.id, !s.enabled),
+                          },
+                          { separator: true },
+                          {
+                            label: "删除",
+                            icon: <Trash2 size={13} />,
+                            danger: true,
+                            onClick: () => onBatchUninstall([{ cli: s.cli, id: s.id, enabled: s.enabled }]),
+                          },
+                        ],
+                      });
+                    }}
                   />
                 ))}
               </div>
@@ -784,38 +719,131 @@ export function SkillManager({
                   collapsed={collapsed.has("agents")}
                   onToggle={() => toggleSection("agents")}
                 />
-                {!collapsed.has("agents") && filteredAgents.map((agent) => {
-                  const isBuiltin = agent.source === "builtin";
-                  return (
-                    <ListRow
-                      key={agent.id}
-                      icon={isBuiltin
-                        ? <Lock size={10} className="text-[var(--app-text-muted)] shrink-0" />
-                        : <Bot size={14} />
-                      }
-                      label={agent.name}
-                      badge={
-                        <div className="flex items-center gap-1 shrink-0">
-                          {agent.model && (
-                            <span className="text-2xs text-[var(--app-text-muted)] font-mono">model:{agent.model}</span>
-                          )}
-                          {agent.tools.length > 0 && (
-                            <span className="text-2xs text-[var(--app-text-muted)] font-mono">tools:{agent.tools.length}</span>
-                          )}
-                          {agent.color && <ColorDot color={agent.color} />}
-                          <CliBadge cli={agent.cli} />
-                        </div>
-                      }
-                      enabled={isBuiltin ? true : agent.enabled}
-                      readonly={isBuiltin}
-                      noCheck={isBuiltin}
-                      selected={selectedId === agent.id}
-                      checked={isBuiltin ? false : selectedSet.has(agent.id)}
-                      showCheck={isBuiltin ? false : showBatch}
-                      onClick={(e) => handleAgentClick(agent, e)}
-                    />
-                  );
-                })}
+                {!collapsed.has("agents") && (
+                  <>
+                    <div className="px-3 py-1 flex items-center gap-2 text-2xs font-mono text-[var(--app-text-muted)]">
+                      {agentSourceCounts.user > 0 && <span>👤 {agentSourceCounts.user} 独立</span>}
+                      {agentSourceCounts.project > 0 && <span>📁 {agentSourceCounts.project} 项目</span>}
+                      {agentSourceCounts.builtin > 0 && <span>🔒 {agentSourceCounts.builtin} 内置</span>}
+                    </div>
+                    {filteredAgents.map((agent) => {
+                      const isBuiltin = agent.source === "builtin";
+                      const sourceLabel = agent.source === "user" ? "独立"
+                        : agent.source === "project" ? "项目"
+                        : agent.source === "builtin" ? "内置"
+                        : "";
+                      return (
+                        <ListRow
+                          key={agent.id}
+                          icon={isBuiltin
+                            ? <Lock size={10} className="text-[var(--app-text-muted)] shrink-0" />
+                            : <Bot size={14} />
+                          }
+                          label={agent.name}
+                          badge={
+                            <div className="flex items-center gap-1 shrink-0">
+                              {!isBuiltin && (
+                                <span className={`text-2xs px-1 py-px rounded font-mono ${
+                                  agent.source === "project"
+                                    ? "bg-amber-500/10 text-amber-400"
+                                    : "bg-[var(--app-accent)]/10 text-[var(--app-accent)]"
+                                }`}>{sourceLabel}</span>
+                              )}
+                              {agent.model && (
+                                <span className="text-2xs text-[var(--app-text-muted)] font-mono">model:{agent.model}</span>
+                              )}
+                              {agent.tools.length > 0 && (
+                                <span className="text-2xs text-[var(--app-text-muted)] font-mono">tools:{agent.tools.length}</span>
+                              )}
+                              {agent.color && <ColorDot color={agent.color} />}
+                              <CliBadge cli={agent.cli} />
+                            </div>
+                          }
+                          enabled={isBuiltin ? true : agent.enabled}
+                          readonly={isBuiltin}
+                          noCheck={isBuiltin}
+                          selected={selectedId === agent.id}
+                          checked={isBuiltin ? false : selectedSet.has(agent.id)}
+                          showCheck={isBuiltin ? false : showBatch}
+                          onClick={(e) => handleAgentClick(agent, e)}
+                          onContextMenu={isBuiltin ? undefined : (e) => {
+                            e.preventDefault();
+                            setContextMenu({
+                              x: e.clientX,
+                              y: e.clientY,
+                              items: [
+                                {
+                                  label: agent.enabled ? "禁用" : "启用",
+                                  icon: agent.enabled ? <Ban size={13} /> : <Play size={13} />,
+                                  onClick: () => onBatchToggle(
+                                    [{ cli: agent.cli, id: agent.id, enabled: !agent.enabled }],
+                                    !agent.enabled,
+                                  ),
+                                },
+                                { separator: true },
+                                {
+                                  label: "删除",
+                                  icon: <Trash2 size={13} />,
+                                  danger: true,
+                                  onClick: () => onDeleteAgent?.(agent.cli, agent.name),
+                                },
+                              ],
+                            });
+                          }}
+                        />
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ── Commands Section ── */}
+            {filtered.commands.length > 0 && (
+              <div>
+                <SectionHeader
+                  label="Commands"
+                  count={filtered.commands.length}
+                  collapsed={collapsed.has("commands")}
+                  onToggle={() => toggleSection("commands")}
+                />
+                {!collapsed.has("commands") && filtered.commands.map((cmd) => (
+                  <ListRow
+                    key={cmd.id}
+                    icon={<Terminal size={12} />}
+                    label={`/${cmd.name}`}
+                    badge={<CliBadge cli={cmd.cli} />}
+                    enabled={cmd.enabled}
+                    selected={selectedId === cmd.id}
+                    checked={selectedSet.has(cmd.id)}
+                    showCheck={showBatch}
+                    onClick={(e) => handleClick(cmd.id, "commands", e, () => onSelect({ type: "command", data: cmd }))}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        items: [
+                          {
+                            label: cmd.enabled ? "禁用" : "启用",
+                            icon: cmd.enabled ? <Ban size={13} /> : <Play size={13} />,
+                            onClick: () => onBatchToggle(
+                              [{ cli: cmd.cli, id: cmd.id, enabled: !cmd.enabled }],
+                              !cmd.enabled,
+                            ),
+                          },
+                          { separator: true },
+                          {
+                            label: "删除",
+                            icon: <Trash2 size={13} />,
+                            danger: true,
+                            onClick: () => onBatchUninstall([{ cli: cmd.cli, id: cmd.id, enabled: cmd.enabled }]),
+                          },
+                        ],
+                      });
+                    }}
+                  />
+                ))}
               </div>
             )}
 
@@ -900,9 +928,9 @@ export function SkillManager({
       {/* Batch uninstall confirmation */}
       <ConfirmDialog
         open={batchUninstallConfirm !== null}
-        title="批量卸载"
-        message={`确定要卸载已选的 ${batchUninstallConfirm?.length || 0} 个 Plugin / Skill 吗？此操作不可撤销。`}
-        confirmLabel="卸载"
+        title="批量删除"
+        message={`确定要删除已选的 ${batchUninstallConfirm?.length || 0} 个 Plugin / Skill 吗？此操作不可撤销。`}
+        confirmLabel="删除"
         onConfirm={() => {
           if (batchUninstallConfirm) {
             onBatchUninstall(batchUninstallConfirm);
@@ -912,6 +940,16 @@ export function SkillManager({
         }}
         onCancel={() => setBatchUninstallConfirm(null)}
       />
+
+      {/* Context menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={contextMenu.items}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 }
