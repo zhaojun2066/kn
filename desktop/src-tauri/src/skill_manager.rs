@@ -2730,6 +2730,7 @@ fn compute_content_fingerprint(path: &Path) -> String {
 }
 
 /// Check whether a path is inside a project directory (has `.claude/` structure).
+#[allow(dead_code)]
 fn is_project_scope(path: &str) -> bool {
     // Project-level resources have ":project-" in their ID
     // But for paths, we check if the path contains "/.claude/" or "/.codex/" or

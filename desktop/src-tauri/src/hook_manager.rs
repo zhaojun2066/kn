@@ -570,6 +570,7 @@ fn toggle_json_hook(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn toggle_codex_hook(
     event_type: &str,
     group_idx: usize,
@@ -763,6 +764,7 @@ fn delete_json_hook(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn delete_codex_hook(event_type: &str, group_idx: usize, hook_idx: usize) -> Result<(), String> {
     let config_path = home_dir().join(".codex").join("config.toml");
     delete_codex_hook_at(&config_path, event_type, group_idx, hook_idx)
@@ -1726,7 +1728,7 @@ fn append_codex_hook_entry(snapshot: &serde_json::Value, event_type: &str, path:
     });
 
     let target_group_idx: usize;
-    let mut target_hook_idx: usize;
+    let target_hook_idx: usize;
 
     if let Some(g_idx) = group_pos {
         target_group_idx = g_idx;
@@ -1741,7 +1743,6 @@ fn append_codex_hook_entry(snapshot: &serde_json::Value, event_type: &str, path:
             });
             if let Some(h_idx) = hook_pos {
                 // Overwrite existing
-                target_hook_idx = h_idx;
                 let mut new_inner = toml_edit::Table::new();
                 new_inner.insert("type", toml_edit::value(ht));
                 new_inner.insert("command", toml_edit::value(cmd));
