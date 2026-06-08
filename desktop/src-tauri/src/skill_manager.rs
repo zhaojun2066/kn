@@ -62,6 +62,8 @@ pub struct StandaloneSkill {
     #[serde(rename = "linkType")]
     pub link_type: String,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +75,8 @@ pub struct CommandEntry {
     pub path: String,
     pub description: String,
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,6 +321,7 @@ fn scan_claude_plugins() -> Vec<PluginEntry> {
                         "claude",
                         &agents_dir,
                         "plugin",
+                        None,
                     );
 
                     // Enumerate commands in installPath/commands/
@@ -444,6 +449,7 @@ fn enumerate_commands(cli: &str, commands_dir: &Path) -> Vec<CommandEntry> {
             path: path.to_string_lossy().to_string(),
             description: desc.unwrap_or_default(),
             enabled,
+            project_name: None,
         });
     }
     commands
@@ -471,6 +477,17 @@ fn scan_claude_standalone_skills(
             continue;
         }
 
+        // Only accept: .md files, .md.disabled files, or directories with SKILL.md / SKILL.md.disabled
+        let is_md = file_name.ends_with(".md") || file_name.ends_with(".md.disabled");
+        let is_skill_dir = path.is_dir() && {
+            let skill_md = path.join("SKILL.md");
+            let skill_md_disabled = path.join("SKILL.md.disabled");
+            skill_md.exists() || skill_md_disabled.exists()
+        };
+        if !is_md && !is_skill_dir {
+            continue;
+        }
+
         // Extract skill name (strip .md / .md.disabled suffix)
         let name = if file_name.ends_with(".md.disabled") {
             file_name.strip_suffix(".md.disabled").unwrap_or(file_name)
@@ -495,6 +512,7 @@ fn scan_claude_standalone_skills(
             enabled,
             link_type: link_type.to_string(),
             path: path.to_string_lossy().to_string(),
+            project_name: None,
         });
     }
 
@@ -734,6 +752,7 @@ fn scan_codex_standalone_skills() -> Vec<StandaloneSkill> {
                         enabled: true,
                         link_type: "symlink".into(),
                         path: path.to_string_lossy().to_string(),
+                        project_name: None,
                     });
                 }
                 continue;
@@ -747,6 +766,7 @@ fn scan_codex_standalone_skills() -> Vec<StandaloneSkill> {
                 enabled,
                 link_type: classify_entry(&path).to_string(),
                 path: path.to_string_lossy().to_string(),
+                project_name: None,
             });
         }
     }
@@ -786,6 +806,7 @@ fn scan_codex_system_skills() -> Vec<StandaloneSkill> {
             enabled: true, // always enabled, read-only
             link_type: "directory".into(),
             path: path.to_string_lossy().to_string(),
+            project_name: None,
         });
     }
 
@@ -841,6 +862,7 @@ fn scan_qoder_standalone_skills() -> Vec<StandaloneSkill> {
             enabled,
             link_type: classify_entry(&path).to_string(),
             path: path.to_string_lossy().to_string(),
+            project_name: None,
         });
     }
 
@@ -875,10 +897,180 @@ fn toggle_qoder_standalone_skill(skill_name: &str, enabled: bool) -> Result<(), 
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  PROJECT-LEVEL SCAN
+
+/// Derive a project name from a project root directory path.
+/// Uses the last component of the path (the directory name).
+pub(crate) fn project_name_from_root(root: &Path) -> Option<String> {
+    root.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+}
+// ═══════════════════════════════════════════════════════════════
+
+/// Scan Claude project-level standalone skills from `<project>/.claude/skills/`.
+fn scan_claude_project_skills(
+    project_root: &Path,
+    plugin_skill_names: &std::collections::HashSet<String>,
+) -> Vec<StandaloneSkill> {
+    let skills_dir = project_root.join(".claude").join("skills");
+    let pn = project_name_from_root(project_root);
+    scan_standalone_skills_in_dir("claude", &skills_dir, plugin_skill_names, pn)
+}
+
+/// Scan Codex project-level standalone skills from `<project>/.codex/skills/`.
+fn scan_codex_project_skills(project_root: &Path) -> Vec<StandaloneSkill> {
+    let skills_dir = project_root.join(".codex").join("skills");
+    let pn = project_name_from_root(project_root);
+    scan_codex_style_skills_in_dir("codex", &skills_dir, pn)
+}
+
+/// Scan Qoder project-level standalone skills from `<project>/.qoder/skills/`.
+fn scan_qoder_project_skills(project_root: &Path) -> Vec<StandaloneSkill> {
+    // Qoder: user-level = ~/.qoder-cn/  ,  project-level = <project>/.qoder/
+    let skills_dir = project_root.join(".qoder").join("skills");
+    let pn = project_name_from_root(project_root);
+    scan_codex_style_skills_in_dir("qoder", &skills_dir, pn)
+}
+
+/// Scan Claude project-level commands from `<project>/.claude/commands/`.
+fn scan_claude_project_commands(project_root: &Path) -> Vec<CommandEntry> {
+    let commands_dir = project_root.join(".claude").join("commands");
+    let pn = project_name_from_root(project_root);
+    enumerate_commands_in_dir("claude", &commands_dir, pn)
+}
+
+/// Generic standalone skill scanner for a given directory (Claude .md format).
+fn scan_standalone_skills_in_dir(
+    cli: &str,
+    skills_dir: &Path,
+    plugin_skill_names: &std::collections::HashSet<String>,
+    project_name: Option<String>,
+) -> Vec<StandaloneSkill> {
+    let mut skills = Vec::new();
+    let dir = match fs::read_dir(skills_dir) {
+        Ok(d) => d,
+        Err(_) => return skills,
+    };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if file_name.starts_with('.') {
+            continue;
+        }
+        // Only accept: .md files, .md.disabled files, or directories with SKILL.md / SKILL.md.disabled
+        let is_md = file_name.ends_with(".md") || file_name.ends_with(".md.disabled");
+        let is_skill_dir = path.is_dir() && {
+            let skill_md = path.join("SKILL.md");
+            let skill_md_disabled = path.join("SKILL.md.disabled");
+            skill_md.exists() || skill_md_disabled.exists()
+        };
+        if !is_md && !is_skill_dir {
+            continue;
+        }
+        let name = if file_name.ends_with(".md.disabled") {
+            file_name.strip_suffix(".md.disabled").unwrap_or(file_name)
+        } else if file_name.ends_with(".md") {
+            file_name.strip_suffix(".md").unwrap_or(file_name)
+        } else {
+            file_name
+        };
+        if plugin_skill_names.contains(name) {
+            continue;
+        }
+        let link_type = classify_entry(&path);
+        let enabled = !file_name.ends_with(".disabled");
+        skills.push(StandaloneSkill {
+            id: format!("{}:project-skill:{}", cli, name),
+            cli: cli.to_string(),
+            name: name.to_string(),
+            enabled,
+            link_type: link_type.to_string(),
+            path: path.to_string_lossy().to_string(),
+            project_name: project_name.clone(),
+        });
+    }
+    skills
+}
+
+/// Generic Codex/Qoder-style standalone skill scanner (directory + SKILL.md).
+fn scan_codex_style_skills_in_dir(
+    cli: &str,
+    skills_dir: &Path,
+    project_name: Option<String>,
+) -> Vec<StandaloneSkill> {
+    let mut skills = Vec::new();
+    let dir = match fs::read_dir(skills_dir) {
+        Ok(d) => d,
+        Err(_) => return skills,
+    };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if file_name.starts_with('.') {
+            continue;
+        }
+        if !path.is_dir() {
+            continue;
+        }
+        let has_skill_md = path.join("SKILL.md").exists();
+        let has_skill_md_disabled = path.join("SKILL.md.disabled").exists();
+        if !has_skill_md && !has_skill_md_disabled {
+            continue;
+        }
+        let enabled = has_skill_md;
+        skills.push(StandaloneSkill {
+            id: format!("{}:project-skill:{}", cli, file_name),
+            cli: cli.to_string(),
+            name: file_name.to_string(),
+            enabled,
+            link_type: classify_entry(&path).to_string(),
+            path: path.to_string_lossy().to_string(),
+            project_name: project_name.clone(),
+        });
+    }
+    skills
+}
+
+/// Generic commands enumerator for a given directory.
+fn enumerate_commands_in_dir(cli: &str, commands_dir: &Path, project_name: Option<String>) -> Vec<CommandEntry> {
+    let mut commands = Vec::new();
+    let dir = match fs::read_dir(commands_dir) {
+        Ok(d) => d,
+        Err(_) => return commands,
+    };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let (name, enabled) = if let Some(n) = file_name.strip_suffix(".md.disabled") {
+            (n.to_string(), false)
+        } else if let Some(n) = file_name.strip_suffix(".md") {
+            (n.to_string(), true)
+        } else {
+            continue;
+        };
+        let desc = extract_description(&path);
+        commands.push(CommandEntry {
+            id: format!("{}:project-command:{}", cli, name),
+            cli: cli.to_string(),
+            name,
+            path: path.to_string_lossy().to_string(),
+            description: desc.unwrap_or_default(),
+            enabled,
+            project_name: project_name.clone(),
+        });
+    }
+    commands
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  MAIN SCAN
 // ═══════════════════════════════════════════════════════════════
 
-pub fn scan_all() -> SkillManagerData {
+pub fn scan_all(project_root: Option<&Path>) -> SkillManagerData {
     // Claude
     let claude_plugins = scan_claude_plugins();
     // Collect plugin-owned skill names for dedup (handles broken symlinks robustly)
@@ -897,17 +1089,35 @@ pub fn scan_all() -> SkillManagerData {
     let qoder_standalone = scan_qoder_standalone_skills();
 
     // Claude standalone commands
-    let claude_commands = claude_commands_dir()
+    let mut claude_commands = claude_commands_dir()
         .map(|d| enumerate_commands("claude", &d))
         .unwrap_or_default();
 
-    // Merge
+    // Merge user-level
     let mut plugins = claude_plugins;
     plugins.extend(codex_plugins);
 
     let mut standalone = claude_standalone;
     standalone.extend(codex_standalone);
     standalone.extend(qoder_standalone);
+
+    // ── Project-level scanning ──
+    if let Some(root) = project_root {
+        // Project skills
+        let project_claude_skills =
+            scan_claude_project_skills(root, &claude_plugin_skill_names);
+        standalone.extend(project_claude_skills);
+
+        let project_codex_skills = scan_codex_project_skills(root);
+        standalone.extend(project_codex_skills);
+
+        let project_qoder_skills = scan_qoder_project_skills(root);
+        standalone.extend(project_qoder_skills);
+
+        // Project commands
+        let project_claude_commands = scan_claude_project_commands(root);
+        claude_commands.extend(project_claude_commands);
+    }
 
     SkillManagerData {
         plugins,
@@ -2093,8 +2303,12 @@ pub fn uninstall_standalone_skill(cli: String, skill_id: String) -> Result<Strin
 // ═══════════════════════════════════════════════════════════════
 
 #[tauri::command]
-pub fn scan_skills() -> SkillManagerData {
-    scan_all()
+pub fn scan_skills(project_path: Option<String>) -> SkillManagerData {
+    let project_root = project_path.as_ref().and_then(|p| {
+        let path = Path::new(p);
+        if path.exists() && path.is_dir() { Some(path) } else { None }
+    });
+    scan_all(project_root)
 }
 
 /// Strip the internal `cli:type:` prefix from an asset ID to get the raw name.
@@ -2124,7 +2338,12 @@ pub fn toggle_plugin(cli: String, plugin_id: String, enabled: bool) -> Result<()
 }
 
 #[tauri::command]
-pub fn toggle_standalone_skill(cli: String, skill_id: String, enabled: bool) -> Result<(), String> {
+pub fn toggle_standalone_skill(cli: String, skill_id: String, enabled: bool, path: Option<String>) -> Result<(), String> {
+    // If path is provided, use path-based toggle (works for both user and project level)
+    if let Some(ref p) = path {
+        return toggle_resource_by_path(p, enabled);
+    }
+    // Fallback: name-based lookup in user-level directory
     let name = strip_id_prefix(&skill_id);
     match cli.as_str() {
         "claude" => toggle_claude_standalone_skill(name, enabled),
@@ -2134,13 +2353,72 @@ pub fn toggle_standalone_skill(cli: String, skill_id: String, enabled: bool) -> 
     }
 }
 
+/// Generic toggle by file path — handles files (.md, .toml) and directories (Codex/Qoder skills).
+///
+/// For files: `name.ext` ↔ `name.ext.disabled`
+/// For directories: `SKILL.md` ↔ `SKILL.md.disabled` inside the dir
+/// Generic toggle by file path — handles files (.md, .toml) and directories (Codex/Qoder skills).
+///
+/// For files: `name.ext` ↔ `name.ext.disabled`
+/// For directories: `SKILL.md` ↔ `SKILL.md.disabled` inside the dir
+pub(crate) fn toggle_resource_by_path(path: &str, enabled: bool) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if p.is_dir() {
+        // Codex/Qoder skill directory — toggle SKILL.md inside
+        let active = p.join("SKILL.md");
+        let disabled = p.join("SKILL.md.disabled");
+        if enabled {
+            if disabled.exists() {
+                fs::rename(&disabled, &active).map_err(|e| format!("启用失败: {}", e))?;
+            } else if !active.exists() {
+                return Err(format!("Skill 不存在: {}", p.display()));
+            }
+        } else {
+            if active.exists() {
+                fs::rename(&active, &disabled).map_err(|e| format!("禁用失败: {}", e))?;
+            } else if !disabled.exists() {
+                return Err(format!("Skill 不存在: {}", p.display()));
+            }
+        }
+    } else {
+        // File-based (.md or .toml) — add/remove .disabled suffix
+        if !p.exists() {
+            return Err(format!("文件不存在: {}", path));
+        }
+        let path_str = p.to_string_lossy();
+        if enabled {
+            let new_str = path_str
+                .strip_suffix(".disabled")
+                .ok_or("资源未处于禁用状态，无法启用")?;
+            let new_path = std::path::Path::new(new_str);
+            if new_path.exists() {
+                return Err("目标文件已存在".into());
+            }
+            fs::rename(p, new_path).map_err(|e| format!("启用失败: {}", e))?;
+        } else {
+            let new_str = format!("{}.disabled", path_str);
+            let new_path = std::path::Path::new(&new_str);
+            if new_path.exists() {
+                return Err("禁用文件已存在".into());
+            }
+            fs::rename(p, new_path).map_err(|e| format!("禁用失败: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  COMMAND TOGGLE / UNINSTALL
 // ═══════════════════════════════════════════════════════════════
 
 /// Toggle a Claude command: rename `xxx.md` ↔ `xxx.md.disabled`.
 #[tauri::command]
-pub fn toggle_command(cli: String, name: String, enabled: bool) -> Result<(), String> {
+pub fn toggle_command(cli: String, name: String, enabled: bool, path: Option<String>) -> Result<(), String> {
+    // If path is provided, use path-based toggle (works for both user and project level)
+    if let Some(ref p) = path {
+        return toggle_resource_by_path(p, enabled);
+    }
+    // Fallback: name-based lookup in user-level directory
     validate_skill_name(&name)?;
     let commands_dir = match cli.as_str() {
         "claude" => claude_commands_dir().ok_or("无法找到 Claude commands 目录")?,
@@ -2273,7 +2551,13 @@ pub fn read_skill_content(path: String) -> Result<SkillContent, String> {
         if md.exists() {
             md
         } else {
-            file_path.join("skill.md")
+            // Check for disabled skill (SKILL.md.disabled) before falling back to skill.md
+            let md_disabled = file_path.join("SKILL.md.disabled");
+            if md_disabled.exists() {
+                md_disabled
+            } else {
+                file_path.join("skill.md")
+            }
         }
     } else {
         file_path.to_path_buf()
@@ -2321,4 +2605,261 @@ pub fn read_skill_content(path: String) -> Result<SkillContent, String> {
         description,
         body: body.trim().to_string(),
     })
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MOVE / COPY OPERATIONS
+// ═══════════════════════════════════════════════════════════════
+
+/// Info returned after a move so the frontend can undo it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveUndoInfo {
+    pub resource_name: String,
+    pub resource_type: String, // "skill" | "agent" | "command"
+    pub from_scope: String,    // "user" | "project"
+    pub to_scope: String,
+    pub backup_path: String,
+    pub original_path: String,
+    pub dest_path: String,
+    /// Lightweight content fingerprint of the source file at move time.
+    /// Used by undo to verify the destination hasn't been modified before deleting it.
+    /// Format: "size:first_256_bytes_as_lossy_utf8"
+    pub content_fingerprint: String,
+}
+
+/// Determine the file name (last component) from a path.
+/// For directories, returns the directory name; for files, returns the file name.
+fn file_name_from_path(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+}
+
+/// Compute a lightweight content fingerprint for a file or directory.
+/// For files: first 256 bytes as lossy UTF-8 + file size.
+/// For directories: entry count + total size.
+fn compute_content_fingerprint(path: &Path) -> String {
+    if path.is_dir() {
+        match std::fs::read_dir(path) {
+            Ok(entries) => {
+                let count = entries.count();
+                format!("dir:{}", count)
+            }
+            Err(_) => "dir:err".to_string(),
+        }
+    } else {
+        let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]);
+                format!("{}:{}", size, preview)
+            }
+            Err(_) => format!("{}:read_err", size),
+        }
+    }
+}
+
+/// Check whether a path is inside a project directory (has `.claude/` structure).
+fn is_project_scope(path: &str) -> bool {
+    // Project-level resources have ":project-" in their ID
+    // But for paths, we check if the path contains "/.claude/" or "/.codex/" or
+    // "/.qoder-cn/" (user) or "/.qoder/" (project, for agents/skills)
+    path.contains("/.claude/") || path.contains("/.codex/") || path.contains("/.qoder-cn/") || path.contains("/.qoder/")
+}
+
+/// Move a file-based resource (skill, agent, command) from source to destination directory.
+///
+/// Creates a backup (.bak) at the source location for undo support.
+/// Returns undo info so the frontend can reverse the operation.
+#[tauri::command]
+pub fn move_skill_file(
+    source_path: String,
+    dest_dir: String,
+    resource_name: String,
+    resource_type: String,
+    from_scope: String,
+    to_scope: String,
+) -> Result<MoveUndoInfo, String> {
+    let src = Path::new(&source_path);
+    if !src.exists() {
+        return Err(format!("源文件不存在: {}", source_path));
+    }
+
+    let dest_dir_path = Path::new(&dest_dir);
+    // Ensure destination directory exists
+    fs::create_dir_all(dest_dir_path)
+        .map_err(|e| format!("无法创建目标目录: {}", e))?;
+
+    let file_name = file_name_from_path(src)
+        .ok_or_else(|| format!("无法解析文件名: {}", source_path))?;
+
+    // Determine dest path based on resource type
+    let dest_path = if src.is_dir() {
+        // Codex/Qoder skills are directories
+        dest_dir_path.join(&file_name)
+    } else if src.extension().map_or(false, |e| e == "md") {
+        // Claude skills/agents/commands are .md files
+        dest_dir_path.join(format!("{}.md", file_name.trim_end_matches(".md")))
+    } else {
+        // .toml files (Codex agents) or other
+        dest_dir_path.join(&file_name)
+    };
+
+    // Check for conflicts
+    if dest_path.exists() {
+        return Err(format!("目标已存在同名资源: {}", file_name));
+    }
+
+    // Compute fingerprint BEFORE any mutation (for undo verification)
+    let content_fingerprint = compute_content_fingerprint(src);
+
+    // Copy to destination
+    if src.is_dir() {
+        copy_dir_recursive(src, &dest_path)?;
+    } else {
+        fs::copy(src, &dest_path)
+            .map_err(|e| format!("复制文件失败: {}", e))?;
+    }
+
+    // Build timestamped backup path to avoid overwriting previous .bak files
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let backup_path = if src.is_dir() {
+        let mut bak_name = src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        bak_name.push_str(&format!(".bak.{}", ts));
+        src.parent().unwrap_or(Path::new(".")).join(&bak_name)
+    } else {
+        let stem = src.file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let ext = src.extension()
+            .and_then(|n| n.to_str())
+            .map(|e| format!(".{}", e))
+            .unwrap_or_default();
+        let bak_name = format!("{}{}.bak.{}", stem, ext, ts);
+        src.parent().unwrap_or(Path::new(".")).join(&bak_name)
+    };
+
+    // Rename source to backup (soft delete)
+    if let Err(e) = fs::rename(src, &backup_path) {
+        // Transactional rollback: delete the copy we just created at destination
+        let _ = if dest_path.is_dir() {
+            fs::remove_dir_all(&dest_path)
+        } else {
+            fs::remove_file(&dest_path)
+        };
+        return Err(format!("备份源文件失败: {}", e));
+    }
+
+    Ok(MoveUndoInfo {
+        resource_name,
+        resource_type,
+        from_scope,
+        to_scope,
+        backup_path: backup_path.to_string_lossy().to_string(),
+        original_path: source_path,
+        dest_path: dest_path.to_string_lossy().to_string(),
+        content_fingerprint,
+    })
+}
+
+/// Copy a file-based resource without deleting the source.
+#[tauri::command]
+pub fn copy_skill_file(
+    source_path: String,
+    dest_dir: String,
+    resource_name: String,
+) -> Result<(), String> {
+    let src = Path::new(&source_path);
+    if !src.exists() {
+        return Err(format!("源文件不存在: {}", source_path));
+    }
+
+    let dest_dir_path = Path::new(&dest_dir);
+    fs::create_dir_all(dest_dir_path)
+        .map_err(|e| format!("无法创建目标目录: {}", e))?;
+
+    let file_name = file_name_from_path(src)
+        .ok_or_else(|| format!("无法解析文件名: {}", source_path))?;
+
+    let dest_path = if src.is_dir() {
+        dest_dir_path.join(&file_name)
+    } else if src.extension().map_or(false, |e| e == "md") {
+        dest_dir_path.join(format!("{}.md", file_name.trim_end_matches(".md")))
+    } else {
+        dest_dir_path.join(&file_name)
+    };
+
+    if dest_path.exists() {
+        return Err(format!("目标已存在同名资源: {}", resource_name));
+    }
+
+    if src.is_dir() {
+        copy_dir_recursive(src, &dest_path)?;
+    } else {
+        fs::copy(src, &dest_path)
+            .map_err(|e| format!("复制文件失败: {}", e))?;
+    }
+
+    Ok(())
+}
+
+/// Undo a move operation: delete the destination and restore the backup to original location.
+///
+/// Verifies the destination content hasn't been modified since the move (using a lightweight
+/// fingerprint) before deleting, to avoid destroying user changes.
+#[tauri::command]
+pub fn undo_move_skill(backup_path: String, original_path: String, dest_path: String, content_fingerprint: String) -> Result<(), String> {
+    let bak = Path::new(&backup_path);
+    let orig = Path::new(&original_path);
+    let dest = Path::new(&dest_path);
+
+    // Verify destination content matches the fingerprint saved at move time.
+    // If the user modified the destination after the move, refuse to delete it.
+    if dest.exists() {
+        let current_fp = compute_content_fingerprint(dest);
+        if current_fp != content_fingerprint {
+            return Err("目标文件已被修改，撤销取消。请手动处理".into());
+        }
+        if dest.is_dir() {
+            fs::remove_dir_all(dest).map_err(|e| format!("删除目标失败: {}", e))?;
+        } else {
+            fs::remove_file(dest).map_err(|e| format!("删除目标失败: {}", e))?;
+        }
+    }
+
+    // Restore backup to original location
+    if bak.exists() {
+        fs::rename(bak, orig).map_err(|e| format!("恢复备份失败: {}", e))?;
+    } else {
+        return Err("备份文件不存在，无法撤销".into());
+    }
+
+    Ok(())
+}
+
+/// Recursively copy a directory (used for Codex/Qoder skill directories).
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| format!("创建目录失败: {}", e))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("读取目录失败: {}", e))? {
+        let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
+        let path = entry.path();
+        if path.is_symlink() {
+            continue; // Skip symlinks for safety
+        }
+        let dest_path = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &dest_path)?;
+        } else {
+            fs::copy(&path, &dest_path).map_err(|e| format!("复制文件失败: {}", e))?;
+        }
+    }
+    Ok(())
 }

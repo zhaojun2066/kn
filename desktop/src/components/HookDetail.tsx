@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Terminal, Lock, FolderOpen, Play, Ban, Trash2, Info, Pencil, Check, X, FileText, Loader } from "lucide-react";
+import { Terminal, Lock, FolderOpen, Play, Ban, Trash2, Info, Pencil, Check, X, FileText, Loader, Zap, ArrowRight } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CLI_HEX_COLORS } from "../lib/cli-constants";
@@ -23,6 +23,7 @@ export interface HookEntry {
   statusMessage?: string;
   name?: string;
   description?: string;
+  projectName?: string;
 }
 
 /* ──────────────────── Props ──────────────────── */
@@ -84,19 +85,60 @@ function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }
 
 function EmptyState() {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-8">
+    <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-8">
       <div
         className="w-16 h-16 flex items-center justify-center border border-dashed"
         style={{ borderColor: "var(--app-border)", background: "var(--app-bg)" }}
       >
-        <Terminal size={24} className="text-[var(--app-text-muted)] opacity-25" />
+        <Zap size={28} className="text-[var(--app-text-muted)] opacity-25" />
       </div>
+
       <div>
-        <h3 className="text-sm font-mono text-[var(--app-text-dim)] mb-1">Hook Manager</h3>
-        <p className="text-xs text-[var(--app-text-muted)] leading-relaxed max-w-xs">
-          从左侧列表选择一个 Hook 查看详情。
+        <h3 className="text-sm font-mono text-[var(--app-text-dim)] mb-1">Hook 管理器</h3>
+        <p className="text-xs text-[var(--app-text-muted)] leading-relaxed max-w-sm">
+          从左侧列表选择一个 Hook 查看详情，或点击 + 新建自定义 Hook。
         </p>
       </div>
+
+      {/* What are hooks */}
+      <div className="text-xs text-[var(--app-text-muted)] font-mono text-left space-y-1.5
+        bg-[var(--app-cmd-bg)] border border-[var(--app-border)] p-3 w-full max-w-sm">
+        <div className="text-[var(--app-text-dim)] font-semibold">什么是 Hook？</div>
+        <div className="leading-relaxed">
+          Hook 是在 AI CLI 工具<b className="text-[var(--app-text)]">关键事件发生时自动执行</b>的脚本。
+          比如在提交提示词前注入上下文、工具调用后记录日志、会话结束时发送通知等。
+        </div>
+        <div className="leading-relaxed mt-1">
+          支持 <b className="text-[var(--app-text)]">Claude Code</b>、<b className="text-[var(--app-text)]">Codex</b>、<b className="text-[var(--app-text)]">Qoder</b> 三款工具。
+        </div>
+      </div>
+
+      {/* Common events */}
+      <div className="text-xs text-[var(--app-text-muted)] font-mono text-left
+        bg-[var(--app-cmd-bg)] border border-[var(--app-border)] p-3 w-full max-w-sm">
+        <div className="text-[var(--app-text-dim)] font-semibold mb-1.5">常用触发事件</div>
+        <div className="space-y-1 leading-relaxed">
+          {[
+            ["UserPromptSubmit", "用户提交提示词时"],
+            ["PreToolUse", "工具调用前"],
+            ["PostToolUse", "工具调用后"],
+            ["Stop", "会话回合结束时"],
+          ].map(([event, desc]) => (
+            <div key={event} className="flex items-center gap-2">
+              <ArrowRight size={10} className="text-[var(--app-accent)] opacity-50 shrink-0" />
+              <code className="text-2xs px-1.5 py-px bg-[var(--app-input)] border border-[var(--app-border)] text-[var(--app-text-dim)] shrink-0">
+                {event}
+              </code>
+              <span className="text-[var(--app-text-muted)]">{desc}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Tip */}
+      <p className="text-2xs text-[var(--app-text-muted)] max-w-xs">
+        创建 Hook 时选择 CLI 工具、事件类型和脚本命令，保存后自动写入对应工具的配置文件。
+      </p>
     </div>
   );
 }
@@ -115,6 +157,7 @@ export function HookDetail({ hook, onRefresh }: HookDetailProps) {
   const h = hook;
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [editingMeta, setEditingMeta] = useState(false);
   const [editName, setEditName] = useState(hook.name || "");
   const [editDesc, setEditDesc] = useState(hook.description || "");
@@ -185,10 +228,13 @@ export function HookDetail({ hook, onRefresh }: HookDetailProps) {
         eventType: h.eventType,
         groupIdx: h.groupIdx,
         hookIdx: h.hookIdx,
+        path: h.path,
       });
       setShowDeleteConfirm(false);
       onRefresh?.();
     } catch (e) {
+      setShowDeleteConfirm(false);
+      setActionError(String(e).slice(0, 200));
       console.error("Delete hook failed:", e);
     }
   }
@@ -366,6 +412,21 @@ export function HookDetail({ hook, onRefresh }: HookDetailProps) {
             </div>
           </div>
         ) : (
+          <>
+            {actionError && (
+              <div className="mt-3 flex items-start gap-2 p-2.5 border border-[var(--app-red)]/30 bg-[var(--app-red-bg)]/30">
+                <X size={12} className="text-[var(--app-red)] shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-2xs text-[var(--app-red)] font-mono leading-relaxed">{actionError}</p>
+                  <button
+                    onClick={() => setActionError(null)}
+                    className="text-2xs text-[var(--app-text-muted)] hover:text-[var(--app-text)] mt-1"
+                  >
+                    关闭
+                  </button>
+                </div>
+              </div>
+            )}
           <div className="mt-3 flex items-center gap-1">
             <button
               onClick={handleToggle}
@@ -388,6 +449,7 @@ export function HookDetail({ hook, onRefresh }: HookDetailProps) {
               <Trash2 size={14} />
             </button>
           </div>
+          </>
         )}
       </div>
 

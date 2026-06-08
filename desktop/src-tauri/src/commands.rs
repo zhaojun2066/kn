@@ -274,16 +274,27 @@ fn build_tree_inner(
 
 #[tauri::command]
 pub fn list_directory_tree(path: String) -> Result<FileTreeNode, String> {
-    // Resolve to a directory: if the path points to a file, use its parent
     let p = std::path::Path::new(&path);
-    let root = if p.is_file() {
-        p.parent()
-            .map(|d| d.to_path_buf())
-            .unwrap_or_else(|| p.to_path_buf())
-    } else {
-        p.to_path_buf()
-    };
 
+    // If the path is a single file, return a tree with just that file
+    if p.is_file() {
+        let name = p.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        if !is_safe_path(p) {
+            return Err("不允许访问此路径".into());
+        }
+        return Ok(FileTreeNode {
+            name: name.clone(),
+            path: p.to_string_lossy().to_string(),
+            is_dir: false,
+            children: None,
+        });
+    }
+
+    // Directory — build full tree
+    let root = p.to_path_buf();
     if !root.exists() {
         return Err(format!("路径不存在: {}", root.display()));
     }
@@ -383,6 +394,13 @@ pub(crate) fn home_dir() -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from(".")
+}
+
+/// Returns the user's home directory as a string, for use by the frontend
+/// when computing user-level config paths.
+#[tauri::command]
+pub fn get_home_dir() -> String {
+    home_dir().to_string_lossy().to_string()
 }
 
 fn read_json_file(path: &std::path::Path) -> Result<serde_json::Value, String> {

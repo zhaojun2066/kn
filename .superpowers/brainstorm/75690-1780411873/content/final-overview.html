@@ -1,0 +1,149 @@
+<h2>文档页设计总览 — 完整布局</h2>
+<p class="subtitle">所有关键设计决策一览，确认后即可进入实现计划</p>
+
+<div class="mockup">
+  <div class="mockup-header">完整页面布局（桌面端 1440px）</div>
+  <div class="mockup-body">
+    <div style="background: #0a0e14; border-radius: 10px; overflow: hidden; font-family: system-ui; border: 1px solid rgba(255,255,255,0.06);">
+
+      <!-- Top NavBar -->
+      <div style="display: flex; align-items: center; padding: 10px 24px; background: rgba(10,14,20,0.85); border-bottom: 1px solid rgba(255,255,255,0.06); gap: 16px; font-size: 13px;">
+        <span style="font-weight: 600; color: #e8e8ec; display: flex; align-items: center; gap: 6px;">
+          <span style="display:inline-block;width:20px;height:20px;background:#00c6ff;border-radius:4px;"></span>
+          AI Profile Manager
+        </span>
+        <span style="color: #8b8fa3;">特性</span>
+        <span style="color: #00c6ff; font-weight: 500;">文档</span>
+        <span style="color: #8b8fa3;">下载</span>
+        <span style="margin-left: auto; color: #8b8fa3;">🌙</span>
+        <span style="color: #8b8fa3;">GitHub</span>
+      </div>
+
+      <!-- Main area: Sidebar + Content -->
+      <div style="display: flex; min-height: 550px;">
+
+        <!-- Sidebar (260px) -->
+        <div style="width: 260px; min-width: 260px; background: #0d1117; border-right: 1px solid rgba(255,255,255,0.06); display: flex; flex-direction: column;">
+
+          <!-- Sidebar header: quick search -->
+          <div style="padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.04);">
+            <div style="padding: 6px 10px; background: #14191f; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-size: 12px; color: #545868;">
+              🔍 搜索...
+            </div>
+          </div>
+
+          <!-- Sidebar scroll -->
+          <div style="flex: 1; overflow-y: auto; padding: 8px 0; font-size: 12.5px; line-height: 2.2;">
+            <div style="padding: 4px 20px; font-size: 10px; color: #545868; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;">🚀 入门指南</div>
+            <div style="padding: 4px 20px 4px 28px; color: #00c6ff; background: rgba(0,198,255,0.05); border-left: 2px solid #00c6ff;">简介</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">安装</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">快速开始</div>
+
+            <div style="padding: 4px 20px; font-size: 10px; color: #545868; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; margin-top: 12px;">📋 CLI 参考</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">配置管理</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">命令参考</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">Shell Wrapper</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">配置结构</div>
+
+            <div style="padding: 4px 20px; font-size: 10px; color: #545868; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; margin-top: 12px;">🖥️ Desktop 应用</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">安装与启动</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">功能与快捷键</div>
+
+            <div style="padding: 4px 20px; font-size: 10px; color: #545868; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; margin-top: 12px;">📖 场景示例</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">多账号切换</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">不同项目不同 Key</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">OpenAI 兼容中转</div>
+
+            <div style="padding: 4px 20px; font-size: 10px; color: #545868; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; margin-top: 12px;">💡 更多</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">FAQ</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">故障排查</div>
+            <div style="padding: 4px 20px 4px 28px; color: #8b8fa3;">卸载与重置</div>
+          </div>
+        </div>
+
+        <!-- Content Area -->
+        <div style="flex: 1; overflow-y: auto; position: relative;">
+          <!-- Content body -->
+          <div style="padding: 40px 48px; max-width: 760px;">
+            <div style="font-size: 11px; color: #545868; margin-bottom: 6px;">🚀 入门指南 / 安装</div>
+            <h1 style="font-size: 28px; font-weight: 700; color: #e8e8ec; margin: 0 0 8px;">安装</h1>
+            <p style="color: #8b8fa3; font-size: 14px; line-height: 1.7; margin-bottom: 24px;">
+              执行安装脚本即可自动完成所有环境配置。
+            </p>
+
+            <!-- Content blocks -->
+            <div style="background: #0d1117; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; margin-bottom: 20px;">
+              <div style="padding: 8px 14px; background: #161b22; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 11px; color: #545868;">bash</div>
+              <pre style="padding: 14px 18px; margin: 0; font-family: monospace; font-size: 12px; line-height: 1.9; color: #c9d1d9;">cd ~/workspace/me/shark/kn
+bash install.sh
+source ~/.zshrc</pre>
+            </div>
+
+            <h2 style="font-size: 18px; font-weight: 600; color: #e8e8ec; margin: 28px 0 10px;">步骤说明</h2>
+            <ol style="color: #8b8fa3; font-size: 14px; line-height: 2; padding-left: 20px;">
+              <li>克隆或进入项目目录</li>
+              <li>执行安装脚本，自动复制文件到 ~/.claude-profiles/</li>
+              <li>加载 shell 配置，立即可用</li>
+            </ol>
+
+            <!-- Bottom navigation -->
+            <div style="display: flex; justify-content: space-between; margin-top: 48px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.06);">
+              <span style="font-size: 13px; color: #545868;">← 简介</span>
+              <span style="font-size: 13px; color: #00c6ff;">快速开始 →</span>
+            </div>
+          </div>
+
+          <!-- Right-side TOC (sticky, only visible on larger screens) -->
+          <div style="position: absolute; right: 32px; top: 40px; width: 160px; font-size: 12px; line-height: 2; display: none;">
+            <!-- This is conceptual - hidden in mockup to keep clean -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr style="margin: 28px 0; border-color: var(--border-color);">
+
+<h3>还需确认的细节</h3>
+
+<div class="options">
+  <div class="option" data-choice="toc-yes" onclick="toggleSelect(this)">
+    <div class="letter">📑</div>
+    <div class="content">
+      <h3>右侧"本页目录"（TOC）— 需要吗？</h3>
+      <p>桌面端在内容区右侧 sticky 显示当前页面的 h2/h3 标题锚点，滚动高亮当前位置。适合长页面导航。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="toc-no" onclick="toggleSelect(this)">
+    <div class="letter">✗</div>
+    <div class="content">
+      <h3>不需要右侧 TOC</h3>
+      <p>页面内容本身不长，保持简洁，靠侧边栏导航就够了</p>
+    </div>
+  </div>
+</div>
+
+<div class="options" style="margin-top: 16px;" data-multiselect>
+  <div class="option" data-choice="mobile-drawer" onclick="toggleSelect(this)">
+    <div class="letter">📱</div>
+    <div class="content">
+      <h3>移动端：侧边栏变成抽屉式</h3>
+      <p>顶部 NavBar 加一个"菜单"按钮，点击后侧边栏从左侧滑入覆盖</p>
+    </div>
+  </div>
+  <div class="option" data-choice="bottom-nav" onclick="toggleSelect(this)">
+    <div class="letter">↓</div>
+    <div class="content">
+      <h3>移动端：底部固定导航</h3>
+      <p>移动端把侧边栏变为底部固定的一行分组 tab（上一页 / 下一页），节省屏幕空间</p>
+    </div>
+  </div>
+  <div class="option" data-choice="keep-landing-docs" onclick="toggleSelect(this)">
+    <div class="letter">🏠</div>
+    <div class="content">
+      <h3>保留首页的 DocsSection</h3>
+      <p>首页的文档区不删，改为精简摘要 + "查看完整文档 →" 链接导向 /docs</p>
+    </div>
+  </div>
+</div>

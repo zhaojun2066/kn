@@ -33,3 +33,12 @@ export interface MutationResult {
   key?: string;
 }
 
+// ── Project Management ──
+
+export interface ProjectInfo {
+  name: string;
+  path: string;
+}
+
+export type ScopeTab = "user" | "project" | "all";
+

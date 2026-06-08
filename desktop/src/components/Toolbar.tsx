@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   Sun, Moon, Monitor, HelpCircle, RotateCw, ChevronDown, Settings,
-  PanelLeft, PanelBottom, PanelRight, Circle, Info, Palette, Check, Terminal,
+  PanelLeft, PanelBottom, PanelRight, Circle, Info, Palette, Check, Terminal, Search, History,
 } from "lucide-react";
 import { formatShortcut } from "../utils/shortcut";
 import { Button } from "./common/Button";
@@ -21,6 +21,8 @@ interface ToolbarProps {
   envCheck: { items: { name: string; label: string; status: string; detail: string; install_cmd?: string }[]; all_ok: boolean } | null;
   onInstallTool?: (cmd: string) => void;
   onRefreshEnvCheck?: () => void;
+  onQuickSwitcher: () => void;
+  onQuickHistory: () => void;
 }
 
 const themeIcons: Record<ThemeMode, React.ReactNode> = {
@@ -76,6 +78,7 @@ export function Toolbar({
   sidebarVisible, onToggleSidebar,
   terminalVisible, rightTerminalVisible, onToggleRightTerminal,
   envCheck, onInstallTool, onRefreshEnvCheck,
+  onQuickSwitcher, onQuickHistory,
 }: ToolbarProps) {
   const { mode, colorScheme, setColorScheme, setTheme } = useTheme();
   const cycleTheme = () => setTheme(themeNext[mode]);
@@ -85,8 +88,27 @@ export function Toolbar({
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* ── Right side — layout controls (VS Code style) ── */}
+      {/* ── Right side — Quick Switcher + layout controls (VS Code style) ── */}
       <div className="flex items-center gap-0.5 mr-1">
+        {/* Quick Switcher button */}
+        <button
+          onClick={onQuickSwitcher}
+          aria-label="快速切换 profile"
+          className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded"
+          title={`快速切换 Profile (${formatShortcut("mod+P")})`}
+        >
+          <Search size={14} aria-hidden="true" />
+        </button>
+        {/* Quick History button */}
+        <button
+          onClick={onQuickHistory}
+          aria-label="会话历史"
+          className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded"
+          title={`会话历史 (${formatShortcut("mod+⇧P")})`}
+        >
+          <History size={14} aria-hidden="true" />
+        </button>
+        <div className="w-px h-4 bg-app-border mx-0.5" />
         <button
           onClick={onToggleSidebar}
           aria-label={`${sidebarVisible ? "隐藏侧边栏" : "显示侧边栏"}`}

@@ -383,57 +383,78 @@ export function HookStore({ open, onClose, onInstalled }: HookStoreProps) {
                   <span className="text-2xs text-[var(--app-text-muted)] font-mono block mb-2">
                     安装到:
                   </span>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedHook.compatibleClis.map((cli) => {
-                      const installed = selectedHook.installed?.includes(cli);
-                      const isInstalling = installing === selectedHook.id;
-                      const isUninstalling = uninstalling === selectedHook.id;
-                      const platformOk = selectedHook.platforms?.includes(currentPlatform);
-                      return installed ? (
-                        <button
-                          key={cli}
-                          onClick={() => handleUninstall(selectedHook, cli)}
-                          disabled={isUninstalling}
-                          className="flex items-center gap-1.5 px-3 py-1.5 border rounded text-xs font-mono transition-colors
-                            border-[var(--app-green)] text-[var(--app-green)]
-                            hover:border-[var(--app-red)] hover:text-[var(--app-red)] hover:bg-[var(--app-red-bg)]
-                            disabled:opacity-50"
-                          title="点击删除"
-                        >
-                          {isUninstalling ? (
-                            <Clock size={12} className="animate-spin" />
+
+                  {/* All installed — show summary */}
+                  {selectedHook.compatibleClis.every((c) => selectedHook.installed?.includes(c)) && (
+                    <div className="flex items-center gap-2 px-3 py-2 border border-[var(--app-green)]/30 bg-[var(--app-green)]/5 text-xs font-mono text-[var(--app-green)]">
+                      <Check size={14} />
+                      <span>已安装到全部兼容 CLI</span>
+                      <span className="flex-1" />
+                      <button
+                        onClick={() => selectedHook.compatibleClis.forEach((c) => handleUninstall(selectedHook, c))}
+                        disabled={!!uninstalling}
+                        className="text-2xs text-[var(--app-text-dim)] hover:text-[var(--app-red)] transition-colors"
+                      >
+                        全部卸载
+                      </button>
+                    </div>
+                  )}
+
+                  {!selectedHook.compatibleClis.every((c) => selectedHook.installed?.includes(c)) && (
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedHook.compatibleClis.map((cli) => {
+                          const installed = selectedHook.installed?.includes(cli);
+                          const isInstalling = installing === selectedHook.id;
+                          const isUninstalling = uninstalling === selectedHook.id;
+                          const platformOk = selectedHook.platforms?.includes(currentPlatform);
+                          return installed ? (
+                            <button
+                              key={cli}
+                              onClick={() => handleUninstall(selectedHook, cli)}
+                              disabled={isUninstalling}
+                              className="flex items-center gap-1.5 px-3 py-1.5 border rounded text-xs font-mono transition-colors
+                                border-[var(--app-green)] text-[var(--app-green)]
+                                hover:border-[var(--app-red)] hover:text-[var(--app-red)] hover:bg-[var(--app-red-bg)]
+                                disabled:opacity-50"
+                              title="点击卸载"
+                            >
+                              {isUninstalling ? (
+                                <Clock size={12} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={12} />
+                              )}
+                              <span>{CLI_LABELS[cli]}</span>
+                            </button>
                           ) : (
-                            <Trash2 size={12} />
-                          )}
-                          <span>{CLI_LABELS[cli]}</span>
-                        </button>
-                      ) : (
-                        <button
-                          key={cli}
-                          onClick={() => platformOk && handleInstall(selectedHook, cli)}
-                          disabled={isInstalling || !platformOk}
-                          className="flex items-center gap-1.5 px-3 py-1.5 border rounded text-xs font-mono transition-colors
-                            border-[var(--app-border)] text-[var(--app-text-dim)] hover:border-[var(--app-accent)] hover:text-[var(--app-accent)]
-                            disabled:opacity-50"
-                          title={platformOk ? undefined : `此 Hook 不支持当前平台（仅支持 ${selectedHook.platforms.map((p) => PLATFORM_LABELS[p] || p).join("、")}）`}
-                        >
-                          {isInstalling ? (
-                            <Clock size={12} className="animate-spin" />
-                          ) : (
-                            <Download size={12} />
-                          )}
-                          <span style={{ color: CLI_COLORS[cli] }}>
-                            {CLI_LABELS[cli]}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {selectedHook.platforms && !selectedHook.platforms.includes(currentPlatform) && (
-                    <p className="text-2xs text-[var(--app-text-muted)] mt-2">
-                      ⚠ 此 Hook 不支持当前平台
-                      （支持: {selectedHook.platforms.map((p) => PLATFORM_LABELS[p] || p).join("、")}）
-                    </p>
+                            <button
+                              key={cli}
+                              onClick={() => platformOk && handleInstall(selectedHook, cli)}
+                              disabled={isInstalling || !platformOk}
+                              className="flex items-center gap-1.5 px-3 py-1.5 border rounded text-xs font-mono transition-colors
+                                border-[var(--app-border)] text-[var(--app-text-dim)] hover:border-[var(--app-accent)] hover:text-[var(--app-accent)]
+                                disabled:opacity-50"
+                              title={platformOk ? undefined : `此 Hook 不支持当前平台（仅支持 ${selectedHook.platforms.map((p) => PLATFORM_LABELS[p] || p).join("、")}）`}
+                            >
+                              {isInstalling ? (
+                                <Clock size={12} className="animate-spin" />
+                              ) : (
+                                <Download size={12} />
+                              )}
+                              <span style={{ color: CLI_COLORS[cli] }}>
+                                {CLI_LABELS[cli]}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {selectedHook.platforms && !selectedHook.platforms.includes(currentPlatform) && (
+                        <p className="text-2xs text-[var(--app-text-muted)] mt-2">
+                          ⚠ 此 Hook 不支持当前平台
+                          （支持: {selectedHook.platforms.map((p) => PLATFORM_LABELS[p] || p).join("、")}）
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
 

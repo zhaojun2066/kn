@@ -144,6 +144,26 @@ Font size changes force an XTerm remount (xterm.js doesn't support hot-reloading
 - Update check: reads `update/update.json` → fetches manifest from `update_url` → compares versions → downloads via curl → verifies SHA256 via shasum → opens installer
 - All update HTTP operations use absolute paths for system binaries: `/usr/bin/curl`, `/usr/bin/shasum`, `/usr/bin/open`
 
+## CLI Config Directory Conventions
+
+Each supported CLI tool uses different config directory names for user-level vs project-level:
+
+| CLI | User-level | Project-level | Notes |
+|-----|-----------|---------------|-------|
+| **Claude Code** | `~/.claude/` | `<project>/.claude/` | Same name for both scopes |
+| **Codex** | `~/.codex/` | `<project>/.codex/` | Same name for both scopes |
+| **Qoder (国产版)** | `~/.qoder-cn/` | `<project>/.qoder/` | **Different names!** User: `.qoder-cn`, Project: `.qoder` |
+
+### Qoder path details
+
+- **User-level**: `~/.qoder-cn/` — all user config (settings.json, agents/, skills/, commands/)
+- **Project-level**: `<project>/.qoder/` — all project config (settings.json, agents/, skills/)
+- **Key rule**: 用户级全是 `.qoder-cn`，项目级全是 `.qoder`，没有任何例外。
+- **Frontend path logic**:
+  - `getHookTargetPath`: project scope + qoder → `project.path/.qoder/settings.json`; user scope → `~/.qoder-cn/settings.json`
+  - `toScope === "project" && cli === "qoder"` → `${project.path}/.qoder/${subdir}`
+  - Detecting CLI from source path: check both `.qoder-cn/` (user) and `.qoder/` (project)
+
 ## Cross-Platform Compatibility
 
 The app targets **macOS Intel**, **macOS Apple Silicon**, **Windows**, and **Linux**. Platform differences are handled in these key areas:

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { EnvVarTable } from "./EnvVarTable";
 import { Badge } from "./common/Badge";
-import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock, FolderOpen, Trash2 } from "lucide-react";
+import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock, FolderOpen, Trash2, BookOpen, ChevronDown, ChevronRight } from "lucide-react";
 import type { ProfileDetail } from "../lib/types";
 import { parseAiCmd } from "../hooks/useTerminal";
 import type { SessionRecord } from "../hooks/useTerminal";
@@ -158,15 +158,98 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
   }
   return (
     <div className="flex-1 flex items-center justify-center bg-app-bg">
-      <div className="flex flex-col items-center gap-4 text-center">
-        <Terminal size={36} className="text-app-text-muted opacity-30" />
+      <div className="flex flex-col items-center gap-5 text-center max-w-md px-4">
+        <div className="w-16 h-16 rounded-full bg-[var(--app-selected)] flex items-center justify-center">
+          <Terminal size={32} className="text-app-accent" />
+        </div>
         <div>
-          <div className="text-base text-app-text-dim">
-            <span className="text-app-text-muted">$ </span>
-            <span className="animate-cursor-blink">_</span>
+          <div className="text-lg text-app-text font-mono font-semibold mb-1">AI Profile Manager</div>
+          <div className="text-sm text-app-text-dim leading-relaxed">
+            管理多个 AI CLI 工具的 API 配置，一键切换服务商
           </div>
-          <div className="text-sm text-app-text-muted mt-2">
-            从侧边栏选择 profile，或按 <kbd className="text-app-amber">{formatShortcut("mod+N")}</kbd> 新建
+        </div>
+
+        {/* What is a profile */}
+        <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
+          <div className="text-app-text-muted font-semibold">什么是 Profile？</div>
+          <div className="leading-relaxed">
+            Profile 是一组<b className="text-app-text">环境变量</b>的集合，用于快速切换 AI 工具的服务商和配置。
+            每个 profile 对应一套 API Key、Base URL、模型名等参数。
+          </div>
+        </div>
+
+        {/* Workflow */}
+        <div className="text-xs text-app-text-dim font-mono text-left space-y-2 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
+          <div className="text-app-text-muted font-semibold">使用流程</div>
+          <div className="space-y-1.5">
+            <div className="flex gap-2.5">
+              <span className="inline-flex items-center justify-center w-[18px] h-[18px] shrink-0 mt-px text-2xs font-mono font-bold
+                bg-app-accent/10 text-app-accent border border-app-accent/20 rounded-full">1</span>
+              <div>
+                <span className="text-app-text font-semibold">新建 Profile</span>
+                <span className="text-app-text-muted"> — 按 {formatShortcut("mod+N")} 或点击侧边栏 + 按钮</span>
+              </div>
+            </div>
+            <div className="flex gap-2.5">
+              <span className="inline-flex items-center justify-center w-[18px] h-[18px] shrink-0 mt-px text-2xs font-mono font-bold
+                bg-app-green/10 text-app-green border border-app-green/20 rounded-full">2</span>
+              <div>
+                <span className="text-app-text font-semibold">配置环境变量</span>
+                <span className="text-app-text-muted"> — 添加 API Key、Base URL 等必要参数</span>
+              </div>
+            </div>
+            <div className="flex gap-2.5">
+              <span className="inline-flex items-center justify-center w-[18px] h-[18px] shrink-0 mt-px text-2xs font-mono font-bold
+                bg-app-amber/10 text-app-amber border border-app-amber/20 rounded-full">3</span>
+              <div>
+                <span className="text-app-text font-semibold">运行 AI 工具</span>
+                <span className="text-app-text-muted"> — 终端中输入 ai &lt;工具&gt; &lt;profile&gt; 或点击运行按钮</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Quick actions */}
+        <div className="flex gap-3 w-full">
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent("kn-quick-new-profile"))}
+            className="flex-1 flex items-center justify-center gap-1.5 text-xs font-mono text-app-text
+              border-2 border-app-accent bg-[var(--app-selected)] px-3 py-2
+              hover:bg-[var(--app-active)] transition-colors"
+          >
+            <span className="text-app-accent opacity-70">+</span>
+            新建 Profile
+          </button>
+          {onInit && (
+            <button onClick={onInit}
+              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-mono text-app-text-dim
+                border border-app-border bg-[var(--app-input)] px-3 py-2
+                hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
+            >
+              扫描系统配置
+            </button>
+          )}
+        </div>
+
+        {/* Shortcuts */}
+        <div className="text-left border border-app-border bg-[var(--app-cmd-bg)] w-full">
+          <div className="px-3 py-1.5 border-b border-app-border bg-[var(--app-cmd-header)]">
+            <span className="text-2xs text-app-text-muted uppercase tracking-wider">快捷键</span>
+          </div>
+          <div className="px-3 py-2 space-y-1 text-2xs font-mono">
+            {[
+              [formatShortcut("mod+N"), "新建 Profile"],
+              [formatShortcut("mod+F"), "搜索 Profile"],
+              ["Enter", "运行选中 Profile"],
+              ["Ctrl+`", "开关底部终端"],
+              [formatShortcut("mod+K"), "快捷键帮助"],
+              ["Esc", "取消选中"],
+            ].map(([key, desc]) => (
+              <div key={key} className="flex justify-between">
+                <span className="text-app-text-muted">{desc}</span>
+                <kbd className="text-app-text-dim">{key}</kbd>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -304,6 +387,89 @@ function CommandBlock({
 }
 
 /* ── MainPanel ──────────────────────────────────────────── */
+
+/* ── UsageGuide — collapsible usage instructions ────────── */
+function UsageGuide() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="border-b border-app-border bg-[var(--app-cmd-bg)]">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-2 border-b border-app-border bg-[var(--app-cmd-header)]
+          hover:bg-[var(--app-hover)] transition-colors group"
+      >
+        {open ? <ChevronDown size={12} className="text-app-text-muted" /> : <ChevronRight size={12} className="text-app-text-muted" />}
+        <BookOpen size={13} className="text-app-text-muted group-hover:text-app-accent transition-colors" />
+        <span className="text-2xs text-app-text-muted font-mono uppercase tracking-wider">使用说明</span>
+        <span className="text-2xs text-app-text-dim ml-auto">{open ? "收起" : "展开"}</span>
+      </button>
+      {open && (
+        <div className="px-4 py-3 space-y-3 text-xs text-app-text-dim leading-relaxed">
+          {/* Step 1 — 配置 */}
+          <div className="flex gap-2.5">
+            <span className="inline-flex items-center justify-center w-[18px] h-[18px] shrink-0 mt-0.5 text-2xs font-mono font-bold
+              bg-app-accent/10 text-app-accent border border-app-accent/20 rounded-full">1</span>
+            <div>
+              <span className="text-app-text font-mono text-xs">配置环境变量</span>
+              <div className="mt-0.5">
+                在下方<b className="text-app-text">环境变量</b>表格中添加 API Key、Base URL、模型名等配置。
+                支持 <kbd className="text-2xs px-1 py-px bg-[var(--app-input)] border border-app-border text-app-text-muted font-mono">ANTHROPIC_API_KEY</kbd>、
+                <kbd className="text-2xs px-1 py-px bg-[var(--app-input)] border border-app-border text-app-text-muted font-mono">OPENAI_API_KEY</kbd> 等常用变量。
+              </div>
+            </div>
+          </div>
+
+          {/* Step 2 — 使用 */}
+          <div className="flex gap-2.5">
+            <span className="inline-flex items-center justify-center w-[18px] h-[18px] shrink-0 mt-0.5 text-2xs font-mono font-bold
+              bg-app-green/10 text-app-green border border-app-green/20 rounded-full">2</span>
+            <div>
+              <span className="text-app-text font-mono text-xs">复制命令并运行</span>
+              <div className="mt-0.5">
+                系统根据环境变量自动生成命令，点击<b className="text-app-text">复制</b>后在终端中粘贴运行，
+                或点击<b className="text-app-text">运行</b>在内置终端中直接执行。
+              </div>
+            </div>
+          </div>
+
+          {/* Step 3 — 终端 */}
+          <div className="flex gap-2.5">
+            <span className="inline-flex items-center justify-center w-[18px] h-[18px] shrink-0 mt-0.5 text-2xs font-mono font-bold
+              bg-app-amber/10 text-app-amber border border-app-amber/20 rounded-full">3</span>
+            <div>
+              <span className="text-app-text font-mono text-xs">在内置终端中使用</span>
+              <div className="mt-0.5">
+                点击 profile 的 <b className="text-app-text">▶ 运行</b> 按钮，选择项目目录后自动启动终端。
+                关闭面板后 PTY 进程仍然存活，再次打开可继续使用。
+              </div>
+            </div>
+          </div>
+
+          {/* Quick tips */}
+          <div className="border-t border-app-border pt-2.5 mt-1">
+            <span className="text-2xs text-app-text-muted font-mono uppercase tracking-wider">快捷提示</span>
+            <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-2xs font-mono">
+              {[
+                ["点击 ⭐ 设为默认", "未指定 profile 时的首选"],
+                ["标签分类", "最多 3 个，便于筛选和搜索"],
+                [formatShortcut("mod+N"), "快速新建 profile"],
+                [formatShortcut("mod+S"), "保存环境变量"],
+              ].map(([tip, desc]) => (
+                <div key={tip} className="flex items-center gap-1.5">
+                  <kbd className="inline-flex items-center px-1 py-px text-2xs bg-[var(--app-input)]
+                    border border-app-border text-app-text-dim font-mono shrink-0">{tip}</kbd>
+                  <span className="text-app-text-muted truncate">{desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Tags row (display + chip-based editing) ───────────── */
 function TagsRow({ profile, allTags, onSetTags }: { profile: ProfileDetail; allTags: string[]; onSetTags: (name: string, tags: string) => Promise<void> }) {
   const [editing, setEditing] = useState(false);
@@ -479,6 +645,8 @@ export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history,
         {/* Tags */}
         <TagsRow profile={profile} allTags={allTags} onSetTags={onSetTags} />
       </div>
+
+      <UsageGuide />
 
       <CommandBlock commands={commands} profileName={profile.name}
         onPaste={onPasteCommand} />

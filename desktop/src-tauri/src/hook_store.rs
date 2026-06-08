@@ -498,7 +498,7 @@ fn get_script(hook_id: &str) -> Option<&'static str> {
 #[tauri::command]
 pub fn list_store_hooks() -> HookStoreData {
     // Check which hooks are already installed for each CLI
-    let existing = hook_manager::scan_hooks();
+    let existing = hook_manager::scan_hooks(None);
     let mut hooks = all_hooks();
 
     for hook in &mut hooks {
@@ -586,6 +586,19 @@ pub fn install_store_hook(hook_id: String, cli: String) -> Result<(), String> {
         script_path.to_string_lossy().to_string()
     };
 
+    // Check if already installed — prevent duplicate hook entries.
+    // Scan existing hooks and look for a match on event_type + matcher + same script path.
+    let existing = hook_manager::scan_hooks(None);
+    let cmd_pattern = format!(".claude-profiles/hooks/{}", hook_id);
+    let already_installed = existing.hooks.iter().any(|h| {
+        h.cli == cli
+            && h.event_type == hook.event_type
+            && h.command.contains(&cmd_pattern)
+    });
+    if already_installed {
+        return Ok(()); // idempotent — already installed, nothing to do
+    }
+
     // Determine config path and write hook entry
     let home_path = crate::home_dir();
 
@@ -623,7 +636,7 @@ pub fn install_store_hook(hook_id: String, cli: String) -> Result<(), String> {
 
     // Save metadata (name + description) for the newly installed hook.
     // Find the hook we just created by matching the command path, then persist.
-    let scan_data = hook_manager::scan_hooks();
+    let scan_data = hook_manager::scan_hooks(None);
     if let Some(entry) = scan_data
         .hooks
         .iter()
@@ -653,7 +666,7 @@ pub fn uninstall_store_hook(hook_id: String, cli: String) -> Result<(), String> 
         .ok_or_else(|| format!("未找到 hook: {}", hook_id))?;
 
     // Find and delete the hook entry from the CLI config
-    let scan_data = hook_manager::scan_hooks();
+    let scan_data = hook_manager::scan_hooks(None);
     let cmd_pattern = format!(".claude-profiles/hooks/{}", hook_id);
 
     let matching: Vec<_> = scan_data
@@ -673,6 +686,7 @@ pub fn uninstall_store_hook(hook_id: String, cli: String) -> Result<(), String> 
             entry.event_type.clone(),
             entry.group_idx,
             entry.hook_idx,
+            entry.path.clone(),
         ) {
             errors.push(e);
         }

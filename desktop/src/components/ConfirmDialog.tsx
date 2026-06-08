@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, X } from "lucide-react";
+import { AlertTriangle, ArrowRight } from "lucide-react";
 import { Button } from "./common/Button";
 import { Dialog } from "./common/Dialog";
 
@@ -11,25 +11,32 @@ interface ConfirmDialogProps {
   onConfirm: () => void;
   onCancel: () => void;
   loading?: boolean;
+  variant?: "danger" | "primary";
 }
 
 export function ConfirmDialog({
   open,
   title,
   message,
-  confirmLabel = "删除",
+  confirmLabel = "确认",
   onConfirm,
   onCancel,
   loading,
+  variant = "danger",
 }: ConfirmDialogProps) {
+  const isPrimary = variant === "primary";
+
   return (
     <Dialog open={open} onClose={onCancel} persistent>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
         <div className="flex items-center gap-2">
-          <AlertTriangle size={15} className="text-app-orange" aria-hidden="true" />
+          {isPrimary
+            ? <ArrowRight size={15} className="text-[var(--app-accent)]" aria-hidden="true" />
+            : <AlertTriangle size={15} className="text-app-orange" aria-hidden="true" />
+          }
           <h3 className="font-semibold text-sm text-app-text font-mono">
-            <span className="text-app-orange opacity-60">! </span>
+            {!isPrimary && <span className="text-app-orange opacity-60">! </span>}
             {title}
           </h3>
         </div>
@@ -38,7 +45,7 @@ export function ConfirmDialog({
           aria-label="关闭"
           className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
         >
-          <X size={14} aria-hidden="true" />
+          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
 
@@ -52,8 +59,8 @@ export function ConfirmDialog({
         <Button variant="secondary" size="sm" onClick={onCancel} disabled={loading}>
           取消
         </Button>
-        <Button variant="danger" size="sm" onClick={onConfirm} disabled={loading}>
-          {loading ? "删除中..." : confirmLabel}
+        <Button variant={isPrimary ? "primary" : "danger"} size="sm" onClick={onConfirm} disabled={loading}>
+          {loading ? (isPrimary ? "移动中..." : "删除中...") : confirmLabel}
         </Button>
       </div>
     </Dialog>

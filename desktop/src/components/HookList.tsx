@@ -2,15 +2,19 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
   ChevronRight, Terminal, Lock, Plus, Search, Store,
   Circle, Filter, ChevronDown, X, Play, Ban, Trash2,
-  Ellipsis, CheckSquare, Square,
+  Ellipsis, CheckSquare, Square, Copy, ArrowRight, ArrowLeft, Folder,
 } from "lucide-react";
 import { SearchInput } from "./common/SearchInput";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { Dialog } from "./common/Dialog";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { CliBadge } from "./common/CliBadge";
 import { FilterDropdown } from "./common/FilterDropdown";
 import { CLI_LABELS, CLI_FILTER_OPTIONS } from "../lib/cli-constants";
+import { ScopeTabs } from "./ScopeTabs";
+import { ProjectSelector } from "./ProjectSelector";
 import type { HookEntry } from "./HookDetail";
+import type { ProjectInfo, ScopeTab } from "../lib/types";
 
 /* ──────────────────── Types ──────────────────── */
 
@@ -30,6 +34,18 @@ interface HookListProps {
   onRefresh?: () => void;
   onToggleHook?: (hook: HookEntry, enabled: boolean) => void;
   onDeleteHook?: (hook: HookEntry) => void;
+  // Copy / Move
+  onMoveHook?: (hook: HookEntry, toScope: "user" | "project", targetProject?: ProjectInfo) => void;
+  onCopyHook?: (hook: HookEntry, toScope: "user" | "project", targetProject?: ProjectInfo) => void;
+  onBatchMoveHooks?: (hooks: HookEntry[], toScope: "user" | "project", targetProject?: ProjectInfo) => void;
+  onBatchCopyHooks?: (hooks: HookEntry[], toScope: "user" | "project", targetProject?: ProjectInfo) => void;
+  // Scope management
+  activeScope: ScopeTab;
+  onScopeChange: (scope: ScopeTab) => void;
+  projects: ProjectInfo[];
+  activeProject: ProjectInfo | null;
+  onProjectChange: (project: ProjectInfo | null) => void;
+  onAddProject: () => void;
 }
 
 /* ──────────────────── Constants ──────────────────── */
@@ -207,6 +223,14 @@ function ListRow({
 
       {/* Badges */}
       <div className="flex items-center gap-1 shrink-0">
+        {hook.projectName && (
+          <span
+            className="text-2xs text-amber-400 bg-amber-500/10 px-1 py-px rounded font-mono max-w-[72px] truncate shrink-0"
+            title={hook.projectName}
+          >
+            {hook.projectName}
+          </span>
+        )}
         <CliBadge cli={hook.cli} />
       </div>
     </div>
@@ -225,16 +249,92 @@ export function HookList({
   onRefresh,
   onToggleHook,
   onDeleteHook,
+  onMoveHook,
+  onCopyHook,
+  onBatchMoveHooks,
+  onBatchCopyHooks,
+  activeScope,
+  onScopeChange,
+  projects,
+  activeProject,
+  onProjectChange,
+  onAddProject,
 }: HookListProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState("");
-  const [cliFilter, setCliFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
+
+  // Per-tab filter state — each scope tab remembers its own filters independently,
+  // matching the SkillManager pattern so switching scopes doesn't leak search state.
+  type HookFilters = { search: string; cliFilter: string; statusFilter: string };
+  const [tabFilters, setTabFilters] = useState<Record<string, HookFilters>>({
+    all: { search: "", cliFilter: "all", statusFilter: "all" },
+    user: { search: "", cliFilter: "all", statusFilter: "all" },
+    project: { search: "", cliFilter: "all", statusFilter: "all" },
+  });
+  const filters = tabFilters[activeScope] ?? tabFilters.all;
+  const setSearch = (v: string) => setTabFilters((prev) => ({ ...prev, [activeScope]: { ...prev[activeScope], search: v } }));
+  const setCliFilter = (v: string) => setTabFilters((prev) => ({ ...prev, [activeScope]: { ...prev[activeScope], cliFilter: v } }));
+  const setStatusFilter = (v: string) => setTabFilters((prev) => ({ ...prev, [activeScope]: { ...prev[activeScope], statusFilter: v } }));
+  const search = filters.search;
+  const cliFilter = filters.cliFilter;
+  const statusFilter = filters.statusFilter;
+
+  // Per-tab project selection — each tab remembers its own project independently.
+  // This mirrors SkillManager's tabProjects pattern so switching scope tabs
+  // doesn't leak project selection from one tab to another.
+  const [tabProjects, setTabProjects] = useState<Record<string, ProjectInfo | null>>({
+    all: null,
+    project: null,
+    user: null,
+  });
+  const effectiveActiveProject = tabProjects[activeScope] ?? null;
+  const handleProjectChange = useCallback((p: ProjectInfo | null) => {
+    setTabProjects((prev) => ({ ...prev, [activeScope]: p }));
+  }, [activeScope]);
+
+  // Sync current tab's project to parent (for triggering re-scan with correct project path)
+  useEffect(() => {
+    onProjectChange(effectiveActiveProject);
+  }, [effectiveActiveProject, onProjectChange]);
+
   const [toolbarExpanded, setToolbarExpanded] = useState(false);
   const [selectedSet, setSelectedSet] = useState<Set<string>>(new Set());
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState<HookEntry[] | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const [moveConfirm, setMoveConfirm] = useState<{
+    hook: HookEntry;
+    targetScope: "user" | "project";
+    fromLabel: string;
+    toLabel: string;
+    targetProject?: ProjectInfo;
+  } | null>(null);
+  const [projectPicker, setProjectPicker] = useState<{
+    hook: HookEntry;
+    action: "copy" | "move";
+    excludePath?: string; // when set, exclude this project from the picker (for cross-project copy/move)
+  } | null>(null);
+  const [batchPicker, setBatchPicker] = useState<{
+    hooks: HookEntry[];
+    action: "copy" | "move";
+    toScope: "user" | "project";
+  } | null>(null);
+  const [batchMoveConfirm, setBatchMoveConfirm] = useState<{
+    hooks: HookEntry[];
+    action: "copy" | "move";
+    toScope: "user" | "project";
+    targetProject?: ProjectInfo;
+  } | null>(null);
   const lastClickedRef = useRef<{ id: string; section: string } | null>(null);
+
+  /** Extract project root path from a hook's config file path.
+   *  e.g. "/foo/proj/.claude/settings.json" → "/foo/proj" */
+  const getHookProjectRoot = (hookPath: string): string => {
+    const dirs = ["/.claude/", "/.codex/", "/.qoder/"];
+    for (const dir of dirs) {
+      const idx = hookPath.indexOf(dir);
+      if (idx !== -1) return hookPath.slice(0, idx);
+    }
+    return "";
+  };
 
   const toggleSection = (key: string) => {
     setCollapsed((prev) => {
@@ -245,7 +345,7 @@ export function HookList({
     });
   };
 
-  // Filter hooks by search + CLI filter + status
+  // Filter hooks by search + CLI filter + status + scope + project
   const filteredHooks = useMemo(() => {
     if (!data) return [];
     let hooks = data.hooks;
@@ -253,6 +353,8 @@ export function HookList({
     if (q) {
       hooks = hooks.filter(
         (h) =>
+          (h.name && h.name.toLowerCase().includes(q)) ||
+          (h.description && h.description.toLowerCase().includes(q)) ||
           h.eventType.toLowerCase().includes(q) ||
           h.command.toLowerCase().includes(q) ||
           h.cli.toLowerCase().includes(q) ||
@@ -267,8 +369,22 @@ export function HookList({
     } else if (statusFilter === "disabled") {
       hooks = hooks.filter((h) => !h.enabled);
     }
+    // Scope filter — explicit whitelist (never use negation), matching SkillManager pattern
+    if (activeScope === "user") {
+      hooks = hooks.filter((h) => h.source === "user" || h.source === "system");
+    } else if (activeScope === "project") {
+      hooks = hooks.filter((h) => h.source === "project");
+    }
+    // Project filter — when a specific project is selected, only show hooks from that project.
+    // Explicitly skip on "user" scope tab (matches SkillManager's filterByProject guard).
+    if (effectiveActiveProject && activeScope !== "user") {
+      const pp = effectiveActiveProject.path.endsWith("/")
+        ? effectiveActiveProject.path
+        : effectiveActiveProject.path + "/";
+      hooks = hooks.filter((h) => h.path.startsWith(pp));
+    }
     return hooks;
-  }, [data, search, cliFilter, statusFilter]);
+  }, [data, search, cliFilter, statusFilter, activeScope, effectiveActiveProject]);
 
   // Group hooks by event type; catch unknowns in "Other"
   const grouped = useMemo(() => {
@@ -294,8 +410,10 @@ export function HookList({
 
   const totalHooks = filteredHooks.length;
 
-  // Reset batch selection when data/filter changes
-  useEffect(() => { setSelectedSet(new Set()); }, [data, search, cliFilter, statusFilter]);
+  // Reset batch selection when data source, scope tab, or project filter changes.
+  // Does NOT reset on search/cli/status filter changes — those narrow the view but
+  // the underlying data is the same; clearing selection on every keystroke is disruptive.
+  useEffect(() => { setSelectedSet(new Set()); }, [data, activeScope, effectiveActiveProject]);
 
   // Multi-select logic
   const toggleSelect = useCallback((id: string, section: string, shiftKey: boolean, metaKey: boolean) => {
@@ -392,8 +510,49 @@ export function HookList({
       if (hooks.length > 0) setBatchDeleteConfirm(hooks);
     };
 
-    return { selectAll, allSelected, anySelected, enableAll, disableAll, deleteAll };
-  }, [filteredHooks, selectedSet, onToggleHook, onDeleteHook]);
+    // Batch copy/move
+    const collectSelectedHooks = (): HookEntry[] => {
+      return filteredHooks.filter((h) => selectedSet.has(h.id) && h.source !== "system");
+    };
+
+    const canMoveCopy = selectedSet.size > 0
+      && activeScope !== "all"
+      && collectSelectedHooks().length > 0;
+    const canMoveToProject = canMoveCopy && activeScope === "user" && projects.length > 0;
+    const canMoveToUser = canMoveCopy && activeScope === "project";
+
+    const moveAll = () => {
+      const hooks = collectSelectedHooks();
+      if (hooks.length === 0) return;
+      if (activeScope === "user") {
+        if (projects.length === 0) return;
+        if (projects.length === 1) {
+          setBatchMoveConfirm({ hooks, action: "move", toScope: "project", targetProject: projects[0] });
+        } else {
+          setBatchPicker({ hooks, action: "move", toScope: "project" });
+        }
+      } else if (activeScope === "project") {
+        setBatchMoveConfirm({ hooks, action: "move", toScope: "user" });
+      }
+    };
+
+    const copyAll = () => {
+      const hooks = collectSelectedHooks();
+      if (hooks.length === 0) return;
+      if (activeScope === "user") {
+        if (projects.length === 0) return;
+        if (projects.length === 1) {
+          setBatchMoveConfirm({ hooks, action: "copy", toScope: "project", targetProject: projects[0] });
+        } else {
+          setBatchPicker({ hooks, action: "copy", toScope: "project" });
+        }
+      } else if (activeScope === "project") {
+        setBatchMoveConfirm({ hooks, action: "copy", toScope: "user" });
+      }
+    };
+
+    return { selectAll, allSelected, anySelected, enableAll, disableAll, deleteAll, canMoveToProject, canMoveToUser, moveAll, copyAll, collectSelectedHooks };
+  }, [filteredHooks, selectedSet, onToggleHook, onDeleteHook, activeScope, projects]);
 
   const clearSelection = () => setSelectedSet(new Set());
 
@@ -418,6 +577,28 @@ export function HookList({
             Hooks
           </span>
         </div>
+
+        {/* Scope tabs */}
+        <div className="mb-2">
+          <ScopeTabs
+            active={activeScope}
+            onChange={onScopeChange}
+            userCount={data?.hooks?.filter((h) => h.source !== "project").length ?? 0}
+            projectCount={data?.hooks?.filter((h) => h.source === "project").length ?? 0}
+          />
+        </div>
+
+        {/* Project selector — only on all/project tabs */}
+        {activeScope !== "user" && (
+          <div className="mb-2">
+            <ProjectSelector
+              projects={projects}
+              active={effectiveActiveProject}
+              onSelect={handleProjectChange}
+              onAddProject={onAddProject}
+            />
+          </div>
+        )}
 
         <div className="flex flex-col gap-1.5">
           <SearchInput
@@ -459,7 +640,8 @@ export function HookList({
           <span>新建</span>
         </button>
 
-        {/* Hook Store — always visible */}
+        {/* Hook Store — only on user-level tab (project-level hooks come from project configs) */}
+        {activeScope === "user" && (
         <button
           onClick={onOpenStore}
           className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-accent)] hover:bg-[var(--app-hover)] transition-colors shrink-0"
@@ -467,6 +649,7 @@ export function HookList({
         >
           <Store size={13} />
         </button>
+        )}
 
         {/* Refresh — if provided */}
         {onRefresh && (
@@ -521,6 +704,49 @@ export function HookList({
               >
                 <Ban size={13} />
               </button>
+            </>
+          )}
+
+          {/* Batch copy/move */}
+          {(batchHandlers.canMoveToProject || batchHandlers.canMoveToUser) && (
+            <>
+              <div className="h-4 border-l border-[var(--app-border)] mx-0.5 shrink-0" />
+              {batchHandlers.canMoveToProject && (
+                <>
+                  <button
+                    onClick={batchHandlers.copyAll}
+                    className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-accent)] hover:bg-[var(--app-hover)] transition-colors shrink-0"
+                    title={`复制已选的 ${selectedSet.size} 项到项目级`}
+                  >
+                    <Copy size={13} />
+                  </button>
+                  <button
+                    onClick={batchHandlers.moveAll}
+                    className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-amber)] hover:bg-[var(--app-hover)] transition-colors shrink-0"
+                    title={`移动已选的 ${selectedSet.size} 项到项目级`}
+                  >
+                    <ArrowRight size={13} />
+                  </button>
+                </>
+              )}
+              {batchHandlers.canMoveToUser && (
+                <>
+                  <button
+                    onClick={batchHandlers.copyAll}
+                    className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-accent)] hover:bg-[var(--app-hover)] transition-colors shrink-0"
+                    title={`复制已选的 ${selectedSet.size} 项到用户级`}
+                  >
+                    <Copy size={13} />
+                  </button>
+                  <button
+                    onClick={batchHandlers.moveAll}
+                    className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-amber)] hover:bg-[var(--app-hover)] transition-colors shrink-0"
+                    title={`移动已选的 ${selectedSet.size} 项到用户级`}
+                  >
+                    <ArrowLeft size={13} />
+                  </button>
+                </>
+              )}
             </>
           )}
 
@@ -609,24 +835,93 @@ export function HookList({
                     onClick={(e) => handleClick(hook, et, e)}
                     onContextMenu={isSystem ? undefined : (e) => {
                       e.preventDefault();
-                      setContextMenu({
-                        x: e.clientX,
-                        y: e.clientY,
-                        items: [
-                          {
-                            label: hook.enabled ? "禁用" : "启用",
-                            icon: hook.enabled ? <Ban size={13} /> : <Play size={13} />,
-                            onClick: () => onToggleHook?.(hook, !hook.enabled),
+                      const isProject = hook.source === "project";
+                      const targetScope = (isProject ? "user" : "project") as "user" | "project";
+                      const isTowardProject = targetScope === "project";
+                      const fromLabel = isProject
+                        ? `项目级 · ${effectiveActiveProject?.name ?? ""}`
+                        : "用户级";
+                      const noProject = isTowardProject && projects.length === 0;
+                      const singleProject = isTowardProject && projects.length === 1;
+                      const arrow = isProject ? "←" : "→";
+                      const menuItems: MenuItem[] = [
+                        {
+                          label: hook.enabled ? "禁用" : "启用",
+                          icon: hook.enabled ? <Ban size={13} /> : <Play size={13} />,
+                          onClick: () => onToggleHook?.(hook, !hook.enabled),
+                        },
+                        { separator: true },
+                        {
+                          label: isTowardProject ? "复制到项目级" : "复制到用户级",
+                          icon: <span>{arrow}</span>,
+                          disabled: noProject,
+                          onClick: () => {
+                            if (isTowardProject) {
+                              if (singleProject) {
+                                onCopyHook?.(hook, "project", projects[0]);
+                              } else {
+                                setProjectPicker({ hook, action: "copy" });
+                              }
+                            } else {
+                              onCopyHook?.(hook, "user");
+                            }
                           },
-                          { separator: true },
-                          {
-                            label: "删除",
-                            icon: <Trash2 size={13} />,
-                            danger: true,
-                            onClick: () => onDeleteHook?.(hook),
+                        },
+                        {
+                          label: isTowardProject ? "移动到项目级" : "移动到用户级",
+                          icon: <span>{arrow}</span>,
+                          disabled: noProject,
+                          onClick: () => {
+                            if (isTowardProject) {
+                              if (singleProject) {
+                                setMoveConfirm({
+                                  hook,
+                                  targetScope: "project",
+                                  fromLabel,
+                                  toLabel: `项目级 · ${projects[0].name}`,
+                                  targetProject: projects[0],
+                                });
+                              } else {
+                                setProjectPicker({ hook, action: "move" });
+                              }
+                            } else {
+                              setMoveConfirm({
+                                hook,
+                                targetScope: "user",
+                                fromLabel,
+                                toLabel: "用户级",
+                              });
+                            }
                           },
-                        ],
-                      });
+                        },
+                        // Cross-project copy/move (only for project-level hooks)
+                        ...(isProject ? [
+                          {
+                            label: "复制到其他项目…",
+                            icon: <Folder size={13} />,
+                            disabled: projects.length <= 1,
+                            onClick: () => {
+                              setProjectPicker({ hook, action: "copy", excludePath: getHookProjectRoot(hook.path) });
+                            },
+                          },
+                          {
+                            label: "移动到其他项目…",
+                            icon: <Folder size={13} />,
+                            disabled: projects.length <= 1,
+                            onClick: () => {
+                              setProjectPicker({ hook, action: "move", excludePath: getHookProjectRoot(hook.path) });
+                            },
+                          },
+                        ] : []),
+                        { separator: true },
+                        {
+                          label: "删除",
+                          icon: <Trash2 size={13} />,
+                          danger: true,
+                          onClick: () => onDeleteHook?.(hook),
+                        },
+                      ];
+                      setContextMenu({ x: e.clientX, y: e.clientY, items: menuItems });
                     }}
                   />
                 );
@@ -677,6 +972,191 @@ export function HookList({
           }
         }}
         onCancel={() => setBatchDeleteConfirm(null)}
+      />
+
+      {/* Project picker dialog — shown when multiple projects exist */}
+      <Dialog
+        open={projectPicker !== null}
+        onClose={() => setProjectPicker(null)}
+        width="340px"
+        persistent
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
+          <div className="flex items-center gap-2">
+            <Folder size={15} className="text-[var(--app-accent)]" />
+            <h3 className="font-semibold text-sm text-app-text font-mono">
+              {projectPicker?.action === "copy" ? "复制到项目" : "移动到项目"}
+            </h3>
+          </div>
+          <button
+            onClick={() => setProjectPicker(null)}
+            className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
+          >
+            <X size={14} />
+          </button>
+        </div>
+        <div className="py-1 max-h-[300px] overflow-y-auto">
+          {(() => {
+            const excludePath = projectPicker?.excludePath;
+            const filtered = excludePath
+              ? projects.filter((p) => p.path !== excludePath)
+              : projects;
+            if (filtered.length === 0) {
+              return (
+                <div className="px-4 py-4 text-center text-2xs text-[var(--app-text-muted)] font-mono">
+                  没有其他项目可选
+                </div>
+              );
+            }
+            return filtered.map((p) => (
+            <button
+              key={p.name}
+              onClick={() => {
+                const hook = projectPicker!.hook;
+                const isProject = hook.source === "project";
+                const fromLabel = isProject
+                  ? `项目级 · ${activeProject?.name ?? ""}`
+                  : "用户级";
+                if (projectPicker!.action === "copy") {
+                  onCopyHook?.(hook, "project", p);
+                } else {
+                  setMoveConfirm({
+                    hook,
+                    targetScope: "project",
+                    fromLabel,
+                    toLabel: `项目级 · ${p.name}`,
+                    targetProject: p,
+                  });
+                }
+                setProjectPicker(null);
+              }}
+              className="w-full text-left px-4 py-2.5 flex items-center gap-3 text-xs font-mono
+                text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]
+                transition-colors group"
+            >
+              <Folder size={13} className="shrink-0 text-[var(--app-text-muted)] group-hover:text-[var(--app-accent)] transition-colors" />
+              <div className="flex-1 min-w-0">
+                <div className="truncate">{p.name}</div>
+                <div className="text-2xs text-[var(--app-text-muted)] truncate mt-0.5 opacity-60">{p.path}</div>
+              </div>
+              <span className="text-2xs text-[var(--app-accent)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0 font-mono">
+                {projectPicker?.action === "copy" ? "复制" : "移动"}
+              </span>
+            </button>
+            ));
+          })()}
+        </div>
+        <div className="border-t border-[var(--app-border-light)] px-4 py-2">
+          <button
+            onClick={() => {
+              setProjectPicker(null);
+              onAddProject();
+            }}
+            className="w-full text-left px-2 py-1.5 flex items-center gap-2 text-xs font-mono
+              text-[var(--app-text-muted)] hover:text-[var(--app-accent)] hover:bg-[var(--app-hover)]
+              transition-colors"
+          >
+            <Plus size={13} />
+            <span>注册新项目...</span>
+          </button>
+        </div>
+      </Dialog>
+
+      {/* Move confirmation dialog */}
+      <ConfirmDialog
+        open={moveConfirm !== null}
+        title={`移动 ${(moveConfirm?.hook.name || moveConfirm?.hook.eventType) ?? ""}`}
+        message={`此操作将从 ${moveConfirm?.fromLabel ?? ""} 移除 "${(moveConfirm?.hook.name || moveConfirm?.hook.eventType) ?? ""}"，并添加到 ${moveConfirm?.toLabel ?? ""}。${moveConfirm?.targetScope === "project" ? "\n\n项目级资源可提交到 Git 与团队共享。" : ""}`}
+        confirmLabel="确认移动"
+        variant="primary"
+        onConfirm={() => {
+          if (moveConfirm) {
+            onMoveHook?.(moveConfirm.hook, moveConfirm.targetScope, moveConfirm.targetProject);
+            setMoveConfirm(null);
+          }
+        }}
+        onCancel={() => setMoveConfirm(null)}
+      />
+
+      {/* Batch project picker dialog */}
+      <Dialog
+        open={batchPicker !== null}
+        onClose={() => setBatchPicker(null)}
+        width="340px"
+        persistent
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
+          <div className="flex items-center gap-2">
+            <Folder size={15} className="text-[var(--app-accent)]" />
+            <h3 className="font-semibold text-sm text-app-text font-mono">
+              批量{batchPicker?.action === "copy" ? "复制" : "移动"}到项目
+            </h3>
+          </div>
+          <button onClick={() => setBatchPicker(null)} className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+        <div className="px-4 py-2 text-2xs text-[var(--app-text-muted)] font-mono border-b border-[var(--app-border-light)]">
+          已选 {batchPicker?.hooks.length ?? 0} 项 Hook
+        </div>
+        <div className="py-1 max-h-[300px] overflow-y-auto">
+          {projects.map((p) => (
+            <button
+              key={p.name}
+              onClick={() => {
+                if (batchPicker) {
+                  setBatchMoveConfirm({
+                    hooks: batchPicker.hooks,
+                    action: batchPicker.action,
+                    toScope: batchPicker.toScope,
+                    targetProject: p,
+                  });
+                }
+                setBatchPicker(null);
+              }}
+              className="w-full text-left px-4 py-2.5 flex items-center gap-3 text-xs font-mono text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)] transition-colors group"
+            >
+              <Folder size={13} className="shrink-0 text-[var(--app-text-muted)] group-hover:text-[var(--app-accent)] transition-colors" />
+              <div className="flex-1 min-w-0">
+                <div className="truncate">{p.name}</div>
+                <div className="text-2xs text-[var(--app-text-muted)] truncate mt-0.5 opacity-60">{p.path}</div>
+              </div>
+              <span className="text-2xs text-[var(--app-accent)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0 font-mono">
+                选择
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="border-t border-[var(--app-border-light)] px-4 py-2">
+          <button
+            onClick={() => { setBatchPicker(null); onAddProject(); }}
+            className="w-full text-left px-2 py-1.5 flex items-center gap-2 text-xs font-mono text-[var(--app-text-muted)] hover:text-[var(--app-accent)] hover:bg-[var(--app-hover)] transition-colors"
+          >
+            <Plus size={13} />
+            <span>注册新项目...</span>
+          </button>
+        </div>
+      </Dialog>
+
+      {/* Batch move/copy confirmation dialog */}
+      <ConfirmDialog
+        open={batchMoveConfirm !== null}
+        title={`批量${batchMoveConfirm?.action === "copy" ? "复制" : "移动"}`}
+        message={`确定要将已选的 ${batchMoveConfirm?.hooks.length ?? 0} 项 Hook${batchMoveConfirm?.action === "copy" ? "复制" : "移动"}到 ${batchMoveConfirm?.toScope === "project" ? `项目级 · ${batchMoveConfirm?.targetProject?.name ?? ""}` : "用户级"} 吗？\n\n${batchMoveConfirm?.action === "move" ? "移动后原位置 Hook 将被删除，可通过撤销恢复。" : ""}`}
+        confirmLabel={`确认${batchMoveConfirm?.action === "copy" ? "复制" : "移动"}`}
+        variant="primary"
+        onConfirm={() => {
+          if (batchMoveConfirm) {
+            if (batchMoveConfirm.action === "copy") {
+              onBatchCopyHooks?.(batchMoveConfirm.hooks, batchMoveConfirm.toScope, batchMoveConfirm.targetProject);
+            } else {
+              onBatchMoveHooks?.(batchMoveConfirm.hooks, batchMoveConfirm.toScope, batchMoveConfirm.targetProject);
+            }
+            setBatchMoveConfirm(null);
+            setSelectedSet(new Set());
+          }
+        }}
+        onCancel={() => setBatchMoveConfirm(null)}
       />
 
       {/* Context menu */}

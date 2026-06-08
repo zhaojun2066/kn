@@ -4,6 +4,7 @@ mod hook_manager;
 mod hook_meta;
 mod hook_store;
 mod profile_cmd;
+mod project_manager;
 mod pty;
 mod skill_manager;
 mod usage;
@@ -109,6 +110,7 @@ pub fn run() {
             commands::unset_env_var,
             commands::set_default_profile,
             commands::get_default_profile,
+            commands::get_home_dir,
             commands::init_profiles,
             commands::ensure_shell_rc,
             commands::write_file,
@@ -164,10 +166,20 @@ pub fn run() {
             agent_manager::toggle_agent,
             agent_manager::read_agent_content,
             skill_manager::read_skill_content,
+            skill_manager::move_skill_file,
+            skill_manager::copy_skill_file,
+            skill_manager::undo_move_skill,
+            project_manager::list_projects,
+            project_manager::add_project,
+            project_manager::remove_project,
             hook_manager::scan_hooks,
             hook_manager::toggle_hook,
             hook_manager::delete_hook,
             hook_manager::create_hook,
+            hook_manager::move_hook_entry,
+            hook_manager::copy_hook_entry,
+            hook_manager::undo_move_hook,
+            hook_manager::restore_hook_snapshot,
             hook_meta::get_hook_meta,
             hook_meta::set_hook_meta,
             hook_meta::delete_hook_meta,

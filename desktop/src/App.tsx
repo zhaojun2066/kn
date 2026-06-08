@@ -8,6 +8,7 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { NameDialog } from "./components/NameDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
+import { QuickSwitcher } from "./components/QuickSwitcher";
 import { UsagePanel } from "./components/UsagePanel";
 import { ActivityBar, type ActivityKey } from "./components/ActivityBar";
 import { SkillManager, type SkillManagerData, type SelectedItem, type BatchToggleItem } from "./components/SkillManager";
@@ -31,13 +32,15 @@ import { useProfiles } from "./hooks/useProfiles";
 import { useTerminal } from "./hooks/useTerminal";
 import { useUsage } from "./hooks/useUsage";
 import { useTheme } from "./hooks/useTheme";
+import { useProjects } from "./hooks/useProjects";
+import type { ScopeTab } from "./lib/types";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { X, AlertCircle, CheckCircle2 } from "lucide-react";
 
-type Toast = { id: number; type: "error" | "success"; message: string };
+type Toast = { id: number; type: "error" | "success"; message: string; undoAction?: () => void; undoLabel?: string };
 
 interface EnvCheckItem { name: string; label: string; status: "ok" | "warn" | "missing"; detail: string; install_cmd?: string; }
 type EnvCheckResult = { items: EnvCheckItem[]; all_ok: boolean } | null;
@@ -51,6 +54,8 @@ export function App() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showQuickSwitcher, setShowQuickSwitcher] = useState(false);
+  const [quickSwitcherMode, setQuickSwitcherMode] = useState<"profile" | "history">("profile");
   const [importData, setImportData] = useState<{ name: string; desc?: string; env: Record<string, string> } | null>(null);
   const [scanData, setScanData] = useState<ScanProfile[] | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -72,11 +77,80 @@ export function App() {
   const [activeActivity, setActiveActivity] = useState<ActivityKey>("profile");
   const [skillData, setSkillData] = useState<SkillManagerData | null>(null);
   const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
+  // Baseline counts from a full scan (user + all projects), unaffected by activeProject filter
+  const [baselineCounts, setBaselineCounts] = useState<{ user: number; project: number }>({ user: 0, project: 0 });
   const [showGraph, setShowGraph] = useState(false);
+
+  // Hook overwrite confirmation — shown before move/copy when target already has the same hook
+  type OverwriteConfirm = {
+    hookName: string;
+    targetLabel: string;
+    onConfirm: () => void;
+  };
+  const [overwriteConfirm, setOverwriteConfirm] = useState<OverwriteConfirm | null>(null);
   const [graphData, setGraphData] = useState<DependencyGraphData | null>(null);
   const [hookData, setHookData] = useState<HookManagerData | null>(null);
   const [hookDataLoading, setHookDataLoading] = useState(false);
   const [selectedHook, setSelectedHook] = useState<HookEntry | null>(null);
+  const [activeScope, setActiveScope] = useState<ScopeTab>("user");
+  const { projects, activeProject, setActiveProject, addProject } = useProjects();
+
+  // Compute scan paths: null = user only, or a list of project paths to scan
+  const scanProjectPaths = useMemo<(string | null)[]>(() => {
+    if (activeScope === "user") return [null];
+    if (activeScope === "project") {
+      if (activeProject) return [activeProject.path];
+      // "全部项目" — scan all registered projects
+      if (projects.length > 0) return projects.map(p => p.path);
+      return [];
+    }
+    // "all" scope
+    if (activeProject) return [null, activeProject.path]; // user + specific project
+    if (projects.length > 0) return [null, ...projects.map(p => p.path)]; // user + all projects
+    return [null]; // user only, no projects registered
+  }, [activeScope, activeProject, projects]);
+
+  // Hook scan paths — always include user-level + ALL projects so tab badge
+  // counts are correct regardless of which scope tab is active.
+  // Unlike scanProjectPaths (which changes per scope), this is stable and
+  // ensures projectCount never drops to 0 when viewing the "user" tab.
+  const hookScanPaths = useMemo<(string | null)[]>(() => {
+    if (projects.length === 0) return [null];
+    return [null, ...projects.map(p => p.path)];
+  }, [projects]);
+
+  // Backward-compatible single project path (for callbacks that need one path)
+  const scanProjectPath = useMemo(() => {
+    if (scanProjectPaths.length === 0) return null;
+    if (scanProjectPaths.length === 1) return scanProjectPaths[0];
+    return null; // multi-project mode — individual re-scans use user-level
+  }, [scanProjectPaths]);
+
+  // Keep a ref so callbacks always read current value
+  const scanProjectPathRef = useRef(scanProjectPath);
+  scanProjectPathRef.current = scanProjectPath;
+
+  // Refresh baseline counts from a full scan (user + all projects), insensitive to activeProject
+  const refreshBaselineCounts = useCallback(async () => {
+    try {
+      const allPaths: (string | null)[] = [null, ...projects.map(p => p.path)];
+      const results = await Promise.all(
+        allPaths.map(p => invoke<SkillManagerData>("scan_skills", { projectPath: p }))
+      );
+      // results[0] = user-level scan (null path); rest = per-project scans
+      // Project scans also include user-level items, so only count user items from the null scan
+      const userCount = results[0]?.standaloneSkills.filter(s => !s.id.includes(":project-")).length ?? 0;
+      let projectCount = 0;
+      for (const r of results) {
+        projectCount += r.standaloneSkills.filter(s => s.id.includes(":project-")).length;
+      }
+      setBaselineCounts({ user: userCount, project: projectCount });
+    } catch { /* ignore */ }
+  }, [projects]);
+
+  // Initial baseline counts & refresh after skillData mutations
+  useEffect(() => { refreshBaselineCounts(); }, [refreshBaselineCounts, skillData]);
+
   const [hookWizardOpen, setHookWizardOpen] = useState(false);
   const [hookStoreOpen, setHookStoreOpen] = useState(false);
   const [skillDataLoading, setSkillDataLoading] = useState(false);
@@ -139,6 +213,60 @@ export function App() {
     invoke("ensure_usage_hooks").catch(() => {});
   }, []);
 
+  /** Scan skills + agents across multiple project paths, merge, and return. */
+  const scanMultiProject = useCallback(async (paths: (string | null)[]) => {
+    if (paths.length === 0) {
+      const empty: SkillManagerData = { plugins: [], standaloneSkills: [], systemSkills: [], commands: [] };
+      return { skills: empty, agents: { agents: [] as AgentManagerData["agents"] } };
+    }
+    // Single path — simple case
+    if (paths.length === 1) {
+      const [skills, agents] = await Promise.all([
+        invoke<SkillManagerData>("scan_skills", { projectPath: paths[0] }),
+        invoke<AgentManagerData>("scan_agents", { projectPath: paths[0] }),
+      ]);
+      return { skills, agents };
+    }
+    // Multiple paths: determine if user-level is included (null in the array)
+    const hasUserLevel = paths[0] === null;
+    const projectPaths: string[] = hasUserLevel
+      ? (paths.slice(1) as string[])
+      : (paths as string[]);
+
+    // Baseline: user-level scan (if included), or empty for project-only scans
+    const [baseSkills, baseAgents] = hasUserLevel
+      ? await Promise.all([
+          invoke<SkillManagerData>("scan_skills", { projectPath: null }),
+          invoke<AgentManagerData>("scan_agents", { projectPath: null }),
+        ])
+      : [
+          { plugins: [] as any[], standaloneSkills: [] as any[], systemSkills: [] as any[], commands: [] as any[] } as SkillManagerData,
+          { agents: [] as any[] } as AgentManagerData,
+        ];
+
+    const mergedSkills: SkillManagerData = {
+      plugins: [...baseSkills.plugins],
+      standaloneSkills: [...baseSkills.standaloneSkills],
+      systemSkills: [...baseSkills.systemSkills],
+      commands: [...(baseSkills.commands || [])],
+    };
+    const mergedAgents: AgentManagerData = { agents: [...baseAgents.agents] };
+
+    // Scan each project and merge only project-scoped items
+    const projResults = await Promise.all(projectPaths.map(pp =>
+      Promise.all([
+        invoke<SkillManagerData>("scan_skills", { projectPath: pp }),
+        invoke<AgentManagerData>("scan_agents", { projectPath: pp }),
+      ])
+    ));
+    for (const [pSkills, pAgents] of projResults) {
+      mergedSkills.standaloneSkills.push(...pSkills.standaloneSkills.filter(s => s.id.includes(":project-")));
+      mergedSkills.commands.push(...(pSkills.commands || []).filter(c => c.id.includes(":project-")));
+      mergedAgents.agents.push(...pAgents.agents.filter(a => a.source === "project"));
+    }
+    return { skills: mergedSkills, agents: mergedAgents };
+  }, []);
+
   // Load skill/plugin data when switching to skills view
   useEffect(() => {
     if (activeActivity !== "skills") {
@@ -146,15 +274,14 @@ export function App() {
       return;
     }
     setSkillDataLoading(true);
-    Promise.all([
-      invoke<SkillManagerData>("scan_skills"),
-      invoke<AgentManagerData>("scan_agents"),
-    ])
-      .then(async ([skills, agents]) => {
+    scanMultiProject(scanProjectPaths)
+      .then(async ({ skills, agents }) => {
         setSkillData(skills);
         setAgentData(agents);
         setSelectedSkillItem(null);
-        // Pre-load dependency graph for impact analysis & call chain panel
+        // Refresh baseline counts in background (don't block)
+        refreshBaselineCounts();
+        // Pre-load dependency graph
         try {
           const graph = await invoke<DependencyGraphData>("build_dependency_graph", {
             skillsData: skills,
@@ -168,11 +295,46 @@ export function App() {
       })
       .catch(() => { setSkillData(null); setAgentData(null); })
       .finally(() => setSkillDataLoading(false));
-  }, [activeActivity]);
+  }, [activeActivity, scanProjectPaths, scanMultiProject]);
 
-  // Load hook data when switching to hooks view
+  // ── Hook multi-project scanning ───────────────────────────
+  // Like scanMultiProject for skills, this scans all relevant project paths
+  // and merges results, so project-level hooks are visible when a project is selected.
+  const scanMultiProjectHooks = useCallback(async (paths: (string | null)[]) => {
+    if (paths.length === 0) {
+      return { hooks: [] as HookEntry[] };
+    }
+    // Single path — simple case (user-level or single project)
+    if (paths.length === 1) {
+      const data = await invoke<HookManagerData>("scan_hooks", { projectPath: paths[0] });
+      return data;
+    }
+    // Multiple paths: user-level baseline + per-project scans
+    const hasUserLevel = paths[0] === null;
+    const projectPaths: string[] = hasUserLevel
+      ? (paths.slice(1) as string[])
+      : (paths as string[]);
+
+    // Baseline scan (user-level)
+    const baseData: HookManagerData = hasUserLevel
+      ? await invoke<HookManagerData>("scan_hooks", { projectPath: null })
+      : { hooks: [] };
+
+    const merged: HookEntry[] = [...baseData.hooks];
+
+    // Per-project scans — only keep project-scoped hooks (source === "project")
+    const projResults = await Promise.all(
+      projectPaths.map(pp => invoke<HookManagerData>("scan_hooks", { projectPath: pp }))
+    );
+    for (const pr of projResults) {
+      merged.push(...pr.hooks.filter(h => h.source === "project"));
+    }
+    return { hooks: merged } as HookManagerData;
+  }, []);
+
+  // Load hook data when switching to hooks view, or when scope/project changes
   const refreshHooks = useCallback(() => {
-    return invoke<HookManagerData>("scan_hooks")
+    return scanMultiProjectHooks(hookScanPaths)
       .then((data) => {
         setHookData(data);
         setSelectedHook((prev) => {
@@ -182,7 +344,7 @@ export function App() {
         return data;
       })
       .catch(() => {});
-  }, []);
+  }, [scanMultiProjectHooks, hookScanPaths]);
 
   useEffect(() => {
     if (activeActivity !== "hooks") {
@@ -190,7 +352,7 @@ export function App() {
       return;
     }
     setHookDataLoading(true);
-    invoke<HookManagerData>("scan_hooks")
+    scanMultiProjectHooks(hookScanPaths)
       .then((data) => {
         setHookData(data);
         setSelectedHook(null);
@@ -200,7 +362,7 @@ export function App() {
         setHookData(null);
       })
       .finally(() => setHookDataLoading(false));
-  }, [activeActivity]);
+  }, [activeActivity, scanMultiProjectHooks, hookScanPaths]);
 
   // Batch hook operations
   const handleToggleHook = useCallback(async (hook: HookEntry, enabled: boolean) => {
@@ -211,24 +373,11 @@ export function App() {
         groupIdx: hook.groupIdx,
         hookIdx: hook.hookIdx,
         enabled,
+        path: hook.path,
       });
       refreshHooks();
     } catch (e) {
       console.error("Toggle hook failed:", e);
-    }
-  }, [refreshHooks]);
-
-  const handleDeleteHook = useCallback(async (hook: HookEntry) => {
-    try {
-      await invoke("delete_hook", {
-        cli: hook.cli,
-        eventType: hook.eventType,
-        groupIdx: hook.groupIdx,
-        hookIdx: hook.hookIdx,
-      });
-      refreshHooks();
-    } catch (e) {
-      console.error("Delete hook failed:", e);
     }
   }, [refreshHooks]);
 
@@ -268,6 +417,541 @@ export function App() {
   }, []);
 
   const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
+
+  // ── Hook Delete ───────────────────────────────────────────
+
+  const handleDeleteHook = useCallback(async (hook: HookEntry) => {
+    try {
+      await invoke("delete_hook", {
+        cli: hook.cli,
+        eventType: hook.eventType,
+        groupIdx: hook.groupIdx,
+        hookIdx: hook.hookIdx,
+        path: hook.path,
+      });
+      refreshHooks();
+    } catch (e) {
+      addToast("error", `删除 Hook 失败: ${String(e).slice(0, 120)}`);
+    }
+  }, [refreshHooks, addToast]);
+
+  // ── Hook Move / Copy ──
+
+  // Keep a ref to hookData for use in callbacks that shouldn't re-create on data change
+  const hookDataRef = useRef(hookData);
+  hookDataRef.current = hookData;
+
+  /** Compute the target config file path for a hook move/copy. */
+  const getHookTargetPath = useCallback((cli: string, toScope: "user" | "project", sourcePath: string, targetProjectPath?: string): string => {
+    const configFile = cli === "codex" ? "config.toml" : "settings.json";
+    // Qoder: user-level = .qoder-cn, project-level = .qoder (different names!)
+    const cliDirUser = cli === "qoder" ? ".qoder-cn" : cli === "codex" ? ".codex" : ".claude";
+    const cliDirProject = cli === "qoder" ? ".qoder" : cli === "codex" ? ".codex" : ".claude";
+
+    // Project scope: use target project path directly
+    if (toScope === "project" && targetProjectPath) {
+      return `${targetProjectPath}/${cliDirProject}/${configFile}`;
+    }
+
+    // User scope: find home directory from an existing user-level hook of the SAME CLI
+    const data = hookDataRef.current;
+    const userHook = data?.hooks?.find(
+      (h) => h.cli === cli && h.source !== "project"
+    );
+    if (userHook) {
+      const base = userHook.path.split(`/${cliDirUser}/`)[0];
+      if (base && base !== userHook.path) {
+        return `${base}/${cliDirUser}/${configFile}`;
+      }
+    }
+    // Fallback: derive from sourcePath (works when source is already user-level)
+    if (sourcePath.includes(`/${cliDirUser}/`)) {
+      const base = sourcePath.split(`/${cliDirUser}/`)[0];
+      return `${base}/${cliDirUser}/${configFile}`;
+    }
+    return `${cliDirUser}/${configFile}`;
+  }, []);
+
+  // Check if a hook with the same CLI + eventType + command already exists at the target path
+  const findDuplicateAtTarget = useCallback((hook: HookEntry, toPath: string): HookEntry | undefined => {
+    return hookData?.hooks.find((h) =>
+      h.cli === hook.cli &&
+      h.eventType === hook.eventType &&
+      h.command === hook.command &&
+      h.path === toPath
+    );
+  }, [hookData]);
+
+  const handleMoveHook = useCallback(async (hook: HookEntry, toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
+    const fromScope = hook.source === "project" ? "project" : "user";
+    const toPath = getHookTargetPath(hook.cli, toScope, hook.path, targetProject?.path);
+    const name = hook.name || hook.matcher || hook.eventType;
+    const targetLabel = toScope === "user" ? "用户级" : "项目级";
+
+    // Check if target already has an identical hook
+    const dup = findDuplicateAtTarget(hook, toPath);
+    if (dup) {
+      setOverwriteConfirm({
+        hookName: name,
+        targetLabel,
+        onConfirm: async () => {
+          setOverwriteConfirm(null);
+          try {
+            await invoke<any>("move_hook_entry", {
+              cli: hook.cli, eventType: hook.eventType,
+              groupIdx: hook.groupIdx, hookIdx: hook.hookIdx,
+              fromPath: hook.path, toPath, fromScope, toScope,
+            });
+            refreshHooks();
+            addToast("success", `已覆盖 "${name}" → ${targetLabel}`);
+          } catch (e) {
+            addToast("error", `移动 Hook 失败: ${String(e).slice(0, 120)}`);
+          }
+        },
+      });
+      return;
+    }
+
+    try {
+      const undoInfo = await invoke<any>("move_hook_entry", {
+        cli: hook.cli,
+        eventType: hook.eventType,
+        groupIdx: hook.groupIdx,
+        hookIdx: hook.hookIdx,
+        fromPath: hook.path,
+        toPath,
+        fromScope,
+        toScope,
+      });
+
+      refreshHooks();
+
+      setToasts((prev) => {
+        const id = ++toastIdRef.current;
+        return [...prev, {
+          id,
+          type: "success" as const,
+          message: `已移动 "${name}" → ${targetLabel}`,
+          undoAction: async () => {
+            await invoke("undo_move_hook", undoInfo);
+            refreshHooks();
+          },
+        } as any];
+      });
+    } catch (e) {
+      addToast("error", `移动 Hook 失败: ${String(e).slice(0, 120)}`);
+    }
+  }, [getHookTargetPath, findDuplicateAtTarget, refreshHooks, addToast]);
+
+  const handleCopyHook = useCallback(async (hook: HookEntry, toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
+    const toPath = getHookTargetPath(hook.cli, toScope, hook.path, targetProject?.path);
+    const name = hook.name || hook.matcher || hook.eventType;
+    const targetLabel = toScope === "user" ? "用户级" : "项目级";
+
+    // Check if target already has an identical hook
+    const dup = findDuplicateAtTarget(hook, toPath);
+    if (dup) {
+      setOverwriteConfirm({
+        hookName: name,
+        targetLabel,
+        onConfirm: async () => {
+          setOverwriteConfirm(null);
+          try {
+            await invoke("copy_hook_entry", {
+              cli: hook.cli, eventType: hook.eventType,
+              groupIdx: hook.groupIdx, hookIdx: hook.hookIdx,
+              fromPath: hook.path, toPath,
+            });
+            refreshHooks();
+            addToast("success", `已覆盖复制 "${name}" → ${targetLabel}`);
+          } catch (e) {
+            addToast("error", `复制 Hook 失败: ${String(e).slice(0, 120)}`);
+          }
+        },
+      });
+      return;
+    }
+
+    try {
+      await invoke("copy_hook_entry", {
+        cli: hook.cli,
+        eventType: hook.eventType,
+        groupIdx: hook.groupIdx,
+        hookIdx: hook.hookIdx,
+        fromPath: hook.path,
+        toPath,
+      });
+
+      await refreshHooks();
+      addToast("success", `已复制 "${name}" → ${targetLabel}`);
+    } catch (e) {
+      addToast("error", `复制 Hook 失败: ${String(e).slice(0, 120)}`);
+    }
+  }, [getHookTargetPath, findDuplicateAtTarget, refreshHooks, addToast]);
+
+  const handleBatchMoveHooks = useCallback(async (hooks: HookEntry[], toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
+    let ok = 0;
+    let failed = 0;
+    // Process in reverse order (descending groupIdx, descending hookIdx) within each
+    // event_type to prevent index drift — removing an earlier hook shifts later indices.
+    const sorted = [...hooks].sort((a, b) => {
+      if (a.eventType !== b.eventType) return a.eventType.localeCompare(b.eventType);
+      if (a.groupIdx !== b.groupIdx) return b.groupIdx - a.groupIdx; // descending
+      return b.hookIdx - a.hookIdx; // descending
+    });
+    for (const hook of sorted) {
+      try {
+        const fromScope = hook.source === "project" ? "project" : "user";
+        const toPath = getHookTargetPath(hook.cli, toScope, hook.path, targetProject?.path);
+        await invoke("move_hook_entry", {
+          cli: hook.cli,
+          eventType: hook.eventType,
+          groupIdx: hook.groupIdx,
+          hookIdx: hook.hookIdx,
+          fromPath: hook.path,
+          toPath,
+          fromScope,
+          toScope,
+        });
+        ok++;
+      } catch (e) {
+        failed++;
+        console.error(`Batch move hook failed:`, e);
+      }
+    }
+    refreshHooks();
+    if (failed === 0) {
+      addToast("success", `已移动 ${ok} 项 Hook → ${toScope === "user" ? "用户级" : "项目级"}`);
+    } else {
+      addToast("error", `移动完成: ${ok} 成功, ${failed} 失败`);
+    }
+  }, [getHookTargetPath, refreshHooks, addToast]);
+
+  const handleBatchCopyHooks = useCallback(async (hooks: HookEntry[], toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
+    let ok = 0;
+    let failed = 0;
+    for (const hook of hooks) {
+      try {
+        const toPath = getHookTargetPath(hook.cli, toScope, hook.path, targetProject?.path);
+
+        // Direct copy — reads source snapshot, writes to target, never touches source file
+        await invoke("copy_hook_entry", {
+          cli: hook.cli,
+          eventType: hook.eventType,
+          groupIdx: hook.groupIdx,
+          hookIdx: hook.hookIdx,
+          fromPath: hook.path,
+          toPath,
+        });
+
+        ok++;
+      } catch (e) {
+        failed++;
+        console.error(`Batch copy hook failed:`, e);
+      }
+    }
+    refreshHooks();
+    if (failed === 0) {
+      addToast("success", `已复制 ${ok} 项 Hook → ${toScope === "user" ? "用户级" : "项目级"}`);
+    } else {
+      addToast("error", `复制完成: ${ok} 成功, ${failed} 失败`);
+    }
+  }, [getHookTargetPath, refreshHooks, addToast]);
+
+  // ── Project management ──
+  const handleAddProject = useCallback(async () => {
+    try {
+      const selectedPath = await tauriOpen({
+        directory: true,
+        multiple: false,
+        title: "选择项目目录",
+      });
+      if (!selectedPath) return;
+      const name = selectedPath.split("/").pop() || selectedPath;
+      await addProject(name, selectedPath);
+      addToast("success", `项目 "${name}" 已注册`);
+    } catch (e) {
+      addToast("error", `注册项目失败: ${String(e).slice(0, 120)}`);
+    }
+  }, [addProject, addToast]);
+
+  // ── Move / Copy resource ──
+
+  /** Map resourceType to the correct subdirectory name. */
+  const subdirForType = (rt: string): string => {
+    switch (rt) {
+      case "skill": return "skills";
+      case "agent": return "agents";
+      case "command": return "commands";
+      default: return "skills";
+    }
+  };
+
+  const handleMoveResource = useCallback(async (item: SelectedItem, toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
+    try {
+      const data = item.data as any;
+      const isProject = data.projectName !== undefined || data.id?.includes(":project-");
+      const fromScope = isProject ? "project" : "user";
+      const resourceType = item.type === "standalone" ? "skill" : item.type === "agent" ? "agent" : "command";
+      const subdir = subdirForType(resourceType);
+
+      // Determine dest directory
+      let destDir: string;
+      if (toScope === "user") {
+        // Use home directory — srcPath.split(...)[0] would give project root for project-level files
+        const srcPath = data.path as string;
+        const homeDir = await invoke<string>("get_home_dir");
+        // Detect CLI type from source path; handles both .qoder/ (project) and .qoder-cn/ (user) variants
+        if (srcPath.includes("/.codex/")) {
+          destDir = `${homeDir}/.codex/${subdir}`;
+        } else if (srcPath.includes("/.qoder-cn/") || srcPath.includes("/.qoder/")) {
+          destDir = `${homeDir}/.qoder-cn/${subdir}`;
+        } else {
+          destDir = `${homeDir}/.claude/${subdir}`;
+        }
+      } else {
+        // Project scope — use provided targetProject or fall back to activeProject
+        const project = targetProject || activeProject;
+        if (!project) { addToast("error", "请先选择目标项目"); return; }
+        const cli = data.cli as string || "claude";
+        if (cli === "codex" || cli === "cx") {
+          destDir = `${project.path}/.codex/${subdir}`;
+        } else if (cli === "qoder") {
+          // Qoder project-level uses .qoder (not .qoder-cn like user-level ~/.qoder-cn/)
+          destDir = `${project.path}/.qoder/${subdir}`;
+        } else {
+          destDir = `${project.path}/.claude/${subdir}`;
+        }
+      }
+
+      const undoInfo = await invoke<any>("move_skill_file", {
+        sourcePath: data.path,
+        destDir,
+        resourceName: data.name,
+        resourceType,
+        fromScope,
+        toScope,
+      });
+
+      // Re-scan
+      const [skills, agents] = await Promise.all([
+        invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPath }),
+        invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPath }),
+      ]);
+      setSkillData(skills);
+      setAgentData(agents);
+
+      // Show undo toast
+      setToasts((prev) => {
+        const id = ++toastIdRef.current;
+        return [...prev, {
+          id,
+          type: "success",
+          message: `已移动 "${data.name}" → ${toScope === "user" ? "用户级" : "项目级"}`,
+          undoAction: async () => {
+            await invoke("undo_move_skill", {
+              backupPath: undoInfo.backupPath,
+              originalPath: undoInfo.originalPath,
+              destPath: undoInfo.destPath,
+              contentFingerprint: undoInfo.contentFingerprint,
+            });
+            const [s, a] = await Promise.all([
+              invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
+              invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
+            ]);
+            setSkillData(s);
+            setAgentData(a);
+          },
+        } as any];
+      });
+    } catch (e) {
+      addToast("error", `移动失败: ${String(e).slice(0, 120)}`);
+    }
+  }, [activeProject, scanProjectPath, addToast]);
+
+  const handleCopyResource = useCallback(async (item: SelectedItem, toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
+    try {
+      const data = item.data as any;
+      const srcPath = data.path as string;
+      const resourceType = item.type === "standalone" ? "skill" : item.type === "agent" ? "agent" : "command";
+      const subdir = subdirForType(resourceType);
+
+      let destDir: string;
+      if (toScope === "project") {
+        const project = targetProject || activeProject;
+        if (!project) { addToast("error", "请先选择目标项目"); return; }
+        const cli = data.cli as string || "claude";
+        if (cli === "codex" || cli === "cx") {
+          destDir = `${project.path}/.codex/${subdir}`;
+        } else if (cli === "qoder") {
+          // Qoder project-level uses .qoder (not .qoder-cn like user-level ~/.qoder-cn/)
+          destDir = `${project.path}/.qoder/${subdir}`;
+        } else {
+          destDir = `${project.path}/.claude/${subdir}`;
+        }
+      } else {
+        // Use home directory — srcPath.split(...)[0] would give project root for project-level files
+        const homeDir = await invoke<string>("get_home_dir");
+        // Detect CLI type from source path; handles both .qoder/ (project) and .qoder-cn/ (user) variants
+        if (srcPath.includes("/.codex/")) {
+          destDir = `${homeDir}/.codex/${subdir}`;
+        } else if (srcPath.includes("/.qoder-cn/") || srcPath.includes("/.qoder/")) {
+          destDir = `${homeDir}/.qoder-cn/${subdir}`;
+        } else {
+          destDir = `${homeDir}/.claude/${subdir}`;
+        }
+      }
+
+      await invoke("copy_skill_file", {
+        sourcePath: data.path,
+        destDir,
+        resourceName: data.name,
+      });
+
+      const [skills, agents] = await Promise.all([
+        invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPath }),
+        invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPath }),
+      ]);
+      setSkillData(skills);
+      setAgentData(agents);
+
+      addToast("success", `已复制 "${data.name}" → ${toScope === "user" ? "用户级" : "项目级"}`);
+    } catch (e) {
+      addToast("error", `复制失败: ${String(e).slice(0, 120)}`);
+    }
+  }, [activeProject, scanProjectPath, addToast]);
+
+  // ── Batch Move / Copy ──
+  const handleBatchMove = useCallback(async (items: SelectedItem[], toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
+    const total = items.length;
+    let ok = 0;
+    let failed = 0;
+    for (const item of items) {
+      try {
+        const data = item.data as any;
+        const isProject = data.projectName !== undefined || data.id?.includes(":project-");
+        const fromScope = isProject ? "project" : "user";
+        const resourceType = item.type === "standalone" ? "skill" : item.type === "agent" ? "agent" : "command";
+        const subdir = subdirForType(resourceType);
+
+        let destDir: string;
+        if (toScope === "user") {
+          // Use home directory — srcPath.split(...)[0] would give project root for project-level files
+          const srcPath = data.path as string;
+          const homeDir = await invoke<string>("get_home_dir");
+          // Detect CLI type from source path; handles both .qoder/ (project) and .qoder-cn/ (user) variants
+          if (srcPath.includes("/.codex/")) {
+            destDir = `${homeDir}/.codex/${subdir}`;
+          } else if (srcPath.includes("/.qoder-cn/") || srcPath.includes("/.qoder/")) {
+            destDir = `${homeDir}/.qoder-cn/${subdir}`;
+          } else {
+            destDir = `${homeDir}/.claude/${subdir}`;
+          }
+        } else {
+          const project = targetProject || activeProject;
+          if (!project) throw new Error("no project");
+          const cli = data.cli as string || "claude";
+          if (cli === "codex" || cli === "cx") {
+            destDir = `${project.path}/.codex/${subdir}`;
+          } else if (cli === "qoder") {
+            // Qoder project-level uses .qoder (not .qoder-cn like user-level ~/.qoder-cn/)
+            destDir = `${project.path}/.qoder/${subdir}`;
+          } else {
+            destDir = `${project.path}/.claude/${subdir}`;
+          }
+        }
+
+        await invoke("move_skill_file", {
+          sourcePath: data.path,
+          destDir,
+          resourceName: data.name,
+          resourceType,
+          fromScope,
+          toScope,
+        });
+        ok++;
+      } catch (e) {
+        failed++;
+        console.error(`Batch move failed for ${(item.data as any).name}:`, e);
+      }
+    }
+    // Re-scan
+    const [skills, agents] = await Promise.all([
+      invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
+      invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
+    ]);
+    setSkillData(skills);
+    setAgentData(agents);
+
+    if (failed === 0) {
+      addToast("success", `已移动 ${ok} 项 → ${toScope === "user" ? "用户级" : "项目级"}`);
+    } else {
+      addToast("error", `移动完成: ${ok} 成功, ${failed} 失败`);
+    }
+  }, [activeProject, scanProjectPath, addToast]);
+
+  const handleBatchCopy = useCallback(async (items: SelectedItem[], toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
+    const total = items.length;
+    let ok = 0;
+    let failed = 0;
+    for (const item of items) {
+      try {
+        const data = item.data as any;
+        const srcPath = data.path as string;
+        const resourceType = item.type === "standalone" ? "skill" : item.type === "agent" ? "agent" : "command";
+        const subdir = subdirForType(resourceType);
+
+        let destDir: string;
+        if (toScope === "project") {
+          const project = targetProject || activeProject;
+          if (!project) throw new Error("no project");
+          const cli = data.cli as string || "claude";
+          if (cli === "codex" || cli === "cx") {
+            destDir = `${project.path}/.codex/${subdir}`;
+          } else if (cli === "qoder") {
+            // Qoder project-level uses .qoder (not .qoder-cn like user-level ~/.qoder-cn/)
+            destDir = `${project.path}/.qoder/${subdir}`;
+          } else {
+            destDir = `${project.path}/.claude/${subdir}`;
+          }
+        } else {
+          // Use home directory — srcPath.split(...)[0] would give project root for project-level files
+          const homeDir = await invoke<string>("get_home_dir");
+          // Detect CLI type from source path; handles both .qoder/ (project) and .qoder-cn/ (user) variants
+          if (srcPath.includes("/.codex/")) {
+            destDir = `${homeDir}/.codex/${subdir}`;
+          } else if (srcPath.includes("/.qoder-cn/") || srcPath.includes("/.qoder/")) {
+            destDir = `${homeDir}/.qoder-cn/${subdir}`;
+          } else {
+            destDir = `${homeDir}/.claude/${subdir}`;
+          }
+        }
+
+        await invoke("copy_skill_file", {
+          sourcePath: data.path,
+          destDir,
+          resourceName: data.name,
+        });
+        ok++;
+      } catch (e) {
+        failed++;
+        console.error(`Batch copy failed for ${(item.data as any).name}:`, e);
+      }
+    }
+    // Re-scan
+    const [skills, agents] = await Promise.all([
+      invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
+      invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
+    ]);
+    setSkillData(skills);
+    setAgentData(agents);
+
+    if (failed === 0) {
+      addToast("success", `已复制 ${ok} 项 → ${toScope === "user" ? "用户级" : "项目级"}`);
+    } else {
+      addToast("error", `复制完成: ${ok} 成功, ${failed} 失败`);
+    }
+  }, [activeProject, scanProjectPath, addToast]);
 
   // After re-scanning, sync selectedSkillItem to the matching item in fresh data
   const syncSelection = useCallback((data: SkillManagerData, prev: SelectedItem | null) => {
@@ -348,7 +1032,7 @@ export function App() {
       try {
         await invoke("toggle_plugin", { cli, pluginId, enabled });
         setSkillDataLoading(true);
-        const data = await invoke<SkillManagerData>("scan_skills");
+        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
         setSkillData(data);
         setSelectedSkillItem((prev) => syncSelection(data, prev));
         setSkillDataLoading(false);
@@ -360,11 +1044,11 @@ export function App() {
   );
 
   const handleToggleStandaloneSkill = useCallback(
-    async (cli: string, skillId: string, enabled: boolean) => {
+    async (cli: string, skillId: string, enabled: boolean, path?: string) => {
       try {
-        await invoke("toggle_standalone_skill", { cli, skillId, enabled });
+        await invoke("toggle_standalone_skill", { cli, skillId, enabled, path: path ?? null });
         setSkillDataLoading(true);
-        const data = await invoke<SkillManagerData>("scan_skills");
+        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
         setSkillData(data);
         setSelectedSkillItem((prev) => syncSelection(data, prev));
         setSkillDataLoading(false);
@@ -377,14 +1061,14 @@ export function App() {
 
   // Agent toggle
   const handleToggleAgent = useCallback(
-    async (cli: string, name: string, enabled: boolean) => {
+    async (cli: string, name: string, enabled: boolean, path?: string) => {
       try {
-        await invoke("toggle_agent", { cli, name, enabled });
+        await invoke("toggle_agent", { cli, name, enabled, path: path ?? null });
         // Re-scan both agents and skills
         setSkillDataLoading(true);
         const [skills, agents] = await Promise.all([
-          invoke<SkillManagerData>("scan_skills"),
-          invoke<AgentManagerData>("scan_agents"),
+          invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
+          invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
         ]);
         setSkillData(skills);
         setAgentData(agents);
@@ -405,14 +1089,14 @@ export function App() {
 
   // Agent delete = disable (rename to .disabled)
   const handleDeleteAgent = useCallback(
-    async (cli: string, name: string) => {
+    async (cli: string, name: string, path?: string) => {
       try {
-        await invoke("toggle_agent", { cli, name, enabled: false });
+        await invoke("toggle_agent", { cli, name, enabled: false, path: path ?? null });
         // Re-scan
         setSkillDataLoading(true);
         const [skills, agents] = await Promise.all([
-          invoke<SkillManagerData>("scan_skills"),
-          invoke<AgentManagerData>("scan_agents"),
+          invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
+          invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
         ]);
         setSkillData(skills);
         setAgentData(agents);
@@ -440,21 +1124,20 @@ export function App() {
           if (item.id.includes(":plugin:")) {
             await invoke("toggle_plugin", { cli: item.cli, pluginId: item.id, enabled });
           } else if (item.id.includes(":agent:")) {
-            // Extract agent name from id "cli:agent:name"
             const name = item.id.split(":").slice(2).join(":");
-            await invoke("toggle_agent", { cli: item.cli, name, enabled });
+            await invoke("toggle_agent", { cli: item.cli, name, enabled, path: item.path ?? null });
           } else if (item.id.includes(":command:")) {
             const name = item.id.split(":").slice(2).join(":");
-            await invoke("toggle_command", { cli: item.cli, name, enabled });
+            await invoke("toggle_command", { cli: item.cli, name, enabled, path: item.path ?? null });
           } else {
-            await invoke("toggle_standalone_skill", { cli: item.cli, skillId: item.id, enabled });
+            await invoke("toggle_standalone_skill", { cli: item.cli, skillId: item.id, enabled, path: item.path ?? null });
           }
         }
         // Single re-scan after all toggles (both skills and agents)
         setSkillDataLoading(true);
         const [data, agents] = await Promise.all([
-          invoke<SkillManagerData>("scan_skills"),
-          invoke<AgentManagerData>("scan_agents"),
+          invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
+          invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
         ]);
         setSkillData(data);
         setAgentData(agents);
@@ -482,7 +1165,7 @@ export function App() {
         }
         // Single re-scan after all uninstalls
         setSkillDataLoading(true);
-        const data = await invoke<SkillManagerData>("scan_skills");
+        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
         setSkillData(data);
         setSelectedSkillItem(null);
         setSkillDataLoading(false);
@@ -548,7 +1231,7 @@ export function App() {
       if (success) {
         addToast("success", message);
         // Re-scan skills
-        const data = await invoke<SkillManagerData>("scan_skills");
+        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
         setSkillData(data);
         setSelectedSkillItem((prev) => syncSelection(data, prev));
         // Re-check silently (no toast) — result arrives via update-check-complete event
@@ -568,7 +1251,7 @@ export function App() {
         const msg = await invoke<string>("uninstall_plugin", { cli, pluginId });
         addToast("success", msg);
         // Re-scan after uninstall
-        const data = await invoke<SkillManagerData>("scan_skills");
+        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
         setSkillData(data);
         setSelectedSkillItem((prev) => syncSelection(data, prev));
       } catch (e) {
@@ -583,7 +1266,7 @@ export function App() {
       try {
         const msg = await invoke<string>("uninstall_standalone_skill", { cli, skillId });
         addToast("success", msg);
-        const data = await invoke<SkillManagerData>("scan_skills");
+        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
         setSkillData(data);
         setSelectedSkillItem(null);
       } catch (e) {
@@ -595,10 +1278,10 @@ export function App() {
 
   // Command toggle handler
   const handleToggleCommand = useCallback(
-    async (cli: string, name: string, enabled: boolean) => {
+    async (cli: string, name: string, enabled: boolean, path?: string) => {
       try {
-        await invoke("toggle_command", { cli, name, enabled });
-        const data = await invoke<SkillManagerData>("scan_skills");
+        await invoke("toggle_command", { cli, name, enabled, path: path ?? null });
+        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
         setSkillData(data);
         setSelectedSkillItem((prev) => syncSelection(data, prev));
       } catch (e) {
@@ -614,7 +1297,7 @@ export function App() {
       try {
         const msg = await invoke<string>("uninstall_command", { cli, name });
         addToast("success", msg);
-        const data = await invoke<SkillManagerData>("scan_skills");
+        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
         setSkillData(data);
         setSelectedSkillItem(null);
       } catch (e) {
@@ -631,7 +1314,7 @@ export function App() {
       if (success) {
         addToast("success", message);
         // Re-scan skills and marketplace
-        invoke<SkillManagerData>("scan_skills").then(setSkillData).catch(() => {});
+        invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }).then(setSkillData).catch(() => {});
       } else {
         addToast("error", message);
       }
@@ -646,7 +1329,7 @@ export function App() {
       if (success) {
         addToast("success", message);
         // Re-scan
-        invoke<SkillManagerData>("scan_skills").then((data) => {
+        invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }).then((data) => {
           setSkillData(data);
           setSelectedSkillItem((prev) => syncSelection(data, prev));
         }).catch(() => {});
@@ -659,7 +1342,7 @@ export function App() {
 
   // Refresh skills after marketplace install
   const handleMarketplaceInstalled = useCallback(async () => {
-    const data = await invoke<SkillManagerData>("scan_skills");
+    const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
     setSkillData(data);
   }, []);
 
@@ -676,6 +1359,20 @@ export function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Cmd+P → profile quick switcher
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "p" || e.key === "P")) {
+        e.preventDefault();
+        setQuickSwitcherMode("profile");
+        setShowQuickSwitcher(true);
+        return;
+      }
+      // Cmd+Shift+P → session history
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "p" || e.key === "P")) {
+        e.preventDefault();
+        setQuickSwitcherMode("history");
+        setShowQuickSwitcher(true);
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setShowShortcuts((prev) => !prev);
@@ -685,7 +1382,8 @@ export function App() {
         setShowAddDialog(true);
       }
       if (e.key === "Escape") {
-        if (showAddDialog) setShowAddDialog(false);
+        if (showQuickSwitcher) setShowQuickSwitcher(false);
+        else if (showAddDialog) setShowAddDialog(false);
         else if (showDeleteConfirm) setShowDeleteConfirm(false);
         else if (showNameDialog) setShowNameDialog(false);
         else if (ctx.selectedName) ctx.deselect();
@@ -729,7 +1427,7 @@ export function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [ctx.selectedName, bottomTerminal.toggle, showAddDialog, showDeleteConfirm, showNameDialog, showShortcuts]);
+  }, [ctx.selectedName, bottomTerminal.toggle, showAddDialog, showDeleteConfirm, showNameDialog, showShortcuts, showQuickSwitcher]);
 
   const isDefault = ctx.selectedProfile?.is_default ?? false;
 
@@ -737,6 +1435,12 @@ export function App() {
     // Open bottom terminal and auto-execute the install command
     bottomTerminal.runInTerminal(cmd, "");
   }, [bottomTerminal]);
+
+  const handleQuickLaunchProfile = useCallback((name: string, command: string, workDir: string) => {
+    ctx.selectProfile(name);
+    rightTerminal.runInNewTab(command, workDir, command);
+    setShowQuickSwitcher(false);
+  }, [ctx, rightTerminal]);
 
   const handlePasteCommand = useCallback(async (cmd: string) => {
     const isAiCmd = /^ai\s/.test(cmd);
@@ -1113,6 +1817,14 @@ export function App() {
         envCheck={envCheck}
         onInstallTool={handleInstallTool}
         onRefreshEnvCheck={refreshEnvCheck}
+        onQuickSwitcher={() => {
+          setQuickSwitcherMode("profile");
+          setShowQuickSwitcher(true);
+        }}
+        onQuickHistory={() => {
+          setQuickSwitcherMode("history");
+          setShowQuickSwitcher(true);
+        }}
       />
 
       {/* Main content — ActivityBar | Sidebar/SkillManager | (MainPanel + BottomTerminal) | RightTerminal */}
@@ -1187,6 +1899,19 @@ export function App() {
                 onCancelCheckUpdates={handleCancelCheckUpdates}
                 onOpenMarketplace={() => setMarketplaceOpen(true)}
                 onOpenGraph={loadGraph}
+                activeScope={activeScope}
+                onScopeChange={setActiveScope}
+                projects={projects}
+                activeProject={activeProject}
+                onProjectChange={setActiveProject}
+                baselineUserCount={baselineCounts.user}
+                baselineProjectCount={baselineCounts.project}
+                onAddProject={handleAddProject}
+                onMoveResource={handleMoveResource}
+                onCopyResource={handleCopyResource}
+                onBatchMove={handleBatchMove}
+                onBatchCopy={handleBatchCopy}
+                onToast={addToast}
               />
             </div>
           )}
@@ -1204,13 +1929,23 @@ export function App() {
                 onRefresh={refreshHooks}
                 onToggleHook={handleToggleHook}
                 onDeleteHook={handleDeleteHook}
+                onMoveHook={handleMoveHook}
+                onCopyHook={handleCopyHook}
+                onBatchMoveHooks={handleBatchMoveHooks}
+                onBatchCopyHooks={handleBatchCopyHooks}
+                activeScope={activeScope}
+                onScopeChange={setActiveScope}
+                projects={projects}
+                activeProject={activeProject}
+                onProjectChange={setActiveProject}
+                onAddProject={handleAddProject}
               />
             </div>
           )}
 
           {/* Middle column: MainPanel + Bottom terminal — hidden when right panel is maximized */}
-          {!rightMaximized && (
-          <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0"
+            style={rightMaximized ? { flex: "0 0 0px", overflow: "hidden", minWidth: 0 } : undefined}>
             {/* MainPanel / SkillDetail — hidden when either panel is maximized */}
             {!rightMaximized && !bottomMaximized && activeActivity === "skills" && showGraph && graphData && (
               <div className="flex-1 flex flex-col bg-[var(--app-bg)]">
@@ -1226,7 +1961,7 @@ export function App() {
               </div>
             )}
             {!rightMaximized && !bottomMaximized && activeActivity === "skills" && !showGraph && (
-              <div className="flex-1 overflow-y-auto bg-[var(--app-bg)]">
+              <div className="flex-1 overflow-y-auto bg-[var(--app-bg)] flex flex-col">
                 <SkillDetail
                   item={selectedSkillItem}
                   data={skillData}
@@ -1295,47 +2030,42 @@ export function App() {
               />
             )}
 
-            {/* Bottom terminal (VS Code-style panel) */}
-            {bottomTerminal.isOpen && !bottomMaximized && (
-              <div
-                className="h-[6px] shrink-0 cursor-row-resize hover:bg-app-accent/20
-                  transition-colors duration-fast group/resize flex items-center justify-center"
-                onMouseDown={handleBottomResize}
-              >
-                <div className="h-px w-full bg-app-border group-hover/resize:bg-app-accent/50" />
-              </div>
-            )}
-            {bottomTerminal.isOpen && (
-              <TerminalPanel
-                mode="bottom"
-                size={bottomMaximized ? undefined : bottomTerminal.size}
-                maximized={bottomMaximized}
-                onToggleMaximize={() => { setBottomMaximized((v) => !v); setRightMaximized(false); }}
-                {...buildTerminalProps(bottomTerminal)}
-              />
-            )}
-          </div>
-          )}
-
-          {/* Right terminal (profile「运行」) */}
-          {rightTerminal.isOpen && !rightMaximized && !bottomMaximized && (
+            {/* Bottom terminal (VS Code-style panel) — resize handle */}
             <div
-              className="w-[6px] shrink-0 cursor-col-resize hover:bg-app-accent/20
+              className="h-[6px] shrink-0 cursor-row-resize hover:bg-app-accent/20
                 transition-colors duration-fast group/resize flex items-center justify-center"
-              onMouseDown={handleRightResize}
+              style={{ display: (bottomTerminal.isOpen && !bottomMaximized) ? undefined : "none" }}
+              onMouseDown={handleBottomResize}
             >
-              <div className="w-px h-full bg-app-border group-hover/resize:bg-app-accent/50" />
+              <div className="h-px w-full bg-app-border group-hover/resize:bg-app-accent/50" />
             </div>
-          )}
-          {rightTerminal.isOpen && !bottomMaximized && (
             <TerminalPanel
-              mode="right"
-              size={rightMaximized ? undefined : rightTerminal.size}
-              maximized={rightMaximized}
-              onToggleMaximize={() => { setRightMaximized((v) => !v); setBottomMaximized(false); }}
-              {...buildTerminalProps(rightTerminal)}
+              mode="bottom"
+              visible={bottomTerminal.isOpen}
+              size={bottomMaximized ? undefined : bottomTerminal.size}
+              maximized={bottomMaximized}
+              onToggleMaximize={() => { setBottomMaximized((v) => !v); setRightMaximized(false); }}
+              {...buildTerminalProps(bottomTerminal)}
             />
-          )}
+          </div>
+
+          {/* Right terminal (profile「运行」) — resize handle */}
+          <div
+            className="w-[6px] shrink-0 cursor-col-resize hover:bg-app-accent/20
+              transition-colors duration-fast group/resize flex items-center justify-center"
+            style={{ display: (rightTerminal.isOpen && !rightMaximized && !bottomMaximized) ? undefined : "none" }}
+            onMouseDown={handleRightResize}
+          >
+            <div className="w-px h-full bg-app-border group-hover/resize:bg-app-accent/50" />
+          </div>
+          <TerminalPanel
+            mode="right"
+            visible={rightTerminal.isOpen && !bottomMaximized}
+            size={rightMaximized ? undefined : rightTerminal.size}
+            maximized={rightMaximized}
+            onToggleMaximize={() => { setRightMaximized((v) => !v); setBottomMaximized(false); }}
+            {...buildTerminalProps(rightTerminal)}
+          />
         </div>
       </div>
 
@@ -1412,6 +2142,14 @@ export function App() {
               : <CheckCircle2 size={14} className="shrink-0 mt-px" />
             }
             <span className="flex-1">{t.message}</span>
+            {t.undoAction && (
+              <button
+                onClick={() => { t.undoAction!(); dismissToast(t.id); }}
+                className="shrink-0 underline text-[var(--app-amber)] hover:text-[var(--app-amber-glow)] font-mono text-xs"
+              >
+                {t.undoLabel || "撤销"}
+              </button>
+            )}
             <button onClick={() => dismissToast(t.id)} className="shrink-0 opacity-60 hover:opacity-100">
               <X size={12} />
             </button>
@@ -1448,6 +2186,22 @@ export function App() {
 
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
 
+      <QuickSwitcher
+        open={showQuickSwitcher}
+        mode={quickSwitcherMode}
+        onClose={() => setShowQuickSwitcher(false)}
+        profiles={ctx.profiles}
+        projects={projects}
+        onLaunchProfile={handleQuickLaunchProfile}
+        history={rightTerminal.history}
+        onResumeSession={(record) => {
+          // QuickSwitcher uses -c (resume last) for instant entry — no session picker
+          const cmd = record.resumeLastCommand || record.command;
+          rightTerminal.runInNewTab(cmd, record.workDir, cmd);
+          setShowQuickSwitcher(false);
+        }}
+      />
+
       <UsagePanel open={showUsage} onClose={() => setShowUsage(false)} />
 
       <AboutDialog open={showAbout} onClose={() => setShowAbout(false)} />
@@ -1458,7 +2212,7 @@ export function App() {
         open={hookWizardOpen}
         onClose={() => setHookWizardOpen(false)}
         onCreated={(name, desc) => {
-          invoke<HookManagerData>("scan_hooks")
+          scanMultiProjectHooks(hookScanPaths)
             .then(async (data) => {
               setHookData(data);
               if (data.hooks.length > 0) {
@@ -1487,12 +2241,7 @@ export function App() {
         open={hookStoreOpen}
         onClose={() => setHookStoreOpen(false)}
         onInstalled={() => {
-          invoke<HookManagerData>("scan_hooks")
-            .then((data) => {
-              setHookData(data);
-              setSelectedHook(null);
-            })
-            .catch(() => {});
+          refreshHooks();
         }}
       />
 
@@ -1569,6 +2318,16 @@ export function App() {
         confirmLabel="删除"
         onConfirm={executeBatchDelete}
         onCancel={() => { setShowBatchDeleteConfirm(false); batchDeleteNamesRef.current = []; }}
+      />
+
+      {/* Hook move/copy overwrite confirmation */}
+      <ConfirmDialog
+        open={overwriteConfirm !== null}
+        title="目标已存在相同 Hook"
+        message={`${overwriteConfirm?.targetLabel ?? ""}已存在 "${overwriteConfirm?.hookName ?? ""}"，是否覆盖？\n\n覆盖会用当前 Hook 替换目标位置的同配置 Hook。`}
+        confirmLabel="覆盖"
+        onConfirm={() => overwriteConfirm?.onConfirm()}
+        onCancel={() => setOverwriteConfirm(null)}
       />
 
     </div>

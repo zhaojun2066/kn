@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scope UI Demo — Skills & Plugins</title>
+<style>
+/* ═══════════════════════════════════════════════════════════
+   RESET & BASE
+   ═══════════════════════════════════════════════════════════ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --font:'JetBrains Mono','Fira Code','Cascadia Code','SF Mono',Consolas,monospace;
+
+  /* Dark terminal CRT — phosphor green on deep black */
+  --bg:#0a0c0a; --panel:#0f120f; --sidebar:#0c0f0c; --input:#0d110d;
+  --hover:#131a13; --active:#182018; --selected:#162616;
+  --border:#1a241a; --border-light:#141c14;
+  --text:#b8d0b8; --text-dim:#7d9a7d; --text-muted:#4d664d;
+  --accent:#3dfc3d; --accent-dim:#2db82d;
+  --amber:#e6a940; --amber-glow:#ffc44d;
+  --red:#e05555; --red-bg:#1f1212;
+  --blue:#5c9edb; --purple:#9c7cdb; --teal:#3a9e8c;
+  --glow:rgba(61,252,61,0.15); --glow-amber:rgba(230,169,64,0.18);
+  --shadow:0 2px 12px rgba(0,0,0,0.5);
+  --shadow-lg:0 8px 30px rgba(0,0,0,0.7),0 0 0 1px #1a241a;
+}
+
+body{
+  background:#070907; color:var(--text);
+  font-family:var(--font); font-size:13px; line-height:1.5;
+  display:flex; justify-content:center; align-items:center;
+  min-height:100vh; padding:40px 20px;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ── Main demo container ── */
+.app{width:380px; background:var(--sidebar); border:1px solid var(--border);
+  box-shadow:var(--shadow); display:flex; flex-direction:column; height:680px;
+  position:relative; overflow:hidden;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   HEADER
+   ═══════════════════════════════════════════════════════════ */
+.header{padding:10px 10px 6px}
+.header-title{display:flex;align-items:center;gap:6px;margin-bottom:10px}
+.header-title svg{color:var(--accent);flex-shrink:0}
+.header-title span{font-size:10px;color:var(--text);letter-spacing:0.15em;text-transform:uppercase;font-weight:500}
+
+/* ── Scope Tabs ── */
+.scope-tabs{display:flex;gap:0;margin-bottom:8px;background:var(--input);
+  border:1px solid var(--border);padding:2px;}
+.tab-btn{flex:1;padding:4px 0;font-size:10px;font-family:var(--font);
+  color:var(--text-muted);background:transparent;border:none;cursor:pointer;
+  text-align:center;letter-spacing:0.05em;transition:all 120ms ease;
+  position:relative;}
+.tab-btn:hover{color:var(--text-dim)}
+.tab-btn.active{color:var(--accent);background:var(--selected);
+  box-shadow:inset 0 0 6px var(--glow)}
+.tab-btn .count{font-size:9px;opacity:0.6;margin-left:2px}
+
+/* ── Project selector ── */
+.project-bar{display:flex;align-items:center;gap:6px;padding:0 0 2px}
+.project-bar .label{font-size:9px;color:var(--text-muted);letter-spacing:0.1em;text-transform:uppercase;white-space:nowrap}
+.project-chip{flex:1;display:flex;align-items:center;gap:5px;padding:3px 8px;
+  font-size:10px;font-family:var(--font);color:var(--amber);background:var(--input);
+  border:1px solid var(--border);cursor:pointer;transition:all 100ms ease}
+.project-chip:hover{background:var(--hover);border-color:var(--amber);color:var(--amber-glow)}
+.project-chip .folder-icon{flex-shrink:0;opacity:0.7}
+.project-chip .name{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-chip .chevron{flex-shrink:0;opacity:0.5;transition:transform 150ms ease}
+.project-chip:hover .chevron{opacity:1}
+.project-chip .no-project{color:var(--text-muted);font-style:italic}
+
+/* ═══════════════════════════════════════════════════════════
+   SEARCH & FILTERS
+   ═══════════════════════════════════════════════════════════ */
+.controls{padding:0 10px 6px;display:flex;flex-direction:column;gap:6px}
+.search-wrap{position:relative}
+.search-wrap input{width:100%;padding:5px 8px 5px 26px;font-size:11px;
+  font-family:var(--font);background:var(--input);color:var(--text);
+  border:1px solid var(--border);outline:none}
+.search-wrap input:focus{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 0 8px var(--glow)}
+.search-wrap input::placeholder{color:var(--text-muted)}
+.search-icon{position:absolute;left:7px;top:50%;transform:translateY(-50%);
+  color:var(--text-muted);pointer-events:none}
+.filter-row{display:flex;gap:6px}
+.filter-row select{flex:1;padding:4px 6px;font-size:10px;font-family:var(--font);
+  background:var(--input);color:var(--text-dim);border:1px solid var(--border);
+  cursor:pointer;outline:none;-webkit-appearance:none;appearance:none}
+.filter-row select:focus{border-color:var(--accent)}
+
+/* ═══════════════════════════════════════════════════════════
+   TOOLBAR
+   ═══════════════════════════════════════════════════════════ */
+.toolbar{display:flex;align-items:center;gap:2px;padding:0 10px 4px}
+.toolbar button{width:26px;height:26px;display:flex;align-items:center;justify-content:center;
+  background:none;border:none;color:var(--text-muted);cursor:pointer;font-family:var(--font);
+  transition:all 100ms ease}
+.toolbar button:hover{color:var(--accent);background:var(--hover)}
+
+/* ═══════════════════════════════════════════════════════════
+   SECTION HEADERS
+   ═══════════════════════════════════════════════════════════ */
+.section{margin:0}
+.section-header{display:flex;align-items:center;gap:6px;padding:8px 10px 4px;
+  cursor:pointer;user-select:none}
+.section-header:hover{background:var(--hover)}
+.section-header .arrow{color:var(--text-muted);transition:transform 150ms ease;flex-shrink:0}
+.section-header .arrow.expanded{transform:rotate(90deg)}
+.section-header .sec-label{font-size:9px;color:var(--text-muted);
+  letter-spacing:0.2em;text-transform:uppercase;flex:1}
+.section-header .sec-count{font-size:9px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.section-header .scope-badge{font-size:8px;padding:0 4px;line-height:16px;
+  letter-spacing:0.1em;margin-left:2px}
+
+/* Scope badge variants — subtle */
+.scope-badge.user{border:1px solid var(--accent-dim);color:var(--accent-dim)}
+.scope-badge.project{border:1px solid var(--amber);color:var(--amber)}
+
+/* ═══════════════════════════════════════════════════════════
+   LIST ROW
+   ═══════════════════════════════════════════════════════════ */
+.list-row{display:flex;align-items:center;gap:8px;height:36px;
+  padding:0 10px;cursor:pointer;transition:all 80ms ease;
+  border-left:3px solid transparent;position:relative}
+.list-row:hover{background:var(--hover);border-left-color:var(--border)}
+.list-row.selected{background:var(--selected);border-left-color:var(--accent);
+  color:var(--text);box-shadow:inset 0 0 8px var(--glow)}
+.list-row .dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.list-row .dot.on{background:var(--accent);box-shadow:0 0 4px var(--glow)}
+.list-row .dot.off{background:var(--text-muted);opacity:0.4}
+.list-row .label{flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list-row .label.off{opacity:0.5;text-decoration:line-through}
+.list-row .row-scope{font-size:8px;padding:1px 4px;letter-spacing:0.08em;flex-shrink:0}
+.list-row .row-scope.user{color:var(--accent-dim);border:1px solid rgba(61,252,61,0.2)}
+.list-row .row-scope.project{color:var(--amber);border:1px solid rgba(230,169,64,0.25)}
+.list-row .row-scope.builtin{color:var(--text-muted);border:1px solid rgba(77,102,77,0.3)}
+.list-row .cli-badge{font-size:8px;color:var(--text-dim);flex-shrink:0}
+
+/* Checkbox */
+.list-row .check{flex-shrink:0;opacity:0;transition:opacity 100ms ease}
+.list-row:hover .check,.list-row .check.visible{opacity:1}
+
+/* ═══════════════════════════════════════════════════════════
+   CONTEXT MENU
+   ═══════════════════════════════════════════════════════════ */
+.ctx-overlay{position:fixed;inset:0;z-index:100}
+.ctx-menu{position:fixed;z-index:101;min-width:180px;background:var(--panel);
+  border:1px solid var(--border);box-shadow:var(--shadow-lg);padding:3px 0}
+.ctx-item{display:flex;align-items:center;gap:8px;padding:5px 10px;
+  font-size:10px;font-family:var(--font);color:var(--text-dim);cursor:pointer;
+  transition:all 60ms ease}
+.ctx-item:hover{background:var(--hover);color:var(--text)}
+.ctx-item .shortcut{margin-left:auto;font-size:8px;color:var(--text-muted);letter-spacing:0.05em}
+.ctx-item.danger{color:var(--red)}
+.ctx-item.danger:hover{background:var(--red-bg);color:var(--red)}
+.ctx-sep{height:1px;background:var(--border);margin:3px 6px}
+
+/* Move/Copy direction arrows */
+.ctx-item .dir-arrow{font-size:9px;opacity:0.5;margin-right:-4px}
+
+/* ═══════════════════════════════════════════════════════════
+   MOVE/COPY CONFIRMATION DIALOG
+   ═══════════════════════════════════════════════════════════ */
+.dialog-overlay{position:absolute;inset:0;background:rgba(0,0,0,0.6);
+  display:flex;align-items:center;justify-content:center;z-index:50;
+  animation:fadeIn 120ms ease}
+.dialog{background:var(--panel);border:1px solid var(--border);
+  box-shadow:var(--shadow-lg);padding:16px;width:300px}
+.dialog h3{font-size:11px;font-weight:500;color:var(--text);margin-bottom:8px}
+.dialog p{font-size:10px;color:var(--text-dim);margin-bottom:14px;line-height:1.6}
+.dialog .from-to{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.dialog .from-to .scope-tag{font-size:9px;padding:3px 8px;font-family:var(--font)}
+.dialog .from-to .scope-tag.source{color:var(--accent-dim);background:var(--selected);border:1px solid var(--accent-dim)}
+.dialog .from-to .scope-tag.dest{color:var(--amber);background:rgba(230,169,64,0.08);border:1px solid var(--amber)}
+.dialog .from-to .arrow-icon{color:var(--text-muted);font-size:14px}
+.dialog .from-to .resource-name{font-size:10px;color:var(--text);font-family:var(--font);
+  background:var(--input);padding:3px 8px;border:1px solid var(--border);flex:1;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dialog .actions{display:flex;gap:6px;justify-content:flex-end}
+.dialog .actions button{padding:5px 12px;font-size:10px;font-family:var(--font);
+  border:1px solid var(--border);cursor:pointer;background:var(--input);color:var(--text-dim);
+  transition:all 100ms ease}
+.dialog .actions button:hover{color:var(--text);background:var(--hover)}
+.dialog .actions button.primary{background:var(--accent-dim);color:var(--bg);
+  border-color:var(--accent-dim);font-weight:500}
+.dialog .actions button.primary:hover{background:var(--accent);border-color:var(--accent)}
+.dialog .actions button.danger{color:var(--red);border-color:var(--red)}
+.dialog .actions button.danger:hover{background:var(--red-bg)}
+
+/* ═══════════════════════════════════════════════════════════
+   EMPTY STATE (project tab, no project registered)
+   ═══════════════════════════════════════════════════════════ */
+.empty-state{display:flex;flex-direction:column;align-items:center;
+  justify-content:center;padding:40px 20px;text-align:center;gap:14px}
+.empty-state .icon-box{width:48px;height:48px;display:flex;align-items:center;
+  justify-content:center;border:1px dashed var(--border);color:var(--text-muted)}
+.empty-state h4{font-size:11px;color:var(--text-dim);font-weight:400}
+.empty-state p{font-size:9px;color:var(--text-muted);line-height:1.6;max-width:240px}
+.empty-state .register-btn{padding:5px 14px;font-size:10px;font-family:var(--font);
+  background:var(--input);color:var(--amber);border:1px solid var(--amber);
+  cursor:pointer;transition:all 100ms ease}
+.empty-state .register-btn:hover{background:rgba(230,169,64,0.08);color:var(--amber-glow);
+  box-shadow:0 0 10px var(--glow-amber)}
+
+/* ═══════════════════════════════════════════════════════════
+   EMPTY STATE (no project resources)
+   ═══════════════════════════════════════════════════════════ */
+.empty-resources{display:flex;flex-direction:column;align-items:center;
+  padding:24px 20px;text-align:center;gap:8px}
+.empty-resources p{font-size:9px;color:var(--text-muted);line-height:1.6}
+.empty-resources .hint{font-size:8px;color:var(--text-muted);opacity:0.6;
+  display:flex;align-items:center;gap:4px}
+.empty-resources .hint kbd{font-size:8px;padding:1px 4px;
+  background:var(--input);border:1px solid var(--border);
+  color:var(--text-dim);font-family:var(--font)}
+
+/* ═══════════════════════════════════════════════════════════
+   STATUS BAR
+   ═══════════════════════════════════════════════════════════ */
+.statusbar{border-top:1px solid var(--border);padding:4px 10px;
+  font-size:9px;color:var(--text-muted);display:flex;align-items:center;gap:8px;margin-top:auto}
+.statusbar .stat{display:flex;align-items:center;gap:3px}
+.statusbar .stat .s-dot{width:4px;height:4px;border-radius:50%;flex-shrink:0}
+.statusbar .stat .s-dot.user-bg{background:var(--accent-dim)}
+.statusbar .stat .s-dot.project-bg{background:var(--amber)}
+
+/* ═══════════════════════════════════════════════════════════
+   PROJECT DROPDOWN
+   ═══════════════════════════════════════════════════════════ */
+.dropdown{position:fixed;z-index:102;min-width:220px;background:var(--panel);
+  border:1px solid var(--border);box-shadow:var(--shadow-lg);padding:3px 0;
+  animation:slideUp 100ms ease}
+.dropdown .drop-item{display:flex;align-items:center;gap:6px;padding:6px 10px;
+  font-size:10px;font-family:var(--font);color:var(--text-dim);cursor:pointer;
+  transition:all 60ms ease}
+.dropdown .drop-item:hover{background:var(--hover);color:var(--text)}
+.dropdown .drop-item.active{color:var(--amber)}
+.dropdown .drop-item.active .check-mark{color:var(--amber)}
+.dropdown .drop-sep{height:1px;background:var(--border);margin:3px 6px}
+.dropdown .drop-item.add{padding:6px 10px;color:var(--accent-dim)}
+.dropdown .drop-item.add:hover{color:var(--accent)}
+.dropdown .drop-path{font-size:8px;color:var(--text-muted);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;flex:1;text-align:right}
+
+/* ═══════════════════════════════════════════════════════════
+   TOOLTIP
+   ═══════════════════════════════════════════════════════════ */
+.tooltip{position:absolute;z-index:60;padding:4px 8px;font-size:9px;
+  font-family:var(--font);color:var(--text);background:var(--panel);
+  border:1px solid var(--border);box-shadow:var(--shadow-lg);
+  pointer-events:none;white-space:nowrap;animation:fadeIn 80ms ease}
+
+/* ═══════════════════════════════════════════════════════════
+   ANIMATIONS
+   ═══════════════════════════════════════════════════════════ */
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes slideUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.6}}
+
+/* ═══════════════════════════════════════════════════════════
+   NOTIFICATION TOAST
+   ═══════════════════════════════════════════════════════════ */
+.toast{position:absolute;bottom:30px;left:50%;transform:translateX(-50%);
+  padding:6px 14px;font-size:10px;font-family:var(--font);color:var(--accent);
+  background:var(--selected);border:1px solid var(--accent-dim);
+  box-shadow:0 0 12px var(--glow);z-index:70;animation:slideUp 120ms ease;
+  display:flex;align-items:center;gap:6px}
+.toast .undo-btn{color:var(--amber);cursor:pointer;text-decoration:underline;
+  font-size:9px}
+.toast .undo-btn:hover{color:var(--amber-glow)}
+</style>
+</head>
+<body>
+
+<div class="app" id="app">
+  <!-- ═══ HEADER ═══ -->
+  <div class="header">
+    <div class="header-title">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.5 9.5V5.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1Zm9 0V5.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1ZM4.5 18.5v-4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1Zm9 0v-4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1Z"/></svg>
+      <span>Skills &amp; Plugins</span>
+    </div>
+
+    <!-- Scope Tabs -->
+    <div class="scope-tabs">
+      <button class="tab-btn" data-tab="all">全部<span class="count">8</span></button>
+      <button class="tab-btn active" data-tab="user">用户级<span class="count">6</span></button>
+      <button class="tab-btn" data-tab="project">项目级<span class="count">2</span></button>
+    </div>
+
+    <!-- Project selector — hidden when user-level tab is active -->
+    <div class="project-bar" id="projectBar" style="display:none">
+      <span class="label">项目</span>
+      <div class="project-chip" id="projectChip" onclick="toggleProjectDropdown(event)">
+        <svg class="folder-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span class="name">shark/kn</span>
+        <svg class="chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ SEARCH & FILTERS ═══ -->
+  <div class="controls">
+    <div class="search-wrap">
+      <svg class="search-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" placeholder="搜索..." id="searchInput">
+    </div>
+    <div class="filter-row">
+      <select><option>全部 CLI</option><option>Claude</option><option>Codex</option><option>Qoder</option></select>
+      <select><option>全部状态</option><option>已启用</option><option>已禁用</option></select>
+    </div>
+  </div>
+
+  <!-- ═══ TOOLBAR ═══ -->
+  <div class="toolbar">
+    <button title="浏览 Marketplace">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+    </button>
+    <button title="Dependency Graph">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><line x1="5" y1="8" x2="5" y2="16"/><line x1="7" y1="18" x2="17" y2="18"/></svg>
+    </button>
+    <button title="检查更新">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+    </button>
+  </div>
+
+  <div style="margin:0 10px;border-bottom:1px solid var(--border-light)"></div>
+
+  <!-- ═══ LIST ═══ -->
+  <div style="flex:1;overflow-y:auto" id="listContainer">
+
+    <!-- ── Plugins Section ── -->
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">
+        <svg class="arrow expanded" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        <span class="sec-label">Plugins</span>
+        <span class="sec-count">3</span>
+      </div>
+      <div class="section-body">
+        <!-- Plugin: user scope -->
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'user','superpowers','plugin')">
+          <span class="dot on"></span>
+          <span class="label">superpowers</span>
+          <span class="row-scope user">用户</span>
+          <span class="cli-badge">cl</span>
+        </div>
+        <!-- Plugin: user scope -->
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'user','ecc','plugin')">
+          <span class="dot on"></span>
+          <span class="label">ecc</span>
+          <span class="row-scope user">用户</span>
+          <span class="cli-badge">cl</span>
+        </div>
+        <!-- Plugin: user scope, disabled -->
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'user','claude-api','plugin')">
+          <span class="dot off"></span>
+          <span class="label off">claude-api</span>
+          <span class="row-scope user">用户</span>
+          <span class="cli-badge">cl</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Skills Section ── -->
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">
+        <svg class="arrow expanded" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        <span class="sec-label">Skills</span>
+        <span class="sec-count">4</span>
+      </div>
+      <div class="section-body">
+        <!-- user scope -->
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'user','brainstorming','skill')">
+          <span class="dot on"></span>
+          <span class="label">brainstorming</span>
+          <span class="row-scope user">用户</span>
+          <span class="cli-badge">cl</span>
+        </div>
+        <!-- user scope -->
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'user','frontend-design','skill')">
+          <span class="dot on"></span>
+          <span class="label">frontend-design</span>
+          <span class="row-scope user">用户</span>
+          <span class="cli-badge">cl</span>
+        </div>
+        <!-- project scope -->
+        <div class="list-row selected" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'project','deploy-check','skill')">
+          <span class="dot on"></span>
+          <span class="label">deploy-check</span>
+          <span class="row-scope project">项目</span>
+          <span class="cli-badge">cl</span>
+        </div>
+        <!-- project scope, disabled -->
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'project','local-lint','skill')">
+          <span class="dot off"></span>
+          <span class="label off">local-lint</span>
+          <span class="row-scope project">项目</span>
+          <span class="cli-badge">cl</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Agents Section ── -->
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">
+        <svg class="arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        <span class="sec-label">Agents</span>
+        <span class="sec-count">3</span>
+        <span class="scope-badge user" style="margin-left:4px">2 用户</span>
+        <span class="scope-badge project" style="margin-left:2px">1 项目</span>
+      </div>
+      <div class="section-body" style="display:none">
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'user','security-reviewer','agent')">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span class="label">security-reviewer</span>
+          <span class="row-scope user">用户</span>
+          <span class="cli-badge">cl</span>
+        </div>
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'user','code-navigator','agent')">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span class="label">code-navigator</span>
+          <span class="row-scope user">用户</span>
+          <span class="cli-badge">cx</span>
+        </div>
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'project','kn-builder','agent')">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span class="label">kn-builder</span>
+          <span class="row-scope project">项目</span>
+          <span class="cli-badge">cl</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Commands Section ── -->
+    <div class="section">
+      <div class="section-header" onclick="toggleSection(this)">
+        <svg class="arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        <span class="sec-label">Commands</span>
+        <span class="sec-count">1</span>
+      </div>
+      <div class="section-body" style="display:none">
+        <div class="list-row" onclick="selectRow(this)" oncontextmenu="showContextMenu(event,'user','deploy','command')">
+          <span class="dot on"></span>
+          <span class="label">/deploy</span>
+          <span class="row-scope user">用户</span>
+          <span class="cli-badge">cl</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ STATUS BAR ═══ -->
+  <div class="statusbar">
+    <span class="stat"><span class="s-dot user-bg"></span> 用户 6</span>
+    <span class="stat"><span class="s-dot project-bg"></span> 项目 2</span>
+    <span style="flex:1"></span>
+    <span>shark/kn</span>
+  </div>
+</div>
+
+<!-- ═══ TOAST (hidden by default) ═══ -->
+<div class="toast" id="toast" style="display:none">
+  <span id="toastMsg"></span>
+  <span class="undo-btn" id="toastUndo" onclick="undoLast()" style="display:none">撤销</span>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════════════════════════ */
+let activeTab = 'user';
+let activeProject = 'shark/kn';
+let lastAction = null;
+let contextMenuEl = null;
+let dropdownEl = null;
+
+/* ═══════════════════════════════════════════════════════════
+   TAB SWITCHING
+   ═══════════════════════════════════════════════════════════ */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    activeTab = this.dataset.tab;
+    filterByScope(activeTab);
+  });
+});
+
+function filterByScope(scope) {
+  const rows = document.querySelectorAll('.list-row');
+  rows.forEach(row => {
+    const badge = row.querySelector('.row-scope');
+    if (!badge) { row.style.display = 'flex'; return; }
+    if (scope === 'all') { row.style.display = 'flex'; return; }
+    const rowScope = badge.textContent === '用户' ? 'user' :
+                     badge.textContent === '项目' ? 'project' : 'builtin';
+    row.style.display = rowScope === scope ? 'flex' : 'none';
+  });
+
+  // Show project bar only for "all" and "project" tabs
+  const projectBar = document.getElementById('projectBar');
+  if (projectBar) {
+    projectBar.style.display = scope === 'user' ? 'none' : 'flex';
+  }
+
+  // Update section counts (simplified)
+  document.querySelectorAll('.section-body').forEach(body => {
+    const visible = [...body.querySelectorAll('.list-row')].filter(r => r.style.display !== 'none').length;
+    const header = body.previousElementSibling;
+    if (header) {
+      const countEl = header.querySelector('.sec-count');
+      if (countEl) countEl.textContent = visible;
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SECTION COLLAPSE
+   ═══════════════════════════════════════════════════════════ */
+function toggleSection(header) {
+  const arrow = header.querySelector('.arrow');
+  const body = header.nextElementSibling;
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  if (isOpen) {
+    body.style.display = 'none';
+    arrow.classList.remove('expanded');
+  } else {
+    body.style.display = 'block';
+    arrow.classList.add('expanded');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ROW SELECTION
+   ═══════════════════════════════════════════════════════════ */
+function selectRow(row) {
+  document.querySelectorAll('.list-row.selected').forEach(r => r.classList.remove('selected'));
+  row.classList.add('selected');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CONTEXT MENU
+   ═══════════════════════════════════════════════════════════ */
+function showContextMenu(e, scope, name, type) {
+  e.preventDefault();
+  removeContextMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+
+  const isUserScope = scope === 'user';
+  const targetScope = isUserScope ? 'project' : 'user';
+  const targetLabel = isUserScope ? '项目级' : '用户级';
+  const arrow = isUserScope ? '→' : '←';
+
+  menu.innerHTML = `
+    <div class="ctx-item" onclick="handleAction('toggle','${name}','${type}')">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      <span>${scope === 'user' ? '禁用' : '启用'}</span>
+    </div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" onclick="handleAction('copy','${name}','${type}','${scope}','${targetScope}')">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      <span>复制到${targetLabel}</span>
+      <span class="dir-arrow">${arrow}</span>
+      <span class="shortcut">⌘C</span>
+    </div>
+    <div class="ctx-item" onclick="handleAction('move','${name}','${type}','${scope}','${targetScope}')">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+      <span>移动到${targetLabel}</span>
+      <span class="dir-arrow">${arrow}</span>
+      <span class="shortcut">⌘⇧M</span>
+    </div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item danger" onclick="handleAction('delete','${name}','${type}')">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      <span>删除</span>
+      <span class="shortcut">⌫</span>
+    </div>
+  `;
+
+  // Position
+  menu.style.left = Math.min(e.clientX, window.innerWidth - 190) + 'px';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - 220) + 'px';
+  document.body.appendChild(menu);
+  contextMenuEl = menu;
+
+  // Click away
+  setTimeout(() => {
+    document.addEventListener('click', removeContextMenu, {once: true});
+    document.addEventListener('contextmenu', removeContextMenu, {once: true});
+  }, 0);
+
+  // ESC to close
+  const escHandler = (ev) => { if(ev.key === 'Escape') removeContextMenu(); };
+  document.addEventListener('keydown', escHandler, {once: true});
+}
+
+function removeContextMenu() {
+  if (contextMenuEl) { contextMenuEl.remove(); contextMenuEl = null; }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ACTIONS
+   ═══════════════════════════════════════════════════════════ */
+function handleAction(action, name, type, fromScope, toScope) {
+  removeContextMenu();
+  const fromLabel = fromScope === 'user' ? '用户级' : '项目级';
+  const toLabel = toScope === 'user' ? '用户级' : '项目级';
+
+  if (action === 'copy') {
+    showToast(`已复制 "${name}" → ${toLabel}`);
+    lastAction = {action:'copy',name,type,fromScope,toScope};
+  } else if (action === 'move') {
+    showConfirmDialog(name, type, fromScope, toScope);
+  } else if (action === 'toggle') {
+    showToast(`已${name === 'deploy-check' ? '禁用' : '切换'} "${name}"`);
+  } else if (action === 'delete') {
+    showToast(`已删除 "${name}"`);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MOVE CONFIRMATION DIALOG
+   ═══════════════════════════════════════════════════════════ */
+function showConfirmDialog(name, type, fromScope, toScope) {
+  removeConfirmDialog();
+  const fromLabel = fromScope === 'user' ? '用户级' : `项目级 · ${activeProject}`;
+  const toLabel = toScope === 'user' ? '用户级' : `项目级 · ${activeProject}`;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'dialog-overlay';
+  overlay.id = 'confirmDialog';
+  overlay.innerHTML = `
+    <div class="dialog" onclick="event.stopPropagation()">
+      <h3>移动 ${type === 'skill' ? 'Skill' : type === 'plugin' ? 'Plugin' : type === 'agent' ? 'Agent' : 'Command'}</h3>
+      <p>此操作将从<span style="color:var(--accent-dim)">${fromLabel}</span>移除该资源，并添加到<span style="color:var(--amber)">${toLabel}</span>。</p>
+      <div class="from-to">
+        <span class="scope-tag source">${fromLabel}</span>
+        <span class="arrow-icon">→</span>
+        <span class="scope-tag dest">${toLabel}</span>
+      </div>
+      <div class="from-to" style="margin-bottom:16px">
+        <span style="font-size:9px;color:var(--text-muted)">资源:</span>
+        <span class="resource-name">${name}</span>
+      </div>
+      <div class="actions">
+        <button onclick="removeConfirmDialog()">取消</button>
+        <button class="primary" onclick="confirmMove('${name}','${type}','${fromScope}','${toScope}')">确认移动</button>
+      </div>
+    </div>
+  `;
+  overlay.addEventListener('click', (e) => { if(e.target === overlay) removeConfirmDialog(); });
+  document.getElementById('app').appendChild(overlay);
+}
+
+function removeConfirmDialog() {
+  const el = document.getElementById('confirmDialog');
+  if (el) el.remove();
+}
+
+function confirmMove(name, type, fromScope, toScope) {
+  removeConfirmDialog();
+  const toLabel = toScope === 'user' ? '用户级' : '项目级';
+  showToast(`已移动 "${name}" → ${toLabel}`);
+  lastAction = {action:'move',name,type,fromScope,toScope};
+
+  // Animate: fade out the row
+  const rows = document.querySelectorAll('.list-row');
+  rows.forEach(r => {
+    if (r.querySelector('.label')?.textContent === name) {
+      r.style.opacity = '0';
+      r.style.transform = 'translateX(-10px)';
+      r.style.transition = 'all 200ms ease';
+      setTimeout(() => {
+        // Flip scope badge
+        const badge = r.querySelector('.row-scope');
+        if (badge) {
+          badge.textContent = toScope === 'user' ? '用户' : '项目';
+          badge.className = `row-scope ${toScope}`;
+        }
+        r.style.opacity = '1';
+        r.style.transform = 'translateX(0)';
+      }, 250);
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PROJECT DROPDOWN
+   ═══════════════════════════════════════════════════════════ */
+function toggleProjectDropdown(e) {
+  e.stopPropagation();
+  removeDropdown();
+
+  const chip = document.getElementById('projectChip');
+  const rect = chip.getBoundingClientRect();
+
+  const dd = document.createElement('div');
+  dd.className = 'dropdown';
+  dd.innerHTML = `
+    <div class="drop-item active" onclick="selectProject('shark/kn')">
+      <span>📁</span>
+      <span>shark/kn</span>
+      <span class="check-mark" style="margin-left:auto">✓</span>
+      <span class="drop-path">~/workspace/me/shark/kn</span>
+    </div>
+    <div class="drop-item" onclick="selectProject('another-project')">
+      <span>📁</span>
+      <span>another-project</span>
+      <span class="drop-path">~/workspace/other/proj</span>
+    </div>
+    <div class="drop-sep"></div>
+    <div class="drop-item add" onclick="showRegisterDialog()">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <span>注册新项目...</span>
+    </div>
+  `;
+
+  dd.style.left = rect.left + 'px';
+  dd.style.top = (rect.bottom + 4) + 'px';
+  dd.style.width = Math.max(rect.width, 240) + 'px';
+  document.body.appendChild(dd);
+  dropdownEl = dd;
+
+  setTimeout(() => {
+    document.addEventListener('click', removeDropdown, {once: true});
+  }, 0);
+}
+
+function removeDropdown() {
+  if (dropdownEl) { dropdownEl.remove(); dropdownEl = null; }
+}
+
+function selectProject(name) {
+  activeProject = name;
+  const chip = document.getElementById('projectChip');
+  chip.querySelector('.name').textContent = name;
+  removeDropdown();
+  showToast(`已切换到 ${name}`);
+}
+
+function showRegisterDialog() {
+  removeDropdown();
+  // Simplified — would open a file picker dialog in the real app
+  alert('注册新项目：选择项目目录\n(实际应用中会调用 Tauri dialog.open)');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TOAST
+   ═══════════════════════════════════════════════════════════ */
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  const msgEl = document.getElementById('toastMsg');
+  const undoEl = document.getElementById('toastUndo');
+
+  msgEl.textContent = msg;
+  if (lastAction && (lastAction.action === 'move' || lastAction.action === 'delete')) {
+    undoEl.style.display = 'inline';
+  } else {
+    undoEl.style.display = 'none';
+  }
+
+  toast.style.display = 'flex';
+  toast.style.animation = 'none';
+  toast.offsetHeight; // reflow
+  toast.style.animation = 'slideUp 120ms ease';
+
+  clearTimeout(toast._timeout);
+  toast._timeout = setTimeout(() => {
+    toast.style.display = 'none';
+  }, 2500);
+}
+
+function undoLast() {
+  if (!lastAction) return;
+  const action = lastAction;
+  lastAction = null;
+  const fromLabel = action.fromScope === 'user' ? '用户级' : '项目级';
+  showToast(`已撤销 — "${action.name}" 回到 ${fromLabel}`);
+  document.getElementById('toastUndo').style.display = 'none';
+}
+
+/* ═══════════════════════════════════════════════════════════
+   KEYBOARD SHORTCUTS
+   ═══════════════════════════════════════════════════════════ */
+document.addEventListener('keydown', function(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key === '1') {
+    e.preventDefault();
+    document.querySelector('.tab-btn[data-tab="all"]').click();
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === '2') {
+    e.preventDefault();
+    document.querySelector('.tab-btn[data-tab="user"]').click();
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === '3') {
+    e.preventDefault();
+    document.querySelector('.tab-btn[data-tab="project"]').click();
+  }
+  if (e.key === 'Escape') {
+    removeContextMenu();
+    removeDropdown();
+    removeConfirmDialog();
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════
+   SEARCH (simple filter)
+   ═══════════════════════════════════════════════════════════ */
+document.getElementById('searchInput').addEventListener('input', function() {
+  const q = this.value.toLowerCase();
+  document.querySelectorAll('.list-row').forEach(row => {
+    const label = row.querySelector('.label')?.textContent?.toLowerCase() || '';
+    row.style.display = q && !label.includes(q) ? 'none' : 'flex';
+  });
+});
+
+// Initial filter: show user-level by default
+filterByScope('user');
+</script>
+</body>
+</html>

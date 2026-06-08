@@ -33,14 +33,14 @@ interface SkillDetailProps {
   } | null;
   graphData?: DependencyGraphData | null;
   onTogglePlugin: (cli: CliKind, pluginId: string, enabled: boolean) => void;
-  onToggleStandaloneSkill: (cli: CliKind, skillId: string, enabled: boolean) => void;
+  onToggleStandaloneSkill: (cli: CliKind, skillId: string, enabled: boolean, path?: string) => void;
   updateInfos: PluginUpdateInfo[];
   onUpdatePlugin: (cli: CliKind, pluginId: string) => void;
   onUninstallPlugin: (cli: CliKind, pluginId: string) => void;
   onUninstallStandaloneSkill: (cli: CliKind, skillId: string) => void;
-  onToggleAgent: (cli: CliKind, name: string, enabled: boolean) => void;
-  onDeleteAgent: (cli: CliKind, name: string) => void;
-  onToggleCommand?: (cli: CliKind, name: string, enabled: boolean) => void;
+  onToggleAgent: (cli: CliKind, name: string, enabled: boolean, path?: string) => void;
+  onDeleteAgent: (cli: CliKind, name: string, path?: string) => void;
+  onToggleCommand?: (cli: CliKind, name: string, enabled: boolean, path?: string) => void;
   onUninstallCommand?: (cli: CliKind, name: string) => void;
   onNodeClick?: (nodeId: string) => void;
   onSelect?: (item: SelectedItem) => void;
@@ -1107,7 +1107,7 @@ function CommandDetail({
 function EmptyState() {
   return (
     <div className="flex-1 flex items-center justify-center bg-[var(--app-bg)]">
-      <div className="flex flex-col items-center gap-5 text-center max-w-sm px-4">
+      <div className="flex flex-col items-center gap-5 text-center max-w-md px-4">
         <div className="w-16 h-16 rounded-full bg-[var(--app-selected)] flex items-center justify-center">
           <Cpu size={28} className="text-[var(--app-accent)]" />
         </div>
@@ -1116,16 +1116,54 @@ function EmptyState() {
             Skill &amp; Plugin Manager
           </div>
           <div className="text-xs text-[var(--app-text-dim)] leading-relaxed">
-            从左侧列表选择一个 Plugin 或 Skill 查看详情
-            <br />
-            你可以在这里启用 / 禁用 Plugin 和 Skill
+            统一管理 Plugin、Skill、Agent 和 Command
           </div>
         </div>
+
+        {/* 使用说明 */}
         <div className="text-xs text-[var(--app-text-dim)] font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-[var(--app-border)] p-3 w-full">
-          <div className="text-[var(--app-text-muted)]">快速操作：</div>
-          <div>• 点击左侧展开分组浏览 Plugin / Skill</div>
-          <div>• 使用搜索过滤 (Ctrl+F)</div>
-          <div>• 右侧面板查看详情和文件</div>
+          <div className="text-[var(--app-text-muted)] font-semibold mb-2">📋 使用说明</div>
+          <div className="space-y-1">
+            <div className="flex items-start gap-1.5">
+              <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+              <span>左侧面板浏览 Plugin / Skill / Agent / Command，点击展开分组</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+              <span>使用 <span className="text-[var(--app-text-muted)]">全部 / 用户级 / 项目级</span> 标签切换作用域</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+              <span>选择项目后查看该项目下的资源</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+              <span>点击工具栏 <span className="text-[var(--app-text-muted)]">⋮</span> 展开批量操作：全选、启用/禁用、移动/复制、删除</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+              <span>右键资源单独操作：启用/禁用、移动/复制到不同作用域、删除</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+              <span>使用搜索框和过滤器快速定位资源</span>
+            </div>
+          </div>
+        </div>
+
+        {/* 注意事项 */}
+        <div className="text-xs font-mono text-left bg-[var(--app-amber-bg)] border border-[var(--app-amber)]/30 p-3 w-full">
+          <div className="flex items-start gap-1.5 text-[var(--app-amber)]">
+            <span className="shrink-0 mt-0.5">⚠️</span>
+            <div>
+              <div className="font-semibold mb-1">注意事项</div>
+              <div className="space-y-0.5 text-[var(--app-text-dim)]">
+                <div>• Plugin 暂不支持复制和移动操作</div>
+                <div>• 仅 Skills、Agents、Commands 可在用户级和项目级之间移动/复制</div>
+                <div>• 系统内置 Agent 和 System Skill 为只读，不可修改</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1165,7 +1203,7 @@ export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandalon
         readonly={false}
         graphData={graphData}
         onToggle={(enabled) =>
-          onToggleStandaloneSkill((item.data as any).cli, (item.data as any).id, enabled)
+          onToggleStandaloneSkill((item.data as any).cli, (item.data as any).id, enabled, (item.data as any).path)
         }
         onUninstall={onUninstallStandaloneSkill}
         onNodeClick={onNodeClick}
@@ -1178,8 +1216,8 @@ export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandalon
       <AgentDetail
         agent={item.data}
         graphData={graphData}
-        onToggle={(agent, enabled) => onToggleAgent(agent.cli, agent.name, enabled)}
-        onDelete={(agent) => onDeleteAgent(agent.cli, agent.name)}
+        onToggle={(agent, enabled) => onToggleAgent(agent.cli, agent.name, enabled, agent.path)}
+        onDelete={(agent) => onDeleteAgent(agent.cli, agent.name, agent.path)}
         onNodeClick={onNodeClick}
       />
     );
@@ -1233,7 +1271,7 @@ export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandalon
     return (
       <CommandDetail
         command={item.data}
-        onToggle={(enabled) => onToggleCommand?.(item.data.cli, item.data.name, enabled)}
+        onToggle={(enabled) => onToggleCommand?.(item.data.cli, item.data.name, enabled, item.data.path)}
         onUninstall={() => onUninstallCommand?.(item.data.cli, item.data.name)}
       />
     );

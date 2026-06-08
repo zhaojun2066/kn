@@ -21,6 +21,7 @@ interface TabInfo {
 
 interface TerminalPanelProps {
   mode?: "right" | "bottom";
+  visible?: boolean;
   size?: number;
   maximized?: boolean;
   onToggleMaximize?: () => void;
@@ -93,7 +94,7 @@ function formatTime(ts: number): string {
 
 /* ── TerminalPanel ──────────────────────────────────────── */
 export function TerminalPanel({
-  mode, size, maximized, onToggleMaximize,
+  mode, visible = true, size, maximized, onToggleMaximize,
   tabs, activeTabId, history,
   onAttachTerminal, onClose, onSwitchTab, onCloseTab, onCloseOthers, onCloseToRight, onNewTab,
   onSetWorkDir, onTerminalReady, onTerminalResize,
@@ -281,10 +282,11 @@ export function TerminalPanel({
     }
   }, [activeTabId]);
 
-  // When panel size or maximize state changes, force the terminal to re-fit.
-  // Double requestAnimationFrame ensures the browser has finished layout before
-  // we read getBoundingClientRect() inside fit().  This is more reliable than
-  // dispatching a synthetic "resize" event, which can fire before layout settles.
+  // When panel size, maximize state, visibility, or active tab changes,
+  // force the terminal to re-fit. Double requestAnimationFrame ensures the
+  // browser has finished layout before we read getBoundingClientRect() inside
+  // fit(). This is more reliable than dispatching a synthetic "resize" event,
+  // which can fire before layout settles.
   useEffect(() => {
     let cancelled = false;
     requestAnimationFrame(() => {
@@ -296,15 +298,22 @@ export function TerminalPanel({
       });
     });
     return () => { cancelled = true; };
-  }, [size, maximized, activeTabId]);
+  }, [size, maximized, visible, activeTabId]);
 
   const isBottom = mode === "bottom";
-  const containerStyle: React.CSSProperties = maximized
-    ? {}
-    : (isBottom
-      ? (size !== undefined ? { height: `${size}px` } : {})
-      : (size !== undefined ? { width: `${size}px` } : {})
-    );
+
+  // When not visible, collapse the panel to zero size while keeping XTerm mounted.
+  // This preserves the terminal buffer so re-show doesn't show a black/blank screen.
+  const containerStyle: React.CSSProperties = !visible
+    ? (isBottom
+      ? { height: 0, overflow: "hidden", border: "none" }
+      : { width: 0, overflow: "hidden", border: "none" })
+    : maximized
+      ? {}
+      : (isBottom
+        ? (size !== undefined ? { height: `${size}px` } : {})
+        : (size !== undefined ? { width: `${size}px` } : {})
+      );
 
   return (
     <div
@@ -312,7 +321,8 @@ export function TerminalPanel({
       style={containerStyle}
       className={`flex flex-col bg-[var(--app-terminal-bg)] border-app-border
         ${isBottom ? "border-t w-full" : "border-l h-full"}
-        ${maximized ? "flex-1" : "shrink-0"}`}
+        ${maximized ? "flex-1" : "shrink-0"}
+        ${!visible ? "shrink-0" : ""}`}
     >
       {/* Header */}
       <div className="flex items-center h-[32px] bg-[var(--app-terminal-header)] border-b border-app-border shrink-0 select-none">
