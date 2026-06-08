@@ -33,7 +33,7 @@ interface DependencyGraphProps {
 // ── Visual styling constants ──
 
 import { CLI_HEX_COLORS } from "../lib/cli-constants";
-const CLI_COLORS = CLI_HEX_COLORS;
+const CLI_COLORS: Record<string, string> = CLI_HEX_COLORS;
 
 const NODE_SHAPES: Record<string, string> = {
   plugin: "hexagon",
@@ -146,10 +146,10 @@ export function DependencyGraph({ data, onNodeClick }: DependencyGraphProps) {
               return CLI_COLORS[cli] || "#6B7280";
             },
             "border-opacity": 0.4,
-            "padding-top": 18,
-            "padding-left": 8,
-            "padding-right": 8,
-            "padding-bottom": 8,
+            "padding-top": 18 as unknown as cytoscape.Css.PropertyValueNode<string>,
+            "padding-left": 8 as unknown as cytoscape.Css.PropertyValueNode<string>,
+            "padding-right": 8 as unknown as cytoscape.Css.PropertyValueNode<string>,
+            "padding-bottom": 8 as unknown as cytoscape.Css.PropertyValueNode<string>,
             shape: "round-rectangle",
             label: "data(label)",
             "text-valign": "top",
@@ -184,13 +184,10 @@ export function DependencyGraph({ data, onNodeClick }: DependencyGraphProps) {
         edgeElasticity: 100,
         gravity: 0.25,
         numIter: 500,
-        tile: true,
-        tilingPaddingVertical: 20,
-        tilingPaddingHorizontal: 20,
         initialTemp: 200,
         coolingFactor: 0.95,
         minTemp: 1.0,
-      },
+      } as cytoscape.CytoscapeOptions["layout"],
       minZoom: 0.3,
       maxZoom: 3,
     });
