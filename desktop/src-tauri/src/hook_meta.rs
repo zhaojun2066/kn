@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::atomic_rename;
 use crate::config_dir;
+use crate::with_write_lock;
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -52,10 +54,26 @@ fn load_all() -> Vec<HookMeta> {
     if text.trim().is_empty() {
         return Vec::new();
     }
-    serde_yaml::from_str(&text).unwrap_or_default()
+    match serde_yaml::from_str(&text) {
+        Ok(metas) => metas,
+        Err(e) => {
+            // Back up corrupted file before it gets overwritten by save_all
+            let bak = path.with_extension("yaml.bak");
+            let _ = fs::write(&bak, &text);
+            eprintln!(
+                "警告: {} 解析失败 ({}), 已备份到 {}",
+                path.display(),
+                e,
+                bak.display()
+            );
+            // Return empty to avoid crashing, but the backup preserves user data
+            Vec::new()
+        }
+    }
 }
 
 fn save_all(metas: &[HookMeta]) -> Result<(), String> {
+    with_write_lock(|| {
     let path = meta_path();
     // Ensure directory exists
     if let Some(parent) = path.parent() {
@@ -83,14 +101,8 @@ fn save_all(metas: &[HookMeta]) -> Result<(), String> {
             }
         }
     }
-    // On Windows, std::fs::rename does not overwrite existing destinations.
-    #[cfg(windows)]
-    {
-        if path.exists() {
-            fs::remove_file(&path).map_err(|e| format!("删除文件失败: {}", e))?;
-        }
-    }
-    if let Err(e) = fs::rename(&tmp_path, &path) {
+    // Use atomic_rename which handles overwrite atomically on all platforms
+    if let Err(e) = atomic_rename(&tmp_path, &path) {
         let _ = fs::remove_file(&tmp_path);
         if !path.exists() {
             let _ = fs::copy(&bak_name, &path);
@@ -100,6 +112,7 @@ fn save_all(metas: &[HookMeta]) -> Result<(), String> {
     }
     let _ = fs::remove_file(&bak_name);
     Ok(())
+    }) // with_write_lock
 }
 
 /// Look up metadata for a specific hook. Returns `None` if no entry exists.

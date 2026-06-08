@@ -367,33 +367,7 @@ pub struct ScanProfile {
 }
 
 pub(crate) fn home_dir() -> std::path::PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        return std::path::PathBuf::from(home);
-    }
-    if let Ok(home) = std::env::var("USERPROFILE") {
-        return std::path::PathBuf::from(home);
-    }
-    // Fallback: try shell to resolve ~
-    if cfg!(target_os = "windows") {
-        if let Ok(output) = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-Command", "Write-Host $env:USERPROFILE"])
-            .output()
-        {
-            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !s.is_empty() {
-                return std::path::PathBuf::from(s);
-            }
-        }
-    } else if let Ok(output) = std::process::Command::new("sh")
-        .args(["-c", "echo $HOME"])
-        .output()
-    {
-        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !s.is_empty() {
-            return std::path::PathBuf::from(s);
-        }
-    }
-    std::path::PathBuf::from(".")
+    crate::home_dir()
 }
 
 /// Returns the user's home directory as a string, for use by the frontend

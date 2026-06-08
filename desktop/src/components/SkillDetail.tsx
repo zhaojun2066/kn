@@ -37,11 +37,11 @@ interface SkillDetailProps {
   updateInfos: PluginUpdateInfo[];
   onUpdatePlugin: (cli: CliKind, pluginId: string) => void;
   onUninstallPlugin: (cli: CliKind, pluginId: string) => void;
-  onUninstallStandaloneSkill: (cli: CliKind, skillId: string) => void;
+  onUninstallStandaloneSkill: (cli: CliKind, skillId: string, path?: string, name?: string) => void;
   onToggleAgent: (cli: CliKind, name: string, enabled: boolean, path?: string) => void;
   onDeleteAgent: (cli: CliKind, name: string, path?: string) => void;
   onToggleCommand?: (cli: CliKind, name: string, enabled: boolean, path?: string) => void;
-  onUninstallCommand?: (cli: CliKind, name: string) => void;
+  onUninstallCommand?: (cli: CliKind, name: string, path?: string) => void;
   onNodeClick?: (nodeId: string) => void;
   onSelect?: (item: SelectedItem) => void;
 }
@@ -480,9 +480,10 @@ function PluginDetail({
       {/* File mode */}
       {viewMode === "file" && pluginRootDir && (
         <div className="flex flex-row flex-1 min-h-0">
-          {/* Left: FileTree */}
+          {/* Left: FileTree — key includes enabled to force refresh on toggle */}
           <div className="w-56 shrink-0 border-r border-[var(--app-border-light)] overflow-y-auto bg-[var(--app-sidebar)]">
             <FileTree
+              key={`${pluginRootDir}-${p.enabled}`}
               rootPath={pluginRootDir}
               onSelect={handleFileSelect}
               activePath={fileActivePath}
@@ -625,9 +626,10 @@ function PluginSkillDetail({
 
       {/* FileTree + Content */}
       <div className="flex flex-row flex-1 min-h-0">
-        {/* Left: FileTree */}
+        {/* Left: FileTree — key includes path for refresh on data change */}
         <div className="w-56 shrink-0 border-r border-[var(--app-border-light)] overflow-y-auto bg-[var(--app-sidebar)]">
           <FileTree
+            key={skill.path}
             rootPath={skill.path}
             onSelect={handleFileSelect}
             activePath={activePath}
@@ -678,7 +680,7 @@ function StandaloneDetail({
   readonly: boolean;
   graphData?: DependencyGraphData | null;
   onToggle: (enabled: boolean) => void;
-  onUninstall: (cli: CliKind, skillId: string) => void;
+  onUninstall: (cli: CliKind, skillId: string, path: string, name: string) => void;
   onNodeClick?: (nodeId: string) => void;
 }) {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
@@ -807,7 +809,7 @@ function StandaloneDetail({
                   message: `确定要删除 "${skill.name}" 吗？将从 skills 目录中移除。`,
                   confirmLabel: "删除",
                   onConfirm: () => {
-                    onUninstall(skill.cli as CliKind, skill.id);
+                    onUninstall(skill.cli as CliKind, skill.id, (skill as any).path, skill.name as string);
                     setConfirm(null);
                   },
                 });
@@ -830,9 +832,10 @@ function StandaloneDetail({
 
       {/* FileTree + Content */}
       <div className="flex flex-row flex-1 min-h-0">
-        {/* Left: FileTree */}
+        {/* Left: FileTree — key includes enabled to force refresh on toggle */}
         <div className="w-56 shrink-0 border-r border-[var(--app-border-light)] overflow-y-auto bg-[var(--app-sidebar)]">
           <FileTree
+            key={`${(skill as any).path}-${(skill as any).enabled}`}
             rootPath={(skill as any).path}
             onSelect={handleFileSelect}
             activePath={activePath}
@@ -1051,9 +1054,10 @@ function CommandDetail({
 
       {/* FileTree + Content */}
       <div className="flex flex-row flex-1 min-h-0">
-        {/* Left: FileTree */}
+        {/* Left: FileTree — key includes enabled to force refresh on toggle */}
         <div className="w-56 shrink-0 border-r border-[var(--app-border-light)] overflow-y-auto bg-[var(--app-sidebar)]">
           <FileTree
+            key={`${command.path}-${command.enabled}`}
             rootPath={command.path}
             onSelect={handleFileSelect}
             activePath={activePath}
@@ -1272,7 +1276,7 @@ export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandalon
       <CommandDetail
         command={item.data}
         onToggle={(enabled) => onToggleCommand?.(item.data.cli, item.data.name, enabled, item.data.path)}
-        onUninstall={() => onUninstallCommand?.(item.data.cli, item.data.name)}
+        onUninstall={() => onUninstallCommand?.(item.data.cli, item.data.name, item.data.path)}
       />
     );
   }

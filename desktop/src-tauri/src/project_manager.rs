@@ -3,6 +3,8 @@
 //! Stores a lightweight project list in `~/.claude-profiles/projects.json`.
 //! Each project maps a display name to an absolute directory path on disk.
 
+use crate::atomic_rename;
+use crate::with_write_lock;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,6 +40,7 @@ fn load_projects() -> ProjectList {
 }
 
 fn save_projects(projects: &ProjectList) -> Result<(), String> {
+    with_write_lock(|| {
     let path = projects_file();
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
@@ -62,8 +65,9 @@ fn save_projects(projects: &ProjectList) -> Result<(), String> {
             }
         }
     }
-    fs::rename(&tmp, &path).map_err(|e| format!("重命名失败: {}", e))?;
+    atomic_rename(&tmp, &path)?;
     Ok(())
+    }) // with_write_lock
 }
 
 // ── Validation ─────────────────────────────────────────────────

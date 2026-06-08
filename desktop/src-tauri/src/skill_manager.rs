@@ -131,14 +131,11 @@ pub struct MarketplaceData {
 
 // ── Paths ──────────────────────────────────────────────────────
 
+/// Thin wrapper around [`crate::home_dir`] that returns `None` instead of `"."` fallback.
+/// Preserves Option semantics used by the skill scanning call chains.
 fn home_dir() -> Option<PathBuf> {
-    if let Ok(h) = std::env::var("HOME") {
-        return Some(PathBuf::from(h));
-    }
-    if let Ok(h) = std::env::var("USERPROFILE") {
-        return Some(PathBuf::from(h));
-    }
-    None
+    let h = crate::home_dir();
+    if h.as_os_str() == "." { None } else { Some(h) }
 }
 
 fn claude_skills_dir() -> Option<PathBuf> {
@@ -322,6 +319,7 @@ fn scan_claude_plugins() -> Vec<PluginEntry> {
                         &agents_dir,
                         "plugin",
                         None,
+                        None,
                     );
 
                     // Enumerate commands in installPath/commands/
@@ -503,7 +501,13 @@ fn scan_claude_standalone_skills(
         }
 
         let link_type = classify_entry(&path);
-        let enabled = !file_name.ends_with(".disabled");
+        // For directory skills, check SKILL.md (not .disabled) — the directory
+        // name itself doesn't change when toggled, unlike flat .md files.
+        let enabled = if is_skill_dir {
+            path.join("SKILL.md").exists()
+        } else {
+            !file_name.ends_with(".disabled")
+        };
 
         skills.push(StandaloneSkill {
             id: format!("claude:skill:{}", name),
@@ -915,14 +919,14 @@ fn scan_claude_project_skills(
 ) -> Vec<StandaloneSkill> {
     let skills_dir = project_root.join(".claude").join("skills");
     let pn = project_name_from_root(project_root);
-    scan_standalone_skills_in_dir("claude", &skills_dir, plugin_skill_names, pn)
+    scan_standalone_skills_in_dir("claude", &skills_dir, plugin_skill_names, pn, Some(project_root))
 }
 
 /// Scan Codex project-level standalone skills from `<project>/.codex/skills/`.
 fn scan_codex_project_skills(project_root: &Path) -> Vec<StandaloneSkill> {
     let skills_dir = project_root.join(".codex").join("skills");
     let pn = project_name_from_root(project_root);
-    scan_codex_style_skills_in_dir("codex", &skills_dir, pn)
+    scan_codex_style_skills_in_dir("codex", &skills_dir, pn, Some(project_root))
 }
 
 /// Scan Qoder project-level standalone skills from `<project>/.qoder/skills/`.
@@ -930,14 +934,14 @@ fn scan_qoder_project_skills(project_root: &Path) -> Vec<StandaloneSkill> {
     // Qoder: user-level = ~/.qoder-cn/  ,  project-level = <project>/.qoder/
     let skills_dir = project_root.join(".qoder").join("skills");
     let pn = project_name_from_root(project_root);
-    scan_codex_style_skills_in_dir("qoder", &skills_dir, pn)
+    scan_codex_style_skills_in_dir("qoder", &skills_dir, pn, Some(project_root))
 }
 
 /// Scan Claude project-level commands from `<project>/.claude/commands/`.
 fn scan_claude_project_commands(project_root: &Path) -> Vec<CommandEntry> {
     let commands_dir = project_root.join(".claude").join("commands");
     let pn = project_name_from_root(project_root);
-    enumerate_commands_in_dir("claude", &commands_dir, pn)
+    enumerate_commands_in_dir("claude", &commands_dir, pn, Some(project_root))
 }
 
 /// Generic standalone skill scanner for a given directory (Claude .md format).
@@ -946,6 +950,7 @@ fn scan_standalone_skills_in_dir(
     skills_dir: &Path,
     plugin_skill_names: &std::collections::HashSet<String>,
     project_name: Option<String>,
+    project_root: Option<&Path>,
 ) -> Vec<StandaloneSkill> {
     let mut skills = Vec::new();
     let dir = match fs::read_dir(skills_dir) {
@@ -979,9 +984,20 @@ fn scan_standalone_skills_in_dir(
             continue;
         }
         let link_type = classify_entry(&path);
-        let enabled = !file_name.ends_with(".disabled");
+        // For directory skills, check SKILL.md (not .disabled) — the directory
+        // name itself doesn't change when toggled, unlike flat .md files.
+        let enabled = if is_skill_dir {
+            path.join("SKILL.md").exists()
+        } else {
+            !file_name.ends_with(".disabled")
+        };
+        let id = if let Some(root) = project_root {
+            format!("{}:project-skill:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), name)
+        } else {
+            format!("{}:project-skill:{}", cli, name)
+        };
         skills.push(StandaloneSkill {
-            id: format!("{}:project-skill:{}", cli, name),
+            id,
             cli: cli.to_string(),
             name: name.to_string(),
             enabled,
@@ -998,6 +1014,7 @@ fn scan_codex_style_skills_in_dir(
     cli: &str,
     skills_dir: &Path,
     project_name: Option<String>,
+    project_root: Option<&Path>,
 ) -> Vec<StandaloneSkill> {
     let mut skills = Vec::new();
     let dir = match fs::read_dir(skills_dir) {
@@ -1019,8 +1036,13 @@ fn scan_codex_style_skills_in_dir(
             continue;
         }
         let enabled = has_skill_md;
+        let id = if let Some(root) = project_root {
+            format!("{}:project-skill:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), file_name)
+        } else {
+            format!("{}:project-skill:{}", cli, file_name)
+        };
         skills.push(StandaloneSkill {
-            id: format!("{}:project-skill:{}", cli, file_name),
+            id,
             cli: cli.to_string(),
             name: file_name.to_string(),
             enabled,
@@ -1033,7 +1055,7 @@ fn scan_codex_style_skills_in_dir(
 }
 
 /// Generic commands enumerator for a given directory.
-fn enumerate_commands_in_dir(cli: &str, commands_dir: &Path, project_name: Option<String>) -> Vec<CommandEntry> {
+fn enumerate_commands_in_dir(cli: &str, commands_dir: &Path, project_name: Option<String>, project_root: Option<&Path>) -> Vec<CommandEntry> {
     let mut commands = Vec::new();
     let dir = match fs::read_dir(commands_dir) {
         Ok(d) => d,
@@ -1053,8 +1075,13 @@ fn enumerate_commands_in_dir(cli: &str, commands_dir: &Path, project_name: Optio
             continue;
         };
         let desc = extract_description(&path);
+        let id = if let Some(root) = project_root {
+            format!("{}:project-command:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), name)
+        } else {
+            format!("{}:project-command:{}", cli, name)
+        };
         commands.push(CommandEntry {
-            id: format!("{}:project-command:{}", cli, name),
+            id,
             cli: cli.to_string(),
             name,
             path: path.to_string_lossy().to_string(),
@@ -2110,29 +2137,58 @@ fn validate_skill_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Install a Claude standalone skill from a local .md file.
+/// Install a Claude standalone skill from a local directory (containing SKILL.md)
+/// or a single .md file (backward compatible).
 fn install_claude_standalone_skill(source: &Path) -> Result<String, String> {
     let skills_dir = claude_skills_dir().ok_or("无法找到 Claude skills 目录")?;
 
-    let file_name = source.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let name = file_name.strip_suffix(".md").unwrap_or(file_name);
+    if source.is_dir() {
+        // Directory mode: validate SKILL.md, then copy entire directory
+        require_skill_md(source)?;
 
-    validate_skill_name(name)?;
+        let name = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        validate_skill_name(&name)?;
 
-    let dest = skills_dir.join(format!("{}.md", name));
+        let dest_dir = skills_dir.join(&name);
+        if dest_dir.exists() {
+            return Err(format!(
+                "Skill '{}' 已存在于 {}",
+                name,
+                skills_dir.display()
+            ));
+        }
 
-    if dest.exists() {
-        return Err(format!(
-            "Skill '{}' 已存在于 {}",
-            name,
-            skills_dir.display()
-        ));
+        fs::create_dir_all(&dest_dir)
+            .map_err(|e| format!("创建目录失败: {}", e))?;
+        copy_dir_contents(source, &dest_dir)?;
+
+        Ok(format!("Skill '{}' 安装成功", name))
+    } else {
+        // Backward compat: single .md file mode
+        let file_name = source.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let name = file_name.strip_suffix(".md").unwrap_or(file_name);
+
+        validate_skill_name(name)?;
+
+        let dest = skills_dir.join(format!("{}.md", name));
+
+        if dest.exists() {
+            return Err(format!(
+                "Skill '{}' 已存在于 {}",
+                name,
+                skills_dir.display()
+            ));
+        }
+
+        // Copy the file to skills directory
+        fs::copy(source, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
+
+        Ok(format!("Skill '{}' 安装成功", name))
     }
-
-    // Copy the file to skills directory
-    fs::copy(source, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
-
-    Ok(format!("Skill '{}' 安装成功", name))
 }
 
 /// Install a Codex/Qoder standalone skill from a local directory or .md file.
@@ -2168,6 +2224,8 @@ fn install_codex_style_standalone_skill(
     fs::create_dir_all(&dest_dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
     if source.is_dir() {
+        // Validate SKILL.md exists before copying
+        require_skill_md(source)?;
         // Copy all contents from source directory
         copy_dir_contents(source, &dest_dir)?;
     } else {
@@ -2177,6 +2235,21 @@ fn install_codex_style_standalone_skill(
     }
 
     Ok(format!("Skill '{}' 安装成功", name))
+}
+
+/// Validate that a directory contains SKILL.md. Returns an error if it does not.
+fn require_skill_md(dir: &Path) -> Result<(), String> {
+    let skill_md = dir.join("SKILL.md");
+    if !skill_md.exists() {
+        return Err(format!(
+            "目录 '{}' 不包含 SKILL.md 文件",
+            dir.display()
+        ));
+    }
+    if !skill_md.is_file() {
+        return Err("SKILL.md 不是一个有效的文件".into());
+    }
+    Ok(())
 }
 
 /// Recursively copy directory contents.
@@ -2225,7 +2298,25 @@ pub fn install_standalone_skill(cli: String, source_path: String) -> Result<Stri
 }
 
 #[tauri::command]
-pub fn uninstall_standalone_skill(cli: String, skill_id: String) -> Result<String, String> {
+pub fn uninstall_standalone_skill(cli: String, skill_id: String, skill_path: Option<String>, skill_name: Option<String>) -> Result<String, String> {
+    // If path is provided, delete directly (handles both user and project level)
+    if let Some(ref p) = skill_path {
+        let file_path = std::path::Path::new(p);
+        if !file_path.exists() {
+            let fallback_name = skill_name.as_deref().unwrap_or("unknown");
+            return Err(format!("Skill '{}' 不存在", fallback_name));
+        }
+        let name = skill_name.as_deref().unwrap_or(
+            file_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown")
+        );
+        if file_path.is_symlink() || file_path.is_file() {
+            fs::remove_file(file_path).map_err(|e| format!("删除失败: {}", e))?;
+        } else if file_path.is_dir() {
+            fs::remove_dir_all(file_path).map_err(|e| format!("删除失败: {}", e))?;
+        }
+        return Ok(format!("Skill '{}' 已删除", name));
+    }
+    // Fallback: ID-based lookup in user-level directory
     let name = strip_id_prefix(&skill_id);
     validate_skill_name(name)?;
     match cli.as_str() {
@@ -2233,29 +2324,18 @@ pub fn uninstall_standalone_skill(cli: String, skill_id: String) -> Result<Strin
             let skills_dir = claude_skills_dir().ok_or("无法找到 Claude skills 目录")?;
             let active = skills_dir.join(format!("{}.md", name));
             let disabled = skills_dir.join(format!("{}.md.disabled", name));
+            let skill_md_dir = skills_dir.join(name);
 
             if active.exists() || active.is_symlink() {
-                if active.is_symlink() {
-                    fs::remove_file(&active).map_err(|e| format!("删除 symlink 失败: {}", e))?;
-                } else {
-                    let bak = skills_dir.join(format!("{}.md.bak", name));
-                    if bak.exists() {
-                        let _ = fs::remove_file(&bak);
-                    }
-                    fs::rename(&active, &bak).map_err(|e| format!("备份失败: {}", e))?;
-                }
+                fs::remove_file(&active).map_err(|e| format!("删除失败: {}", e))?;
                 Ok(format!("Skill '{}' 已删除", name))
             } else if disabled.exists() || disabled.is_symlink() {
-                if disabled.is_symlink() {
-                    fs::remove_file(&disabled).map_err(|e| format!("删除 symlink 失败: {}", e))?;
-                } else {
-                    let bak = skills_dir.join(format!("{}.md.disabled.bak", name));
-                    if bak.exists() {
-                        let _ = fs::remove_file(&bak);
-                    }
-                    fs::rename(&disabled, &bak).map_err(|e| format!("备份失败: {}", e))?;
-                }
+                fs::remove_file(&disabled).map_err(|e| format!("删除失败: {}", e))?;
                 Ok(format!("Skill '{}'（已禁用）已删除", name))
+            } else if skill_md_dir.exists() && skill_md_dir.is_dir() {
+                fs::remove_dir_all(&skill_md_dir)
+                    .map_err(|e| format!("删除失败: {}", e))?;
+                Ok(format!("Skill '{}'（目录）已删除", name))
             } else {
                 Err(format!("Skill '{}' 不存在", name))
             }
@@ -2266,14 +2346,10 @@ pub fn uninstall_standalone_skill(cli: String, skill_id: String) -> Result<Strin
             if !skill_dir.exists() && !skill_dir.is_symlink() {
                 return Err(format!("Skill '{}' 不存在", name));
             }
-            if skill_dir.is_symlink() {
-                fs::remove_file(&skill_dir).map_err(|e| format!("删除 symlink 失败: {}", e))?;
+            if skill_dir.is_symlink() || skill_dir.is_file() {
+                fs::remove_file(&skill_dir).map_err(|e| format!("删除失败: {}", e))?;
             } else {
-                let bak = skills_dir.join(format!("{}.bak", name));
-                if bak.exists() {
-                    let _ = fs::remove_dir_all(&bak);
-                }
-                fs::rename(&skill_dir, &bak).map_err(|e| format!("备份失败: {}", e))?;
+                fs::remove_dir_all(&skill_dir).map_err(|e| format!("删除失败: {}", e))?;
             }
             Ok(format!("Skill '{}' 已删除", name))
         }
@@ -2283,14 +2359,10 @@ pub fn uninstall_standalone_skill(cli: String, skill_id: String) -> Result<Strin
             if !skill_dir.exists() && !skill_dir.is_symlink() {
                 return Err(format!("Skill '{}' 不存在", name));
             }
-            if skill_dir.is_symlink() {
-                fs::remove_file(&skill_dir).map_err(|e| format!("删除 symlink 失败: {}", e))?;
+            if skill_dir.is_symlink() || skill_dir.is_file() {
+                fs::remove_file(&skill_dir).map_err(|e| format!("删除失败: {}", e))?;
             } else {
-                let bak = skills_dir.join(format!("{}.bak", name));
-                if bak.exists() {
-                    let _ = fs::remove_dir_all(&bak);
-                }
-                fs::rename(&skill_dir, &bak).map_err(|e| format!("备份失败: {}", e))?;
+                fs::remove_dir_all(&skill_dir).map_err(|e| format!("删除失败: {}", e))?;
             }
             Ok(format!("Skill '{}' 已删除", name))
         }
@@ -2312,19 +2384,13 @@ pub fn scan_skills(project_path: Option<String>) -> SkillManagerData {
 }
 
 /// Strip the internal `cli:type:` prefix from an asset ID to get the raw name.
+/// Handles both old format `"cli:type:name"` and new format `"cli:type:hash:name"`.
 /// E.g. `"claude:plugin:superpowers@superpowers-marketplace"` → `"superpowers@superpowers-marketplace"`
-///      `"codex:skill:my-skill"` → `"my-skill"`
+///      `"claude:project-skill:a3f2b1c0:hello"` → `"hello"`
 fn strip_id_prefix(id: &str) -> &str {
-    // ID format: "cli:type:actual-name"
-    // Split off the first two colon-delimited segments.
-    id.find(':')
-        .and_then(|first| {
-            id[first + 1..]
-                .find(':')
-                .map(|second| first + 1 + second + 1)
-        })
-        .map(|pos| &id[pos..])
-        .unwrap_or(id)
+    // Take the last colon-delimited segment — the name is always the filename
+    // (without extension), and filenames can't contain ':' on any platform.
+    id.rsplit(':').next().unwrap_or(id)
 }
 
 #[tauri::command]
@@ -2447,9 +2513,20 @@ pub fn toggle_command(cli: String, name: String, enabled: bool, path: Option<Str
     Ok(())
 }
 
-/// Uninstall a Claude command: rename to .bak (soft delete).
+/// Uninstall a command: delete the file or directory directly.
+/// When `path` is provided, deletes the file at that path directly (works for both user and project level).
 #[tauri::command]
-pub fn uninstall_command(cli: String, name: String) -> Result<String, String> {
+pub fn uninstall_command(cli: String, name: String, path: Option<String>) -> Result<String, String> {
+    // If path is provided, delete directly (handles both user and project level)
+    if let Some(ref p) = path {
+        let file_path = std::path::Path::new(p);
+        if !file_path.exists() {
+            return Err(format!("Command '{}' 不存在", name));
+        }
+        fs::remove_file(file_path).map_err(|e| format!("删除失败: {}", e))?;
+        return Ok(format!("Command '{}' 已删除", name));
+    }
+    // Fallback: name-based lookup in user-level directory
     validate_skill_name(&name)?;
     let commands_dir = match cli.as_str() {
         "claude" => claude_commands_dir().ok_or("无法找到 Claude commands 目录")?,
@@ -2460,18 +2537,10 @@ pub fn uninstall_command(cli: String, name: String) -> Result<String, String> {
     let disabled = commands_dir.join(format!("{}.md.disabled", name));
 
     if active.exists() {
-        let bak = commands_dir.join(format!("{}.md.bak", name));
-        if bak.exists() {
-            let _ = fs::remove_file(&bak);
-        }
-        fs::rename(&active, &bak).map_err(|e| format!("备份失败: {}", e))?;
+        fs::remove_file(&active).map_err(|e| format!("删除失败: {}", e))?;
         Ok(format!("Command '{}' 已删除", name))
     } else if disabled.exists() {
-        let bak = commands_dir.join(format!("{}.md.disabled.bak", name));
-        if bak.exists() {
-            let _ = fs::remove_file(&bak);
-        }
-        fs::rename(&disabled, &bak).map_err(|e| format!("备份失败: {}", e))?;
+        fs::remove_file(&disabled).map_err(|e| format!("删除失败: {}", e))?;
         Ok(format!("Command '{}'（已禁用）已删除", name))
     } else {
         Err(format!("Command '{}' 不存在", name))

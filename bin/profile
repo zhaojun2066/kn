@@ -100,12 +100,21 @@ def cmd_env(config, name, shell="bash"):
         print(f"Profile '{name}' not found.", file=sys.stderr)
         sys.exit(1)
     env = config["profiles"][name].get("env", {})
+    # Validate all keys before output (defense-in-depth against injection)
+    import re
+    for k in env:
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
+            print(f"Invalid env var key in profile '{name}': '{k}'. Skipping.", file=sys.stderr)
     if shell == "powershell":
         for k, v in sorted(env.items()):
+            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
+                continue
             safe = v.replace("'", "''")
             print(f"$env:{k} = '{safe}'")
     else:
         for k, v in sorted(env.items()):
+            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
+                continue
             safe = v.replace("'", "'\\''")
             print(f"export {k}='{safe}'")
 
@@ -421,6 +430,11 @@ def cmd_set(config, name, raw, json_mode=False):
     key, _, val = raw.partition("=")
     if not key:
         print("KEY cannot be empty.", file=sys.stderr)
+        sys.exit(1)
+    # Validate env var key to prevent command injection in shell eval
+    import re
+    if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', key):
+        print(f"Invalid env var key: '{key}'. Keys must match [A-Za-z_][A-Za-z0-9_]*", file=sys.stderr)
         sys.exit(1)
     config["profiles"][name].setdefault("env", {})[key] = val
     cfg.write_config(config)

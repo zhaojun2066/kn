@@ -99,6 +99,19 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
   const [confirmRemove, setConfirmRemove] = useState<{ cli: string; name: string } | null>(null);
   const [addingRecommended, setAddingRecommended] = useState<Set<string>>(new Set());
 
+  // Auto-clear messages with cleanup (prevents state updates on unmounted component)
+  useEffect(() => {
+    if (!errorMsg) return;
+    const timer = setTimeout(() => setErrorMsg(""), 8000);
+    return () => clearTimeout(timer);
+  }, [errorMsg]);
+
+  useEffect(() => {
+    if (!marketMsg) return;
+    const timer = setTimeout(() => setMarketMsg(""), 4000);
+    return () => clearTimeout(timer);
+  }, [marketMsg]);
+
   // Load marketplace data when opened
   useEffect(() => {
     if (!open) return;
@@ -132,8 +145,6 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
         setErrorMsg("");
       } else {
         setErrorMsg(message || "安装失败");
-        // Auto-clear error after 8s
-        setTimeout(() => setErrorMsg(""), 8000);
       }
     });
 
@@ -164,7 +175,6 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
         const { success, message } = event.payload;
         if (success) {
           setMarketMsg(message);
-          setTimeout(() => setMarketMsg(""), 4000);
         }
         // Note: addingMarket/removingMarket/addingRecommended are cleared
         // by their respective handlers via the synchronous invoke return
@@ -188,10 +198,8 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
         .then(setData)
         .catch(() => {});
       onInstalled();
-      setTimeout(() => setMarketMsg(""), 4000);
     } catch (e) {
       setErrorMsg(String(e));
-      setTimeout(() => setErrorMsg(""), 8000);
     } finally {
       setAddingMarket(false);
     }
@@ -216,7 +224,6 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
     setAddingRecommended(new Set());
     if (errors.length > 0) {
       setErrorMsg(errors.join(" | "));
-      setTimeout(() => setErrorMsg(""), 10000);
     } else {
       // Refresh marketplace data after successful adds
       invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all" })
@@ -242,10 +249,8 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
         .then(setData)
         .catch(() => {});
       onInstalled();
-      setTimeout(() => setMarketMsg(""), 4000);
     } catch (e) {
       setErrorMsg(String(e));
-      setTimeout(() => setErrorMsg(""), 8000);
     } finally {
       setRemovingMarket((prev) => {
         const next = new Set(prev);
@@ -290,7 +295,6 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
       onInstalled();
     } catch (e) {
       setErrorMsg(String(e));
-      setTimeout(() => setErrorMsg(""), 8000);
     } finally {
       setInstalling((prev) => {
         const next = new Set(prev);
@@ -300,12 +304,12 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
     }
   };
 
-  const handleSelectFile = async () => {
+  const handleSelectDirectory = async () => {
     try {
       const selected = await tauriOpen({
+        directory: true,
         multiple: false,
-        filters: [{ name: "Skill 文件", extensions: ["md"] }],
-        title: "选择 Skill 文件",
+        title: "选择 Skill 目录（需包含 SKILL.md）",
       });
       if (selected && typeof selected === "string") {
         setSkillSource(selected);
@@ -563,7 +567,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
 
             {/* File path display / picker */}
             <button
-              onClick={handleSelectFile}
+              onClick={handleSelectDirectory}
               className="flex items-center gap-1.5 flex-1 px-3 py-1.5 border border-dashed
                 border-[var(--app-border)] text-2xs text-[var(--app-text-muted)] font-mono
                 hover:border-[var(--app-accent)] hover:text-[var(--app-text)] transition-colors"
@@ -572,7 +576,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
               {skillSource ? (
                 <span className="truncate text-[var(--app-text-dim)]">{basename(skillSource)}</span>
               ) : (
-                <span>选择 .md 文件...</span>
+                <span>选择 Skill 目录...</span>
               )}
             </button>
 

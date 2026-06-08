@@ -105,7 +105,12 @@ _ai_launch_with_profile() {
 
     # eval the export statements, then launch in a subshell
     # env vars only affect THIS subshell, parent shell is clean
+    # Safety: keys are validated by `profile set` against ^[A-Za-z_][A-Za-z0-9_]*$
+    # and `profile env` skips any invalid keys as defense-in-depth.
     (
+        # Clean up temp files on any exit (normal, error, or SIGINT)
+        trap 'rm -f "$_tmp_settings"' EXIT
+
         eval "$env_output"
         export KN_PROFILE="$profile_name"
         export KN_CLI_TOOL="$tool"

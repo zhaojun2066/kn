@@ -1,5 +1,18 @@
 <script setup lang="ts">
 import { APP_NAME, APP_VERSION } from '../config'
+
+function scrollToDownload() {
+  const el = document.getElementById('download');
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth' });
+  } else {
+    window.location.hash = '#/';
+    setTimeout(() => {
+      const el = document.getElementById('download');
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  }
+}
 </script>
 
 <template>
@@ -17,7 +30,7 @@ import { APP_NAME, APP_VERSION } from '../config'
       <div class="footer-links">
         <a href="#/">特性</a>
         <a href="#/docs">文档</a>
-        <a href="#/#download">下载</a>
+        <a href="#/" @click.prevent="scrollToDownload">下载</a>
       </div>
 
       <div class="footer-right">

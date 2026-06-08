@@ -395,10 +395,11 @@ export function useTerminal(panelId: string = "right") {
     };
     setHistory((prev) => {
       const filtered = prev.filter((r) => !(r.command === cmd && r.workDir === workDir));
-      return [record, ...filtered].slice(0, MAX_HISTORY);
+      const next = [record, ...filtered].slice(0, MAX_HISTORY);
+      // Persist using computed next value, not stale closure
+      saveHistory(next);
+      return next;
     });
-    // Persist outside updater
-    saveHistory([record, ...history.filter((r) => !(r.command === cmd && r.workDir === workDir))].slice(0, MAX_HISTORY));
     } // !isBottom — history only for right panel
 
     // Wait for shell prompt + resize signal to settle, then send command

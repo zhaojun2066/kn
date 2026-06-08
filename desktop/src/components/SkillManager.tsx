@@ -254,6 +254,7 @@ export function SkillManager({
   const [projectPicker, setProjectPicker] = useState<{
     item: SelectedItem;
     action: "copy" | "move";
+    excludePath?: string; // when set, exclude this project from the picker (for cross-project copy/move)
   } | null>(null);
   const [batchPicker, setBatchPicker] = useState<{
     items: SelectedItem[];
@@ -267,6 +268,19 @@ export function SkillManager({
     targetProject?: ProjectInfo;
   } | null>(null);
   const lastClickedRef = useRef<{ id: string; section: string } | null>(null);
+
+  /** Extract project root path from a resource's file path.
+   *  e.g. "/foo/proj/.claude/skills/hello.md" → "/foo/proj"
+   *  Normalizes Windows backslashes to forward slashes before matching. */
+  const getResourceProjectRoot = (resourcePath: string): string => {
+    const normalized = resourcePath.replace(/\\/g, "/");
+    const dirs = ["/.claude/", "/.codex/", "/.qoder/"];
+    for (const dir of dirs) {
+      const idx = normalized.indexOf(dir);
+      if (idx !== -1) return normalized.slice(0, idx);
+    }
+    return "";
+  };
 
   const toggleSection = (key: string) => {
     setCollapsed((prev) => {
@@ -1008,12 +1022,39 @@ export function SkillManager({
                               }
                             },
                           },
+                          // Cross-project copy/move (only for project-level skills)
+                          ...(isProject ? [
+                            {
+                              label: "复制到其他项目…",
+                              icon: <Folder size={13} />,
+                              disabled: projects.length <= 1,
+                              onClick: () => {
+                                setProjectPicker({
+                                  item: { type: "standalone", data: s },
+                                  action: "copy",
+                                  excludePath: getResourceProjectRoot(s.path),
+                                });
+                              },
+                            },
+                            {
+                              label: "移动到其他项目…",
+                              icon: <Folder size={13} />,
+                              disabled: projects.length <= 1,
+                              onClick: () => {
+                                setProjectPicker({
+                                  item: { type: "standalone", data: s },
+                                  action: "move",
+                                  excludePath: getResourceProjectRoot(s.path),
+                                });
+                              },
+                            },
+                          ] : []),
                           { separator: true },
                           {
                             label: "删除",
                             icon: <Trash2 size={13} />,
                             danger: true,
-                            onClick: () => onBatchUninstall([{ cli: s.cli, id: s.id, enabled: s.enabled }]),
+                            onClick: () => onBatchUninstall([{ cli: s.cli, id: s.id, enabled: s.enabled, path: s.path }]),
                           },
                         ],
                       });
@@ -1150,6 +1191,33 @@ export function SkillManager({
                                     }
                                   },
                                 },
+                                // Cross-project copy/move (only for project-level agents)
+                                ...(isProjectAgent ? [
+                                  {
+                                    label: "复制到其他项目…",
+                                    icon: <Folder size={13} />,
+                                    disabled: projects.length <= 1,
+                                    onClick: () => {
+                                      setProjectPicker({
+                                        item: { type: "agent", data: agent },
+                                        action: "copy",
+                                        excludePath: getResourceProjectRoot(agent.path),
+                                      });
+                                    },
+                                  },
+                                  {
+                                    label: "移动到其他项目…",
+                                    icon: <Folder size={13} />,
+                                    disabled: projects.length <= 1,
+                                    onClick: () => {
+                                      setProjectPicker({
+                                        item: { type: "agent", data: agent },
+                                        action: "move",
+                                        excludePath: getResourceProjectRoot(agent.path),
+                                      });
+                                    },
+                                  },
+                                ] : []),
                                 { separator: true },
                                 {
                                   label: "删除",
@@ -1263,12 +1331,39 @@ export function SkillManager({
                               }
                             },
                           },
+                          // Cross-project copy/move (only for project-level commands)
+                          ...(isProjectCmd ? [
+                            {
+                              label: "复制到其他项目…",
+                              icon: <Folder size={13} />,
+                              disabled: projects.length <= 1,
+                              onClick: () => {
+                                setProjectPicker({
+                                  item: { type: "command", data: cmd },
+                                  action: "copy",
+                                  excludePath: getResourceProjectRoot(cmd.path),
+                                });
+                              },
+                            },
+                            {
+                              label: "移动到其他项目…",
+                              icon: <Folder size={13} />,
+                              disabled: projects.length <= 1,
+                              onClick: () => {
+                                setProjectPicker({
+                                  item: { type: "command", data: cmd },
+                                  action: "move",
+                                  excludePath: getResourceProjectRoot(cmd.path),
+                                });
+                              },
+                            },
+                          ] : []),
                           { separator: true },
                           {
                             label: "删除",
                             icon: <Trash2 size={13} />,
                             danger: true,
-                            onClick: () => onBatchUninstall([{ cli: cmd.cli, id: cmd.id, enabled: cmd.enabled }]),
+                            onClick: () => onBatchUninstall([{ cli: cmd.cli, id: cmd.id, enabled: cmd.enabled, path: cmd.path }]),
                           },
                         ],
                       });
@@ -1399,8 +1494,20 @@ export function SkillManager({
         </div>
 
         {/* Project list */}
-        <div className="py-1 max-h-[300px] overflow-y-auto">
-          {projects.map((p) => (
+        <div className="max-h-[50vh] overflow-y-auto py-1">
+          {(() => {
+            const excludePath = projectPicker?.excludePath;
+            const filtered = excludePath
+              ? projects.filter((p) => p.path !== excludePath)
+              : projects;
+            if (filtered.length === 0) {
+              return (
+                <div className="px-4 py-4 text-center text-2xs text-[var(--app-text-muted)] font-mono">
+                  没有其他项目可选
+                </div>
+              );
+            }
+            return filtered.map((p) => (
             <button
               key={p.name}
               onClick={() => {
@@ -1436,7 +1543,8 @@ export function SkillManager({
                 {projectPicker?.action === "copy" ? "复制" : "移动"}
               </span>
             </button>
-          ))}
+            ));
+          })()}
         </div>
 
         {/* Footer — register new project */}

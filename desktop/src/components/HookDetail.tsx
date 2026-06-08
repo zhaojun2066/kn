@@ -164,7 +164,7 @@ export function HookDetail({ hook, onRefresh }: HookDetailProps) {
   const [savingMeta, setSavingMeta] = useState(false);
 
   // Script content — load if command is an absolute file path
-  const isFilePath = hook.command.startsWith("/");
+  const isFilePath = hook.command.startsWith("/") || /^[A-Za-z]:\\/.test(hook.command);
   const [scriptContent, setScriptContent] = useState<string | null>(null);
   const [scriptLoading, setScriptLoading] = useState(false);
   const [scriptError, setScriptError] = useState("");

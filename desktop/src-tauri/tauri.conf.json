@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicepage/nicepage/refs/heads/main/schemas/tauri-conf.schema.json",
   "productName": "AI Profile Manager",
   "identifier": "com.kn.ai-profile-manager",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",

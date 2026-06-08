@@ -34,6 +34,7 @@ import { useUsage } from "./hooks/useUsage";
 import { useTheme } from "./hooks/useTheme";
 import { useProjects } from "./hooks/useProjects";
 import type { ScopeTab } from "./lib/types";
+import { basename } from "./lib/path-utils";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -129,6 +130,8 @@ export function App() {
   // Keep a ref so callbacks always read current value
   const scanProjectPathRef = useRef(scanProjectPath);
   scanProjectPathRef.current = scanProjectPath;
+  const scanProjectPathsRef = useRef(scanProjectPaths);
+  scanProjectPathsRef.current = scanProjectPaths;
 
   // Refresh baseline counts from a full scan (user + all projects), insensitive to activeProject
   const refreshBaselineCounts = useCallback(async () => {
@@ -667,7 +670,7 @@ export function App() {
         title: "选择项目目录",
       });
       if (!selectedPath) return;
-      const name = selectedPath.split("/").pop() || selectedPath;
+      const name = basename(selectedPath) || selectedPath;
       await addProject(name, selectedPath);
       addToast("success", `项目 "${name}" 已注册`);
     } catch (e) {
@@ -677,52 +680,103 @@ export function App() {
 
   // ── Move / Copy resource ──
 
-  /** Map resourceType to the correct subdirectory name. */
-  const subdirForType = (rt: string): string => {
-    switch (rt) {
-      case "skill": return "skills";
-      case "agent": return "agents";
-      case "command": return "commands";
-      default: return "skills";
+  // ── Resource helpers (extracted from duplicated move/copy/batch logic) ──
+
+  /** Common fields present on all SelectedItem data variants. */
+  interface ResourceData {
+    id: string;
+    name: string;
+    path: string;
+    cli?: string;
+    projectName?: string;
+  }
+
+  /** Extract common fields from any SelectedItem with defensive fallbacks. */
+  function getResourceData(item: SelectedItem): ResourceData {
+    const data = item.data as Record<string, unknown>;
+    return {
+      id: (data.id as string) || "",
+      name: (data.name as string) || "",
+      path: (data.path as string) || "",
+      cli: data.cli as string | undefined,
+      projectName: data.projectName as string | undefined,
+    };
+  }
+
+  /** Subdirectory inside the CLI config folder for each resource type. */
+  type ResourceType = "skill" | "agent" | "command";
+
+  function getResourceType(item: SelectedItem): ResourceType {
+    switch (item.type) {
+      case "standalone": case "system": case "plugin-skill": return "skill";
+      case "agent": case "plugin-agent": return "agent";
+      default: return "command";
     }
-  };
+  }
+
+  function getSubdir(rt: ResourceType): string {
+    return rt === "skill" ? "skills" : rt === "agent" ? "agents" : "commands";
+  }
+
+  /** Detect CLI type from a file path (e.g. "/.codex/" → "codex").
+   *  Normalizes Windows backslashes to forward slashes before matching. */
+  function detectCliFromPath(srcPath: string): string {
+    const normalized = srcPath.replace(/\\/g, "/");
+    if (normalized.includes("/.codex/")) return "codex";
+    if (normalized.includes("/.qoder-cn/") || normalized.includes("/.qoder/")) return "qoder";
+    return "claude";
+  }
+
+  /** CLI-appropriate config directory name for user-level scope. */
+  function userConfigDir(cli: string): string {
+    if (cli === "codex" || cli === "cx") return ".codex";
+    if (cli === "qoder") return ".qoder-cn";
+    return ".claude";
+  }
+
+  /** CLI-appropriate config directory name for project-level scope. */
+  function projectConfigDir(cli: string): string {
+    if (cli === "codex" || cli === "cx") return ".codex";
+    if (cli === "qoder") return ".qoder"; // project-level uses .qoder (not .qoder-cn)
+    return ".claude";
+  }
+
+  /** Build destination directory for a move/copy operation. */
+  async function buildDestDir(
+    srcPath: string,
+    cliFromData: string | undefined,
+    toScope: "user" | "project",
+    subdir: string,
+    project?: import("./lib/types").ProjectInfo,
+  ): Promise<string> {
+    if (toScope === "user") {
+      const homeDir = await invoke<string>("get_home_dir");
+      const cli = detectCliFromPath(srcPath);
+      return `${homeDir}/${userConfigDir(cli)}/${subdir}`;
+    }
+    // project scope
+    if (!project) throw new Error("no project");
+    const cli = cliFromData || "claude";
+    return `${project.path}/${projectConfigDir(cli)}/${subdir}`;
+  }
+  // ── end resource helpers ──
+
+  /** @deprecated Use getSubdir(getResourceType(item)) instead. */
+  const subdirForType = (rt: string): string => getSubdir(rt as ResourceType);
 
   const handleMoveResource = useCallback(async (item: SelectedItem, toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
     try {
-      const data = item.data as any;
+      const data = getResourceData(item);
       const isProject = data.projectName !== undefined || data.id?.includes(":project-");
       const fromScope = isProject ? "project" : "user";
-      const resourceType = item.type === "standalone" ? "skill" : item.type === "agent" ? "agent" : "command";
-      const subdir = subdirForType(resourceType);
+      const resourceType = getResourceType(item);
+      const subdir = getSubdir(resourceType);
+      const srcPath = data.path as string;
+      const project = toScope === "project" ? (targetProject ?? activeProject ?? undefined) : undefined;
 
-      // Determine dest directory
-      let destDir: string;
-      if (toScope === "user") {
-        // Use home directory — srcPath.split(...)[0] would give project root for project-level files
-        const srcPath = data.path as string;
-        const homeDir = await invoke<string>("get_home_dir");
-        // Detect CLI type from source path; handles both .qoder/ (project) and .qoder-cn/ (user) variants
-        if (srcPath.includes("/.codex/")) {
-          destDir = `${homeDir}/.codex/${subdir}`;
-        } else if (srcPath.includes("/.qoder-cn/") || srcPath.includes("/.qoder/")) {
-          destDir = `${homeDir}/.qoder-cn/${subdir}`;
-        } else {
-          destDir = `${homeDir}/.claude/${subdir}`;
-        }
-      } else {
-        // Project scope — use provided targetProject or fall back to activeProject
-        const project = targetProject || activeProject;
-        if (!project) { addToast("error", "请先选择目标项目"); return; }
-        const cli = data.cli as string || "claude";
-        if (cli === "codex" || cli === "cx") {
-          destDir = `${project.path}/.codex/${subdir}`;
-        } else if (cli === "qoder") {
-          // Qoder project-level uses .qoder (not .qoder-cn like user-level ~/.qoder-cn/)
-          destDir = `${project.path}/.qoder/${subdir}`;
-        } else {
-          destDir = `${project.path}/.claude/${subdir}`;
-        }
-      }
+      if (toScope === "project" && !project) { addToast("error", "请先选择目标项目"); return; }
+
+      const destDir = await buildDestDir(srcPath, data.cli, toScope, subdir, project);
 
       const undoInfo = await invoke<any>("move_skill_file", {
         sourcePath: data.path,
@@ -733,13 +787,10 @@ export function App() {
         toScope,
       });
 
-      // Re-scan
-      const [skills, agents] = await Promise.all([
-        invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPath }),
-        invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPath }),
-      ]);
-      setSkillData(skills);
-      setAgentData(agents);
+      // Re-scan with full project paths (like scanMultiProject) so project tabs stay populated
+      const { skills: reSkills, agents: reAgents } = await scanMultiProject(scanProjectPathsRef.current);
+      setSkillData(reSkills);
+      setAgentData(reAgents);
 
       // Show undo toast
       setToasts((prev) => {
@@ -755,52 +806,28 @@ export function App() {
               destPath: undoInfo.destPath,
               contentFingerprint: undoInfo.contentFingerprint,
             });
-            const [s, a] = await Promise.all([
-              invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
-              invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
-            ]);
+            const { skills: s, agents: a } = await scanMultiProject(scanProjectPathsRef.current);
             setSkillData(s);
             setAgentData(a);
           },
-        } as any];
+        }];
       });
     } catch (e) {
       addToast("error", `移动失败: ${String(e).slice(0, 120)}`);
     }
-  }, [activeProject, scanProjectPath, addToast]);
+  }, [activeProject, scanProjectPath, addToast, scanMultiProject]);
 
   const handleCopyResource = useCallback(async (item: SelectedItem, toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
     try {
-      const data = item.data as any;
+      const data = getResourceData(item);
       const srcPath = data.path as string;
-      const resourceType = item.type === "standalone" ? "skill" : item.type === "agent" ? "agent" : "command";
-      const subdir = subdirForType(resourceType);
+      const resourceType = getResourceType(item);
+      const subdir = getSubdir(resourceType);
+      const project = toScope === "project" ? (targetProject ?? activeProject ?? undefined) : undefined;
 
-      let destDir: string;
-      if (toScope === "project") {
-        const project = targetProject || activeProject;
-        if (!project) { addToast("error", "请先选择目标项目"); return; }
-        const cli = data.cli as string || "claude";
-        if (cli === "codex" || cli === "cx") {
-          destDir = `${project.path}/.codex/${subdir}`;
-        } else if (cli === "qoder") {
-          // Qoder project-level uses .qoder (not .qoder-cn like user-level ~/.qoder-cn/)
-          destDir = `${project.path}/.qoder/${subdir}`;
-        } else {
-          destDir = `${project.path}/.claude/${subdir}`;
-        }
-      } else {
-        // Use home directory — srcPath.split(...)[0] would give project root for project-level files
-        const homeDir = await invoke<string>("get_home_dir");
-        // Detect CLI type from source path; handles both .qoder/ (project) and .qoder-cn/ (user) variants
-        if (srcPath.includes("/.codex/")) {
-          destDir = `${homeDir}/.codex/${subdir}`;
-        } else if (srcPath.includes("/.qoder-cn/") || srcPath.includes("/.qoder/")) {
-          destDir = `${homeDir}/.qoder-cn/${subdir}`;
-        } else {
-          destDir = `${homeDir}/.claude/${subdir}`;
-        }
-      }
+      if (toScope === "project" && !project) { addToast("error", "请先选择目标项目"); return; }
+
+      const destDir = await buildDestDir(srcPath, data.cli, toScope, subdir, project);
 
       await invoke("copy_skill_file", {
         sourcePath: data.path,
@@ -808,18 +835,15 @@ export function App() {
         resourceName: data.name,
       });
 
-      const [skills, agents] = await Promise.all([
-        invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPath }),
-        invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPath }),
-      ]);
-      setSkillData(skills);
-      setAgentData(agents);
+      const { skills: reSkills, agents: reAgents } = await scanMultiProject(scanProjectPathsRef.current);
+      setSkillData(reSkills);
+      setAgentData(reAgents);
 
       addToast("success", `已复制 "${data.name}" → ${toScope === "user" ? "用户级" : "项目级"}`);
     } catch (e) {
       addToast("error", `复制失败: ${String(e).slice(0, 120)}`);
     }
-  }, [activeProject, scanProjectPath, addToast]);
+  }, [activeProject, scanProjectPath, addToast, scanMultiProject]);
 
   // ── Batch Move / Copy ──
   const handleBatchMove = useCallback(async (items: SelectedItem[], toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
@@ -828,38 +852,17 @@ export function App() {
     let failed = 0;
     for (const item of items) {
       try {
-        const data = item.data as any;
+        const data = getResourceData(item);
         const isProject = data.projectName !== undefined || data.id?.includes(":project-");
         const fromScope = isProject ? "project" : "user";
-        const resourceType = item.type === "standalone" ? "skill" : item.type === "agent" ? "agent" : "command";
-        const subdir = subdirForType(resourceType);
+        const resourceType = getResourceType(item);
+        const subdir = getSubdir(resourceType);
+        const srcPath = data.path as string;
+        const project = toScope === "project" ? (targetProject ?? activeProject ?? undefined) : undefined;
 
-        let destDir: string;
-        if (toScope === "user") {
-          // Use home directory — srcPath.split(...)[0] would give project root for project-level files
-          const srcPath = data.path as string;
-          const homeDir = await invoke<string>("get_home_dir");
-          // Detect CLI type from source path; handles both .qoder/ (project) and .qoder-cn/ (user) variants
-          if (srcPath.includes("/.codex/")) {
-            destDir = `${homeDir}/.codex/${subdir}`;
-          } else if (srcPath.includes("/.qoder-cn/") || srcPath.includes("/.qoder/")) {
-            destDir = `${homeDir}/.qoder-cn/${subdir}`;
-          } else {
-            destDir = `${homeDir}/.claude/${subdir}`;
-          }
-        } else {
-          const project = targetProject || activeProject;
-          if (!project) throw new Error("no project");
-          const cli = data.cli as string || "claude";
-          if (cli === "codex" || cli === "cx") {
-            destDir = `${project.path}/.codex/${subdir}`;
-          } else if (cli === "qoder") {
-            // Qoder project-level uses .qoder (not .qoder-cn like user-level ~/.qoder-cn/)
-            destDir = `${project.path}/.qoder/${subdir}`;
-          } else {
-            destDir = `${project.path}/.claude/${subdir}`;
-          }
-        }
+        if (toScope === "project" && !project) throw new Error("no project");
+
+        const destDir = await buildDestDir(srcPath, data.cli, toScope, subdir, project);
 
         await invoke("move_skill_file", {
           sourcePath: data.path,
@@ -872,23 +875,20 @@ export function App() {
         ok++;
       } catch (e) {
         failed++;
-        console.error(`Batch move failed for ${(item.data as any).name}:`, e);
+        console.error(`Batch move failed for ${getResourceData(item).name}:`, e);
       }
     }
-    // Re-scan
-    const [skills, agents] = await Promise.all([
-      invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
-      invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
-    ]);
-    setSkillData(skills);
-    setAgentData(agents);
+    // Re-scan with full project paths so project tabs stay populated
+    const { skills: reSkills, agents: reAgents } = await scanMultiProject(scanProjectPathsRef.current);
+    setSkillData(reSkills);
+    setAgentData(reAgents);
 
     if (failed === 0) {
       addToast("success", `已移动 ${ok} 项 → ${toScope === "user" ? "用户级" : "项目级"}`);
     } else {
       addToast("error", `移动完成: ${ok} 成功, ${failed} 失败`);
     }
-  }, [activeProject, scanProjectPath, addToast]);
+  }, [activeProject, scanProjectPath, addToast, scanMultiProject]);
 
   const handleBatchCopy = useCallback(async (items: SelectedItem[], toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
     const total = items.length;
@@ -896,36 +896,15 @@ export function App() {
     let failed = 0;
     for (const item of items) {
       try {
-        const data = item.data as any;
+        const data = getResourceData(item);
         const srcPath = data.path as string;
-        const resourceType = item.type === "standalone" ? "skill" : item.type === "agent" ? "agent" : "command";
-        const subdir = subdirForType(resourceType);
+        const resourceType = getResourceType(item);
+        const subdir = getSubdir(resourceType);
+        const project = toScope === "project" ? (targetProject ?? activeProject ?? undefined) : undefined;
 
-        let destDir: string;
-        if (toScope === "project") {
-          const project = targetProject || activeProject;
-          if (!project) throw new Error("no project");
-          const cli = data.cli as string || "claude";
-          if (cli === "codex" || cli === "cx") {
-            destDir = `${project.path}/.codex/${subdir}`;
-          } else if (cli === "qoder") {
-            // Qoder project-level uses .qoder (not .qoder-cn like user-level ~/.qoder-cn/)
-            destDir = `${project.path}/.qoder/${subdir}`;
-          } else {
-            destDir = `${project.path}/.claude/${subdir}`;
-          }
-        } else {
-          // Use home directory — srcPath.split(...)[0] would give project root for project-level files
-          const homeDir = await invoke<string>("get_home_dir");
-          // Detect CLI type from source path; handles both .qoder/ (project) and .qoder-cn/ (user) variants
-          if (srcPath.includes("/.codex/")) {
-            destDir = `${homeDir}/.codex/${subdir}`;
-          } else if (srcPath.includes("/.qoder-cn/") || srcPath.includes("/.qoder/")) {
-            destDir = `${homeDir}/.qoder-cn/${subdir}`;
-          } else {
-            destDir = `${homeDir}/.claude/${subdir}`;
-          }
-        }
+        if (toScope === "project" && !project) throw new Error("no project");
+
+        const destDir = await buildDestDir(srcPath, data.cli, toScope, subdir, project);
 
         await invoke("copy_skill_file", {
           sourcePath: data.path,
@@ -935,41 +914,38 @@ export function App() {
         ok++;
       } catch (e) {
         failed++;
-        console.error(`Batch copy failed for ${(item.data as any).name}:`, e);
+        console.error(`Batch copy failed for ${getResourceData(item).name}:`, e);
       }
     }
-    // Re-scan
-    const [skills, agents] = await Promise.all([
-      invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
-      invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
-    ]);
-    setSkillData(skills);
-    setAgentData(agents);
+    // Re-scan with full project paths so project tabs stay populated
+    const { skills: reSkills, agents: reAgents } = await scanMultiProject(scanProjectPathsRef.current);
+    setSkillData(reSkills);
+    setAgentData(reAgents);
 
     if (failed === 0) {
       addToast("success", `已复制 ${ok} 项 → ${toScope === "user" ? "用户级" : "项目级"}`);
     } else {
       addToast("error", `复制完成: ${ok} 成功, ${failed} 失败`);
     }
-  }, [activeProject, scanProjectPath, addToast]);
+  }, [activeProject, scanProjectPath, addToast, scanMultiProject]);
 
   // After re-scanning, sync selectedSkillItem to the matching item in fresh data
   const syncSelection = useCallback((data: SkillManagerData, prev: SelectedItem | null) => {
     if (!prev) return null;
     if (prev.type === "plugin") {
-      const found = data.plugins.find((p) => p.id === (prev.data as any).id);
+      const found = data.plugins.find((p) => p.id === (prev!.data as unknown as ResourceData).id);
       return found ? { type: "plugin" as const, data: found } : null;
     }
     if (prev.type === "standalone") {
-      const found = data.standaloneSkills.find((s) => s.id === (prev.data as any).id);
+      const found = data.standaloneSkills.find((s) => s.id === (prev!.data as unknown as ResourceData).id);
       return found ? { type: "standalone" as const, data: found } : null;
     }
     if (prev.type === "system") {
-      const found = data.systemSkills.find((s) => s.id === (prev.data as any).id);
+      const found = data.systemSkills.find((s) => s.id === (prev!.data as unknown as ResourceData).id);
       return found ? { type: "system" as const, data: found } : null;
     }
     if (prev.type === "command") {
-      const found = data.commands.find((c) => c.id === (prev.data as any).id);
+      const found = data.commands.find((c) => c.id === (prev!.data as unknown as ResourceData).id);
       return found ? { type: "command" as const, data: found } : null;
     }
     return null;
@@ -978,7 +954,7 @@ export function App() {
   // Agent selection sync (separate since agent data comes from agentData, not skillData)
   const syncAgentSelection = useCallback((agents: AgentManagerData, prev: SelectedItem | null) => {
     if (!prev || prev.type !== "agent") return null;
-    const found = agents.agents.find((a) => a.id === (prev.data as any).id);
+    const found = agents.agents.find((a) => a.id === (prev!.data as unknown as ResourceData).id);
     return found ? { type: "agent" as const, data: found } : null;
   }, []);
 
@@ -1032,15 +1008,16 @@ export function App() {
       try {
         await invoke("toggle_plugin", { cli, pluginId, enabled });
         setSkillDataLoading(true);
-        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
-        setSkillData(data);
-        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+        setSkillData(skills);
+        setAgentData(agents);
+        setSelectedSkillItem((prev) => syncSelection(skills, prev));
         setSkillDataLoading(false);
       } catch (e) {
         addToast("error", `操作失败: ${e}`);
       }
     },
-    [addToast, syncSelection],
+    [addToast, syncSelection, scanMultiProject],
   );
 
   const handleToggleStandaloneSkill = useCallback(
@@ -1048,15 +1025,16 @@ export function App() {
       try {
         await invoke("toggle_standalone_skill", { cli, skillId, enabled, path: path ?? null });
         setSkillDataLoading(true);
-        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
-        setSkillData(data);
-        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+        setSkillData(skills);
+        setAgentData(agents);
+        setSelectedSkillItem((prev) => syncSelection(skills, prev));
         setSkillDataLoading(false);
       } catch (e) {
         addToast("error", `操作失败: ${e}`);
       }
     },
-    [addToast, syncSelection],
+    [addToast, syncSelection, scanMultiProject],
   );
 
   // Agent toggle
@@ -1064,16 +1042,13 @@ export function App() {
     async (cli: string, name: string, enabled: boolean, path?: string) => {
       try {
         await invoke("toggle_agent", { cli, name, enabled, path: path ?? null });
-        // Re-scan both agents and skills
+        // Re-scan both agents and skills with full project paths
         setSkillDataLoading(true);
-        const [skills, agents] = await Promise.all([
-          invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
-          invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
-        ]);
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
         setSkillData(skills);
         setAgentData(agents);
         setSelectedSkillItem((prev) => {
-          if (prev?.type === "agent" && (prev.data as any).name === name) {
+          if (prev?.type === "agent" && prev.data.name === name) {
             const found = agents.agents.find((a) => a.name === name && a.cli === cli);
             return found ? { type: "agent", data: found } : null;
           }
@@ -1084,36 +1059,27 @@ export function App() {
         addToast("error", `操作失败: ${e}`);
       }
     },
-    [addToast],
+    [addToast, scanMultiProject],
   );
 
   // Agent delete = disable (rename to .disabled)
   const handleDeleteAgent = useCallback(
     async (cli: string, name: string, path?: string) => {
       try {
-        await invoke("toggle_agent", { cli, name, enabled: false, path: path ?? null });
-        // Re-scan
+        await invoke("delete_agent", { cli, name, path: path ?? null });
+        // Re-scan with full project paths
         setSkillDataLoading(true);
-        const [skills, agents] = await Promise.all([
-          invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
-          invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
-        ]);
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
         setSkillData(skills);
         setAgentData(agents);
-        setSelectedSkillItem((prev) => {
-          if (prev?.type === "agent" && (prev.data as any).name === name) {
-            const found = agents.agents.find((a) => a.name === name && a.cli === cli);
-            return found ? { type: "agent", data: found } : null;
-          }
-          return prev;
-        });
+        setSelectedSkillItem(null);
         setSkillDataLoading(false);
-        addToast("success", `已禁用 Agent "${name}"`);
+        addToast("success", `已删除 Agent "${name}"`);
       } catch (e) {
-        addToast("error", `操作失败: ${e}`);
+        addToast("error", `删除失败: ${e}`);
       }
     },
-    [addToast],
+    [addToast, scanMultiProject],
   );
 
   // Batch toggle: fires all toggles, then does ONE scan
@@ -1124,49 +1090,54 @@ export function App() {
           if (item.id.includes(":plugin:")) {
             await invoke("toggle_plugin", { cli: item.cli, pluginId: item.id, enabled });
           } else if (item.id.includes(":agent:")) {
-            const name = item.id.split(":").slice(2).join(":");
+            const name = item.id.split(":").pop() || item.id;
             await invoke("toggle_agent", { cli: item.cli, name, enabled, path: item.path ?? null });
-          } else if (item.id.includes(":command:")) {
-            const name = item.id.split(":").slice(2).join(":");
+          } else if (item.id.includes(":command:") || item.id.includes("-command:")) {
+            const name = item.id.split(":").pop() || item.id;
             await invoke("toggle_command", { cli: item.cli, name, enabled, path: item.path ?? null });
           } else {
             await invoke("toggle_standalone_skill", { cli: item.cli, skillId: item.id, enabled, path: item.path ?? null });
           }
         }
-        // Single re-scan after all toggles (both skills and agents)
+        // Re-scan with full project paths so project tabs stay populated
         setSkillDataLoading(true);
-        const [data, agents] = await Promise.all([
-          invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }),
-          invoke<AgentManagerData>("scan_agents", { projectPath: scanProjectPathRef.current }),
-        ]);
-        setSkillData(data);
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+        setSkillData(skills);
         setAgentData(agents);
-        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        setSelectedSkillItem((prev) => syncSelection(skills, prev));
         setSkillDataLoading(false);
       } catch (e) {
         addToast("error", `批量操作失败: ${e}`);
       }
     },
-    [addToast, syncSelection],
+    [addToast, syncSelection, scanMultiProject],
   );
 
   const handleBatchUninstall = useCallback(
     async (items: BatchToggleItem[]) => {
       try {
         for (const item of items) {
+          // Detect command IDs: user-level "cli:command:name" or project-level "cli:project-command:hash:name"
+          const isCommand = item.id.includes(":command:") || item.id.includes("-command:");
           if (item.id.includes(":plugin:")) {
             await invoke("uninstall_plugin", { cli: item.cli, pluginId: item.id });
-          } else if (item.id.includes(":command:")) {
-            const name = item.id.split(":").slice(2).join(":");
-            await invoke("uninstall_command", { cli: item.cli, name });
+          } else if (item.id.includes(":agent:")) {
+            const name = item.id.split(":").pop() || item.id;
+            await invoke("delete_agent", { cli: item.cli, name, path: item.path ?? null });
+          } else if (isCommand) {
+            const name = item.id.split(":").pop() || item.id;
+            await invoke("uninstall_command", { cli: item.cli, name, path: item.path ?? null });
           } else {
-            await invoke("uninstall_standalone_skill", { cli: item.cli, skillId: item.id });
+            // Extract name from ID (last segment) as fallback
+            const name = item.id.split(":").pop() || item.id;
+            await invoke("uninstall_standalone_skill", { cli: item.cli, skillId: item.id, skillPath: item.path ?? null, skillName: name });
           }
         }
-        // Single re-scan after all uninstalls
+        // Re-scan with full project paths so project tabs stay populated
         setSkillDataLoading(true);
-        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
-        setSkillData(data);
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+        setSkillData(skills);
+        setAgentData(agents);
         setSelectedSkillItem(null);
         setSkillDataLoading(false);
         addToast("success", `已删除 ${items.length} 项`);
@@ -1174,7 +1145,7 @@ export function App() {
         addToast("error", `批量删除失败: ${e}`);
       }
     },
-    [addToast],
+    [addToast, scanMultiProject],
   );
 
   // Track whether check was user-initiated (show toast) or auto (silent)
@@ -1230,10 +1201,11 @@ export function App() {
       const { success, message } = event.payload;
       if (success) {
         addToast("success", message);
-        // Re-scan skills
-        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
-        setSkillData(data);
-        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        // Re-scan with full project paths so project tabs stay populated
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+        setSkillData(skills);
+        setAgentData(agents);
+        setSelectedSkillItem((prev) => syncSelection(skills, prev));
         // Re-check silently (no toast) — result arrives via update-check-complete event
         checkSilentRef.current = true;
         invoke("check_updates").catch(() => {});
@@ -1250,30 +1222,33 @@ export function App() {
       try {
         const msg = await invoke<string>("uninstall_plugin", { cli, pluginId });
         addToast("success", msg);
-        // Re-scan after uninstall
-        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
-        setSkillData(data);
-        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        // Re-scan with full project paths so project tabs stay populated
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+        setSkillData(skills);
+        setAgentData(agents);
+        setSelectedSkillItem((prev) => syncSelection(skills, prev));
       } catch (e) {
         addToast("error", `删除失败: ${e}`);
       }
     },
-    [addToast, syncSelection],
+    [addToast, syncSelection, scanMultiProject],
   );
 
   const handleUninstallStandaloneSkill = useCallback(
-    async (cli: string, skillId: string) => {
+    async (cli: string, skillId: string, path?: string, name?: string) => {
       try {
-        const msg = await invoke<string>("uninstall_standalone_skill", { cli, skillId });
+        const msg = await invoke<string>("uninstall_standalone_skill", { cli, skillId, skillPath: path ?? null, skillName: name ?? null });
         addToast("success", msg);
-        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
-        setSkillData(data);
+        // Re-scan with full project paths so project tabs stay populated
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+        setSkillData(skills);
+        setAgentData(agents);
         setSelectedSkillItem(null);
       } catch (e) {
         addToast("error", `删除失败: ${e}`);
       }
     },
-    [addToast],
+    [addToast, scanMultiProject],
   );
 
   // Command toggle handler
@@ -1281,30 +1256,32 @@ export function App() {
     async (cli: string, name: string, enabled: boolean, path?: string) => {
       try {
         await invoke("toggle_command", { cli, name, enabled, path: path ?? null });
-        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
-        setSkillData(data);
-        setSelectedSkillItem((prev) => syncSelection(data, prev));
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+        setSkillData(skills);
+        setAgentData(agents);
+        setSelectedSkillItem((prev) => syncSelection(skills, prev));
       } catch (e) {
         addToast("error", `操作失败: ${e}`);
       }
     },
-    [addToast, syncSelection],
+    [addToast, syncSelection, scanMultiProject],
   );
 
   // Command uninstall handler
   const handleUninstallCommand = useCallback(
-    async (cli: string, name: string) => {
+    async (cli: string, name: string, path?: string) => {
       try {
-        const msg = await invoke<string>("uninstall_command", { cli, name });
+        const msg = await invoke<string>("uninstall_command", { cli, name, path: path ?? null });
         addToast("success", msg);
-        const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
-        setSkillData(data);
+        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+        setSkillData(skills);
+        setAgentData(agents);
         setSelectedSkillItem(null);
       } catch (e) {
         addToast("error", `删除失败: ${e}`);
       }
     },
-    [addToast],
+    [addToast, scanMultiProject],
   );
 
   // Listen for plugin-install-complete event
@@ -1313,14 +1290,17 @@ export function App() {
       const { success, message } = event.payload;
       if (success) {
         addToast("success", message);
-        // Re-scan skills and marketplace
-        invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }).then(setSkillData).catch(() => {});
+        // Re-scan skills with full project paths
+        scanMultiProject(scanProjectPathsRef.current).then(({ skills, agents }) => {
+          setSkillData(skills);
+          setAgentData(agents);
+        }).catch(() => {});
       } else {
         addToast("error", message);
       }
     });
     return () => { unlisten.then((fn) => fn()); };
-  }, [addToast]);
+  }, [addToast, scanMultiProject]);
 
   // Listen for plugin-uninstall-complete event
   useEffect(() => {
@@ -1328,23 +1308,25 @@ export function App() {
       const { success, message } = event.payload;
       if (success) {
         addToast("success", message);
-        // Re-scan
-        invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current }).then((data) => {
-          setSkillData(data);
-          setSelectedSkillItem((prev) => syncSelection(data, prev));
+        // Re-scan with full project paths
+        scanMultiProject(scanProjectPathsRef.current).then(({ skills, agents }) => {
+          setSkillData(skills);
+          setAgentData(agents);
+          setSelectedSkillItem((prev) => syncSelection(skills, prev));
         }).catch(() => {});
       } else {
         addToast("error", message);
       }
     });
     return () => { unlisten.then((fn) => fn()); };
-  }, [addToast, syncSelection]);
+  }, [addToast, syncSelection, scanMultiProject]);
 
   // Refresh skills after marketplace install
   const handleMarketplaceInstalled = useCallback(async () => {
-    const data = await invoke<SkillManagerData>("scan_skills", { projectPath: scanProjectPathRef.current });
-    setSkillData(data);
-  }, []);
+    const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
+    setSkillData(skills);
+    setAgentData(agents);
+  }, [scanMultiProject]);
 
   // Show errors as toasts (dedup: track last shown error)
   const lastErrorRef = useRef<string | null>(null);
@@ -1572,11 +1554,13 @@ export function App() {
       }
       const currentVersion: string = await invoke("get_app_version");
 
-      let manifest: any;
+      interface UpdatePlatform { url: string; sha256?: string; signature?: string; }
+      interface UpdateManifest { version: string; notes?: string; platforms: Record<string, UpdatePlatform>; }
+      let manifest: UpdateManifest;
       try {
         const text = (await invoke("fetch_url", { url: config.update_url })) as string;
         if (!text.trim()) throw new Error("空响应");
-        manifest = JSON.parse(text);
+        manifest = JSON.parse(text) as UpdateManifest;
       } catch (e: any) {
         if (!opts?.silent) addToast("error", `无法获取更新清单: ${e}\n${config.update_url}`);
         return;
@@ -1593,7 +1577,7 @@ export function App() {
 
       const platformInfo: { os: string; arch: string } = await invoke("get_platform_info");
       const platform = `${platformInfo.os === "macos" ? "darwin" : platformInfo.os}-${platformInfo.arch}`;
-      const plat = manifest.platforms[platform] || Object.values(manifest.platforms)[0] as any;
+      const plat = manifest.platforms[platform] || Object.values(manifest.platforms)[0];
       if (!plat?.url) { addToast("error", `无此平台的更新包 (${platform})`); return; }
 
       // Show update dialog with release notes instead of auto-downloading
@@ -1885,7 +1869,7 @@ export function App() {
                   && selectedSkillItem.type !== "plugin-agent"
                   && selectedSkillItem.type !== "command"
                   && selectedSkillItem.type !== "plugin-command"
-                  ? (selectedSkillItem.data as any).id
+                  ? getResourceData(selectedSkillItem!).id
                   : null}
                 onSelect={setSelectedSkillItem}
                 onTogglePlugin={handleTogglePlugin}

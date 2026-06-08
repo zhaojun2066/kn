@@ -1,3 +1,4 @@
+use crate::with_write_lock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -179,10 +180,12 @@ pub fn load_pricing() -> HashMap<String, ModelPricing> {
 }
 
 pub fn save_pricing(pricing: &HashMap<String, ModelPricing>) -> Result<(), String> {
+    with_write_lock(|| {
     let dir = crate::config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create dir: {}", e))?;
     let json = serde_json::to_string_pretty(pricing).map_err(|e| format!("serialize: {}", e))?;
     fs::write(pricing_file(), json).map_err(|e| format!("write: {}", e))
+    }) // with_write_lock
 }
 
 // ── Tauri commands ───────────────────────────────────────────

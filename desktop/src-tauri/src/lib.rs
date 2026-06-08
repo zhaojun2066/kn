@@ -10,8 +10,88 @@ mod skill_manager;
 mod usage;
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+/// Global write lock — serializes all config file writes to prevent
+/// data corruption when multiple Tauri commands run concurrently.
+/// (The Python CLI already uses fcntl.flock for its own writes.)
+static WRITE_LOCK: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
+
+/// Acquire the global write lock and run the closure.
+/// All file-write operations should pass through this to avoid races.
+pub(crate) fn with_write_lock<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let _guard = WRITE_LOCK
+        .lock()
+        .map_err(|e| format!("write lock poisoned: {}", e))?;
+    f()
+}
+
+/// Atomically rename `src` to `dst`, overwriting `dst` if it exists.
+///
+/// On Unix this is `std::fs::rename` (atomic + overwrites). On Windows,
+/// `std::fs::rename` fails if the destination exists, so we use
+/// `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` which performs the
+/// replace atomically — avoiding the TOCTOU race of remove-then-rename.
+pub(crate) fn atomic_rename(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ffi::OsStr;
+
+        fn to_wide(s: &OsStr) -> Vec<u16> {
+            s.encode_wide().chain(Some(0)).collect()
+        }
+
+        extern "system" {
+            fn MoveFileExW(
+                lpExistingFileName: *const u16,
+                lpNewFileName: *const u16,
+                dwFlags: u32,
+            ) -> i32;
+        }
+
+        const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+        const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+
+        let src_wide = to_wide(src.as_os_str());
+        let dst_wide = to_wide(dst.as_os_str());
+        let ret = unsafe {
+            MoveFileExW(
+                src_wide.as_ptr(),
+                dst_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if ret == 0 {
+            return Err(format!(
+                "MoveFileEx 失败: {} -> {}: {}",
+                src.display(),
+                dst.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(src, dst).map_err(|e| format!("rename 失败: {} -> {}: {}", src.display(), dst.display(), e))
+    }
+}
+
+/// Generate a short (8-char hex) hash of a path string.
+/// Used to create unique scope keys for project-level skill/agent/command IDs
+/// and hook IDs to prevent collisions across projects.
+pub(crate) fn hash_path(path: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:08x}", hasher.finish())
+}
 
 /// Shared config directory.
 ///
@@ -33,13 +113,37 @@ pub(crate) fn config_dir() -> PathBuf {
 /// Resolve the user home directory across platforms.
 ///
 /// Reads `HOME` first, falling back to `USERPROFILE` on Windows (where
-/// GUI apps launched from Explorer typically lack `HOME`). Returns `.`
-/// as a last resort.
+/// GUI apps launched from Explorer typically lack `HOME`).
+/// If both env vars are missing, tries shell fallback (powershell on Windows,
+/// `echo $HOME` via `sh` on Unix). Returns `.` as a last resort.
 pub(crate) fn home_dir() -> PathBuf {
-    let raw = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(&raw)
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home);
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        return PathBuf::from(home);
+    }
+    // Fallback: try shell to resolve home directory
+    if cfg!(target_os = "windows") {
+        if let Ok(output) = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Write-Output $env:USERPROFILE"])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !s.is_empty() {
+                return PathBuf::from(s);
+            }
+        }
+    } else if let Ok(output) = std::process::Command::new("sh")
+        .args(["-c", "echo $HOME"])
+        .output()
+    {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !s.is_empty() {
+            return PathBuf::from(s);
+        }
+    }
+    PathBuf::from(".")
 }
 
 /// Resolve the user's Documents folder on Windows.
@@ -164,6 +268,7 @@ pub fn run() {
             agent_manager::build_dependency_graph,
             agent_manager::analyze_impact,
             agent_manager::toggle_agent,
+            agent_manager::delete_agent,
             agent_manager::read_agent_content,
             skill_manager::read_skill_content,
             skill_manager::move_skill_file,

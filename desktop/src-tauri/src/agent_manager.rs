@@ -235,6 +235,7 @@ fn agent_from_frontmatter(
     source: &str, // "user" | "project" | "plugin"
     frontmatter: &serde_yaml::Value,
     project_name: Option<String>,
+    project_root: Option<&std::path::Path>,
 ) -> AgentEntry {
     let description = frontmatter
         .get("description")
@@ -280,8 +281,14 @@ fn agent_from_frontmatter(
 
     let enabled = !path.to_string_lossy().ends_with(".disabled");
 
+    let id = if let Some(root) = project_root {
+        format!("{}:agent:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), name)
+    } else {
+        format!("{}:agent:{}", cli, name)
+    };
+
     AgentEntry {
-        id: format!("{}:agent:{}", cli, name),
+        id,
         cli: cli.to_string(),
         name: name.to_string(),
         description,
@@ -306,13 +313,13 @@ fn claude_agents_dir() -> std::path::PathBuf {
 
 fn scan_claude_user_agents() -> Vec<AgentEntry> {
     let dir = claude_agents_dir();
-    scan_md_agents_in_dir("claude", &dir, "user", None)
+    scan_md_agents_in_dir("claude", &dir, "user", None, None)
 }
 
 fn scan_claude_project_agents(project_root: &std::path::Path) -> Vec<AgentEntry> {
     let dir = project_root.join(".claude").join("agents");
     let pn = crate::skill_manager::project_name_from_root(project_root);
-    scan_md_agents_in_dir("claude", &dir, "project", pn)
+    scan_md_agents_in_dir("claude", &dir, "project", pn, Some(project_root))
 }
 
 /// Scan a directory for .md agent files (Claude/Qoder format).
@@ -321,6 +328,7 @@ pub(crate) fn scan_md_agents_in_dir(
     dir: &std::path::PathBuf,
     source: &str,
     project_name: Option<String>,
+    project_root: Option<&std::path::Path>,
 ) -> Vec<AgentEntry> {
     let mut agents = Vec::new();
 
@@ -372,6 +380,7 @@ pub(crate) fn scan_md_agents_in_dir(
             source,
             &frontmatter,
             project_name.clone(),
+            project_root,
         ));
     }
 
@@ -391,20 +400,20 @@ fn qoder_agents_dir() -> std::path::PathBuf {
 
 fn scan_qoder_user_agents() -> Vec<AgentEntry> {
     let dir = qoder_agents_dir();
-    scan_md_agents_in_dir("qoder", &dir, "user", None)
+    scan_md_agents_in_dir("qoder", &dir, "user", None, None)
 }
 
 fn scan_qoder_project_agents(project_root: &std::path::Path) -> Vec<AgentEntry> {
     // Qoder project-level uses .qoder (not .qoder-cn like user-level)
     let dir = project_root.join(".qoder").join("agents");
     let pn = crate::skill_manager::project_name_from_root(project_root);
-    scan_md_agents_in_dir("qoder", &dir, "project", pn)
+    scan_md_agents_in_dir("qoder", &dir, "project", pn, Some(project_root))
 }
 
 fn scan_codex_project_agents(project_root: &std::path::Path) -> Vec<AgentEntry> {
     let dir = project_root.join(".codex").join("agents");
     let pn = crate::skill_manager::project_name_from_root(project_root);
-    scan_codex_toml_agents_in_dir("codex", &dir, "project", pn)
+    scan_codex_toml_agents_in_dir("codex", &dir, "project", pn, Some(project_root))
 }
 
 // ── Codex .toml agent scanning ──
@@ -419,6 +428,7 @@ fn scan_codex_toml_agents_in_dir(
     dir: &std::path::PathBuf,
     source: &str,
     project_name: Option<String>,
+    project_root: Option<&std::path::Path>,
 ) -> Vec<AgentEntry> {
     let mut agents = Vec::new();
 
@@ -464,8 +474,13 @@ fn scan_codex_toml_agents_in_dir(
             })
             .unwrap_or_default();
 
+        let id = if let Some(root) = project_root {
+            format!("{}:agent:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), stem)
+        } else {
+            format!("{}:agent:{}", cli, stem)
+        };
         agents.push(AgentEntry {
-            id: format!("{}:agent:{}", cli, stem),
+            id,
             cli: cli.to_string(),
             name: stem.to_string(),
             description,
@@ -485,7 +500,7 @@ fn scan_codex_toml_agents_in_dir(
 }
 
 fn scan_codex_user_agents() -> Vec<AgentEntry> {
-    scan_codex_toml_agents_in_dir("codex", &codex_agents_dir(), "user", None)
+    scan_codex_toml_agents_in_dir("codex", &codex_agents_dir(), "user", None, None)
 }
 
 // ── Main scan entry point ──
@@ -752,6 +767,46 @@ pub fn toggle_agent(cli: String, name: String, enabled: bool, path: Option<Strin
     }
 
     Ok(())
+}
+
+/// Delete an agent file directly (no .bak soft-delete).
+/// When `path` is provided, deletes the file at that path (works for both user and project level).
+/// Otherwise falls back to name-based lookup in the user-level directory.
+#[tauri::command]
+pub fn delete_agent(cli: String, name: String, path: Option<String>) -> Result<String, String> {
+    // If path is provided, delete directly
+    if let Some(ref p) = path {
+        let file_path = std::path::Path::new(p);
+        if !file_path.exists() {
+            return Err(format!("Agent '{}' 不存在", name));
+        }
+        if file_path.is_symlink() || file_path.is_file() {
+            std::fs::remove_file(file_path).map_err(|e| format!("删除失败: {}", e))?;
+        } else if file_path.is_dir() {
+            std::fs::remove_dir_all(file_path).map_err(|e| format!("删除失败: {}", e))?;
+        }
+        return Ok(format!("Agent '{}' 已删除", name));
+    }
+    // Fallback: name-based lookup in user-level directory
+    let (dir, ext) = match cli.as_str() {
+        "claude" => (claude_agents_dir(), "md"),
+        "qoder" => (qoder_agents_dir(), "md"),
+        "codex" => (codex_agents_dir(), "toml"),
+        _ => return Err(format!("不支持的 CLI: {}", cli)),
+    };
+
+    let active_path = dir.join(format!("{}.{}", name, ext));
+    let disabled_path = dir.join(format!("{}.{}.disabled", name, ext));
+
+    if active_path.exists() {
+        std::fs::remove_file(&active_path).map_err(|e| format!("删除失败: {}", e))?;
+        Ok(format!("Agent '{}' 已删除", name))
+    } else if disabled_path.exists() {
+        std::fs::remove_file(&disabled_path).map_err(|e| format!("删除失败: {}", e))?;
+        Ok(format!("Agent '{}'（已禁用）已删除", name))
+    } else {
+        Err(format!("Agent '{}' 不存在", name))
+    }
 }
 
 /// Read the body content (system prompt) of an agent file.

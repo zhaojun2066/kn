@@ -209,12 +209,30 @@ def _parse_yaml(text):
 def _yaml_val(raw):
     """Strip quotes and whitespace from a YAML scalar value."""
     v = raw.strip()
+    # Strip inline comments BEFORE quote stripping, so " #" inside
+    # quoted values is preserved as literal content (bug M22 fix).
+    if " #" in v:
+        # Only strip if the " #" is outside quotes
+        in_quote = False
+        quote_char = None
+        comment_idx = None
+        for i, ch in enumerate(v):
+            if ch in ('"', "'") and (i == 0 or v[i-1] != '\\'):
+                if not in_quote:
+                    in_quote = True
+                    quote_char = ch
+                elif ch == quote_char:
+                    in_quote = False
+                    quote_char = None
+            if ch == '#' and v[i-1:i+1] == ' #' and not in_quote:
+                comment_idx = i - 1
+                break
+        if comment_idx is not None:
+            v = v[:comment_idx].strip()
     if len(v) >= 2:
         if (v.startswith('"') and v.endswith('"')) or \
            (v.startswith("'") and v.endswith("'")):
             return v[1:-1]
-    if " #" in v:
-        v = v[: v.index(" #")]
     return v.strip()
 
 
@@ -232,7 +250,7 @@ def _format_yaml(config):
         profile = config["profiles"][name]
         lines.append(f"  {name}:")
         if profile.get("desc"):
-            lines.append(f'    desc: "{profile["desc"]}"')
+            lines.append(f'    desc: {_quote_yaml(profile["desc"])}')
         lines.append("    env:")
         env = profile.get("env", {})
         if env:
@@ -246,9 +264,17 @@ def _format_yaml(config):
 
 
 def _quote_yaml(val):
-    """Quote value if it contains YAML-special characters."""
+    """Quote value if it contains YAML-special characters or is a YAML reserved word."""
     if not val:
         return '""'
+    # Quote YAML boolean/null/number-like values for compatibility with
+    # Rust serde_yaml (which would otherwise interpret them as non-strings).
+    yaml_reserved = {"true", "false", "yes", "no", "on", "off", "null", "~", "y", "n"}
+    if val.lower() in yaml_reserved:
+        return f'"{val}"'
+    # Quote numeric-looking strings (including floats like "1.0" and negatives)
+    if val.replace(".", "", 1).replace("-", "", 1).isdigit() and any(c.isdigit() for c in val):
+        return f'"{val}"'
     special = set(" :#{}[]&*!|>\"'@`,")
     if any(c in special for c in val):
         escaped = val.replace("\\", "\\\\").replace('"', '\\"')

@@ -1,6 +1,6 @@
 [package]
 name = "ai-profile-manager"
-version = "1.0.5"
+version = "1.0.6"
 edition = "2021"
 description = "AI Profile Manager Desktop App"
 

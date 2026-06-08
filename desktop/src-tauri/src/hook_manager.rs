@@ -5,9 +5,10 @@
 //! - **Claude / Qoder**: `~/.claude/settings.json` (or `~/.qoder-cn/settings.json`) → `hooks` field (JSON)
 //! - **Codex**: `~/.codex/config.toml` → `[[hooks.<EventType>]]` arrays (TOML)
 
+use crate::atomic_rename;
+use crate::with_write_lock;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 // ── Types ──────────────────────────────────────────────────────
@@ -58,15 +59,10 @@ fn home_dir() -> PathBuf {
 
 /// Generate a short (8-char hex) hash of a path string.
 /// Used to create unique scope keys for project-level hook IDs.
-fn hash_path(path: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:08x}", hasher.finish())
-}
-
 /// Atomically write content to a file: create .bak backup, write to .tmp, fsync, rename.
 /// This prevents data corruption from crashes or concurrent writes mid-write.
 fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
+    with_write_lock(|| {
     // Compute backup path up front — needed for recovery on Windows rename failure.
     let mut bak_name = path.to_string_lossy().to_string();
     bak_name.push_str(".bak");
@@ -94,14 +90,9 @@ fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
         }
     }
 
-    // On Windows, std::fs::rename does not overwrite existing destinations.
-    #[cfg(windows)]
-    {
-        if path.exists() {
-            fs::remove_file(path).map_err(|e| format!("删除文件失败: {}", e))?;
-        }
-    }
-    if let Err(e) = fs::rename(&tmp_path, path) {
+    // Use atomic_rename which handles overwrite atomically on all platforms
+    // (MoveFileExW on Windows, standard rename on Unix)
+    if let Err(e) = atomic_rename(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);
         // Attempt to restore from backup if we deleted the target above
         if !path.exists() {
@@ -114,6 +105,7 @@ fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
     // Clean up backup on success
     let _ = fs::remove_file(&bak_name);
     Ok(())
+    }) // with_write_lock
 }
 
 // ── Claude / Qoder hooks (JSON in settings.json) ──────────────
@@ -177,7 +169,7 @@ fn scan_json_hooks(cli: &str, settings_path: &PathBuf, source: &str, project_nam
             .parent()
             .and_then(|p| p.parent())
         {
-            hash_path(&proj_root.to_string_lossy())
+            crate::hash_path(&proj_root.to_string_lossy())
         } else {
             "project".into()
         }
@@ -304,7 +296,7 @@ fn scan_codex_hooks_at(config_path: &PathBuf, source: &str, project_name: Option
             .parent()
             .and_then(|p| p.parent())
         {
-            hash_path(&proj_root.to_string_lossy())
+            crate::hash_path(&proj_root.to_string_lossy())
         } else {
             "project".into()
         }
@@ -892,7 +884,25 @@ pub fn create_json_hook(
 ) -> Result<(), String> {
     let mut root: serde_json::Value = if path.exists() {
         let text = fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
-        serde_json::from_str(&text).unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
+        match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                // Back up corrupted file before overwriting
+                let bak = path.with_extension("json.bak");
+                let _ = fs::write(&bak, &text);
+                eprintln!(
+                    "警告: {} 解析失败 ({}), 已备份到 {}",
+                    path.display(),
+                    e,
+                    bak.display()
+                );
+                return Err(format!(
+                    "配置文件解析失败: {}. 原文件已备份到 {}",
+                    e,
+                    bak.display()
+                ));
+            }
+        }
     } else {
         serde_json::Value::Object(serde_json::Map::new())
     };
