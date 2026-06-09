@@ -213,6 +213,127 @@ class TestPublicAPI(unittest.TestCase):
         self.assertEqual(cfg.get_default(config), "a")
 
 
+class TestMultilineValues(unittest.TestCase):
+    """Verify multi-line YAML values round-trip correctly."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+        self.lock = tempfile.NamedTemporaryFile(mode="w", suffix=".lock", delete=False)
+        cfg.CONFIG_FILE = self.tmp.name
+        cfg.LOCK_FILE = self.lock.name
+
+    def tearDown(self):
+        self.tmp.close()
+        self.lock.close()
+        os.unlink(self.tmp.name)
+        os.unlink(self.lock.name)
+
+    def test_multiline_desc_round_trip(self):
+        """Profile description with newlines should round-trip correctly."""
+        data = {
+            "profiles": {
+                "multi-desc": {
+                    "desc": "Line 1\nLine 2\nLine 3",
+                    "env": {},
+                },
+            },
+        }
+        cfg.write_config(data)
+        result = cfg.read_config()
+        self.assertEqual(
+            result["profiles"]["multi-desc"]["desc"],
+            "Line 1\nLine 2\nLine 3",
+        )
+
+    def test_multiline_env_var_round_trip(self):
+        """Env var with multi-line value should round-trip preserving content."""
+        data = {
+            "profiles": {
+                "multi-env": {
+                    "desc": "",
+                    "env": {"SSH_KEY": "-----BEGIN KEY-----\nline1\nline2\n-----END KEY-----"},
+                },
+            },
+        }
+        cfg.write_config(data)
+        result = cfg.read_config()
+        # Block scalar may add trailing newline — strip for comparison
+        actual = result["profiles"]["multi-env"]["env"]["SSH_KEY"].rstrip("\n")
+        self.assertEqual(
+            actual,
+            "-----BEGIN KEY-----\nline1\nline2\n-----END KEY-----",
+        )
+
+    def test_multiline_preserves_content(self):
+        """Block scalar (|) should preserve the multi-line content."""
+        data = {
+            "profiles": {
+                "trail": {
+                    "desc": "",
+                    "env": {"TEXT": "hello\nworld"},
+                },
+            },
+        }
+        cfg.write_config(data)
+        result = cfg.read_config()
+        actual = result["profiles"]["trail"]["env"]["TEXT"].rstrip("\n")
+        self.assertEqual(actual, "hello\nworld")
+
+    def test_multiline_empty_profile_unchanged(self):
+        """Profiles without multi-line values should be unaffected."""
+        data = {
+            "default": "simple",
+            "profiles": {
+                "simple": {"desc": "Just a simple profile", "env": {"X": "1"}},
+            },
+        }
+        cfg.write_config(data)
+        result = cfg.read_config()
+        self.assertEqual(result["default"], "simple")
+        self.assertEqual(result["profiles"]["simple"]["desc"], "Just a simple profile")
+
+
+class TestBackupRotation(unittest.TestCase):
+    """Verify 3-generation backup rotation."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.config_file = os.path.join(self.tmp_dir, "config.yaml")
+        self.backup_file = os.path.join(self.tmp_dir, "config.yaml.bak")
+        cfg.CONFIG_DIR = self.tmp_dir
+        cfg.CONFIG_FILE = self.config_file
+        cfg.BACKUP_FILE = self.backup_file
+        cfg.LOCK_FILE = os.path.join(self.tmp_dir, ".config.lock")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_first_write_creates_no_backup(self):
+        """First write has no previous config, so no .bak created."""
+        data = {"profiles": {"test": {"desc": "", "env": {"K": "v1"}}}}
+        cfg.write_config(data)
+        self.assertFalse(os.path.exists(self.backup_file))
+
+    def test_second_write_creates_bak(self):
+        """Second write backs up the first config to .bak."""
+        cfg.write_config({"profiles": {"a": {"desc": "", "env": {}}}})
+        self.assertTrue(os.path.exists(self.config_file))
+        cfg.write_config({"profiles": {"b": {"desc": "", "env": {}}}})
+        self.assertTrue(os.path.exists(self.backup_file))
+
+    def test_rotation_produces_bak1_bak2(self):
+        """After 3+ writes, .bak.1 and .bak.2 should exist."""
+        for i in range(5):
+            cfg.write_config({"profiles": {f"p{i}": {"desc": "", "env": {}}}})
+
+        self.assertTrue(os.path.exists(self.backup_file), ".bak should exist")
+        bak1 = f"{self.backup_file}.1"
+        bak2 = f"{self.backup_file}.2"
+        self.assertTrue(os.path.exists(bak1), f"{bak1} should exist after rotation")
+        self.assertTrue(os.path.exists(bak2), f"{bak2} should exist after rotation")
+
+
 class TestDeleteProfileDefault(unittest.TestCase):
     """Verify delete-profile default promotion behavior matches between Python CLI and Rust desktop."""
 
@@ -285,6 +406,83 @@ class TestDeleteProfileDefault(unittest.TestCase):
         # _format_yaml omits the "default:" line when value is empty,
         # so read_config returns a dict without a "default" key.
         self.assertEqual(result.get("default", ""), "")
+
+
+class TestYamlValEdgeCases(unittest.TestCase):
+    """Verify _yaml_val handles edge cases correctly."""
+
+    def test_strips_double_quotes(self):
+        self.assertEqual(cfg._yaml_val('"hello"'), "hello")
+
+    def test_strips_single_quotes(self):
+        self.assertEqual(cfg._yaml_val("'hello'"), "hello")
+
+    def test_strips_trailing_whitespace(self):
+        self.assertEqual(cfg._yaml_val("  hello  "), "hello")
+
+    def test_preserves_inner_spaces(self):
+        self.assertEqual(cfg._yaml_val('"hello world"'), "hello world")
+
+    def test_comment_stripped_outside_quotes(self):
+        self.assertEqual(cfg._yaml_val("value # comment"), "value")
+
+    def test_comment_preserved_inside_quotes(self):
+        # "# comment" inside quotes is literal content
+        result = cfg._yaml_val('"value # comment"')
+        self.assertEqual(result, "value # comment")
+
+    def test_escaped_quote_inside_quotes(self):
+        # Backslash-escaped quote should not end the quoted region
+        result = cfg._yaml_val(r'"say \"hello\""')
+        self.assertTrue("say" in result)
+
+    def test_empty_value(self):
+        self.assertEqual(cfg._yaml_val(""), "")
+
+    def test_explicit_empty_quotes(self):
+        self.assertEqual(cfg._yaml_val('""'), "")
+
+    def test_colon_in_value_preserved(self):
+        self.assertEqual(cfg._yaml_val("https://example.com"), "https://example.com")
+
+
+class TestQuoteYamlEdgeCases(unittest.TestCase):
+    """Verify _quote_yaml handles all edge cases."""
+
+    def test_yaml_reserved_words_quoted(self):
+        for word in ["true", "false", "yes", "no", "on", "off", "null", "~"]:
+            result = cfg._quote_yaml(word)
+            self.assertTrue(result.startswith('"'), f"'{word}' should be quoted")
+
+    def test_value_with_hash_quoted(self):
+        result = cfg._quote_yaml("key # with hash")
+        self.assertTrue(result.startswith('"'))
+
+    def test_value_with_at_sign_quoted(self):
+        result = cfg._quote_yaml("user@host")
+        self.assertTrue(result.startswith('"'))
+
+    def test_value_with_colon_quoted(self):
+        result = cfg._quote_yaml("key: value")
+        self.assertTrue(result.startswith('"'))
+
+    def test_value_with_backtick_quoted(self):
+        result = cfg._quote_yaml("`command`")
+        self.assertTrue(result.startswith('"'))
+
+    def test_plain_alphanumeric_not_quoted(self):
+        result = cfg._quote_yaml("hello123")
+        self.assertFalse(result.startswith('"'))
+
+    def test_single_quote_escaped(self):
+        result = cfg._quote_yaml("it's working")
+        self.assertTrue(result.startswith('"'))
+        self.assertIn("it's working", result)
+
+    def test_backslash_escaped(self):
+        result = cfg._quote_yaml("C:\\path\\file")
+        self.assertTrue(result.startswith('"'))
+        self.assertIn("\\\\", result)  # backslash doubled
 
 
 if __name__ == "__main__":

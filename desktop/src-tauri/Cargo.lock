@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-profile-manager"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -37,6 +37,7 @@ dependencies = [
  "tauri-plugin-fs",
  "tauri-plugin-shell",
  "tauri-plugin-updater",
+ "tempfile",
  "toml 0.8.2",
  "toml_edit 0.22.27",
 ]

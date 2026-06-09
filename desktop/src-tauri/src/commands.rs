@@ -939,3 +939,144 @@ pub fn check_environment() -> EnvCheckResult {
 
     EnvCheckResult { items, all_ok }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── find_binary ────────────────────────────────────────
+
+    #[test]
+    fn test_find_binary_known_command() {
+        // "sh" should exist on all Unix-like systems
+        let path = find_binary(&["sh"]);
+        assert!(path.is_some(), "find_binary should find 'sh'");
+        let path = path.unwrap();
+        assert!(std::path::Path::new(&path).exists(), "returned path should exist");
+    }
+
+    #[test]
+    fn test_find_binary_nonexistent() {
+        // Should return None for clearly nonexistent binary
+        // (may still resolve via bare name fallback, but the path won't exist)
+        let path = find_binary(&["nonexistent_binary_xyz_12345"]);
+        // The bare-name fallback may still return a string, but it shouldn't
+        // resolve to an actual file on disk
+        if let Some(p) = &path {
+            assert!(!std::path::Path::new(p).exists(),
+                "bare-name fallback for nonexistent binary should not resolve to real file");
+        }
+    }
+
+    // ── verify_sha256 ──────────────────────────────────────
+
+    #[test]
+    fn test_verify_sha256_correct_hash() {
+        let dir = std::env::temp_dir().join(format!("kn-test-sha256-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("test.bin");
+        std::fs::write(&file_path, b"hello world\n").unwrap();
+
+        // sha256 of "hello world\n"
+        let expected = "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447";
+        let result = verify_sha256(file_path.to_string_lossy().to_string(), expected.to_string()).unwrap();
+        assert!(result, "verify_sha256 should return true for correct hash");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_verify_sha256_wrong_hash() {
+        let dir = std::env::temp_dir().join(format!("kn-test-sha256-wrong-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("test.bin");
+        std::fs::write(&file_path, b"hello world\n").unwrap();
+
+        let result = verify_sha256(
+            file_path.to_string_lossy().to_string(),
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        )
+        .unwrap();
+        assert!(!result, "verify_sha256 should return false for wrong hash");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── home_dir ───────────────────────────────────────────
+
+    #[test]
+    fn test_home_dir_returns_existing_path() {
+        let home = crate::home_dir();
+        assert!(home.exists(), "home_dir should return an existing path: {:?}", home);
+        assert!(home.is_absolute(), "home_dir should return absolute path");
+    }
+
+    // ── config backup ──────────────────────────────────────
+
+    #[test]
+    fn test_backup_file_path() {
+        let bak = backup_file();
+        assert!(bak.ends_with("config.yaml.bak"), "backup_file should end with config.yaml.bak, got: {:?}", bak);
+    }
+
+    #[test]
+    fn test_config_backup_exists_non_panic() {
+        // Should not panic even when config doesn't exist
+        let _ = config_backup_exists();
+    }
+
+    // ── Profile CRUD ────────────────────────────────────────
+
+    static CRUD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn temp_config_setup() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+        let guard = CRUD_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("CLAUDE_PROFILES_HOME", dir.path().to_string_lossy().to_string());
+        (guard, dir)
+    }
+
+    fn cleanup_config(dir: tempfile::TempDir) {
+        std::env::remove_var("CLAUDE_PROFILES_HOME");
+        drop(dir);
+        // CRUD_LOCK guard is dropped by caller
+    }
+
+    #[test]
+    fn test_crud_flow_full_lifecycle() {
+        let (_guard, dir) = temp_config_setup();
+
+        // Add profiles
+        assert!(add_profile("alpha".into(), Some("first".into())).unwrap().ok);
+        assert!(add_profile("beta".into(), None).unwrap().ok);
+        assert!(add_profile("gamma".into(), Some("third".into())).unwrap().ok);
+
+        // List
+        let list = list_profiles().unwrap();
+        assert_eq!(list.profiles.len(), 3);
+
+        // Set env var
+        assert!(set_env_var("alpha".into(), "KEY1".into(), "val1".into()).unwrap().ok);
+        let detail = show_profile("alpha".into()).unwrap();
+        assert_eq!(detail.env.get("KEY1"), Some(&"val1".to_string()));
+
+        // Set default
+        assert!(set_default_profile("beta".into()).unwrap().ok);
+        assert_eq!(get_default_profile().unwrap(), "beta");
+
+        // Remove non-default
+        assert!(remove_profile("gamma".into()).unwrap().ok);
+        let list2 = list_profiles().unwrap();
+        assert_eq!(list2.profiles.len(), 2);
+
+        // Remove default → alpha should be promoted (alphabetically first)
+        assert!(remove_profile("beta".into()).unwrap().ok);
+        assert_eq!(get_default_profile().unwrap(), "alpha");
+
+        // Invalid name rejected
+        assert!(!add_profile("BAD NAME".into(), None).unwrap().ok);
+
+        cleanup_config(dir);
+    }
+
+}
