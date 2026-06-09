@@ -310,7 +310,21 @@ fn scan_claude_plugins() -> Vec<PluginEntry> {
 
                     // Enumerate skills in installPath/skills/
                     let skills_dir = PathBuf::from(install_path).join("skills");
-                    let skills = enumerate_claude_skills(&skills_dir);
+                    let mut skills = enumerate_claude_skills(&skills_dir);
+
+                    // Fallback: single-skill plugins (e.g., pm-skills) have
+                    // SKILL.md at the install root instead of a skills/ subdirectory.
+                    if skills.is_empty() {
+                        let root_md = PathBuf::from(install_path).join("SKILL.md");
+                        if root_md.exists() {
+                            let desc = extract_description(&root_md);
+                            skills.push(SkillEntry {
+                                name: name.to_string(),
+                                path: root_md.to_string_lossy().to_string(),
+                                description: desc,
+                            });
+                        }
+                    }
 
                     // Enumerate agents in installPath/agents/
                     let agents_dir = PathBuf::from(install_path).join("agents");
@@ -1540,16 +1554,41 @@ fn scan_claude_marketplace() -> MarketplaceData {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            // Count skills in the plugin's skills directory
-            let skills_dir = Path::new(mkt_dir).join("skills");
-            let skill_count = if skills_dir.exists() {
-                fs::read_dir(&skills_dir)
+            // Count skills in the plugin's own directory (derived from the
+            // "source" field in marketplace.json, e.g. "./skills/plugin-name").
+            // Falls back to <mkt_dir>/skills/ if source is missing (legacy),
+            // but correctly detects single-skill plugins (root SKILL.md) vs
+            // multi-skill containers (skills/ subdirectory).
+            let source = p
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let plugin_dir = if source.starts_with("./") {
+                Path::new(mkt_dir).join(source.trim_start_matches("./"))
+            } else {
+                // Legacy: no source field — use marketplace-level skills/
+                Path::new(mkt_dir).join("skills")
+            };
+            let skill_count = if plugin_dir.join("SKILL.md").exists() {
+                // Single-skill plugin (e.g., pm-skills style)
+                1
+            } else if plugin_dir.join("skills").exists() {
+                // Multi-skill container plugin
+                enumerate_claude_skills(&plugin_dir.join("skills")).len()
+            } else if plugin_dir.exists() && plugin_dir.is_dir() {
+                // Directory exists but no clear skill structure —
+                // scan for .md files directly (paranoid fallback)
+                fs::read_dir(&plugin_dir)
                     .map(|d| {
                         d.flatten()
                             .filter(|e| {
-                                let p = e.path();
-                                let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                                !n.starts_with('.') && (n.ends_with(".md") || p.is_dir())
+                                let path = e.path();
+                                let n =
+                                    path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                !n.starts_with('.')
+                                    && (n.ends_with(".md")
+                                        || (path.is_dir()
+                                            && path.join("SKILL.md").exists()))
                             })
                             .count()
                     })
