@@ -175,6 +175,7 @@ pub struct HookExecutionLog {
 
 impl HookExecutionLog {
     /// Whether the hook execution was successful (exit code 0, or no exit code).
+    #[allow(dead_code)]
     pub fn success(&self) -> bool {
         self.exit_code.unwrap_or(0) == 0
     }
