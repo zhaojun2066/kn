@@ -45,10 +45,18 @@ def write_config(config):
     with open(LOCK_FILE, "w") as lf:
         _acquire_lock(lf)
         try:
-            # Backup existing config before overwriting
+            # Rotate backups before overwriting (keep 3 generations)
             if os.path.exists(CONFIG_FILE):
                 try:
                     import shutil
+                    # Rotate .bak.2 → .bak.3, .bak.1 → .bak.2, .bak → .bak.1
+                    for i in range(2, 0, -1):
+                        older = f"{BACKUP_FILE}.{i}"
+                        newer = f"{BACKUP_FILE}.{i + 1}"
+                        if os.path.exists(older):
+                            shutil.move(older, newer)
+                    if os.path.exists(BACKUP_FILE):
+                        shutil.move(BACKUP_FILE, f"{BACKUP_FILE}.1")
                     shutil.copy2(CONFIG_FILE, BACKUP_FILE)
                 except Exception:
                     pass  # backup is best-effort; don't block the write
@@ -151,20 +159,62 @@ def _parse_yaml(text):
       - 4: desc: and env: (keys inside a profile mapping)
       - 6: env var key: value entries (keys inside the env mapping)
 
-    No support for lists, anchors, multiline, tags.
+    Supports block scalars (| / >) for multi-line desc and env var values.
     """
     config = {"profiles": {}}
     current_profile = None
     in_env = False
+    block_scalar_key = None     # key name being filled by block scalar
+    block_scalar_indent = 0      # minimum indent for continuation lines
+    block_scalar_lines = []      # collected lines
+
+    def _flush_block_scalar():
+        """Commit any in-progress block scalar to the config."""
+        nonlocal block_scalar_key, block_scalar_indent, block_scalar_lines
+        if block_scalar_key is None:
+            return
+        val = "\n".join(block_scalar_lines)
+        # Preserve trailing newline for literal style (|)
+        if block_scalar_lines and block_scalar_lines[-1] == "":
+            val += "\n"
+        if current_profile and in_env:
+            config["profiles"][current_profile]["env"][block_scalar_key] = val
+        elif current_profile and block_scalar_key == "desc":
+            config["profiles"][current_profile]["desc"] = val
+        block_scalar_key = None
+        block_scalar_indent = 0
+        block_scalar_lines = []
 
     for raw in text.split("\n"):
         line = raw.rstrip()
         stripped = line.strip()
 
         if not stripped or stripped.startswith("#"):
+            if block_scalar_key is not None:
+                # Empty lines within block scalar are preserved content
+                block_scalar_lines.append("")
             continue
 
         indent = len(line) - len(line.lstrip(" "))
+
+        # Check for block scalar indicator (| or >) in a key: value line
+        if ":" in stripped:
+            key, _, val = stripped.partition(":")
+            val_stripped = val.strip()
+            if val_stripped in ("|", ">"):
+                # Flush any previous block scalar first
+                _flush_block_scalar()
+                block_scalar_key = key.strip()
+                block_scalar_indent = indent + 2
+                continue
+
+        # Collect continuation lines for current block scalar
+        if block_scalar_key is not None and indent >= block_scalar_indent:
+            content = line[block_scalar_indent:] if len(line) >= block_scalar_indent else ""
+            block_scalar_lines.append(content)
+            continue
+        else:
+            _flush_block_scalar()
 
         if indent == 0:
             in_env = False
@@ -203,6 +253,7 @@ def _parse_yaml(text):
                 config["profiles"][current_profile]["env"][key] = val
             continue
 
+    _flush_block_scalar()
     return config
 
 
@@ -249,18 +300,28 @@ def _format_yaml(config):
     for name in sorted(config.get("profiles", {}).keys()):
         profile = config["profiles"][name]
         lines.append(f"  {name}:")
-        if profile.get("desc"):
-            lines.append(f'    desc: {_quote_yaml(profile["desc"])}')
+        _emit_yaml_scalar(lines, "desc", profile.get("desc", ""), 4)
         lines.append("    env:")
         env = profile.get("env", {})
         if env:
             for k, v in sorted(env.items()):
-                lines.append(f"      {k}: {_quote_yaml(v)}")
+                _emit_yaml_scalar(lines, k, v, 6)
         else:
             lines.append("      {}")
         lines.append("")
 
     return "\n".join(lines) + "\n"
+
+
+def _emit_yaml_scalar(lines, key, val, indent):
+    """Emit a YAML key: value line, using block scalar (|) if value has newlines."""
+    prefix = " " * indent
+    if "\n" in val:
+        lines.append(f"{prefix}{key}: |")
+        for line in val.split("\n"):
+            lines.append(f"{prefix}  {line}")
+    else:
+        lines.append(f"{prefix}{key}: {_quote_yaml(val)}")
 
 
 def _quote_yaml(val):
@@ -272,9 +333,14 @@ def _quote_yaml(val):
     yaml_reserved = {"true", "false", "yes", "no", "on", "off", "null", "~", "y", "n"}
     if val.lower() in yaml_reserved:
         return f'"{val}"'
-    # Quote numeric-looking strings (including floats like "1.0" and negatives)
-    if val.replace(".", "", 1).replace("-", "", 1).isdigit() and any(c.isdigit() for c in val):
+    # Quote numeric-looking strings (including floats like "1.0", negatives,
+    # scientific notation like "1e5", and signed numbers like "+5").
+    # Use float() instead of regex to catch all YAML number formats.
+    try:
+        float(val)
         return f'"{val}"'
+    except ValueError:
+        pass
     special = set(" :#{}[]&*!|>\"'@`,")
     if any(c in special for c in val):
         escaped = val.replace("\\", "\\\\").replace('"', '\\"')

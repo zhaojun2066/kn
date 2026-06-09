@@ -410,7 +410,8 @@ def cmd_remove(config, name, json_mode=False):
         sys.exit(1)
     del config["profiles"][name]
     if config.get("default") == name:
-        config["default"] = ""
+        remaining = sorted(config.get("profiles", {}).keys())
+        config["default"] = remaining[0] if remaining else ""
     cfg.write_config(config)
     if not json_mode:
         print(f"Profile '{name}' removed.")

@@ -108,9 +108,7 @@ pub fn start_pty(
     // Resolve shell binary.
     // On Windows, prefer Git Bash (provides Unix environment where shell-rc works).
     // Fall back to PowerShell with execution policy relaxed if Git Bash is absent.
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
+    let home = crate::home_dir().to_string_lossy().to_string();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
         if cfg!(target_os = "windows") {
             let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();

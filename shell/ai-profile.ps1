@@ -12,12 +12,37 @@ function _profile_env {
     $inProfile = $false; $inEnv = $false
     $escaped = [regex]::Escape($name)
     Get-Content $cfg | ForEach-Object {
-        if ($_ -match "^  ${escaped}:") { $inProfile = $true; return }
-        if ($inProfile -and $_ -match "^    env:") { $inEnv = $true; return }
-        if ($inEnv -and $_ -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*(""|''|)(.+?)\2\s*$') {
-            $env_vars[$Matches[1]] = $Matches[3]
+        $line = $_
+        if ($line -match "^  ${escaped}:") { $inProfile = $true; return }
+        if ($inProfile -and $line -match "^    env:") { $inEnv = $true; return }
+        if ($inEnv) {
+            # Next top-level section ends this profile's env block
+            if ($line -match "^  [a-z]") { $inProfile = $false; $inEnv = $false; return }
+            # Parse key: value (7 leading spaces for env vars)
+            if ($line -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$') {
+                $key = $Matches[1]
+                $rawVal = $Matches[2]
+                # Handle empty / explicit-empty values
+                if ($rawVal -eq '' -or $rawVal -eq '""' -or $rawVal -eq "''") {
+                    $env_vars[$key] = ""
+                    return
+                }
+                # Strip surrounding double quotes
+                if ($rawVal[0] -eq '"' -and $rawVal[-1] -eq '"') {
+                    $env_vars[$key] = $rawVal.Substring(1, $rawVal.Length - 2)
+                    return
+                }
+                # Strip surrounding single quotes
+                if ($rawVal[0] -eq "'" -and $rawVal[-1] -eq "'") {
+                    $env_vars[$key] = $rawVal.Substring(1, $rawVal.Length - 2)
+                    return
+                }
+                # Unquoted value: truncate YAML inline comments (#)
+                $hashIdx = $rawVal.IndexOf('#')
+                if ($hashIdx -ge 0) { $rawVal = $rawVal.Substring(0, $hashIdx).TrimEnd() }
+                $env_vars[$key] = $rawVal
+            }
         }
-        if ($inEnv -and $_ -match "^  [a-z]") { $inProfile = $false; $inEnv = $false }
     }
     return $env_vars
 }
@@ -56,7 +81,7 @@ function ai {
         Write-Host ""
         Write-Host "  Manage profiles:"
         Write-Host "    ai profile list           List all profiles"
-        Write-Host "    ai profile env <name>     Show env vars for profile"
+        Write-Host "    ai profile env <name>     Show env vars for a profile"
         return
     }
 
@@ -74,15 +99,12 @@ function ai {
                     # Generate temp settings file via --settings (CLI flag > settings.json).
                     $tmpSettings = New-TemporaryFile
                     @{ env = $envs } | ConvertTo-Json -Compress | Set-Content $tmpSettings
-                    # Run in child scope (& { }) so env vars don't leak to parent session.
-                    & {
-                        foreach ($key in $envs.Keys) {
-                            Set-Item -Path "env:$key" -Value $envs[$key]
-                        }
-                        $env:KN_PROFILE = $profileName
-                        $env:KN_CLI_TOOL = $tool
-                        & $tool --settings $tmpSettings @toolArgs
+                    foreach ($key in $envs.Keys) {
+                        Set-Item -Path "env:$key" -Value $envs[$key]
                     }
+                    $env:KN_PROFILE = $profileName
+                    $env:KN_CLI_TOOL = $tool
+                    & $tool --settings $tmpSettings @toolArgs
                     Remove-Item $tmpSettings -Force -ErrorAction SilentlyContinue
                     return
                 }
@@ -98,16 +120,39 @@ function ai {
                     $profileName = $rest[0]
                     $toolArgs = @($rest | Select-Object -Skip 1)
                     Write-Host "-> Using profile: $profileName"
-                    # OPENAI_API_KEY env var takes priority over auth.json with
-                    # preferred_auth_method="apikey". Use --config to force it.
-                    & {
-                        foreach ($key in $envs.Keys) {
-                            Set-Item -Path "env:$key" -Value $envs[$key]
+                    # Codex ignores OPENAI_API_KEY env var; reads only ~/.codex/auth.json.
+                    # Write the profile's key to auth.json, pass base_url/model via -c.
+                    $apiKey = $envs['OPENAI_API_KEY']
+                    $baseUrl = $envs['OPENAI_BASE_URL']
+                    $model = $envs['OPENAI_MODEL']
+                    $authFile = "$env:USERPROFILE\.codex\auth.json"
+                    $extraArgs = @()
+                    if ($model) { $extraArgs += '-c', "model=$model" }
+                    if ($baseUrl) { $extraArgs += '-c', "model_providers.custom.base_url=$baseUrl" }
+                    if ($apiKey) {
+                        $codexDir = Split-Path $authFile -Parent
+                        if (-not (Test-Path $codexDir)) { New-Item -ItemType Directory -Force $codexDir | Out-Null }
+                        $oldAuth = $null
+                        if (Test-Path $authFile) { $oldAuth = Get-Content $authFile -Raw }
+                        @{ auth_mode = "apikey"; OPENAI_API_KEY = $apiKey } | ConvertTo-Json -Compress | Set-Content $authFile
+                        try {
+                            foreach ($key in $envs.Keys) {
+                                Set-Item -Path "env:$key" -Value $envs[$key]
+                            }
+                            $env:KN_PROFILE = $profileName
+                            $env:KN_CLI_TOOL = $tool
+                            & $tool @extraArgs @toolArgs
+                        } finally {
+                            if ($oldAuth) { Set-Content $authFile $oldAuth }
                         }
-                        $env:KN_PROFILE = $profileName
-                        $env:KN_CLI_TOOL = $tool
-                        & $tool --config preferred_auth_method="apikey" @toolArgs
+                        return
                     }
+                    foreach ($key in $envs.Keys) {
+                        Set-Item -Path "env:$key" -Value $envs[$key]
+                    }
+                    $env:KN_PROFILE = $profileName
+                    $env:KN_CLI_TOOL = $tool
+                    & $tool @extraArgs @toolArgs
                     return
                 }
             }
@@ -122,14 +167,12 @@ function ai {
                     $profileName = $rest[0]
                     $toolArgs = @($rest | Select-Object -Skip 1)
                     Write-Host "-> Using profile: $profileName"
-                    & {
-                        foreach ($key in $envs.Keys) {
-                            Set-Item -Path "env:$key" -Value $envs[$key]
-                        }
-                        $env:KN_PROFILE = $profileName
-                        $env:KN_CLI_TOOL = $tool
-                        & $tool @toolArgs
+                    foreach ($key in $envs.Keys) {
+                        Set-Item -Path "env:$key" -Value $envs[$key]
                     }
+                    $env:KN_PROFILE = $profileName
+                    $env:KN_CLI_TOOL = $tool
+                    & $tool @toolArgs
                     return
                 }
             }

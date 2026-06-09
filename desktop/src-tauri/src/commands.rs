@@ -1,6 +1,8 @@
 use crate::profile_cmd;
+use sha2::{Digest, Sha256};
 use tauri::command;
 use tauri::Emitter;
+use std::time::Duration;
 
 // ── Config backup paths ────────────────────────────────────
 fn config_dir() -> std::path::PathBuf {
@@ -554,8 +556,12 @@ pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
                 format!("{}.exe", name)
             };
             let system32 = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+            let home = crate::home_dir();
+            let home_str = home.to_string_lossy();
             vec![
                 format!(r"{}\System32\{}", system32, exe_name),
+                format!(r"{}\scoop\shims\{}", home_str, exe_name),
+                format!(r"{}\AppData\Roaming\npm\{}", home_str, exe_name),
                 format!(r"C:\Program Files\{}", exe_name),
                 format!(r"C:\Program Files (x86)\{}", exe_name),
             ]
@@ -566,23 +572,48 @@ pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
             }
         }
     }
-    // Fallback: just use the first name (might work via PATH)
+    // Fallback 2: check login-shell PATH (catches ~/.local/bin, Homebrew, etc.)
+    for name in names {
+        if let Some(path) = resolve_from_shell_path(name) {
+            return Some(path);
+        }
+    }
+    // Final fallback: bare command name (relies on system PATH)
     names.first().map(|n| n.to_string())
+}
+
+/// Resolve a binary name via login-shell PATH lookup.
+/// Tauri GUI apps have a minimal PATH; the login shell has the user's full PATH.
+fn resolve_from_shell_path(name: &str) -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let cmd = format!(
+        "command -v {} 2>/dev/null || type {} 2>/dev/null",
+        name, name
+    );
+    let output = std::process::Command::new(&shell)
+        .args(["-lc", &cmd])
+        .output()
+        .ok()?;
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 #[tauri::command]
 pub async fn fetch_url(url: String) -> Result<String, String> {
-    // 后台线程执行，不阻塞主异步运行时
     tauri::async_runtime::spawn_blocking(move || {
-        let curl = find_binary(&["curl"]).unwrap_or_else(|| "curl".into());
-        let output = std::process::Command::new(&curl)
-            .args(["-sL", "--max-time", "30", &url])
-            .output()
-            .map_err(|e| format!("curl 执行失败: {}", e))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-        String::from_utf8(output.stdout).map_err(|e| format!("编码错误: {}", e))
+        reqwest::blocking::Client::new()
+            .get(&url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .map_err(|e| format!("请求失败: {}", e))?
+            .error_for_status()
+            .map_err(|e| format!("HTTP 错误: {}", e))?
+            .text()
+            .map_err(|e| format!("读取响应失败: {}", e))
     })
     .await
     .map_err(|e| format!("后台任务失败: {}", e))?
@@ -652,53 +683,12 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
 
 #[tauri::command]
 pub fn verify_sha256(path: String, expected: String) -> Result<bool, String> {
-    let actual = if cfg!(target_os = "macos") {
-        let shasum = find_binary(&["shasum"]).unwrap_or_else(|| "shasum".into());
-        let output = std::process::Command::new(&shasum)
-            .args(["-a", "256", &path])
-            .output()
-            .map_err(|e| format!("shasum 执行失败: {}", e))?;
-        String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_string()
-    } else if cfg!(target_os = "windows") {
-        // Use PowerShell Get-FileHash (locale-independent, unlike certutil).
-        // Escape single quotes in path: PowerShell single-quoted strings use '' for literal '
-        let escaped_path = path.replace('\'', "''");
-        let output = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "(Get-FileHash -Path '{}' -Algorithm SHA256).Hash",
-                    escaped_path
-                ),
-            ])
-            .output()
-            .map_err(|e| format!("powershell 执行失败: {}", e))?;
-        String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_lowercase()
-    } else {
-        let sha = find_binary(&["sha256sum", "shasum"]).unwrap_or_else(|| "sha256sum".into());
-        let args: Vec<&str> = if sha.contains("shasum") {
-            vec!["-a", "256", path.as_str()]
-        } else {
-            vec![path.as_str()]
-        };
-        let output = std::process::Command::new(&sha)
-            .args(&args)
-            .output()
-            .map_err(|e| format!("sha256 执行失败: {}", e))?;
-        String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_string()
-    };
-    Ok(actual.to_lowercase() == expected.to_lowercase())
+    let mut file =
+        std::fs::File::open(&path).map_err(|e| format!("无法打开文件: {}", e))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| format!("读取文件失败: {}", e))?;
+    let actual = format!("{:x}", hasher.finalize());
+    Ok(actual == expected.to_lowercase())
 }
 
 #[tauri::command]

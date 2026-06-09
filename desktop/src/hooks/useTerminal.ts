@@ -483,21 +483,23 @@ export function useTerminal(panelId: string = "right") {
     const rafId = rafWriteRef.current.get(tabId);
     if (rafId) { cancelAnimationFrame(rafId); rafWriteRef.current.delete(tabId); }
 
+    // Compute side-effects inside the setTabs updater so they operate on
+    // the *latest* state, not stale sessionsRef (React batches setState calls,
+    // so reading sessionsRef after setTabs sees pre-update data).
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
       if (next.length === 0 && isBottom) {
         return [newTab("终端")];
       }
+
+      // Right panel: close when last tab removed
+      if (next.length === 0 && !isBottom) {
+        setIsOpen(false);
+      } else if (activeTabIdRef.current === tabId) {
+        setActiveTabId(next[0]?.id || "");
+      }
       return next;
     });
-
-    // Right panel: close when last tab removed
-    const remaining = sessionsRef.current.filter((t) => t.id !== tabId);
-    if (remaining.length === 0 && !isBottom) {
-      setIsOpen(false);
-    } else if (activeTabIdRef.current === tabId) {
-      setActiveTabId(remaining[0]?.id || "");
-    }
 
     // Kill PTY in background (fire-and-forget)
     if (tab?.ptyRunning) {

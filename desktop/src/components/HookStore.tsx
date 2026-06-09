@@ -142,7 +142,7 @@ export function HookStore({ open, onClose, onInstalled }: HookStoreProps) {
       setData(fresh);
       setSelectedHook(fresh.hooks.find((h) => h.id === hook.id) || null);
       onInstalled();
-    } catch (e: any) {
+    } catch (e: unknown) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setInstalling(null);
@@ -158,7 +158,7 @@ export function HookStore({ open, onClose, onInstalled }: HookStoreProps) {
       setData(fresh);
       setSelectedHook(fresh.hooks.find((h) => h.id === hook.id) || null);
       onInstalled();
-    } catch (e: any) {
+    } catch (e: unknown) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setUninstalling(null);

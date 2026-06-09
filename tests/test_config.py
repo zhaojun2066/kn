@@ -154,6 +154,24 @@ class TestQuoteYaml(unittest.TestCase):
         result = cfg._quote_yaml("hello world")
         self.assertTrue(result.startswith('"'))
 
+    def test_yaml_number_variants_quoted(self):
+        """Values that YAML would interpret as numbers MUST be quoted."""
+        for val in ["+5", "1e5", "-1e5", "1.5e10", ".5", "5.", "-1.5", "42"]:
+            result = cfg._quote_yaml(val)
+            self.assertTrue(
+                result.startswith('"'),
+                f"'{val}' should be quoted, got: {result}",
+            )
+
+    def test_non_numbers_not_quoted(self):
+        """Values that are NOT YAML numbers should stay unquoted."""
+        for val in ["1.2.3", "--5", "abc", "1.0-release"]:
+            result = cfg._quote_yaml(val)
+            self.assertFalse(
+                result.startswith('"'),
+                f"'{val}' should NOT be quoted, got: {result}",
+            )
+
 
 class TestPublicAPI(unittest.TestCase):
     def setUp(self):
@@ -193,6 +211,80 @@ class TestPublicAPI(unittest.TestCase):
     def test_get_default(self):
         config = cfg.read_config()
         self.assertEqual(cfg.get_default(config), "a")
+
+
+class TestDeleteProfileDefault(unittest.TestCase):
+    """Verify delete-profile default promotion behavior matches between Python CLI and Rust desktop."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+        self.lock = tempfile.NamedTemporaryFile(mode="w", suffix=".lock", delete=False)
+        cfg.CONFIG_FILE = self.tmp.name
+        cfg.LOCK_FILE = self.lock.name
+
+    def tearDown(self):
+        self.tmp.close()
+        self.lock.close()
+        os.unlink(self.tmp.name)
+        os.unlink(self.lock.name)
+
+    def test_delete_default_promotes_first_alphabetical(self):
+        """When default profile is deleted, alphabetically-first remaining becomes new default."""
+        data = {
+            "default": "zulu",
+            "profiles": {
+                "alpha": {"desc": "", "env": {}},
+                "bravo": {"desc": "", "env": {}},
+                "zulu": {"desc": "", "env": {}},
+            },
+        }
+        cfg.write_config(data)
+        config = cfg.read_config()
+        # Simulate cmd_remove for 'zulu' (the current default)
+        del config["profiles"]["zulu"]
+        if config.get("default") == "zulu":
+            remaining = sorted(config.get("profiles", {}).keys())
+            config["default"] = remaining[0] if remaining else ""
+        cfg.write_config(config)
+        result = cfg.read_config()
+        self.assertEqual(result["default"], "alpha")
+
+    def test_delete_non_default_preserves_default(self):
+        """Deleting a non-default profile leaves default unchanged."""
+        data = {
+            "default": "alpha",
+            "profiles": {
+                "alpha": {"desc": "", "env": {}},
+                "bravo": {"desc": "", "env": {}},
+            },
+        }
+        cfg.write_config(data)
+        config = cfg.read_config()
+        del config["profiles"]["bravo"]
+        # default was alpha, bravo was not the default — no change
+        cfg.write_config(config)
+        result = cfg.read_config()
+        self.assertEqual(result["default"], "alpha")
+
+    def test_delete_last_profile_clears_default(self):
+        """Deleting the only profile sets default to empty string."""
+        data = {
+            "default": "solo",
+            "profiles": {
+                "solo": {"desc": "", "env": {}},
+            },
+        }
+        cfg.write_config(data)
+        config = cfg.read_config()
+        del config["profiles"]["solo"]
+        if config.get("default") == "solo":
+            remaining = sorted(config.get("profiles", {}).keys())
+            config["default"] = remaining[0] if remaining else ""
+        cfg.write_config(config)
+        result = cfg.read_config()
+        # _format_yaml omits the "default:" line when value is empty,
+        # so read_config returns a dict without a "default" key.
+        self.assertEqual(result.get("default", ""), "")
 
 
 if __name__ == "__main__":

@@ -1561,7 +1561,7 @@ export function App() {
         const text = (await invoke("fetch_url", { url: config.update_url })) as string;
         if (!text.trim()) throw new Error("空响应");
         manifest = JSON.parse(text) as UpdateManifest;
-      } catch (e: any) {
+      } catch (e: unknown) {
         if (!opts?.silent) addToast("error", `无法获取更新清单: ${e}\n${config.update_url}`);
         return;
       }
@@ -1825,8 +1825,8 @@ export function App() {
               searchQuery={ctx.searchQuery}
               onSelect={(name) => ctx.selectProfile(name)}
               onSearch={(query) => ctx.search(query)}
-              onCopy={handleCopyProfile}
-              onRename={handleRenameProfile}
+              onCopy={(name) => { ctx.selectProfile(name); handleCopyProfile(); }}
+              onRename={(name) => { ctx.selectProfile(name); handleRenameProfile(name); }}
               onDelete={(name) => { ctx.selectProfile(name); setShowDeleteConfirm(true); }}
               onSetDefault={(name) => ctx.setDefault(name)}
               usageCounts={usageCounts}

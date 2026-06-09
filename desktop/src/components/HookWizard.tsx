@@ -282,7 +282,7 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
       });
       onCreated(hookName.trim(), hookDescription.trim());
       handleClose();
-    } catch (e: any) {
+    } catch (e: unknown) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setSaving(false);

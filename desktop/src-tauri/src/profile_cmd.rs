@@ -1,7 +1,9 @@
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -72,6 +74,32 @@ fn config_file() -> PathBuf {
     crate::config_dir().join("config.yaml")
 }
 
+// ── File locking (cross-process, interoperable with Python fcntl.flock) ──
+
+fn lock_file_path() -> PathBuf {
+    crate::config_dir().join(".config.lock")
+}
+
+fn acquire_lock(file: &std::fs::File, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(_) => {
+                if Instant::now() > deadline {
+                    return Err("无法获取配置锁 (5s 超时)".into());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+fn release_lock(file: &std::fs::File) -> Result<(), String> {
+    file.unlock()
+        .map_err(|e| format!("释放锁失败: {}", e))
+}
+
 // ── File operations ─────────────────────────────────────────
 
 fn read_config() -> Result<Config, String> {
@@ -87,34 +115,59 @@ fn read_config() -> Result<Config, String> {
 }
 
 fn write_config(config: &Config) -> Result<(), String> {
-    let dir = crate::config_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
-    let path = config_file();
-    let backup = dir.join("config.yaml.bak");
+    crate::with_write_lock(|| {
+        let dir = crate::config_dir();
+        fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
-    // ── Backup existing config before overwriting ──
-    if path.exists() {
-        let _ = fs::copy(&path, &backup); // best-effort, don't fail on backup error
-    }
+        // Acquire cross-process file lock (interoperable with Python fcntl.flock on Unix)
+        let lock_path = lock_file_path();
+        let lock_fh = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| format!("无法打开锁文件: {}", e))?;
+        acquire_lock(&lock_fh, Duration::from_secs(5))?;
 
-    let yaml = serde_yaml::to_string(config).map_err(|e| format!("序列化失败: {}", e))?;
+        let result = (|| {
+            let path = config_file();
+            let backup = dir.join("config.yaml.bak");
 
-    // Atomic-ish write: tmp file → fsync → rename
-    // On Windows, rename() may fail if the target exists and is locked by AV/backup.
-    // Use write-then-rename for best-effort atomicity, fall back to direct write on failure.
-    let tmp = dir.join("config.yaml.tmp");
-    fs::write(&tmp, &yaml).map_err(|e| format!("写入配置失败: {}", e))?;
-    // fsync the tmp file before renaming
-    if let Ok(f) = std::fs::File::open(&tmp) {
-        let _ = f.sync_all();
-    }
-    if fs::rename(&tmp, &path).is_err() {
-        // Rename failed (e.g. Windows file lock) — fall back to direct write
-        fs::write(&path, &yaml).map_err(|e| format!("写入配置文件失败: {}", e))?;
-        let _ = fs::remove_file(&tmp);
-    }
+            // ── Rotate backups (keep 3 generations) then backup ──
+            if path.exists() {
+                for i in (1..=2).rev() {
+                    let src = dir.join(format!("config.yaml.bak.{}", i));
+                    let dst = dir.join(format!("config.yaml.bak.{}", i + 1));
+                    if src.exists() {
+                        let _ = fs::rename(&src, &dst);
+                    }
+                }
+                if backup.exists() {
+                    let _ = fs::rename(&backup, dir.join("config.yaml.bak.1"));
+                }
+                let _ = fs::copy(&path, &backup); // best-effort, don't fail on backup error
+            }
 
-    Ok(())
+            let yaml =
+                serde_yaml::to_string(config).map_err(|e| format!("序列化失败: {}", e))?;
+
+            // Atomic-ish write: tmp file → fsync → rename
+            let tmp = dir.join("config.yaml.tmp");
+            fs::write(&tmp, &yaml).map_err(|e| format!("写入配置失败: {}", e))?;
+            if let Ok(f) = std::fs::File::open(&tmp) {
+                let _ = f.sync_all();
+            }
+            if fs::rename(&tmp, &path).is_err() {
+                fs::write(&path, &yaml).map_err(|e| format!("写入配置文件失败: {}", e))?;
+                let _ = fs::remove_file(&tmp);
+            }
+
+            Ok(())
+        })();
+
+        release_lock(&lock_fh)?;
+        result
+    })
 }
 
 // ── Public command functions ────────────────────────────────
@@ -258,7 +311,9 @@ pub fn remove_profile_cmd(name: &str) -> Result<MutationResult, String> {
     }
     config.profiles.remove(name);
     if config.default == name {
-        config.default = config.profiles.keys().next().cloned().unwrap_or_default();
+        let mut remaining: Vec<&String> = config.profiles.keys().collect();
+        remaining.sort();
+        config.default = remaining.first().map(|s| (*s).clone()).unwrap_or_default();
     }
     write_config(&config)?;
     Ok(MutationResult {
@@ -332,9 +387,7 @@ pub fn get_default_profile_cmd() -> Result<String, String> {
 }
 
 pub fn init_profiles_cmd() -> Result<MutationResult, String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
+    let home = crate::home_dir().to_string_lossy().to_string();
     let settings_path = PathBuf::from(&home).join(".claude").join("settings.json");
 
     if !settings_path.exists() {
@@ -426,371 +479,10 @@ pub fn init_profiles_cmd() -> Result<MutationResult, String> {
 
 // ── Shell wrapper setup ─────────────────────────────────────
 
-const SHELL_RC: &str = r#"# AI Profile Manager — Shell Wrapper
-# Usage: ai <tool> <profile>
-#        ai profile <command>
+// Embedded at build time from canonical sources in shell/ directory.
+const SHELL_RC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/ai-profile.sh"));
 
-CONFIG="$HOME/.claude-profiles/config.yaml"
-
-_profile_env() {
-    local name="$1"
-    [ ! -f "$CONFIG" ] && return 1
-    sed -n "/^  ${name}:/,/^  [a-z]/p" "$CONFIG" | \
-        awk -F': ' '/^      [A-Za-z_][A-Za-z0-9_]*:/ {
-            k=$1; sub(/^      /,"",k)
-            v=substr($0,length(k)+9)
-            if (v ~ /^".*"$/) v=substr(v,2,length(v)-2)
-            else if (v ~ /^'"'"'.*'"'"'$/) v=substr(v,2,length(v)-2)
-            print "export " k "='"'"'" v "'"'"'"
-        }'
-}
-
-_profile_list() {
-    [ ! -f "$CONFIG" ] && { echo "No config found at $CONFIG" >&2; return 1; }
-    grep '^  [a-zA-Z]' "$CONFIG" | sed 's/^  \([a-zA-Z0-9_-]*\):.*/\1/' | while read -r name; do
-        local is_default=""
-        grep -q "^default: \"$name\"" "$CONFIG" && is_default=" (*)"
-        echo "  $name$is_default"
-    done
-}
-
-_profile_show() {
-    local name="$1"
-    [ ! -f "$CONFIG" ] && { echo "No config found" >&2; return 1; }
-    local output
-    output=$(_profile_env "$name")
-    if [ -z "$output" ]; then
-        echo "Profile '$name' not found" >&2
-        return 1
-    fi
-    echo "Profile: $name"
-    echo "$output" | sed 's/^export //'
-}
-
-ai() {
-    local cmd="${1:-}"
-    if [ -z "$cmd" ]; then
-        echo "Usage: ai <tool> [args...]"
-        echo ""
-        echo "  Run with profile:"
-        echo "    ai claude <profile>       Run Claude Code with profile env"
-        echo "    ai codex <profile>        Run Codex CLI with profile env"
-        echo "    ai qoderclicn <profile>   Run Qoder with profile env"
-        echo ""
-        echo "  Manage profiles:"
-        echo "    ai profile list           List all profiles"
-        echo "    ai profile env <name>     Show env vars for a profile"
-        echo "    ai profile switch <name>  Set default profile"
-        return
-    fi
-    case "$cmd" in
-        claude|codex|qoderclicn)
-            local tool="$1"; shift
-            if [ $# -gt 0 ]; then
-                local env_output=$(_profile_env "$1")
-                if [ -n "$env_output" ]; then
-                    local profile_name="$1"; shift
-                    echo "-> Using profile: $profile_name"
-                    case "$tool" in
-                        claude)
-                            # Claude Code v2.0.1+ bug: settings.json env overrides shell env.
-                            # Generate temp settings file from profile, pass via --settings flag.
-                            if command -v python3 >/dev/null 2>&1; then
-                                local tmp_settings
-                                tmp_settings=$(mktemp "${TMPDIR:-/tmp}/kn-claude.XXXXXX")
-                                echo "$env_output" | python3 -c "
-import sys, json
-env = {}
-for line in sys.stdin:
-    line = line.strip()
-    if not line.startswith('export '):
-        continue
-    rest = line[7:]
-    eq = rest.index('=')
-    key = rest[:eq]
-    val = rest[eq+1:]
-    # Strip matching surrounding quotes if present
-    if len(val) >= 2 and val[0] == val[-1] and val[0] in ('\"', \"'\"):
-        val = val[1:-1]
-    env[key] = val
-print(json.dumps({'env': env}))
-" > "$tmp_settings"
-                                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" --settings "$tmp_settings" "$@")
-                                local rc=$?
-                                rm -f "$tmp_settings"
-                                return $rc
-                            else
-                                # python3 not available — fall back to env vars only
-                                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
-                                return
-                            fi
-                            ;;
-                        codex)
-                            # Codex ignores OPENAI_API_KEY env var; reads only ~/.codex/auth.json.
-                            # Write the profile's key to auth.json, pass base_url/model via -c.
-                            # Use set -- (not string var) for arg accumulation — zsh does NOT
-                            # word-split unquoted variables, so $_kn_extra would become one arg.
-                            local _kn_apikey=$(echo "$env_output" | sed -n "s/^export OPENAI_API_KEY='\\(.*\\)'/\\1/p")
-                            local _kn_base=$(echo "$env_output" | sed -n "s/^export OPENAI_BASE_URL='\\(.*\\)'/\\1/p")
-                            local _kn_model=$(echo "$env_output" | sed -n "s/^export OPENAI_MODEL='\\(.*\\)'/\\1/p")
-                            local _kn_auth="$HOME/.codex/auth.json"
-                            [ -n "$_kn_model" ] && set -- -c "model=$_kn_model" "$@"
-                            [ -n "$_kn_base" ] && set -- -c "model_providers.custom.base_url=$_kn_base" "$@"
-                            if [ -n "$_kn_apikey" ]; then
-                                [ -d "$HOME/.codex" ] || mkdir -p "$HOME/.codex"
-                                [ -f "$_kn_auth" ] && cp "$_kn_auth" "$_kn_auth.kn-bak"
-                                printf '{"auth_mode":"apikey","OPENAI_API_KEY":"%s"}\n' "$_kn_apikey" > "$_kn_auth"
-                                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
-                                local _kn_rc=$?
-                                [ -f "$_kn_auth.kn-bak" ] && mv "$_kn_auth.kn-bak" "$_kn_auth"
-                                return $_kn_rc
-                            fi
-                            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
-                            return
-                            ;;
-                        *)
-                            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
-                            return
-                            ;;
-                    esac
-                fi
-            fi
-            command "$tool" "$@"
-            ;;
-        profile)
-            shift
-            case "${1:-}" in
-                list)
-                    _profile_list
-                    ;;
-                env)
-                    shift
-                    _profile_show "${1:-}"
-                    ;;
-                switch)
-                    shift
-                    local name="${1:-}"
-                    if [ -z "$name" ]; then
-                        echo "Usage: ai profile switch <name>" >&2
-                        return 1
-                    fi
-                    if grep -q "^  ${name}:" "$CONFIG" 2>/dev/null; then
-                        sed -i '' "s/^default:.*/default: \"$name\"/" "$CONFIG" 2>/dev/null || \
-                        sed -i "s/^default:.*/default: \"$name\"/" "$CONFIG"
-                        echo "Default profile set to '$name'"
-                    else
-                        echo "Profile '$name' not found" >&2
-                        return 1
-                    fi
-                    ;;
-                *)
-                    echo "Usage: ai profile {list|env <name>|switch <name>}" >&2
-                    return 1
-                    ;;
-            esac
-            ;;
-        -h|--help|help)
-            echo "AI Profile Manager"
-            echo "  ai claude <profile>       Run Claude Code with profile"
-            echo "  ai codex <profile>        Run Codex CLI with profile"
-            echo "  ai qoderclicn <profile>   Run Qoder with profile"
-            echo "  ai profile list           List all profiles"
-            echo "  ai profile env <name>     Show env vars for profile"
-            echo "  ai profile switch <name>  Set default profile"
-            ;;
-        *)
-            echo "Unknown command: $cmd" >&2
-            echo "Supported: claude, codex, qoderclicn, profile" >&2
-            return 1
-            ;;
-    esac
-}
-"#;
-
-const SHELL_RC_PS1: &str = r#"# AI Profile Manager — PowerShell Wrapper
-# Usage: ai <tool> <profile>
-# Sourced by PTY on startup and/or via PowerShell profile.
-
-$script:_kn_config_dir = if ($env:HOME) { "$env:HOME\.claude-profiles" } else { "$env:USERPROFILE\.claude-profiles" }
-
-function _profile_env {
-    param([string]$name)
-    $cfg = Join-Path $script:_kn_config_dir "config.yaml"
-    if (-not (Test-Path $cfg)) { return @{} }
-    $env_vars = @{}
-    $inProfile = $false; $inEnv = $false
-    $escaped = [regex]::Escape($name)
-    Get-Content $cfg | ForEach-Object {
-        if ($_ -match "^  ${escaped}:") { $inProfile = $true; return }
-        if ($inProfile -and $_ -match "^    env:") { $inEnv = $true; return }
-        if ($inEnv -and $_ -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*"(.*)"\s*$') {
-            $env_vars[$Matches[1]] = $Matches[2]
-        } elseif ($inEnv -and $_ -match "^      ([A-Za-z_][A-Za-z0-9_]*):\s*'(.*)'\s*$") {
-            $env_vars[$Matches[1]] = $Matches[2]
-        } elseif ($inEnv -and $_ -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*([^\s].*[^\s]|[^\s])\s*$') {
-            $env_vars[$Matches[1]] = $Matches[2]
-        }
-        if ($inEnv -and $_ -match "^  [a-z]") { $inProfile = $false; $inEnv = $false }
-    }
-    return $env_vars
-}
-
-function _profile_list {
-    $cfg = Join-Path $script:_kn_config_dir "config.yaml"
-    if (-not (Test-Path $cfg)) { Write-Host "No config found at $cfg"; return }
-    $defaultMatch = Get-Content $cfg | Select-String '^default:\s*"?(.+?)"?\s*$'
-    $default = if ($defaultMatch) { $defaultMatch.Matches.Groups[1].Value } else { "" }
-    Get-Content $cfg | Select-String '^  ([a-zA-Z0-9_-]+):' | ForEach-Object {
-        $n = $_.Matches.Groups[1].Value
-        if ($n -eq $default) { Write-Host "  $n (*)" } else { Write-Host "  $n" }
-    }
-}
-
-function _profile_show {
-    param([string]$name)
-    $vars = _profile_env $name
-    if (-not $vars -or $vars.Count -eq 0) { Write-Host "Profile '$name' not found"; return }
-    Write-Host "Profile: $name"
-    foreach ($key in ($vars.Keys | Sort-Object)) {
-        Write-Host "  $key=$($vars[$key])"
-    }
-}
-
-function ai {
-    $cmd = $args[0]
-
-    if (-not $cmd) {
-        Write-Host "Usage: ai <tool> [args...]"
-        Write-Host ""
-        Write-Host "  Run with profile:"
-        Write-Host "    ai claude <profile>       Run Claude Code with profile env"
-        Write-Host "    ai codex <profile>        Run Codex CLI with profile env"
-        Write-Host "    ai qoderclicn <profile>   Run Qoder with profile env"
-        Write-Host ""
-        Write-Host "  Manage profiles:"
-        Write-Host "    ai profile list           List all profiles"
-        Write-Host "    ai profile env <name>     Show env vars for a profile"
-        return
-    }
-
-    switch ($cmd) {
-        'claude' {
-            $tool = 'claude'
-            $rest = @($args | Select-Object -Skip 1)
-            if ($rest.Count -gt 0) {
-                $envs = _profile_env $rest[0]
-                if ($envs -and $envs.Count -gt 0) {
-                    $profileName = $rest[0]
-                    $toolArgs = @($rest | Select-Object -Skip 1)
-                    Write-Host "-> Using profile: $profileName"
-                    # Claude Code v2.0.1+ bug: settings.json env overrides shell env.
-                    # Generate temp settings file via --settings (CLI flag > settings.json).
-                    $tmpSettings = New-TemporaryFile
-                    @{ env = $envs } | ConvertTo-Json -Compress | Set-Content $tmpSettings
-                    foreach ($key in $envs.Keys) {
-                        Set-Item -Path "env:$key" -Value $envs[$key]
-                    }
-                    $env:KN_PROFILE = $profileName
-                    $env:KN_CLI_TOOL = $tool
-                    & $tool --settings $tmpSettings @toolArgs
-                    Remove-Item $tmpSettings -Force -ErrorAction SilentlyContinue
-                    return
-                }
-            }
-            & $tool @rest
-        }
-        'codex' {
-            $tool = 'codex'
-            $rest = @($args | Select-Object -Skip 1)
-            if ($rest.Count -gt 0) {
-                $envs = _profile_env $rest[0]
-                if ($envs -and $envs.Count -gt 0) {
-                    $profileName = $rest[0]
-                    $toolArgs = @($rest | Select-Object -Skip 1)
-                    Write-Host "-> Using profile: $profileName"
-                    # Codex ignores OPENAI_API_KEY env var; reads only ~/.codex/auth.json.
-                    # Write the profile's key to auth.json, pass base_url/model via -c.
-                    $apiKey = $envs['OPENAI_API_KEY']
-                    $baseUrl = $envs['OPENAI_BASE_URL']
-                    $model = $envs['OPENAI_MODEL']
-                    $authFile = "$env:USERPROFILE\.codex\auth.json"
-                    $extraArgs = @()
-                    if ($model) { $extraArgs += '-c', "model=$model" }
-                    if ($baseUrl) { $extraArgs += '-c', "model_providers.custom.base_url=$baseUrl" }
-                    if ($apiKey) {
-                        $codexDir = Split-Path $authFile -Parent
-                        if (-not (Test-Path $codexDir)) { New-Item -ItemType Directory -Force $codexDir | Out-Null }
-                        $oldAuth = $null
-                        if (Test-Path $authFile) { $oldAuth = Get-Content $authFile -Raw }
-                        @{ auth_mode = "apikey"; OPENAI_API_KEY = $apiKey } | ConvertTo-Json -Compress | Set-Content $authFile
-                        try {
-                            foreach ($key in $envs.Keys) {
-                                Set-Item -Path "env:$key" -Value $envs[$key]
-                            }
-                            $env:KN_PROFILE = $profileName
-                            $env:KN_CLI_TOOL = $tool
-                            & $tool @extraArgs @toolArgs
-                        } finally {
-                            if ($oldAuth) { Set-Content $authFile $oldAuth }
-                        }
-                        return
-                    }
-                    foreach ($key in $envs.Keys) {
-                        Set-Item -Path "env:$key" -Value $envs[$key]
-                    }
-                    $env:KN_PROFILE = $profileName
-                    $env:KN_CLI_TOOL = $tool
-                    & $tool @extraArgs @toolArgs
-                    return
-                }
-            }
-            & $tool @rest
-        }
-        'qoderclicn' {
-            $tool = 'qoderclicn'
-            $rest = @($args | Select-Object -Skip 1)
-            if ($rest.Count -gt 0) {
-                $envs = _profile_env $rest[0]
-                if ($envs -and $envs.Count -gt 0) {
-                    $profileName = $rest[0]
-                    $toolArgs = @($rest | Select-Object -Skip 1)
-                    Write-Host "-> Using profile: $profileName"
-                    foreach ($key in $envs.Keys) {
-                        Set-Item -Path "env:$key" -Value $envs[$key]
-                    }
-                    $env:KN_PROFILE = $profileName
-                    $env:KN_CLI_TOOL = $tool
-                    & $tool @toolArgs
-                    return
-                }
-            }
-            & $tool @rest
-        }
-        'profile' {
-            $subcmd = $args[1]
-            switch ($subcmd) {
-                'list' { _profile_list }
-                'env' { _profile_show $args[2] }
-                default {
-                    Write-Host "Usage: ai profile {list|env <name>}"
-                }
-            }
-        }
-        { $_ -in @('-h','--help','help') } {
-            Write-Host "AI Profile Manager"
-            Write-Host "  ai claude <profile>       Run Claude Code with profile"
-            Write-Host "  ai codex <profile>        Run Codex CLI with profile"
-            Write-Host "  ai qoderclicn <profile>   Run Qoder with profile"
-            Write-Host "  ai profile list           List all profiles"
-            Write-Host "  ai profile env <name>     Show env vars for profile"
-        }
-        default {
-            Write-Host "Unknown command: $cmd"
-            Write-Host "Supported: claude, codex, qoderclicn, profile"
-        }
-    }
-}
-"#;
+const SHELL_RC_PS1: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/ai-profile.ps1"));
 
 const HOOK_RECORDER: &str = r##"#!/usr/bin/env python3
 """Token usage recorder — called by Stop/SessionEnd hooks.
@@ -987,9 +679,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     let dir = crate::config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
+    let home = crate::home_dir().to_string_lossy().to_string();
 
     // ── Migration: merge old dev config into unified config (one-time) ──
     let dev_config = PathBuf::from(&home)
@@ -1019,10 +709,24 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         let _ = fs::rename(&dev_config, dev_config.with_extension("yaml.migrated"));
     }
 
-    // Write shell-rc to config dir
-    fs::write(dir.join("shell-rc"), SHELL_RC).map_err(|e| format!("写入 shell-rc 失败: {}", e))?;
+    // Write shell-rc to config dir (only if content changed — preserves user customizations)
+    let shell_rc_path = dir.join("shell-rc");
+    let needs_write = match fs::read_to_string(&shell_rc_path) {
+        Ok(existing) => existing != SHELL_RC,
+        Err(_) => true,
+    };
+    if needs_write {
+        fs::write(&shell_rc_path, SHELL_RC).map_err(|e| format!("写入 shell-rc 失败: {}", e))?;
+    }
     if cfg!(target_os = "windows") {
-        fs::write(dir.join("shell-rc.ps1"), SHELL_RC_PS1).ok();
+        let ps1_path = dir.join("shell-rc.ps1");
+        let needs_ps1_write = match fs::read_to_string(&ps1_path) {
+            Ok(existing) => existing != SHELL_RC_PS1,
+            Err(_) => true,
+        };
+        if needs_ps1_write {
+            fs::write(&ps1_path, SHELL_RC_PS1).ok();
+        }
     }
 
     // Write token usage hook recorder script
@@ -1130,4 +834,70 @@ fn detect_cli_type(env: &HashMap<String, String>) -> Option<String> {
         return Some("codex".into());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn make_config(default: &str, names: &[&str]) -> Config {
+        let mut profiles = HashMap::new();
+        for name in names {
+            profiles.insert(name.to_string(), ProfileConfig::default());
+        }
+        Config {
+            default: default.into(),
+            profiles,
+        }
+    }
+
+    #[test]
+    fn test_remove_default_promotes_first_alphabetical() {
+        let mut config = make_config("zulu", &["alpha", "bravo", "zulu"]);
+        config.profiles.remove("zulu");
+        if config.default == "zulu" {
+            let mut remaining: Vec<&String> = config.profiles.keys().collect();
+            remaining.sort();
+            config.default = remaining.first().map(|s| (*s).clone()).unwrap_or_default();
+        }
+        assert_eq!(config.default, "alpha");
+    }
+
+    #[test]
+    fn test_remove_non_default_preserves_default() {
+        let mut config = make_config("alpha", &["alpha", "bravo"]);
+        config.profiles.remove("bravo");
+        // default was "alpha", bravo was not default — no change to default logic
+        assert_eq!(config.default, "alpha");
+    }
+
+    #[test]
+    fn test_remove_last_profile_clears_default() {
+        let mut config = make_config("solo", &["solo"]);
+        config.profiles.remove("solo");
+        if config.default == "solo" {
+            let mut remaining: Vec<&String> = config.profiles.keys().collect();
+            remaining.sort();
+            config.default = remaining.first().map(|s| (*s).clone()).unwrap_or_default();
+        }
+        assert_eq!(config.default, "");
+    }
+
+    #[test]
+    fn test_lock_acquire_release() {
+        let dir = std::env::temp_dir().join(format!("kn-test-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock_path = dir.join(".config.lock");
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+
+        acquire_lock(&f, Duration::from_secs(1)).unwrap();
+        release_lock(&f).unwrap();
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
