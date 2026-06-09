@@ -87,11 +87,10 @@ jobs:
             target: aarch64-pc-windows-msvc
             label: windows-arm64
             platform: windows-arm64
-          # Linux build 暂时注释掉，CI 环境缺少 webkit2gtk 依赖导致编译失败
-          # - os: ubuntu-latest
-          #   target: x86_64-unknown-linux-gnu
-          #   label: linux-x64
-          #   platform: linux-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: linux-x64
+            platform: linux-x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -113,7 +112,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libgtk-3-dev libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev
 
@@ -169,12 +168,11 @@ jobs:
           name: windows-arm64
           path: assets/windows-arm64
 
-      # Linux build 暂时注释掉
-      # - name: Download Linux
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     name: linux-x64
-      #     path: assets/linux-x86_64
+      - name: Download Linux
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x64
+          path: assets/linux-x86_64
 
       - name: Install git-cliff
         run: |
@@ -265,16 +263,15 @@ jobs:
                '.platforms["windows-arm64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi
 
-          # Linux build 暂时注释掉
-          # # linux-x86_64
-          # DEB=$(find assets/linux-x86_64 -name "*.deb" | head -1)
-          # if [ -f "$DEB" ]; then
-          #   SHA=$(sha256sum "$DEB" | cut -d' ' -f1)
-          #   FNAME=$(basename "$DEB")
-          #   jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
-          #      --arg sha "$SHA" \
-          #      '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
-          # fi
+          # linux-x86_64
+          DEB=$(find assets/linux-x86_64 -name "*.deb" | head -1)
+          if [ -f "$DEB" ]; then
+            SHA=$(sha256sum "$DEB" | cut -d' ' -f1)
+            FNAME=$(basename "$DEB")
+            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+               --arg sha "$SHA" \
+               '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
+          fi
 
           # Embed release notes into download.json (for in-app update dialog)
           jq --arg v "$APP_VERSION" --rawfile n release-notes.md \
@@ -295,9 +292,8 @@ jobs:
             assets/**/*.dmg
             assets/**/*.exe
             assets/**/*.msi
-            # Linux build 暂时注释掉
-            # assets/**/*.deb
-            # assets/**/*.AppImage
+            assets/**/*.deb
+            assets/**/*.AppImage
             download.json
           draft: false
           prerelease: false

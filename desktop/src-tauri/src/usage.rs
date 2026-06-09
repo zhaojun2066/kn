@@ -311,9 +311,7 @@ pub fn replace_pricing(pricing: HashMap<String, ModelPricing>) -> Result<(), Str
 
 #[tauri::command]
 pub fn get_usage_tracking_enabled() -> Result<bool, String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
+    let home = crate::home_dir().to_string_lossy().to_string();
     let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
     if claude_settings.exists() {
         let content = fs::read_to_string(&claude_settings).unwrap_or_default();
@@ -333,9 +331,7 @@ pub fn get_usage_tracking_enabled() -> Result<bool, String> {
 
 #[tauri::command]
 pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
+    let home = crate::home_dir().to_string_lossy().to_string();
     let hooks_dir = crate::config_dir().join("hooks");
     fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
 

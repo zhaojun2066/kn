@@ -557,6 +557,7 @@ function PluginSkillDetail({
   cli: string;
   onBack?: () => void;
 }) {
+  const skillPath = skill.path;
   const [skillContent, setSkillContent] = useState<{ description: string; body: string } | null>(null);
   const [contentError, setContentError] = useState<string>("");
   const [activePath, setActivePath] = useState<string>(skill.path);
@@ -649,14 +650,14 @@ function PluginSkillDetail({
           <div className="px-6 pt-3 pb-1 flex items-center gap-1.5">
             <File size={10} className="text-[var(--app-text-muted)] shrink-0" />
             <span className="text-2xs text-[var(--app-text-muted)] font-mono truncate">
-              {activePath === (skill as any).path ? coreFileName : (basename(activePath) || activePath)}
+              {activePath === skillPath ? coreFileName : (basename(activePath) || activePath)}
             </span>
           </div>
 
           {/* File content */}
           <div className="px-6 pb-6">
             <FileContentBlock
-              content={activePath === (skill as any).path ? (skillContent?.body || "") : fileContent}
+              content={activePath === skillPath ? (skillContent?.body || "") : fileContent}
               filePath={activePath}
             />
           </div>
@@ -676,34 +677,35 @@ function StandaloneDetail({
   onUninstall,
   onNodeClick,
 }: {
-  skill: NonNullable<SkillDetailProps["item"]>["data"];
+  skill: import("./SkillManager").StandaloneSkill;
   readonly: boolean;
   graphData?: DependencyGraphData | null;
   onToggle: (enabled: boolean) => void;
   onUninstall: (cli: CliKind, skillId: string, path: string, name: string) => void;
   onNodeClick?: (nodeId: string) => void;
 }) {
+  const skillPath = skill.path;
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [skillContent, setSkillContent] = useState<{ description: string; body: string } | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
-  const [activePath, setActivePath] = useState<string>("");
+  const [activePath, setActivePath] = useState<string>(skillPath);
   const [fileContent, setFileContent] = useState<string>("");
   const loadRef2 = useRef(0);
 
   const hasLinkType = "linkType" in skill;
 
   useEffect(() => {
-    if (hasLinkType && (skill as any).path) {
-      setActivePath((skill as any).path);
+    if (hasLinkType && skillPath) {
+      setActivePath(skillPath);
       setContentError(null);
-      invoke<{ description: string; body: string }>("read_skill_content", { path: (skill as any).path })
+      invoke<{ description: string; body: string }>("read_skill_content", { path: skillPath })
         .then((c) => {
           setSkillContent(c);
           if (!c.description && !c.body) setContentError("Skill 文件为空");
         })
         .catch((e) => setContentError(`无法读取 Skill 内容: ${String(e).slice(0, 80)}`));
     }
-  }, [hasLinkType, (skill as any)?.path]);
+  }, [hasLinkType, skill.path]);
 
   const handleFileSelect = useCallback((node: FileTreeNode) => {
     if (node.is_dir) return;
@@ -717,7 +719,7 @@ function StandaloneDetail({
   // Reverse references from graph
   const reverseRefs = useMemo(() => {
     if (!graphData || !hasLinkType) return [];
-    const skillId = `${(skill as any).cli}:skill:${(skill as any).name}`;
+    const skillId = `${skill.cli}:skill:${skill.name}`;
     return graphData.edges
       .filter((e) => e.to === skillId)
       .map((e) => {
@@ -729,7 +731,7 @@ function StandaloneDetail({
 
   if (!hasLinkType) return null;
 
-  const coreFileName = (skill as any).path ? basename((skill as any).path) : "";
+  const coreFileName = skillPath ? basename(skillPath) : "";
 
   const iconMap: Record<string, React.ReactNode> = {
     symlink: <Link2 size={18} />,
@@ -809,7 +811,7 @@ function StandaloneDetail({
                   message: `确定要删除 "${skill.name}" 吗？将从 skills 目录中移除。`,
                   confirmLabel: "删除",
                   onConfirm: () => {
-                    onUninstall(skill.cli as CliKind, skill.id, (skill as any).path, skill.name as string);
+                    onUninstall(skill.cli as CliKind, skill.id, skillPath, skill.name as string);
                     setConfirm(null);
                   },
                 });
@@ -835,8 +837,8 @@ function StandaloneDetail({
         {/* Left: FileTree — key includes enabled to force refresh on toggle */}
         <div className="w-56 shrink-0 border-r border-[var(--app-border-light)] overflow-y-auto bg-[var(--app-sidebar)]">
           <FileTree
-            key={`${(skill as any).path}-${(skill as any).enabled}`}
-            rootPath={(skill as any).path}
+            key={`${skillPath}-${skill.enabled}`}
+            rootPath={skillPath}
             onSelect={handleFileSelect}
             activePath={activePath}
             defaultOpenFile={coreFileName}
@@ -850,7 +852,7 @@ function StandaloneDetail({
               <div className="p-3 border border-[var(--app-amber)] bg-[var(--app-amber-bg)]">
                 <p className="text-xs text-[var(--app-text-dim)] font-mono">{contentError}</p>
                 <p className="text-2xs text-[var(--app-text-muted)] font-mono mt-1">
-                  路径: {(skill as any).path}
+                  路径: {skillPath}
                 </p>
               </div>
             </div>
@@ -873,14 +875,14 @@ function StandaloneDetail({
           <div className="px-6 pt-3 pb-1 flex items-center gap-1.5">
             <File size={10} className="text-[var(--app-text-muted)] shrink-0" />
             <span className="text-2xs text-[var(--app-text-muted)] font-mono truncate">
-              {activePath === (skill as any).path ? coreFileName : (basename(activePath) || activePath)}
+              {activePath === skillPath ? coreFileName : (basename(activePath) || activePath)}
             </span>
           </div>
 
           {/* File content */}
           <div className="px-6 pb-6">
             <FileContentBlock
-              content={activePath === (skill as any).path ? (skillContent?.body || "") : fileContent}
+              content={activePath === skillPath ? (skillContent?.body || "") : fileContent}
               filePath={activePath}
             />
           </div>
@@ -1180,34 +1182,36 @@ export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandalon
   if (!item) return <EmptyState />;
 
   if (item.type === "plugin") {
-    const updateInfo = updateInfos.find((u) => u.pluginId === (item.data as any).id);
+    const plugin = item.data;
+    const updateInfo = updateInfos.find((u) => u.pluginId === plugin.id);
     return (
       <PluginDetail
-        plugin={item.data}
+        plugin={plugin}
         onToggle={(enabled) =>
-          onTogglePlugin((item.data as any).cli, (item.data as any).id, enabled)
+          onTogglePlugin(plugin.cli, plugin.id, enabled)
         }
         updateInfo={updateInfo}
         onUpdate={onUpdatePlugin}
         onUninstall={onUninstallPlugin}
-        onSkillClick={(skill, cli) => onSelect?.({ type: "plugin-skill", data: { skill, cli, parentPlugin: item.data as any } })}
-        onAgentClick={(agent) => onSelect?.({ type: "plugin-agent", data: { ...agent, parentPlugin: item.data as any } })}
+        onSkillClick={(skill, cli) => onSelect?.({ type: "plugin-skill", data: { skill, cli, parentPlugin: plugin } })}
+        onAgentClick={(agent) => onSelect?.({ type: "plugin-agent", data: { ...agent, parentPlugin: plugin } })}
         onCommandClick={(cmd) => {
           console.log("[DEBUG] plugin command clicked:", cmd);
-          onSelect?.({ type: "plugin-command", data: { ...cmd, parentPlugin: item.data as any } });
+          onSelect?.({ type: "plugin-command", data: { ...cmd, parentPlugin: plugin } });
         }}
       />
     );
   }
 
   if (item.type === "standalone") {
+    const skill = item.data;
     return (
       <StandaloneDetail
-        skill={item.data}
+        skill={skill}
         readonly={false}
         graphData={graphData}
         onToggle={(enabled) =>
-          onToggleStandaloneSkill((item.data as any).cli, (item.data as any).id, enabled, (item.data as any).path)
+          onToggleStandaloneSkill(skill.cli, skill.id, enabled, skill.path)
         }
         onUninstall={onUninstallStandaloneSkill}
         onNodeClick={onNodeClick}
