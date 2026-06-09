@@ -76,8 +76,37 @@ See `desktop/CLAUDE.md` for full desktop architecture, PTY data flow, terminal p
 
 ## CI/CD
 
-- `.github/workflows/build-desktop.yml` — manual trigger (`workflow_dispatch`), builds macOS (ARM + Intel) + Windows, creates GitHub Release
+- `.github/workflows/build-desktop.yml` — **tag-push trigger** (`v1.0.7` → auto build + release) with `workflow_dispatch` fallback; validates version, builds macOS (ARM + Intel) + Windows, auto-generates release notes via git-cliff
 - `.github/workflows/deploy-site.yml` — auto-deploys `site/` to GitHub Pages on push to main
+
+## Release Process
+
+发布由 Git tag 触发，构建和 release notes 完全自动化。**必须在 main 分支上操作，不要在功能分支上打 release tag。**
+
+```bash
+# 0. 确保在 main 分支且代码已合并
+git checkout main
+git pull origin main
+
+# 1. 更新版本号（两个文件同步修改）
+#    - desktop/src-tauri/tauri.conf.json  →  "version": "1.0.7"
+#    - desktop/src-tauri/Cargo.toml       →  version = "1.0.7"
+
+# 2. 提交版本升级
+git add desktop/src-tauri/tauri.conf.json desktop/src-tauri/Cargo.toml
+git commit -m "release: v1.0.7"
+
+# 3. 打 annotated tag 并推送（推送 tag 即触发 CI 发布）
+git tag -a v1.0.7 -m "v1.0.7"
+git push origin main
+git push origin v1.0.7
+
+# 4. 在 https://github.com/zhaojun2066/ai-profile-manager/actions 查看构建进度
+```
+
+Release notes 由 [git-cliff](https://git-cliff.org) 根据 conventional commits 自动生成，按 Features / Bug Fixes / Refactoring / Miscellaneous 分组，每条带 commit 链接。
+本地预览 release notes: `git cliff --unreleased`
+完整发布指南（含功能分支开发 → merge → 发布全流程）见 `RELEASE.md`。
 
 ## Cross-Platform Design
 

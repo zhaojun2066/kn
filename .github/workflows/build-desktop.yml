@@ -1,23 +1,73 @@
 name: Build Desktop App
 
 on:
-  # 注释掉自动触发，改为手动触发。桌面构建耗时长（4 个平台），每次 push 都跑太浪费。
-  # 需要发布新版本时，去 Actions → Build Desktop App → Run workflow 手动执行。
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - "desktop/**"
-  #     - ".github/workflows/build-desktop.yml"
+  # Tag push triggers automatic release (e.g., v1.0.7)
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+  # Manual trigger retained as fallback
   workflow_dispatch:
     inputs:
-      notes:
-        description: "Release notes (更新说明)"
+      version:
+        description: "Version to release (e.g., 1.0.7). Must match tauri.conf.json"
         required: false
         type: string
-        default: ""
+      release_notes_override:
+        description: "Custom release notes (overrides auto-generation if provided)"
+        required: false
+        type: string
 
 jobs:
+  # ── Validate version before building ──
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Need full history for tag comparison
+
+      - name: Read and validate versions
+        id: version
+        run: |
+          APP_VERSION=$(grep '"version"' desktop/src-tauri/tauri.conf.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/')
+          echo "app_version=$APP_VERSION" >> $GITHUB_OUTPUT
+
+          # Determine the target version
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG_VERSION=$(echo "${{ github.ref }}" | sed 's|refs/tags/v||')
+          elif [ -n "${{ inputs.version }}" ]; then
+            TAG_VERSION="${{ inputs.version }}"
+          else
+            TAG_VERSION="$APP_VERSION"
+          fi
+          echo "tag_version=$TAG_VERSION" >> $GITHUB_OUTPUT
+
+          # Validation 1: tag version matches tauri.conf.json version
+          if [ "$APP_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error:: tauri.conf.json version ($APP_VERSION) does not match tag/input version ($TAG_VERSION)"
+            exit 1
+          fi
+
+          # Validation 2: version is newer than latest existing release tag
+          LATEST_TAG=$(git tag --sort=-version:refname 'v*' 2>/dev/null | grep -v "v$APP_VERSION" | head -1 | sed 's/^v//')
+          if [ -n "$LATEST_TAG" ]; then
+            HIGHER=$(printf "%s\n%s" "$APP_VERSION" "$LATEST_TAG" | sort -V | tail -1)
+            if [ "$HIGHER" != "$APP_VERSION" ]; then
+              echo "::error:: version $APP_VERSION is not newer than latest release $LATEST_TAG"
+              exit 1
+            fi
+            echo "previous_tag=v$LATEST_TAG" >> $GITHUB_OUTPUT
+          else
+            echo "previous_tag=" >> $GITHUB_OUTPUT
+          fi
+
+          echo "✅ Validated: releasing v$APP_VERSION"
+
+  # ── Build all platforms in parallel ──
   build:
+    needs: validate
     strategy:
       matrix:
         include:
@@ -81,21 +131,19 @@ jobs:
           name: ${{ matrix.label }}
           path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
 
+  # ── Generate release notes, manifest, and publish ──
   release:
-    needs: build
+    needs: [validate, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      APP_VERSION: ${{ needs.validate.outputs.app_version }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Read app version
-        id: version
-        run: |
-          VER=$(grep '"version"' desktop/src-tauri/tauri.conf.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/')
-          echo "APP_VERSION=$VER" >> $GITHUB_ENV
-          echo "version=$VER" >> $GITHUB_OUTPUT
+        with:
+          fetch-depth: 0 # Need full history for git-cliff
 
       - name: Download macOS Apple Silicon
         uses: actions/download-artifact@v4
@@ -127,6 +175,35 @@ jobs:
       #   with:
       #     name: linux-x64
       #     path: assets/linux-x86_64
+
+      - name: Install git-cliff
+        run: |
+          CLIFF_VERSION="2.8.0"
+          curl -sL "https://github.com/orhun/git-cliff/releases/download/v${CLIFF_VERSION}/git-cliff-${CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz" | tar -xz -C /usr/local/bin
+          git cliff --version
+
+      - name: Generate release notes
+        run: |
+          if [ -n "${{ inputs.release_notes_override }}" ]; then
+            echo "${{ inputs.release_notes_override }}" > release-notes.md
+          else
+            # Generate notes for the latest tag
+            git cliff --latest -o release-notes.md
+
+            # If empty (no previous tag), try unreleased changes
+            if [ ! -s release-notes.md ]; then
+              git cliff --unreleased -o release-notes.md
+            fi
+
+            # Ultimate fallback
+            if [ ! -s release-notes.md ]; then
+              echo "## v$APP_VERSION" > release-notes.md
+              echo "" >> release-notes.md
+              echo "Release v$APP_VERSION" >> release-notes.md
+            fi
+          fi
+          echo "=== Generated Release Notes ==="
+          cat release-notes.md
 
       - name: Generate download.json manifest
         run: |
@@ -197,18 +274,12 @@ jobs:
           #      '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           # fi
 
-          RELEASE_NOTES="${{ inputs.notes }}"
-          if [ -z "$RELEASE_NOTES" ]; then
-            RELEASE_NOTES="自动构建版本 $APP_VERSION"
-          fi
-          jq --arg v "$APP_VERSION" --arg n "$RELEASE_NOTES" \
+          # Embed release notes into download.json (for in-app update dialog)
+          jq --arg v "$APP_VERSION" --rawfile n release-notes.md \
              '.version = $v | .notes = $n' download.json > tmp && mv tmp download.json
 
           echo "=== download.json ==="
           cat download.json
-
-          # Save notes to file for the release step
-          echo "$RELEASE_NOTES" > release-notes.txt
 
       - name: Create Release and upload
         uses: softprops/action-gh-release@v2
@@ -217,7 +288,7 @@ jobs:
           name: v${{ env.APP_VERSION }}
           overwrite_files: true
           fail_on_unmatched_files: false
-          body_path: release-notes.txt
+          body_path: release-notes.md
           files: |
             assets/**/*.dmg
             assets/**/*.exe
