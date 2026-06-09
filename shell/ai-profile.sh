@@ -93,6 +93,22 @@ _default_profile() {
     grep '^default:' "$CONFIG" 2>/dev/null | sed 's/^default: *"*\([^"]*\)"*/\1/'
 }
 
+# ── Find project-level .ai-profile by traversing up from $PWD ──
+_find_project_profile() {
+    local dir="$PWD"
+    while [ "$dir" != "/" ]; do
+        if [ -f "$dir/.ai-profile" ]; then
+            local proj_name=$(head -n1 "$dir/.ai-profile" | tr -d '[:space:]')
+            if [ -n "$proj_name" ] && [ -n "$(_profile_env "$proj_name" 2>/dev/null)" ]; then
+                export KN_PROJECT_DIR="$dir"
+                export KN_PROFILE_SOURCE="project"
+                echo "$proj_name"; return 0
+            fi
+        fi
+        dir=$(dirname "$dir")
+    done; return 1
+}
+
 # ── Interactive profile picker ──
 _interactive_pick() {
     local tool="$1"
@@ -127,6 +143,24 @@ _ai_launch_with_profile() {
 
     echo "-> Using profile: $profile_name"
 
+    # Auto-register current directory as a project (before the tool starts,
+    # so it appears immediately in Hook/Skill project selectors).
+    python3 -c "
+import json, os
+d = os.path.realpath(os.environ['PWD'])
+f = os.path.expanduser('~/.claude-profiles/projects.json')
+try:
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    try:
+        with open(f) as fh: projs = json.load(fh)
+    except: projs = []
+    if not isinstance(projs, list): projs = []
+    if not any(p.get('path') == d for p in projs if isinstance(p, dict)):
+        projs.append({'name': os.path.basename(d), 'path': d})
+        with open(f, 'w') as fh: json.dump(projs, fh, indent=2, ensure_ascii=False)
+except: pass
+" 2>/dev/null
+
     # All launch paths use a subshell so env vars don't leak to parent shell.
     # trap ensures temp files are cleaned up on any exit (normal, error, SIGINT).
     case "$tool" in
@@ -152,12 +186,12 @@ for line in sys.stdin:
     env[key] = val
 print(json.dumps({'env': env}))
 " > "$tmp_settings"
-                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" --settings "$tmp_settings" "$@")
+                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" --settings "$tmp_settings" "$@")
                 local rc=$?
                 rm -f "$tmp_settings"
                 return $rc
             else
-                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
+                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")
                 return
             fi
             ;;
@@ -174,19 +208,62 @@ print(json.dumps({'env': env}))
                 [ -d "$HOME/.codex" ] || mkdir -p "$HOME/.codex"
                 [ -f "$_kn_auth" ] && cp "$_kn_auth" "$_kn_auth.kn-bak"
                 printf '{"auth_mode":"apikey","OPENAI_API_KEY":"%s"}\n' "$_kn_apikey" > "$_kn_auth"
-                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
+                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")
                 local _kn_rc=$?
                 [ -f "$_kn_auth.kn-bak" ] && mv "$_kn_auth.kn-bak" "$_kn_auth"
                 return $_kn_rc
             fi
-            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
+            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")
             return
             ;;
         *)
-            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && command "$tool" "$@")
+            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")
             return
             ;;
     esac
+}
+
+# ── AI Model tips + personalized top profiles ──
+_ai_tips() {
+    echo "AI Model Tips:"
+    echo "  编程开发   → claude-sonnet-4-6 / deepseek-v3"
+    echo "  复杂推理   → claude-opus-4-8 / deepseek-reasoner"
+    echo "  快速修改   → claude-haiku-4-5"
+    echo "  中文场景   → deepseek-chat / deepseek-v4-pro"
+    echo ""
+
+    # Try to compute personalized top 3 from shell history
+    local histfile="${HISTFILE:-}"
+    if [ -z "$histfile" ]; then
+        # Fallback to common history file locations
+        if [ -f "$HOME/.zsh_history" ]; then
+            histfile="$HOME/.zsh_history"
+        elif [ -f "$HOME/.bash_history" ]; then
+            histfile="$HOME/.bash_history"
+        fi
+    fi
+
+    if [ -n "$histfile" ] && [ -f "$histfile" ]; then
+        # Parse shell history to find top 3 most-used profiles.
+        # Supports both zsh (: <ts>:<dur>;<cmd>) and bash (plain) formats.
+        # The profile name is the 3rd field in "ai <tool> <profile> [args...]".
+        local top_profiles
+        top_profiles=$(sed 's/^: [0-9]*:[0-9]*;//' "$histfile" 2>/dev/null | \
+            awk '$1 == "ai" && ($2 == "claude" || $2 == "codex" || $2 == "qoderclicn") {
+                count[$3]++
+            } END {
+                for (p in count) print count[p], p
+            }' | sort -rn | head -3 | awk '{print "    " $2 " (" $1 " 次)"}')
+
+        if [ -n "$top_profiles" ]; then
+            echo "  你最常用:"
+            echo "$top_profiles"
+        else
+            echo "  你最常用:   尚未使用 profile，试试 ai claude <profile> 吧"
+        fi
+    else
+        echo "  你最常用:   无法读取历史文件，试试 ai claude <profile> 吧"
+    fi
 }
 
 # ── Help text ──
@@ -200,6 +277,7 @@ _ai_help() {
     echo "    ai profile list           List all profiles"
     echo "    ai profile env <name>     Show env vars for a profile"
     echo "    ai profile switch <name>  Set default profile"
+    echo "    ai tips                   Show model selection recommendations"
 }
 
 # ── Main ai() function ──
@@ -219,6 +297,7 @@ ai() {
         echo "    ai profile list           List all profiles"
         echo "    ai profile env <name>     Show env vars"
         echo "    ai profile switch <name>  Set default profile"
+        echo "    ai tips                   Model selection recommendations"
         echo ""
         echo "Available profiles:"
         _profile_list
@@ -237,6 +316,14 @@ ai() {
                     _ai_launch_with_profile "$tool" "$profile_name" "$@"
                     return
                 fi
+            fi
+
+            # Check for project-level .ai-profile file
+            local proj_profile
+            proj_profile=$(_find_project_profile)
+            if [ -n "$proj_profile" ]; then
+                _ai_launch_with_profile "$tool" "$proj_profile" "$@"
+                return
             fi
 
             # No profile specified → try default profile
@@ -270,6 +357,9 @@ ai() {
             ;;
         -h|--help|help)
             _ai_help
+            ;;
+        tips)
+            _ai_tips
             ;;
         *)
             echo "Unknown command: $cmd" >&2

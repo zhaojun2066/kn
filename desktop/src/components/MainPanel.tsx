@@ -9,7 +9,6 @@ import { shortenPath } from "../lib/path-utils";
 import { formatShortcut } from "../utils/shortcut";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { OnboardingWizard } from "./OnboardingWizard";
-
 interface MainPanelProps {
   profile: ProfileDetail | null;
   hasProfiles: boolean;
@@ -280,7 +279,9 @@ function CommandBlock({
           <Terminal size={13} className="text-app-accent opacity-60" />
           <span className="tracking-wider uppercase text-2xs text-app-text-muted">使用命令</span>
         </div>
-        <span className="text-2xs text-app-text-muted">— {profileName}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-2xs text-app-text-muted">— {profileName}</span>
+        </div>
       </div>
 
       <div className="px-3 py-2 space-y-1">

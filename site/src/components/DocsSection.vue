@@ -46,6 +46,9 @@ const commands = [
   { cmd: 'profile init', desc: '从 ~/.claude/settings.json 导入' },
   { cmd: 'ai claude <profile>', desc: '用指定 profile 启动 Claude Code' },
   { cmd: 'ai codex <profile>', desc: '用指定 profile 启动 Codex' },
+  { cmd: 'ai qoderclicn <profile>', desc: '用指定 profile 启动 Qoder CN' },
+  { cmd: 'ai claude', desc: '交互式选择 profile 后启动' },
+  { cmd: 'ai tips', desc: '模型推荐与 shell 使用频率排名' },
 ]
 
 // ── FAQ ────────────────────────────
@@ -60,7 +63,7 @@ const faqs = [
   },
   {
     q: '怎么让 profile 对整个项目目录生效？',
-    a: '可以使用 direnv。在项目根目录创建 .envrc，通过 profile env 命令获取环境变量并导出。',
+    a: '在项目根目录创建 .ai-profile 文件，写入 profile 名称。进入该目录后 ai claude 会自动使用对应 profile。也支持 direnv 高级用法。',
   },
   {
     q: 'Desktop App 和 CLI 的数据如何同步？',
@@ -68,7 +71,15 @@ const faqs = [
   },
   {
     q: '支持哪些 CLI 工具？',
-    a: '目前完整支持 Claude Code 和 Codex CLI。profile 系统本身是通用的，可以管理任意环境变量组合。',
+    a: '目前完整支持 Claude Code、Codex CLI 和 Qoder CN（阿里通义协议）。profile 系统本身是通用的，可以管理任意环境变量组合。',
+  },
+  {
+    q: 'Shell 补全怎么配置？',
+    a: '安装脚本 install.sh 会自动为 zsh 和 bash 配置补全，无需手动操作。安装后 source ~/.zshrc 即可使用 Tab 补全。',
+  },
+  {
+    q: '如何查看 Token 用量和费用？',
+    a: 'Desktop 应用内置 Token 用量仪表盘，自动记录每次调用的 token 消耗，按模型和项目维度统计，支持自定义价格估算费用。',
   },
 ]
 

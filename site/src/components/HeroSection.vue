@@ -12,27 +12,36 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
       <div class="hero-grid">
         <!-- Left -->
         <div class="hero-text reveal">
-          <span class="section-label">会话级环境变量管理</span>
+          <span class="section-label">AI CLI 工具的统一管理中心</span>
           <h1 class="hero-title">
-            可视化切换 <span class="hero-highlight">API Key</span>，轻松管理
+            告别手动改配置，<span class="hero-highlight">一行命令</span>切换 AI 环境
           </h1>
+
+          <!-- Supported CLI tools -->
+          <div class="hero-tools">
+            <span class="tool-badge">🤖 Claude Code</span>
+            <span class="tool-badge">📟 Codex CLI</span>
+            <span class="tool-badge">🇨🇳 Qoder CN</span>
+          </div>
+
           <div class="hero-features-wrap">
             <ul class="hero-features">
-              <li>多 Profile 管理，一键切换 API Key</li>
-              <li>会话级隔离，终端之间互不干扰</li>
-              <li>可视化界面，告别手写配置文件</li>
-              <li>CLI + GUI 共享配置，实时同步</li>
+              <li>多 Profile 管理，一键切换 API Key / Model / Base URL</li>
+              <li>会话级隔离，终端之间互不干扰，退出自动清除</li>
+              <li>Quick Switcher (⌘K) 全局快速启动，按使用频率排序</li>
+              <li>自动追踪 Token 用量，按模型 / 项目统计成本</li>
+              <li>可视化 Hook 管理 + Agent 管理 + Shell 补全</li>
             </ul>
           </div>
 
           <div class="hero-actions">
             <a :href="DOWNLOAD_URL_ARM" class="btn btn-primary">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              下载
+              下载 macOS 版
             </a>
             <a href="#/docs" class="btn btn-outline">查看文档</a>
           </div>
-          <p class="hero-meta">v{{ APP_VERSION }} · macOS 12+ · 开源免费</p>
+          <p class="hero-meta">v{{ APP_VERSION }} · macOS 12+ / Windows / Linux · 开源免费</p>
         </div>
 
         <!-- Right: Desktop GUI Demo -->
@@ -107,6 +116,25 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
   background: var(--clr-accent);
   opacity: 0.15;
   border-radius: 3px;
+}
+
+/* ── Tool badges ───────────── */
+.hero-tools {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tool-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 100px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: var(--clr-raised);
+  border: 1px solid var(--clr-border-strong);
+  color: var(--clr-text-secondary);
 }
 
 /* ── Feature bullets ────────── */

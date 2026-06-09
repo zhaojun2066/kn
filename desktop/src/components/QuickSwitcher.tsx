@@ -3,6 +3,7 @@ import { CLIIcon } from "./common/CLIIcon";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import type { ProfileSummary, ProjectInfo } from "../lib/types";
 import type { SessionRecord } from "../hooks/useTerminal";
+import { parseAiCmd } from "../hooks/useTerminal";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -57,6 +58,9 @@ function fuzzyMatch(query: string, target: string): FuzzyResult {
 
   return { matches: qi === q.length, score };
 }
+
+// ── Smart recommendation threshold ───────────────────────────
+const FREQUENCY_THRESHOLD = 3;
 
 // ── Profile command builder ──────────────────────────────────
 
@@ -124,17 +128,42 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
 
   // ── Filtered & sorted results ────────────────────────────
 
-  // Profile step: fuzzy-match profiles
+  // Compute profile usage frequency from session history
+  const profileFrequency = useMemo(() => {
+    const freq: Record<string, number> = {};
+    for (const r of history) {
+      const parsed = parseAiCmd(r.command);
+      if (parsed) {
+        freq[parsed.profile] = (freq[parsed.profile] || 0) + 1;
+      }
+    }
+    return freq;
+  }, [history]);
+
+  // Profile step: fuzzy-match profiles, sort by frequency then score
   const filteredProfiles = useMemo(() => {
     return profiles
       .map((p) => {
         const cmd = profileCommand(p.name, p.cli_type);
         const result = fuzzyMatch(searchQuery, p.name + " " + (p.desc || ""));
-        return { ...p, cmd, ...result };
+        const freq = profileFrequency[p.name] || 0;
+        return { ...p, cmd, freq, ...result };
       })
       .filter((p) => p.matches)
-      .sort((a, b) => b.score - a.score);
-  }, [profiles, searchQuery]);
+      .sort((a, b) => {
+        const aFreq = a.freq >= FREQUENCY_THRESHOLD ? 1 : 0;
+        const bFreq = b.freq >= FREQUENCY_THRESHOLD ? 1 : 0;
+        if (aFreq !== bFreq) return bFreq - aFreq;          // frequent first
+        if (aFreq === 1) return b.freq - a.freq;            // within frequent: by count desc
+        return b.score - a.score;                            // within normal: by fuzzy score
+      });
+  }, [profiles, searchQuery, profileFrequency]);
+
+  // Split profiles into frequent vs normal for sectioned rendering
+  const splitIndex = useMemo(() => {
+    const idx = filteredProfiles.findIndex((p) => p.freq < FREQUENCY_THRESHOLD);
+    return idx === -1 ? filteredProfiles.length : idx;
+  }, [filteredProfiles]);
 
   // Project step: fuzzy-match projects (always show "browse" option at end)
   const filteredProjects = useMemo(() => {
@@ -320,8 +349,12 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
 
   // ── Render result rows ────────────────────────────────────
 
-  function renderProfileRow(p: ProfileSummary & { cmd: string | null; matches: boolean; score: number }, index: number) {
+  function renderProfileRow(
+    p: ProfileSummary & { cmd: string | null; matches: boolean; score: number; freq: number },
+    index: number
+  ) {
     const canLaunch = p.cmd !== null;
+    const isFrequent = p.freq >= FREQUENCY_THRESHOLD;
     return (
       <div
         key={p.name}
@@ -340,7 +373,17 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
         }}
       >
         <CLIIcon type={p.cli_type || "other"} size={16} />
+        {isFrequent && (
+          <span className="shrink-0 text-xs text-[var(--app-amber)] opacity-80" title={`使用 ${p.freq} 次`}>
+            &#9733;
+          </span>
+        )}
         <span className="flex-1 text-sm font-mono truncate">{p.name}</span>
+        {isFrequent && (
+          <span className="shrink-0 px-1 py-px text-2xs font-mono bg-[var(--app-amber)]/10 text-[var(--app-amber)]">
+            {p.freq}x
+          </span>
+        )}
         {p.tags && p.tags.length > 0 && (
           <span className="flex items-center gap-0.5 shrink-0">
             {p.tags.map((tag) => (
@@ -486,7 +529,29 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
           {/* ── Profile step ────────────────────────────── */}
           {isProfileStep &&
             (filteredProfiles.length > 0 ? (
-              filteredProfiles.map((p, i) => renderProfileRow(p, i))
+              <>
+                {/* Frequent section */}
+                {splitIndex > 0 && (
+                  <>
+                    <div className="mx-2 mt-1.5 mb-0.5 text-2xs font-mono text-[var(--app-amber)] uppercase tracking-wider opacity-70">
+                      常用
+                    </div>
+                    {filteredProfiles.slice(0, splitIndex).map((p, i) =>
+                      renderProfileRow(p, i)
+                    )}
+                    {/* Divider */}
+                    <div className="mx-2 my-1 border-t border-[var(--app-border-light)]" />
+                  </>
+                )}
+                {/* Normal section */}
+                {splitIndex < filteredProfiles.length && (
+                  <>
+                    {filteredProfiles.slice(splitIndex).map((p, i) =>
+                      renderProfileRow(p, splitIndex + i)
+                    )}
+                  </>
+                )}
+              </>
             ) : (
               <div className="flex items-center justify-center py-8 text-xs text-[var(--app-text-muted)] font-mono">
                 无匹配结果

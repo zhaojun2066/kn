@@ -385,6 +385,20 @@ fn read_json_file(path: &std::path::Path) -> Result<serde_json::Value, String> {
     serde_json::from_str(&content).map_err(|e| format!("解析 {} 失败: {}", path.display(), e))
 }
 
+/// Profile names that conflict with reserved keywords in `profile_cmd::add_profile_cmd`.
+/// Scan results with these names get a "-config" suffix appended so they can be imported.
+const RESERVED_PROFILE_NAMES: &[&str] = &["claude", "codex", "qoderclicn", "profile", "ai", "help"];
+
+/// Return a valid profile name for a scan result.
+/// If the name is a reserved keyword, append "-config".
+fn sanitize_scan_name(name: &str) -> String {
+    if RESERVED_PROFILE_NAMES.contains(&name) {
+        format!("{}-config", name)
+    } else {
+        name.to_string()
+    }
+}
+
 #[tauri::command]
 pub fn scan_system_configs() -> Result<ScanResult, String> {
     let home = home_dir();
@@ -406,7 +420,7 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
         }
         if !env.is_empty() {
             profiles.push(ScanProfile {
-                name: "claude".into(),
+                name: sanitize_scan_name("claude"),
                 cli_type: "claude".into(),
                 env,
                 source: claude_str,
@@ -454,7 +468,7 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
 
     if !codex_env.is_empty() {
         profiles.push(ScanProfile {
-            name: "codex".into(),
+            name: sanitize_scan_name("codex"),
             cli_type: "codex".into(),
             env: codex_env,
             source: format!("{}, {}", codex_auth_str, codex_config_str),
@@ -477,7 +491,7 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
         }
         // Always include Qoder CN if the directory exists (even without extracted env vars)
         profiles.push(ScanProfile {
-            name: "qoder-cn".into(),
+            name: sanitize_scan_name("qoder-cn"),
             cli_type: "qoderclicn".into(),
             env: qoder_env,
             source: qoder_str,

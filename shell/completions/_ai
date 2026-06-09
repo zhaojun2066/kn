@@ -1,0 +1,63 @@
+#compdef ai
+# AI Profile Manager — Zsh completion script
+# Installed by install.sh and desktop app to ~/.claude-profiles/completions/_ai
+#
+# Provides completions for the ai() shell function:
+#   ai <tab>             → claude / codex / qoderclicn / profile
+#   ai claude <tab>      → profile names from config.yaml
+#   ai profile <tab>     → list / env / switch
+#   ai profile env <tab> → profile names
+#   ai profile switch <tab> → profile names
+
+_ai_profiles() {
+    local config="$HOME/.claude-profiles/config.yaml"
+    [ -f "$config" ] || return 0
+    sed -n 's/^  \([a-zA-Z][a-zA-Z0-9_-]*\):.*/\1/p' "$config"
+}
+
+_ai() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    _arguments -C \
+        '1:command:->cmd' \
+        '2: :->arg2' \
+        '3: :->arg3'
+
+    case "$state" in
+        cmd)
+            local -a cmds
+            cmds=(claude codex qoderclicn profile)
+            _describe -t commands 'command' cmds
+            ;;
+        arg2)
+            case "$words[2]" in
+                claude|codex|qoderclicn)
+                    local -a profiles
+                    profiles=($(_ai_profiles))
+                    _describe -t profiles 'profile' profiles
+                    ;;
+                profile)
+                    local -a subcmds
+                    subcmds=('list:List all profiles' 'env:Show env vars for a profile' 'switch:Set default profile')
+                    _describe -t commands 'profile command' subcmds
+                    ;;
+            esac
+            ;;
+        arg3)
+            case "$words[2]" in
+                profile)
+                    case "$words[3]" in
+                        env|switch)
+                            local -a profiles
+                            profiles=($(_ai_profiles))
+                            _describe -t profiles 'profile' profiles
+                            ;;
+                    esac
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_ai "$@"

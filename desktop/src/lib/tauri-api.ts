@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ProfileList, ProfileDetail, MutationResult } from "./types";
+import type { ProfileList, ProfileDetail, MutationResult, HookExecutionLog } from "./types";
 
 export async function listProfiles(): Promise<ProfileList> {
   return invoke("list_profiles");
@@ -76,12 +76,25 @@ export interface ModelPricing {
   currency: string;
 }
 
+export interface ProjectUsage {
+  project_path?: string;
+  project_name?: string;
+  tokens_in: number;
+  tokens_out: number;
+  percentage: number;
+  models: ModelUsage[];
+}
+
 export async function getUsage(days: number): Promise<UsageSummary> {
   return invoke("get_usage", { days });
 }
 
 export async function getDailyUsage(days: number): Promise<DailyUsage[]> {
   return invoke("get_daily_usage", { days });
+}
+
+export async function getUsageByProject(days: number): Promise<ProjectUsage[]> {
+  return invoke("get_usage_by_project", { days });
 }
 
 export async function getPricing(): Promise<Record<string, ModelPricing>> {
@@ -102,4 +115,11 @@ export async function getUsageTrackingEnabled(): Promise<boolean> {
 
 export async function setUsageTrackingEnabled(enabled: boolean): Promise<void> {
   return invoke("set_usage_tracking_enabled", { enabled });
+}
+
+export async function getHookExecutionLogs(
+  hookId?: string,
+  limit?: number,
+): Promise<HookExecutionLog[]> {
+  return invoke("get_hook_execution_logs", { hookId, limit });
 }

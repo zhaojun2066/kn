@@ -42,3 +42,25 @@ export interface ProjectInfo {
 
 export type ScopeTab = "user" | "project" | "all";
 
+// ── Usage / Token Tracking ──
+
+export interface ProjectUsage {
+  project_path?: string;
+  project_name?: string;
+  tokens_in: number;
+  tokens_out: number;
+  percentage: number;
+  models: { model: string; tokens_in: number; tokens_out: number; percentage: number }[];
+}
+
+// ── Hook Execution Logs ──
+
+export interface HookExecutionLog {
+  hookId: string;
+  timestamp: string;
+  exitCode?: number;
+  durationMs?: number;
+  outputPreview?: string;
+  errorPreview?: string;
+}
+

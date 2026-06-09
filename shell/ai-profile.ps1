@@ -68,6 +68,148 @@ function _profile_show {
     }
 }
 
+function _Get-DefaultProfile {
+    $cfg = Join-Path $script:_kn_config_dir "config.yaml"
+    if (-not (Test-Path $cfg)) { return "" }
+    $match = Get-Content $cfg | Select-String '^default:\s*"?(.+?)"?\s*$'
+    if ($match) { return $match.Matches.Groups[1].Value }
+    return ""
+}
+
+function _Find-ProjectProfile {
+    $dir = Get-Location
+    while ($dir.Path -ne $dir.Root) {
+        $aiProfileFile = Join-Path $dir ".ai-profile"
+        if (Test-Path $aiProfileFile) {
+            $projName = (Get-Content $aiProfileFile -First 1).Trim()
+            if ($projName) {
+                $envs = _profile_env $projName
+                if ($envs -and $envs.Count -gt 0) {
+                    $env:KN_PROJECT_DIR = $dir.Path
+                    $env:KN_PROFILE_SOURCE = "project"
+                    return $projName
+                }
+            }
+        }
+        $dir = $dir.Parent
+    }
+    return $null
+}
+
+function _Launch-WithProfile {
+    param([string]$tool, [string]$profileName, [string[]]$toolArgs)
+
+    $envs = _profile_env $profileName
+    if (-not $envs -or $envs.Count -eq 0) {
+        Write-Host "Profile '$profileName' not found or has no env vars."
+        & $tool @toolArgs
+        return
+    }
+
+    Write-Host "-> Using profile: $profileName"
+    $env:KN_PROFILE = $profileName
+    $env:KN_CLI_TOOL = $tool
+    $env:KN_WORKING_DIR = (Get-Location).Path
+
+    # Auto-register current directory as a project (before the tool starts)
+    $projDir = (Get-Location).Path
+    $projFile = "$env:USERPROFILE\.claude-profiles\projects.json"
+    try {
+        $projs = @()
+        if (Test-Path $projFile) {
+            $projs = Get-Content $projFile -Raw | ConvertFrom-Json
+            if ($projs -isnot [array]) { $projs = @() }
+        }
+        $exists = $projs | Where-Object { $_.path -eq $projDir }
+        if (-not $exists) {
+            $projs += @{ name = (Split-Path $projDir -Leaf); path = $projDir }
+            $parent = Split-Path $projFile -Parent
+            if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force $parent | Out-Null }
+            $projs | ConvertTo-Json -Depth 3 | Set-Content $projFile
+        }
+    } catch {}
+
+    switch ($tool) {
+        'claude' {
+            # Claude Code v2.0.1+ bug: settings.json env overrides shell env.
+            # Generate temp settings file via --settings (CLI flag > settings.json).
+            $tmpSettings = New-TemporaryFile
+            @{ env = $envs } | ConvertTo-Json -Compress | Set-Content $tmpSettings
+            foreach ($key in $envs.Keys) {
+                Set-Item -Path "env:$key" -Value $envs[$key]
+            }
+            & $tool --settings $tmpSettings @toolArgs
+            Remove-Item $tmpSettings -Force -ErrorAction SilentlyContinue
+        }
+        'codex' {
+            # Codex ignores OPENAI_API_KEY env var; reads only ~/.codex/auth.json.
+            # Write the profile's key to auth.json, pass base_url/model via -c.
+            $apiKey = $envs['OPENAI_API_KEY']
+            $baseUrl = $envs['OPENAI_BASE_URL']
+            $model = $envs['OPENAI_MODEL']
+            $authFile = "$env:USERPROFILE\.codex\auth.json"
+            $extraArgs = @()
+            if ($model) { $extraArgs += '-c', "model=$model" }
+            if ($baseUrl) { $extraArgs += '-c', "model_providers.custom.base_url=$baseUrl" }
+            if ($apiKey) {
+                $codexDir = Split-Path $authFile -Parent
+                if (-not (Test-Path $codexDir)) { New-Item -ItemType Directory -Force $codexDir | Out-Null }
+                $oldAuth = $null
+                if (Test-Path $authFile) { $oldAuth = Get-Content $authFile -Raw }
+                @{ auth_mode = "apikey"; OPENAI_API_KEY = $apiKey } | ConvertTo-Json -Compress | Set-Content $authFile
+                try {
+                    foreach ($key in $envs.Keys) {
+                        Set-Item -Path "env:$key" -Value $envs[$key]
+                    }
+                    & $tool @extraArgs @toolArgs
+                } finally {
+                    if ($oldAuth) { Set-Content $authFile $oldAuth }
+                }
+            } else {
+                foreach ($key in $envs.Keys) {
+                    Set-Item -Path "env:$key" -Value $envs[$key]
+                }
+                & $tool @extraArgs @toolArgs
+            }
+        }
+        default {
+            foreach ($key in $envs.Keys) {
+                Set-Item -Path "env:$key" -Value $envs[$key]
+            }
+            & $tool @toolArgs
+        }
+    }
+}
+
+function _Try-Launch-Explicit {
+    param([string]$tool, [string[]]$rest)
+    if ($rest.Count -gt 0) {
+        $envs = _profile_env $rest[0]
+        if ($envs -and $envs.Count -gt 0) {
+            _Launch-WithProfile $tool $rest[0] @($rest | Select-Object -Skip 1)
+            return $true
+        }
+    }
+    return $false
+}
+
+function _Try-Launch-Fallback {
+    param([string]$tool, [string[]]$rest)
+    # Project-level .ai-profile
+    $projProfile = _Find-ProjectProfile
+    if ($projProfile) {
+        _Launch-WithProfile $tool $projProfile $rest
+        return $true
+    }
+    # Default profile
+    $defaultProfile = _Get-DefaultProfile
+    if ($defaultProfile) {
+        _Launch-WithProfile $tool $defaultProfile $rest
+        return $true
+    }
+    return $false
+}
+
 function ai {
     $cmd = $args[0]
 
@@ -89,93 +231,22 @@ function ai {
         'claude' {
             $tool = 'claude'
             $rest = @($args | Select-Object -Skip 1)
-            if ($rest.Count -gt 0) {
-                $envs = _profile_env $rest[0]
-                if ($envs -and $envs.Count -gt 0) {
-                    $profileName = $rest[0]
-                    $toolArgs = @($rest | Select-Object -Skip 1)
-                    Write-Host "-> Using profile: $profileName"
-                    # Claude Code v2.0.1+ bug: settings.json env overrides shell env.
-                    # Generate temp settings file via --settings (CLI flag > settings.json).
-                    $tmpSettings = New-TemporaryFile
-                    @{ env = $envs } | ConvertTo-Json -Compress | Set-Content $tmpSettings
-                    foreach ($key in $envs.Keys) {
-                        Set-Item -Path "env:$key" -Value $envs[$key]
-                    }
-                    $env:KN_PROFILE = $profileName
-                    $env:KN_CLI_TOOL = $tool
-                    & $tool --settings $tmpSettings @toolArgs
-                    Remove-Item $tmpSettings -Force -ErrorAction SilentlyContinue
-                    return
-                }
-            }
+            if (_Try-Launch-Explicit $tool $rest) { return }
+            if (_Try-Launch-Fallback $tool $rest) { return }
             & $tool @rest
         }
         'codex' {
             $tool = 'codex'
             $rest = @($args | Select-Object -Skip 1)
-            if ($rest.Count -gt 0) {
-                $envs = _profile_env $rest[0]
-                if ($envs -and $envs.Count -gt 0) {
-                    $profileName = $rest[0]
-                    $toolArgs = @($rest | Select-Object -Skip 1)
-                    Write-Host "-> Using profile: $profileName"
-                    # Codex ignores OPENAI_API_KEY env var; reads only ~/.codex/auth.json.
-                    # Write the profile's key to auth.json, pass base_url/model via -c.
-                    $apiKey = $envs['OPENAI_API_KEY']
-                    $baseUrl = $envs['OPENAI_BASE_URL']
-                    $model = $envs['OPENAI_MODEL']
-                    $authFile = "$env:USERPROFILE\.codex\auth.json"
-                    $extraArgs = @()
-                    if ($model) { $extraArgs += '-c', "model=$model" }
-                    if ($baseUrl) { $extraArgs += '-c', "model_providers.custom.base_url=$baseUrl" }
-                    if ($apiKey) {
-                        $codexDir = Split-Path $authFile -Parent
-                        if (-not (Test-Path $codexDir)) { New-Item -ItemType Directory -Force $codexDir | Out-Null }
-                        $oldAuth = $null
-                        if (Test-Path $authFile) { $oldAuth = Get-Content $authFile -Raw }
-                        @{ auth_mode = "apikey"; OPENAI_API_KEY = $apiKey } | ConvertTo-Json -Compress | Set-Content $authFile
-                        try {
-                            foreach ($key in $envs.Keys) {
-                                Set-Item -Path "env:$key" -Value $envs[$key]
-                            }
-                            $env:KN_PROFILE = $profileName
-                            $env:KN_CLI_TOOL = $tool
-                            & $tool @extraArgs @toolArgs
-                        } finally {
-                            if ($oldAuth) { Set-Content $authFile $oldAuth }
-                        }
-                        return
-                    }
-                    foreach ($key in $envs.Keys) {
-                        Set-Item -Path "env:$key" -Value $envs[$key]
-                    }
-                    $env:KN_PROFILE = $profileName
-                    $env:KN_CLI_TOOL = $tool
-                    & $tool @extraArgs @toolArgs
-                    return
-                }
-            }
+            if (_Try-Launch-Explicit $tool $rest) { return }
+            if (_Try-Launch-Fallback $tool $rest) { return }
             & $tool @rest
         }
         'qoderclicn' {
             $tool = 'qoderclicn'
             $rest = @($args | Select-Object -Skip 1)
-            if ($rest.Count -gt 0) {
-                $envs = _profile_env $rest[0]
-                if ($envs -and $envs.Count -gt 0) {
-                    $profileName = $rest[0]
-                    $toolArgs = @($rest | Select-Object -Skip 1)
-                    Write-Host "-> Using profile: $profileName"
-                    foreach ($key in $envs.Keys) {
-                        Set-Item -Path "env:$key" -Value $envs[$key]
-                    }
-                    $env:KN_PROFILE = $profileName
-                    $env:KN_CLI_TOOL = $tool
-                    & $tool @toolArgs
-                    return
-                }
-            }
+            if (_Try-Launch-Explicit $tool $rest) { return }
+            if (_Try-Launch-Fallback $tool $rest) { return }
             & $tool @rest
         }
         'profile' {

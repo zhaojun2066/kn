@@ -441,20 +441,20 @@ fn scan_codex_hooks() -> Vec<HookEntry> {
 
 fn scan_claude_project_hooks(project_root: &std::path::Path) -> Vec<HookEntry> {
     let path = project_root.join(".claude").join("settings.json");
-    let pn = crate::skill_manager::project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     scan_json_hooks("claude", &path, "project", pn)
 }
 
 fn scan_qoder_project_hooks(project_root: &std::path::Path) -> Vec<HookEntry> {
     // Qoder: user-level = ~/.qoder-cn/  ,  project-level = <project>/.qoder/
     let path = project_root.join(".qoder").join("settings.json");
-    let pn = crate::skill_manager::project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     scan_json_hooks("qoder", &path, "project", pn)
 }
 
 fn scan_codex_project_hooks(project_root: &std::path::Path) -> Vec<HookEntry> {
     let path = project_root.join(".codex").join("config.toml");
-    let pn = crate::skill_manager::project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     scan_codex_hooks_at(&path, "project", pn)
 }
 
@@ -1795,4 +1795,117 @@ fn append_codex_hook_entry(snapshot: &serde_json::Value, event_type: &str, path:
 fn restore_codex_hook_entry(undo: &HookMoveUndoInfo, path: &std::path::PathBuf) -> Result<(), String> {
     let _ = append_codex_hook_entry(&undo.hook_snapshot, &undo.event_type, path)?;
     Ok(())
+}
+
+/// Update a hook's command in-place (without delete + recreate).
+/// For JSON (Claude/Qoder): directly edits the JSON value in the config file.
+/// For TOML (Codex): uses snapshot → delete → create → rollback on failure.
+#[tauri::command]
+pub fn set_hook_command(
+    cli: String,
+    event_type: String,
+    group_idx: usize,
+    hook_idx: usize,
+    path: String,
+    command: String,
+) -> Result<(), String> {
+    let config_path = std::path::PathBuf::from(&path);
+    match cli.as_str() {
+        "claude" | "qoder" => {
+            set_json_hook_command(&config_path, &event_type, group_idx, hook_idx, &command)
+        }
+        "codex" => {
+            // TOML arrays cannot be edited in-place; use snapshot → delete → create
+            let hook_snapshot =
+                snapshot_codex_hook_at(&config_path, &event_type, group_idx, hook_idx)?;
+            let matcher = hook_snapshot
+                .get("matcher")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let hook_type = hook_snapshot
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("command")
+                .to_string();
+            delete_codex_hook_at(&config_path, &event_type, group_idx, hook_idx)?;
+            let result =
+                create_codex_hook_new(&event_type, &matcher, &command, &hook_type);
+            if result.is_err() {
+                // Rollback: restore the original hook
+                let _ = append_codex_hook_entry(&hook_snapshot, &event_type, &config_path);
+            }
+            result
+        }
+        _ => Err(format!("不支持的 CLI: {}", cli)),
+    }
+}
+
+/// Directly edit a JSON hook's command field (Claude/Qoder).
+fn set_json_hook_command(
+    path: &std::path::Path,
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+    command: &str,
+) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("JSON 解析失败: {}", e))?;
+
+    let hook = root
+        .pointer_mut(&format!("/hooks/{}/{}", event_type, group_idx))
+        .and_then(|group| group.get_mut("hooks"))
+        .and_then(|hooks| hooks.get_mut(hook_idx))
+        .ok_or_else(|| "hook 不存在".to_string())?;
+
+    // Rotating backup before modifying (3 generations, matches profile_cmd pattern)
+    let bak3 = path.with_extension("json.bak.3");
+    let bak2 = path.with_extension("json.bak.2");
+    let bak1 = path.with_extension("json.bak.1");
+    let bak  = path.with_extension("json.bak");
+    let _ = fs::rename(&bak2, &bak3);
+    let _ = fs::rename(&bak1, &bak2);
+    let _ = fs::rename(&bak, &bak1);
+    let _ = fs::copy(path, &bak);
+
+    hook["command"] = serde_json::Value::String(command.to_string());
+
+    let new_text =
+        serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {}", e))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, &new_text).map_err(|e| format!("写入失败: {}", e))?;
+    #[cfg(unix)]
+    {
+        if let Ok(f) = fs::File::open(&tmp) {
+            use std::os::unix::io::AsRawFd;
+            unsafe { libc::fsync(f.as_raw_fd()); }
+        }
+    }
+    crate::atomic_rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Snapshot a Codex TOML hook entry for rollback safety.
+fn snapshot_codex_hook_at(
+    path: &std::path::Path,
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+) -> Result<serde_json::Value, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
+    let toml_val: toml::Value =
+        toml::from_str(&text).map_err(|e| format!("TOML 解析失败: {}", e))?;
+    let inner_arr = toml_val
+        .get("hooks")
+        .and_then(|h| h.get(event_type))
+        .and_then(|arr| arr.as_array())
+        .and_then(|a| a.get(group_idx))
+        .and_then(|g| g.get("hooks"))
+        .and_then(|h| h.as_array())
+        .ok_or_else(|| "hooks 列表不存在".to_string())?;
+    let hook = inner_arr.get(hook_idx).ok_or_else(|| "hook 不存在".to_string())?;
+    let json_str =
+        serde_json::to_string(&hook).map_err(|e| format!("序列化失败: {}", e))?;
+    serde_json::from_str(&json_str).map_err(|e| format!("JSON 解析失败: {}", e))
 }

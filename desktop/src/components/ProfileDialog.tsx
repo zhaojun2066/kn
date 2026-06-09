@@ -488,6 +488,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onInstallToo
               >
                 + 添加变量
               </button>
+
             </div>
           )}
         </div>

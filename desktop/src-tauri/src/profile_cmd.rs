@@ -484,6 +484,10 @@ const SHELL_RC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../
 
 const SHELL_RC_PS1: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/ai-profile.ps1"));
 
+const COMPLETION_ZSH: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/completions/_ai"));
+
+const COMPLETION_BASH: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/completions/ai.bash"));
+
 const HOOK_RECORDER: &str = r##"#!/usr/bin/env python3
 """Token usage recorder — called by Stop/SessionEnd hooks.
 Reads structured JSON from stdin, extracts token usage, appends to usage.jsonl.
@@ -496,6 +500,98 @@ from datetime import datetime, timezone
 USAGE_FILE = os.path.join(
     os.path.expanduser("~"), ".claude-profiles", "usage.jsonl"
 )
+
+PROJECTS_FILE = os.path.join(
+    os.path.expanduser("~"), ".claude-profiles", "projects.json"
+)
+
+
+def _resolve_project():
+    """Read KN_WORKING_DIR, auto-register project, return (path, name)."""
+    working_dir = os.environ.get("KN_WORKING_DIR", "")
+    if not working_dir:
+        # Backward compatibility: try old env var
+        working_dir = os.environ.get("KN_PROJECT_DIR", "")
+    if not working_dir:
+        return None, None
+
+    # Normalize: realpath resolves symlinks and normalizes path separators
+    try:
+        working_dir = os.path.realpath(working_dir)
+    except OSError:
+        working_dir = os.path.abspath(working_dir)
+
+    project_name = os.path.basename(working_dir.rstrip(os.sep))
+
+    # Auto-register in projects.json
+    _ensure_project_registered(working_dir, project_name)
+
+    return working_dir, project_name
+
+
+def _ensure_project_registered(path, name):
+    """Add project to projects.json if not already present.
+
+    Uses fcntl.flock on Unix for cross-process safety (same pattern as
+    the Rust backend's config lock). On Windows, falls back to simple
+    read-merge-write.
+    """
+    try:
+        import fcntl
+
+        os.makedirs(os.path.dirname(PROJECTS_FILE), exist_ok=True)
+        fd = os.open(PROJECTS_FILE, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            os.lseek(fd, 0, 0)
+            raw = os.read(fd, 16384) or b"[]"
+            projects = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, OSError):
+            projects = []
+            os.lseek(fd, 0, 0)
+
+        if not isinstance(projects, list):
+            projects = []
+
+        # Check if path already registered
+        if any(p.get("path") == path for p in projects if isinstance(p, dict)):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+            return
+
+        projects.append({"name": name, "path": path})
+        data = json.dumps(projects, indent=2, ensure_ascii=False)
+
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, 0)
+        os.write(fd, data.encode("utf-8"))
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        return
+    except ImportError:
+        # Windows fallback: no fcntl available
+        pass
+
+    # Windows path (or any platform where fcntl import failed)
+    try:
+        os.makedirs(os.path.dirname(PROJECTS_FILE), exist_ok=True)
+        try:
+            with open(PROJECTS_FILE, "r", encoding="utf-8") as f:
+                projects = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            projects = []
+
+        if not isinstance(projects, list):
+            projects = []
+
+        if any(p.get("path") == path for p in projects if isinstance(p, dict)):
+            return
+
+        projects.append({"name": name, "path": path})
+        with open(PROJECTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(projects, f, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
 
 
 def main():
@@ -511,12 +607,18 @@ def main():
     if not usage:
         sys.exit(0)
 
+    project_path, project_name = _resolve_project()
+
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "profile": profile,
         "tool": tool,
         **usage,
     }
+    if project_path:
+        record["project_path"] = project_path
+        if project_name:
+            record["project_name"] = project_name
 
     try:
         os.makedirs(os.path.dirname(USAGE_FILE), exist_ok=True)
@@ -729,10 +831,33 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         }
     }
 
+    // Write shell completions to config dir
+    let completions_dir = dir.join("completions");
+    fs::create_dir_all(&completions_dir).ok();
+    let zsh_path = completions_dir.join("_ai");
+    let bash_path = completions_dir.join("ai.bash");
+    let needs_zsh_write = match fs::read_to_string(&zsh_path) {
+        Ok(existing) => existing != COMPLETION_ZSH,
+        Err(_) => true,
+    };
+    if needs_zsh_write {
+        fs::write(&zsh_path, COMPLETION_ZSH).ok();
+    }
+    let needs_bash_write = match fs::read_to_string(&bash_path) {
+        Ok(existing) => existing != COMPLETION_BASH,
+        Err(_) => true,
+    };
+    if needs_bash_write {
+        fs::write(&bash_path, COMPLETION_BASH).ok();
+    }
+
     // Write token usage hook recorder script
     let hooks_dir = dir.join("hooks");
     fs::create_dir_all(&hooks_dir).ok();
     fs::write(hooks_dir.join("record-usage.py"), HOOK_RECORDER).ok();
+
+    // Write hook execution log wrapper script
+    let _ = crate::hook_logs::write_run_with_log_script();
 
     // ── Unix: add source line to ~/.zshrc (idempotent) ──
     if !cfg!(target_os = "windows") {
@@ -769,6 +894,55 @@ pub fn ensure_shell_rc() -> Result<String, String> {
                 } else {
                     format!("{}\n{}\n{}\n", bash_content, bash_marker, bash_source_line)
                 };
+                fs::write(&bashrc, new_bash).ok();
+            }
+
+            // ── Inject shell completion config ──
+            let completions_dir_str = completions_dir.display().to_string();
+            let compl_marker_start = "# >>> AI Profile Completions >>>";
+            let compl_marker_end = "# <<< AI Profile Completions <<<";
+
+            // Zsh: fpath + compinit
+            {
+                let zshrc = PathBuf::from(&home).join(".zshrc");
+                let zsh_content = if zshrc.exists() {
+                    fs::read_to_string(&zshrc).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                // Only add compinit if .zshrc doesn't already have it (avoid slow duplicate init)
+                let has_compinit = zsh_content.contains("compinit");
+                let zsh_compl_block = if has_compinit {
+                    format!(
+                        "\n{}\nfpath=(\"{}\" $fpath)\n{}\n",
+                        compl_marker_start, completions_dir_str, compl_marker_end
+                    )
+                } else {
+                    format!(
+                        "\n{}\nfpath=(\"{}\" $fpath)\nautoload -Uz compinit && compinit\n{}\n",
+                        compl_marker_start, completions_dir_str, compl_marker_end
+                    )
+                };
+                // Remove old completion block if present, then append new one
+                let zsh_cleaned = remove_marker_block(&zsh_content, compl_marker_start, compl_marker_end);
+                let new_zsh = format!("{}{}", zsh_cleaned, zsh_compl_block);
+                fs::write(&zshrc, new_zsh).ok();
+            }
+
+            // Bash: source completion script
+            {
+                let bashrc = PathBuf::from(&home).join(".bashrc");
+                let bash_content = if bashrc.exists() {
+                    fs::read_to_string(&bashrc).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let bash_compl_block = format!(
+                    "\n{}\nsource \"{}/ai.bash\"\n{}\n",
+                    compl_marker_start, completions_dir_str, compl_marker_end
+                );
+                let bash_cleaned = remove_marker_block(&bash_content, compl_marker_start, compl_marker_end);
+                let new_bash = format!("{}{}", bash_cleaned, bash_compl_block);
                 fs::write(&bashrc, new_bash).ok();
             }
         }
@@ -812,6 +986,27 @@ pub fn ensure_shell_rc() -> Result<String, String> {
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+/// Remove a marker-delimited block from a string. Used for idempotent shell RC updates.
+fn remove_marker_block(content: &str, marker_start: &str, marker_end: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut skip = false;
+    for line in content.lines() {
+        if line.trim() == marker_start {
+            skip = true;
+            continue;
+        }
+        if line.trim() == marker_end {
+            skip = false;
+            continue;
+        }
+        if !skip {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    result
+}
 
 fn detect_cli_type(env: &HashMap<String, String>) -> Option<String> {
     if let Some(t) = env.get("_KN_CLI_TYPE") {

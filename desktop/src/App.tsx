@@ -94,7 +94,7 @@ export function App() {
   const [hookDataLoading, setHookDataLoading] = useState(false);
   const [selectedHook, setSelectedHook] = useState<HookEntry | null>(null);
   const [activeScope, setActiveScope] = useState<ScopeTab>("user");
-  const { projects, activeProject, setActiveProject, addProject } = useProjects();
+  const { projects, activeProject, setActiveProject, addProject, loadProjects } = useProjects();
 
   // Compute scan paths: null = user only, or a list of project paths to scan
   const scanProjectPaths = useMemo<(string | null)[]>(() => {
@@ -216,6 +216,13 @@ export function App() {
     invoke("ensure_usage_hooks").catch(() => {});
   }, []);
 
+  // Listen for "新建 Profile" custom event from EmptyState quick-action button
+  useEffect(() => {
+    const handler = () => setShowAddDialog(true);
+    window.addEventListener("kn-quick-new-profile", handler);
+    return () => window.removeEventListener("kn-quick-new-profile", handler);
+  }, []);
+
   /** Scan skills + agents across multiple project paths, merge, and return. */
   const scanMultiProject = useCallback(async (paths: (string | null)[]) => {
     if (paths.length === 0) {
@@ -269,6 +276,13 @@ export function App() {
     }
     return { skills: mergedSkills, agents: mergedAgents };
   }, []);
+
+  // Refresh project list when switching to hooks or skills (catches auto-registered projects from usage tracking)
+  useEffect(() => {
+    if (activeActivity === "hooks" || activeActivity === "skills") {
+      loadProjects();
+    }
+  }, [activeActivity, loadProjects]);
 
   // Load skill/plugin data when switching to skills view
   useEffect(() => {

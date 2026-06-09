@@ -15,6 +15,10 @@ pub struct UsageRecord {
     pub model: String,
     pub tokens_in: u64,
     pub tokens_out: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +41,17 @@ pub struct DailyUsage {
     pub date: String,
     pub tokens_in: u64,
     pub tokens_out: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectUsage {
+    pub project_path: Option<String>,
+    pub project_name: Option<String>,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub percentage: f64,
+    /// Model breakdown for this project (only populated when drilling in)
+    pub models: Vec<ModelUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,6 +304,144 @@ pub fn get_daily_usage(days: u32) -> Result<Vec<DailyUsage>, String> {
         })
         .collect();
     result.sort_by(|a, b| a.date.cmp(&b.date));
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn get_usage_by_project(days: u32) -> Result<Vec<ProjectUsage>, String> {
+    let cutoff = cutoff_date(days);
+
+    let file = match fs::File::open(usage_file()) {
+        Ok(f) => f,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let reader = BufReader::new(file);
+
+    // Aggregate: project_path -> (tokens_in, tokens_out, project_name, models map)
+    struct Agg {
+        tokens_in: u64,
+        tokens_out: u64,
+        project_name: Option<String>,
+        models: HashMap<String, (u64, u64)>,
+    }
+
+    let mut projects: HashMap<String, Agg> = HashMap::new();
+    let mut unlinked_in: u64 = 0;
+    let mut unlinked_out: u64 = 0;
+    let mut unlinked_models: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut grand_total: u64 = 0;
+
+    for line in reader.lines() {
+        let line = line.unwrap_or_default();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(rec) = serde_json::from_str::<UsageRecord>(&line) {
+            let Some(day) = parse_local_date(&rec.ts) else {
+                continue;
+            };
+            if day < cutoff {
+                continue;
+            }
+            let tin = rec.tokens_in;
+            let tout = rec.tokens_out;
+            grand_total += tin + tout;
+            let model = if rec.model.is_empty() { "unknown".to_string() } else { rec.model.clone() };
+
+            if let Some(ref pp) = rec.project_path {
+                let entry = projects.entry(pp.clone()).or_insert_with(|| Agg {
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    project_name: rec.project_name.clone(),
+                    models: HashMap::new(),
+                });
+                entry.tokens_in += tin;
+                entry.tokens_out += tout;
+                let me = entry.models.entry(model).or_insert((0, 0));
+                me.0 += tin;
+                me.1 += tout;
+            } else {
+                unlinked_in += tin;
+                unlinked_out += tout;
+                let me = unlinked_models.entry(model).or_insert((0, 0));
+                me.0 += tin;
+                me.1 += tout;
+            }
+        }
+    }
+
+    let mut result: Vec<ProjectUsage> = projects
+        .into_iter()
+        .map(|(path, agg)| {
+            let total = agg.tokens_in + agg.tokens_out;
+            let mut models: Vec<ModelUsage> = agg
+                .models
+                .into_iter()
+                .map(|(model, (tin, tout))| ModelUsage {
+                    model,
+                    tokens_in: tin,
+                    tokens_out: tout,
+                    percentage: if total > 0 {
+                        ((tin + tout) as f64 / total as f64) * 100.0
+                    } else {
+                        0.0
+                    },
+                })
+                .collect();
+            models.sort_by(|a, b| (b.tokens_in + b.tokens_out).cmp(&(a.tokens_in + a.tokens_out)));
+            ProjectUsage {
+                project_path: Some(path),
+                project_name: agg.project_name.filter(|n| !n.is_empty()),
+                tokens_in: agg.tokens_in,
+                tokens_out: agg.tokens_out,
+                percentage: if grand_total > 0 {
+                    ((agg.tokens_in + agg.tokens_out) as f64 / grand_total as f64) * 100.0
+                } else {
+                    0.0
+                },
+                models,
+            }
+        })
+        .collect();
+
+    // Sort by total tokens descending
+    result.sort_by(|a, b| {
+        (b.tokens_in + b.tokens_out)
+            .cmp(&(a.tokens_in + a.tokens_out))
+            .then_with(|| a.project_path.cmp(&b.project_path))
+    });
+    if unlinked_in > 0 || unlinked_out > 0 {
+        let total_unlinked = unlinked_in + unlinked_out;
+        let mut unlinked_model_list: Vec<ModelUsage> = unlinked_models
+            .into_iter()
+            .map(|(model, (tin, tout))| ModelUsage {
+                model,
+                tokens_in: tin,
+                tokens_out: tout,
+                percentage: if total_unlinked > 0 {
+                    ((tin + tout) as f64 / total_unlinked as f64) * 100.0
+                } else {
+                    0.0
+                },
+            })
+            .collect();
+        unlinked_model_list.sort_by(|a, b| {
+            (b.tokens_in + b.tokens_out).cmp(&(a.tokens_in + a.tokens_out))
+        });
+        result.push(ProjectUsage {
+            project_path: None,
+            project_name: Some("未关联项目".to_string()),
+            tokens_in: unlinked_in,
+            tokens_out: unlinked_out,
+            percentage: if grand_total > 0 {
+                (total_unlinked as f64 / grand_total as f64) * 100.0
+            } else {
+                0.0
+            },
+            models: unlinked_model_list,
+        });
+    }
+
     Ok(result)
 }
 

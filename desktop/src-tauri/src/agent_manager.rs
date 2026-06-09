@@ -318,7 +318,7 @@ fn scan_claude_user_agents() -> Vec<AgentEntry> {
 
 fn scan_claude_project_agents(project_root: &std::path::Path) -> Vec<AgentEntry> {
     let dir = project_root.join(".claude").join("agents");
-    let pn = crate::skill_manager::project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     scan_md_agents_in_dir("claude", &dir, "project", pn, Some(project_root))
 }
 
@@ -406,13 +406,13 @@ fn scan_qoder_user_agents() -> Vec<AgentEntry> {
 fn scan_qoder_project_agents(project_root: &std::path::Path) -> Vec<AgentEntry> {
     // Qoder project-level uses .qoder (not .qoder-cn like user-level)
     let dir = project_root.join(".qoder").join("agents");
-    let pn = crate::skill_manager::project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     scan_md_agents_in_dir("qoder", &dir, "project", pn, Some(project_root))
 }
 
 fn scan_codex_project_agents(project_root: &std::path::Path) -> Vec<AgentEntry> {
     let dir = project_root.join(".codex").join("agents");
-    let pn = crate::skill_manager::project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     scan_codex_toml_agents_in_dir("codex", &dir, "project", pn, Some(project_root))
 }
 

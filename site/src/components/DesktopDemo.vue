@@ -53,6 +53,32 @@ const scenes = [
       { text: '  class RedisClient: ...', cls: 'tool-out', delay: 200 },
     ],
   },
+  {
+    title: 'Quick Switcher (⌘K)',
+    desc: '全局快速启动器，模糊搜索，按频率排序',
+    sidebar: ['deepseek', 'anthropic', 'codex-work', 'openai-dev'],
+    activeProfile: null,
+    mainType: 'switcher',
+    switcherResults: [
+      { name: 'deepseek', subtitle: 'Claude Code · 使用 23 次', icon: '🤖' },
+      { name: 'codex-work', subtitle: 'Codex · 使用 15 次', icon: '📟' },
+      { name: 'anthropic', subtitle: 'Claude Code · 使用 8 次', icon: '🤖' },
+      { name: 'openai-dev', subtitle: 'Codex · 使用 5 次', icon: '📟' },
+    ],
+  },
+  {
+    title: 'Token 用量仪表盘',
+    desc: '按模型 / 项目统计 token，可视化成本趋势',
+    sidebar: ['deepseek', 'anthropic', 'codex-work', 'openai-dev'],
+    activeProfile: null,
+    mainType: 'usage',
+    usageStats: [
+      { model: 'deepseek-v4-pro', tokens: '1.2M', cost: '$4.80', pct: 45 },
+      { model: 'deepseek-v4-flash', tokens: '890K', cost: '$1.78', pct: 33 },
+      { model: 'claude-sonnet-4-6', tokens: '420K', cost: '$6.30', pct: 16 },
+      { model: 'gpt-5', tokens: '160K', cost: '$2.40', pct: 6 },
+    ],
+  },
 ]
 
 const currentScene = ref(0)
@@ -61,7 +87,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 let progressTimer: ReturnType<typeof setInterval> | null = null
 
 // Terminal scene gets more time to show the full interaction
-const sceneDurations = [4000, 4000, 8000]
+const sceneDurations = [4000, 4000, 8000, 5000, 5000]
 
 const scene = computed(() => scenes[currentScene.value])
 
@@ -240,6 +266,75 @@ onUnmounted(() => {
                   <span class="term-cursor">▌</span>
                 </template>
                 <template v-else>{{ line.text }}</template>
+              </div>
+            </div>
+          </template>
+
+          <!-- ── Scene: Quick Switcher ── -->
+          <template v-if="scene.mainType === 'switcher'">
+            <div class="switcher-overlay">
+              <div class="switcher-box">
+                <div class="switcher-input-row">
+                  <span class="switcher-prompt">❯</span>
+                  <span class="switcher-placeholder">搜索 Profile 或项目...</span>
+                  <span class="switcher-hint">⌘K</span>
+                </div>
+                <div class="switcher-list">
+                  <div
+                    v-for="(item, i) in scene.switcherResults"
+                    :key="item.name"
+                    class="switcher-item"
+                    :class="{ selected: i === 0 }"
+                    :style="{ animationDelay: i * 0.1 + 's' }"
+                  >
+                    <span class="switcher-icon">{{ item.icon }}</span>
+                    <div class="switcher-info">
+                      <span class="switcher-name">{{ item.name }}</span>
+                      <span class="switcher-subtitle">{{ item.subtitle }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- ── Scene: Token Usage Dashboard ── -->
+          <template v-if="scene.mainType === 'usage'">
+            <div class="usage-panel">
+              <div class="usage-header">
+                <span class="usage-title">📊 Token 用量</span>
+                <span class="usage-period">最近 7 天</span>
+              </div>
+              <div class="usage-summary">
+                <div class="usage-stat">
+                  <span class="usage-stat-val">2.67M</span>
+                  <span class="usage-stat-label">总 Token</span>
+                </div>
+                <div class="usage-stat">
+                  <span class="usage-stat-val">$15.28</span>
+                  <span class="usage-stat-label">预估费用</span>
+                </div>
+              </div>
+              <div class="usage-bars">
+                <div
+                  v-for="(stat, i) in scene.usageStats"
+                  :key="stat.model"
+                  class="usage-bar-row"
+                  :style="{ animationDelay: i * 0.12 + 's' }"
+                >
+                  <span class="usage-bar-label">{{ stat.model }}</span>
+                  <div class="usage-bar-track">
+                    <div
+                      class="usage-bar-fill"
+                      :style="{ width: stat.pct + '%' }"
+                    ></div>
+                  </div>
+                  <span class="usage-bar-val">{{ stat.tokens }} / {{ stat.cost }}</span>
+                </div>
+              </div>
+              <div class="usage-chart-hint">
+                <span>▁ ▂ ▃ ▅ ▄ ▆ ▇</span>
+                <span class="usage-chart-label">近 7 天用量趋势 ↑</span>
               </div>
             </div>
           </template>
@@ -618,6 +713,217 @@ onUnmounted(() => {
 .term-cursor {
   color: var(--clr-accent);
   animation: cursorBlink 1s step-end infinite;
+}
+
+/* ── Switcher Scene ─────────── */
+.switcher-overlay {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(0,0,0,0.2);
+}
+
+.switcher-box {
+  width: 100%;
+  max-width: 380px;
+  background: #0d1117;
+  border: 1px solid var(--clr-border-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+}
+
+.switcher-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--clr-border);
+}
+
+.switcher-prompt {
+  color: var(--clr-green);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.switcher-placeholder {
+  flex: 1;
+  font-size: 0.72rem;
+  color: var(--clr-text-muted);
+}
+
+.switcher-hint {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--clr-raised);
+  color: var(--clr-text-dim);
+  border: 1px solid var(--clr-border);
+}
+
+.switcher-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.switcher-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  animation: fadeSlideIn 0.4s ease-out both;
+}
+
+.switcher-item.selected {
+  background: var(--clr-accent-dim);
+}
+
+.switcher-icon {
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+.switcher-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.switcher-name {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--clr-text);
+}
+
+.switcher-subtitle {
+  font-size: 0.6rem;
+  color: var(--clr-text-muted);
+}
+
+/* ── Usage Scene ─────────────── */
+.usage-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.usage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.usage-title {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--clr-text);
+}
+
+.usage-period {
+  font-size: 0.65rem;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: var(--clr-raised);
+  color: var(--clr-text-muted);
+}
+
+.usage-summary {
+  display: flex;
+  gap: 12px;
+}
+
+.usage-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #0d1117;
+  border: 1px solid var(--clr-border);
+}
+
+.usage-stat-val {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--clr-accent);
+}
+
+.usage-stat-label {
+  font-size: 0.6rem;
+  color: var(--clr-text-muted);
+}
+
+.usage-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.usage-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: fadeSlideIn 0.4s ease-out both;
+}
+
+.usage-bar-label {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--clr-text-secondary);
+  width: 100px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-bar-track {
+  flex: 1;
+  height: 6px;
+  background: var(--clr-raised);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--clr-accent), var(--clr-accent-secondary));
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.usage-bar-val {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--clr-text-dim);
+  white-space: nowrap;
+}
+
+.usage-chart-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--clr-accent);
+  letter-spacing: 0.2em;
+}
+
+.usage-chart-label {
+  font-family: var(--font-body);
+  font-size: 0.6rem;
+  color: var(--clr-text-muted);
+  letter-spacing: normal;
 }
 
 /* ── Scene Dots ──────────────── */

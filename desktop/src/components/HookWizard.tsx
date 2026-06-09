@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { X, ChevronRight, Terminal, Check, AlertCircle, FolderOpen, Copy } from "lucide-react";
+import { X, ChevronRight, Terminal, Check, AlertCircle, FolderOpen, Copy, FileText } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
@@ -207,6 +207,12 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
   const [copied, setCopied] = useState(false);
   const [hookName, setHookName] = useState("");
   const [hookDescription, setHookDescription] = useState("");
+  const [wrapWithLog, setWrapWithLog] = useState(false);
+
+  // Build the label for run-with-log.sh wrapper
+  const logLabel = hookName.trim() || `${cli}-${eventType}`;
+  const wrapCommand = (cmd: string) =>
+    `~/.claude-profiles/hooks/run-with-log.sh ${logLabel} ${cmd}`;
 
   // Available hook types for the selected CLI, filtered by event type
   const currentHookTypes = useMemo(() => {
@@ -271,7 +277,8 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
   const handleCreate = async () => {
     setError("");
     setSaving(true);
-    const finalCommand = commandMode === "file" ? scriptPath.trim() : command.trim();
+    const rawCmd = commandMode === "file" ? scriptPath.trim() : command.trim();
+    const finalCommand = wrapWithLog ? wrapCommand(rawCmd) : rawCmd;
     try {
       await invoke("create_hook", {
         cli,
@@ -320,7 +327,8 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
     }
   };
 
-  const finalCommand = commandMode === "file" ? scriptPath : command;
+  const rawCommand = commandMode === "file" ? scriptPath : command;
+  const finalCommand = wrapWithLog ? wrapCommand(rawCommand) : rawCommand;
 
   return (
     <div
@@ -562,6 +570,35 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
                 </div>
               )}
 
+              {/* ── Log wrapper toggle (shown for both text and file modes) ── */}
+              <div className="mt-3 p-3 border border-[var(--app-border-light)] rounded bg-[var(--app-bg)]">
+                <button
+                  onClick={() => setWrapWithLog(!wrapWithLog)}
+                  className="flex items-center gap-2 w-full text-left transition-colors"
+                >
+                  <div className={`w-8 h-4 rounded-full relative transition-colors ${wrapWithLog ? "bg-[var(--app-accent)]" : "bg-[var(--app-border)]"}`}>
+                    <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${wrapWithLog ? "left-4" : "left-0.5"}`} />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <FileText size={12} className={wrapWithLog ? "text-[var(--app-accent)]" : "text-[var(--app-text-muted)]"} />
+                      <span className={`text-xs font-mono ${wrapWithLog ? "text-[var(--app-accent)]" : "text-[var(--app-text-dim)]"}`}>
+                        启用执行日志（用于测试）
+                      </span>
+                    </div>
+                    <p className="text-2xs text-[var(--app-text-muted)] font-mono mt-0.5">
+                      自动用 run-with-log.sh 包装命令，每次 Hook 触发时记录输出和耗时到本地日志
+                    </p>
+                  </div>
+                </button>
+                {wrapWithLog && rawCommand && (
+                  <div className="mt-2 p-2 bg-[var(--app-input)] border border-[var(--app-border-light)] rounded">
+                    <span className="text-2xs text-[var(--app-text-muted)] font-mono">包装后的命令：</span>
+                    <pre className="text-2xs text-[var(--app-accent)] font-mono mt-0.5 whitespace-pre-wrap">{finalCommand}</pre>
+                  </div>
+                )}
+              </div>
+
               {/* Preview */}
               {finalCommand && (() => {
                 const previewText = cli === "codex"
@@ -632,6 +669,12 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
                     <span className="text-[var(--app-text-muted)] w-20">Command:</span>
                     <span className="text-[var(--app-text)] break-all">{finalCommand}</span>
                   </div>
+                  {wrapWithLog && (
+                    <div className="flex items-center gap-1.5 mt-2 px-2 py-1 bg-[var(--app-accent)]/10 border border-[var(--app-accent)]/20 rounded">
+                      <FileText size={10} className="text-[var(--app-accent)]" />
+                      <span className="text-2xs font-mono text-[var(--app-accent)]">已启用执行日志记录</span>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="mt-3 p-3 border border-[var(--app-amber)] bg-[var(--app-amber-bg)] rounded">

@@ -5,6 +5,9 @@
 #   ~/.claude-profiles/
 #   ├── bin/profile        ← CLI
 #   ├── lib/config.py      ← shared module
+#   ├── completions/       ← shell completions
+#   │   ├── _ai             ← Zsh completion
+#   │   └── ai.bash         ← Bash completion
 #   ├── shell-rc           ← shell wrapper
 #   ├── config.yaml        ← user data
 #   └── .config.lock       ← file lock
@@ -15,6 +18,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$HOME/.claude-profiles"
 MARKER_START="# >>> AI Profile Manager >>>"
 MARKER_END="# <<< AI Profile Manager <<<"
+COMPLETIONS_MARKER_START="# >>> AI Profile Completions >>>"
+COMPLETIONS_MARKER_END="# <<< AI Profile Completions <<<"
 
 echo "==> Installing AI Profile Manager → $INSTALL_DIR"
 
@@ -40,6 +45,12 @@ echo "  ✓ lib/config.py"
 # Install shell wrapper
 cp "$SCRIPT_DIR/shell/ai-profile.sh" "$INSTALL_DIR/shell-rc"
 echo "  ✓ shell-rc"
+
+# Install shell completions
+mkdir -p "$INSTALL_DIR/completions"
+cp "$SCRIPT_DIR/shell/completions/_ai" "$INSTALL_DIR/completions/_ai"
+cp "$SCRIPT_DIR/shell/completions/ai.bash" "$INSTALL_DIR/completions/ai.bash"
+echo "  ✓ completions (_ai + ai.bash)"
 
 # Install config template (only if not exists)
 if [ ! -f "$INSTALL_DIR/config.yaml" ]; then
@@ -111,6 +122,47 @@ configure_rc() {
 # Configure both zsh and bash (idempotent, harmless either way)
 configure_rc "$HOME/.zshrc" ".zshrc"
 configure_rc "$HOME/.bashrc" ".bashrc"
+
+# ── Configure shell completions ────────────────────────────────
+
+configure_completions() {
+    local rc_path="$1"
+    local rc_name="$2"
+    local completions_dir="$INSTALL_DIR/completions"
+
+    # Remove old marker block if exists
+    if grep -Fq "$COMPLETIONS_MARKER_START" "$rc_path" 2>/dev/null; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "/$COMPLETIONS_MARKER_START/,/$COMPLETIONS_MARKER_END/d" "$rc_path"
+        else
+            sed -i "/$COMPLETIONS_MARKER_START/,/$COMPLETIONS_MARKER_END/d" "$rc_path"
+        fi
+    fi
+
+    if [ "$rc_name" = ".zshrc" ]; then
+        # Zsh: add completions dir to fpath and autoload compinit
+        {
+            echo ""
+            echo "$COMPLETIONS_MARKER_START"
+            echo "fpath=(\"$completions_dir\" \$fpath)"
+            echo "autoload -Uz compinit && compinit"
+            echo "$COMPLETIONS_MARKER_END"
+        } >> "$rc_path"
+        echo "  ✓ Zsh completions added to ~/$rc_name"
+    elif [ "$rc_name" = ".bashrc" ]; then
+        # Bash: source the completion script
+        {
+            echo ""
+            echo "$COMPLETIONS_MARKER_START"
+            echo "source \"$completions_dir/ai.bash\""
+            echo "$COMPLETIONS_MARKER_END"
+        } >> "$rc_path"
+        echo "  ✓ Bash completions added to ~/$rc_name"
+    fi
+}
+
+configure_completions "$HOME/.zshrc" ".zshrc"
+configure_completions "$HOME/.bashrc" ".bashrc"
 
 if [ -z "$CONFIGURED_FILES" ]; then
     echo "  - Shell already configured"

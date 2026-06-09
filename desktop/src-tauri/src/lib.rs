@@ -1,5 +1,6 @@
 mod agent_manager;
 mod commands;
+mod hook_logs;
 mod hook_manager;
 mod hook_meta;
 mod hook_store;
@@ -11,7 +12,7 @@ mod usage;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Global write lock — serializes all config file writes to prevent
@@ -91,6 +92,14 @@ pub(crate) fn hash_path(path: &str) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut hasher);
     format!("{:08x}", hasher.finish())
+}
+
+/// Derive a project name from a project root directory path.
+/// Uses the last component of the path (the directory name).
+pub(crate) fn project_name_from_root(root: &Path) -> Option<String> {
+    root.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
 }
 
 /// Shared config directory.
@@ -243,6 +252,7 @@ pub fn run() {
             pty::kill_pty,
             usage::get_usage,
             usage::get_daily_usage,
+            usage::get_usage_by_project,
             usage::get_pricing,
             usage::set_pricing,
             usage::replace_pricing,
@@ -285,12 +295,14 @@ pub fn run() {
             hook_manager::copy_hook_entry,
             hook_manager::undo_move_hook,
             hook_manager::restore_hook_snapshot,
+            hook_manager::set_hook_command,
             hook_meta::get_hook_meta,
             hook_meta::set_hook_meta,
             hook_meta::delete_hook_meta,
             hook_store::list_store_hooks,
             hook_store::install_store_hook,
             hook_store::uninstall_store_hook,
+            hook_logs::get_hook_execution_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

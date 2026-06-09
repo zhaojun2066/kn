@@ -36,6 +36,42 @@ const features = [
     desc: '自动记录终端运行历史，随时一键恢复到之前的会话状态。配色主题独立切换，6 套终端主题可选。',
     icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
   },
+  {
+    num: '07',
+    title: 'Quick Switcher (⌘K)',
+    desc: '全局快速启动器，模糊搜索 Profile 和项目，按使用频率排序，一键直达目标会话。',
+    icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M8 11h6"/></svg>`,
+  },
+  {
+    num: '08',
+    title: 'Token 用量追踪',
+    desc: '自动记录每次调用的 token 消耗，按模型和项目维度统计，可配置成本估算，用量趋势一目了然。',
+    icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,
+  },
+  {
+    num: '09',
+    title: 'Hook 可视化管理',
+    desc: '图形界面创建 / 编辑 Hook，支持 Stop、PreTool、PostTool 等事件类型，执行日志可追溯。',
+    icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`,
+  },
+  {
+    num: '10',
+    title: 'Skills 管理',
+    desc: '浏览、创建、编辑 Claude Code Skills。支持用户级、项目级和系统内置三种来源，一目了然。',
+    icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 12 15 2 8.5 12 2"/><line x1="12" y1="15" x2="12" y2="22"/></svg>`,
+  },
+  {
+    num: '11',
+    title: 'Plugins & Commands',
+    desc: 'Marketplace 插件安装与更新，自定义 Commands 管理。按 CLI 类型分组，一键启用 / 禁用。',
+    icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="currentColor"/><circle cx="6" cy="18" r="1" fill="currentColor"/></svg>`,
+  },
+  {
+    num: '12',
+    title: 'Agent 管理',
+    desc: '浏览 Claude Code / Codex / Qoder 的 Agent 配置。内置 Agent 只读保护，用户和项目 Agent 可编辑。',
+    icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="10" r="3"/><path d="M12 2a8 8 0 0 0-8 8c0 5.4 8 12 8 12s8-6.6 8-12a8 8 0 0 0-8-8z"/></svg>`,
+  },
 ]
 </script>
 

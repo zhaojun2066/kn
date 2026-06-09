@@ -2,8 +2,10 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import {
   getUsage,
   getDailyUsage,
+  getUsageByProject,
   type UsageSummary,
   type DailyUsage,
+  type ProjectUsage,
 } from "../lib/tauri-api";
 
 interface UseUsageOptions {
@@ -15,20 +17,23 @@ export function useUsage({ summaryDays = 30, dailyDays = 1 }: UseUsageOptions = 
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [daily, setDaily] = useState<DailyUsage[]>([]);
   const [todayDaily, setTodayDaily] = useState<DailyUsage[]>([]);
+  const [projectUsage, setProjectUsage] = useState<ProjectUsage[]>([]);
   const [loading, setLoading] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, d, t] = await Promise.all([
+      const [s, d, t, p] = await Promise.all([
         getUsage(summaryDays),
         getDailyUsage(dailyDays),
         getDailyUsage(1),
+        getUsageByProject(summaryDays),
       ]);
       setSummary(s);
       setDaily(d);
       setTodayDaily(t);
+      setProjectUsage(p);
     } catch {
       // silently fail — usage.jsonl might not exist yet
     } finally {
@@ -48,5 +53,5 @@ export function useUsage({ summaryDays = 30, dailyDays = 1 }: UseUsageOptions = 
     ? todayDaily[todayDaily.length - 1].tokens_in + todayDaily[todayDaily.length - 1].tokens_out
     : 0;
 
-  return { summary, daily, todayTokens, loading, refresh };
+  return { summary, daily, todayTokens, projectUsage, loading, refresh };
 }

@@ -917,29 +917,20 @@ fn toggle_qoder_standalone_skill(skill_name: &str, enabled: bool) -> Result<(), 
 // ═══════════════════════════════════════════════════════════════
 //  PROJECT-LEVEL SCAN
 
-/// Derive a project name from a project root directory path.
-/// Uses the last component of the path (the directory name).
-pub(crate) fn project_name_from_root(root: &Path) -> Option<String> {
-    root.file_name()
-        .and_then(|n| n.to_str())
-        .map(|s| s.to_string())
-}
-// ═══════════════════════════════════════════════════════════════
-
 /// Scan Claude project-level standalone skills from `<project>/.claude/skills/`.
 fn scan_claude_project_skills(
     project_root: &Path,
     plugin_skill_names: &std::collections::HashSet<String>,
 ) -> Vec<StandaloneSkill> {
     let skills_dir = project_root.join(".claude").join("skills");
-    let pn = project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     scan_standalone_skills_in_dir("claude", &skills_dir, plugin_skill_names, pn, Some(project_root))
 }
 
 /// Scan Codex project-level standalone skills from `<project>/.codex/skills/`.
 fn scan_codex_project_skills(project_root: &Path) -> Vec<StandaloneSkill> {
     let skills_dir = project_root.join(".codex").join("skills");
-    let pn = project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     scan_codex_style_skills_in_dir("codex", &skills_dir, pn, Some(project_root))
 }
 
@@ -947,14 +938,14 @@ fn scan_codex_project_skills(project_root: &Path) -> Vec<StandaloneSkill> {
 fn scan_qoder_project_skills(project_root: &Path) -> Vec<StandaloneSkill> {
     // Qoder: user-level = ~/.qoder-cn/  ,  project-level = <project>/.qoder/
     let skills_dir = project_root.join(".qoder").join("skills");
-    let pn = project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     scan_codex_style_skills_in_dir("qoder", &skills_dir, pn, Some(project_root))
 }
 
 /// Scan Claude project-level commands from `<project>/.claude/commands/`.
 fn scan_claude_project_commands(project_root: &Path) -> Vec<CommandEntry> {
     let commands_dir = project_root.join(".claude").join("commands");
-    let pn = project_name_from_root(project_root);
+    let pn = crate::project_name_from_root(project_root);
     enumerate_commands_in_dir("claude", &commands_dir, pn, Some(project_root))
 }
 

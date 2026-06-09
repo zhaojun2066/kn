@@ -38,6 +38,7 @@ export function EnvVarRow({ envKey, value, onSave, onDelete, showAll, readonly }
   const [deleting, setDeleting] = useState(false);
 
   const secret = isSecretKey(envKey);
+
   const displayValue = (secret && !visible && !showAll) ? maskValue(value) : value;
 
   const handleSave = async () => {
@@ -160,6 +161,7 @@ export function EnvVarRow({ envKey, value, onSave, onDelete, showAll, readonly }
           </>
         )}
       </span>
+
     </div>
   );
 }
