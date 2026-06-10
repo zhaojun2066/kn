@@ -98,7 +98,7 @@ _find_project_profile() {
     local dir="$PWD"
     while [ "$dir" != "/" ]; do
         if [ -f "$dir/.ai-profile" ]; then
-            local proj_name=$(head -n1 "$dir/.ai-profile" | tr -d '[:space:]')
+            local proj_name=$(head -n1 "$dir/.ai-profile" | sed 's/^default_profile:[[:space:]]*//' | tr -d '[:space:]')
             if [ -n "$proj_name" ] && [ -n "$(_profile_env "$proj_name" 2>/dev/null)" ]; then
                 export KN_PROJECT_DIR="$dir"
                 export KN_PROFILE_SOURCE="project"
