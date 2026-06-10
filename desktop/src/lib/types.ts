@@ -38,6 +38,7 @@ export interface MutationResult {
 export interface ProjectInfo {
   name: string;
   path: string;
+  defaultProfile?: string;
 }
 
 export type ScopeTab = "user" | "project" | "all";
@@ -102,4 +103,17 @@ export function recommendedInstallOption(item: EnvCheckItem): InstallOption | nu
 
 export function recommendedInstallCommand(item: EnvCheckItem): string | null {
   return recommendedInstallOption(item)?.command ?? item.install_cmd ?? null;
+}
+
+// ── Session (CLI native) ──
+
+export interface SessionInfo {
+  sessionId: string;
+  title: string;
+  cli: "claude" | "codex" | "qoder";
+  profile: string | null;
+  projectPath: string;
+  workDir: string;
+  timestamp: number;
+  status: "active" | "ended";
 }

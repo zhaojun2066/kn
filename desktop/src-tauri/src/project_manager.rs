@@ -16,6 +16,22 @@ use std::path::{Path, PathBuf};
 pub struct ProjectInfo {
     pub name: String,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[expect(dead_code)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub title: String,
+    pub cli: String,
+    pub profile: Option<String>,
+    pub project_path: String,
+    pub work_dir: String,
+    pub timestamp: u64,
+    pub status: String,
 }
 
 pub type ProjectList = Vec<ProjectInfo>;
@@ -118,7 +134,7 @@ pub fn add_project(name: String, path: String) -> Result<(), String> {
         return Err(format!("项目 '{}' 已存在", name));
     }
 
-    projects.push(ProjectInfo { name, path });
+    projects.push(ProjectInfo { name, path, default_profile: None });
     save_projects(&projects)
 }
 
@@ -131,4 +147,83 @@ pub fn remove_project(name: String) -> Result<(), String> {
         return Err(format!("项目 '{}' 不存在", name));
     }
     save_projects(&projects)
+}
+
+// ── Update project ─────────────────────────────────────────────
+
+#[tauri::command]
+pub fn update_project(name: String, new_name: Option<String>, new_path: Option<String>, default_profile: Option<String>) -> Result<(), String> {
+    let mut projects = load_projects();
+    let idx = projects.iter().position(|p| p.name == name)
+        .ok_or_else(|| format!("项目 '{}' 不存在", name))?;
+
+    if let Some(ref nn) = new_name {
+        if nn != &name && projects.iter().any(|p| p.name == *nn) {
+            return Err(format!("项目 '{}' 已存在", nn));
+        }
+        validate_project_name(nn)?;
+        projects[idx].name = nn.clone();
+    }
+    if let Some(ref np) = new_path {
+        validate_project_path(np)?;
+        projects[idx].path = np.clone();
+    }
+    if let Some(dp) = default_profile.as_ref() {
+        if dp.is_empty() {
+            projects[idx].default_profile = None;
+        } else {
+            projects[idx].default_profile = Some(dp.clone());
+        }
+    }
+    save_projects(&projects)?;
+
+    if default_profile.is_some() {
+        let _ = write_ai_profile_file(&projects[idx].path, projects[idx].default_profile.as_deref());
+    }
+    Ok(())
+}
+
+// ── .ai-profile file helpers ──────────────────────────────────
+
+fn ai_profile_path(project_path: &str) -> PathBuf {
+    Path::new(project_path).join(".ai-profile")
+}
+
+fn write_ai_profile_file(project_path: &str, default_profile: Option<&str>) -> Result<(), String> {
+    let path = ai_profile_path(project_path);
+    match default_profile {
+        Some(p) if !p.is_empty() => {
+            let content = format!("default_profile: {}\n", p);
+            fs::write(&path, &content).map_err(|e| format!("写入 .ai-profile 失败: {}", e))?;
+        }
+        _ => {
+            if path.exists() {
+                fs::remove_file(&path).map_err(|e| format!("删除 .ai-profile 失败: {}", e))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn write_ai_profile(project_path: String, default_profile: String) -> Result<(), String> {
+    write_ai_profile_file(&project_path, Some(&default_profile))
+}
+
+#[tauri::command]
+pub fn read_ai_profile(project_path: String) -> Result<Option<String>, String> {
+    let path = ai_profile_path(&project_path);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取 .ai-profile 失败: {}", e))?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(val) = trimmed.strip_prefix("default_profile:") {
+            let profile = val.trim().trim_matches('"').trim_matches('\'');
+            if profile.is_empty() { return Ok(None); }
+            return Ok(Some(profile.to_string()));
+        }
+    }
+    Ok(None)
 }
