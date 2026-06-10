@@ -37,7 +37,10 @@ import { useToasts } from "./hooks/useToasts";
 import { useUsage } from "./hooks/useUsage";
 import { useTheme } from "./hooks/useTheme";
 import { useProjects } from "./hooks/useProjects";
-import type { ScopeTab } from "./lib/types";
+import { useSessionScanner } from "./hooks/useSessionScanner";
+import { ProjectSidebar } from "./components/ProjectSidebar";
+import { ProjectDetail } from "./components/ProjectDetail";
+import type { ScopeTab, SessionInfo } from "./lib/types";
 import { basename } from "./lib/path-utils";
 import { buildDestDir, getResourceData, getResourceType, getSubdir, type ResourceData } from "./lib/resource-transfer";
 import { Command } from "@tauri-apps/plugin-shell";
@@ -100,7 +103,8 @@ export function App() {
   const [hookDataLoading, setHookDataLoading] = useState(false);
   const [selectedHook, setSelectedHook] = useState<HookEntry | null>(null);
   const [activeScope, setActiveScope] = useState<ScopeTab>("user");
-  const { projects, activeProject, setActiveProject, addProject, loadProjects } = useProjects();
+  const { projects, activeProject, setActiveProject, addProject, loadProjects, removeProject, updateProject } = useProjects();
+  const sessionScanner = useSessionScanner();
 
   // Compute scan paths: null = user only, or a list of project paths to scan
   const scanProjectPaths = useMemo<(string | null)[]>(() => {
@@ -710,6 +714,54 @@ export function App() {
       addToast("error", `注册项目失败: ${String(e).slice(0, 120)}`);
     }
   }, [addProject, addToast]);
+
+  const handleRunProjectProfile = useCallback((profileName: string, cliType: string) => {
+    if (!activeProject) return;
+    const cmd = `ai ${cliType} ${profileName}`;
+    rightTerminal.runInNewTab(cmd, activeProject.path, `${activeProject.name} · ${profileName}`);
+  }, [activeProject, rightTerminal]);
+
+  const handleResumeSession = useCallback((session: SessionInfo) => {
+    const cmdMap: Record<string, string> = {
+      claude: `ai claude ${session.profile || ""} --resume ${session.sessionId}`,
+      codex: `ai codex ${session.profile || ""} resume ${session.sessionId}`,
+      qoder: `ai qoder ${session.profile || ""} -r ${session.sessionId}`,
+    };
+    const cmd = cmdMap[session.cli] || `ai claude --resume ${session.sessionId}`;
+    const label = session.title.slice(0, 30);
+    rightTerminal.runInNewTab(cmd.trim(), session.projectPath, label);
+  }, [rightTerminal]);
+
+  const handleRenameProjectFromSidebar = useCallback((name: string) => {
+    setNameDialogTitle("修改项目名称");
+    setNameDialogInitial(name);
+    setNameDialogOnConfirm(() => async (newName: string) => {
+      if (newName === name) return;
+      await updateProject(name, newName);
+      addToast("success", `项目已重命名为 "${newName}"`);
+    });
+    setShowNameDialog(true);
+  }, [updateProject, addToast]);
+
+  const handleChangeProjectPath = useCallback(async (name: string) => {
+    try {
+      const path = await tauriOpen({ directory: true, multiple: false, title: "选择新项目路径" });
+      if (!path || typeof path !== "string") return;
+      await updateProject(name, undefined, path);
+      addToast("success", `项目路径已更新`);
+    } catch (e) {
+      addToast("error", `修改路径失败: ${String(e).slice(0, 120)}`);
+    }
+  }, [updateProject, addToast]);
+
+  const handleDeleteProjectFromSidebar = useCallback(async (name: string) => {
+    try {
+      await removeProject(name);
+      addToast("success", `项目 "${name}" 已删除`);
+    } catch (e) {
+      addToast("error", `删除失败: ${String(e).slice(0, 120)}`);
+    }
+  }, [removeProject, addToast]);
 
   // ── Move / Copy resource ──
 
@@ -1850,6 +1902,19 @@ export function App() {
             </div>
           )}
 
+          {/* Projects sidebar */}
+          {sidebarVisible && !rightMaximized && !bottomMaximized && activeActivity === "projects" && (
+            <ProjectSidebar
+              projects={projects}
+              selectedProject={activeProject}
+              onSelect={(p) => setActiveProject(p)}
+              onAddProject={handleAddProject}
+              onDeleteProject={handleDeleteProjectFromSidebar}
+              onRenameProject={handleRenameProjectFromSidebar}
+              onChangePath={handleChangeProjectPath}
+            />
+          )}
+
           {/* Middle column: MainPanel + Bottom terminal — hidden when right panel is maximized */}
           <div className="flex-1 flex flex-col overflow-hidden min-h-0"
             style={rightMaximized ? { flex: "0 0 0px", overflow: "hidden", minWidth: 0 } : undefined}>
@@ -1896,7 +1961,25 @@ export function App() {
                 />
               </div>
             )}
-            {!rightMaximized && !bottomMaximized && activeActivity !== "skills" && activeActivity !== "hooks" && (
+            {!rightMaximized && !bottomMaximized && activeActivity === "projects" && activeProject && (
+              <ProjectDetail
+                project={activeProject}
+                profiles={ctx.profiles}
+                sessions={sessionScanner.sessions}
+                sessionsLoading={sessionScanner.loading}
+                onResumeSession={handleResumeSession}
+                onRunProfile={handleRunProjectProfile}
+                onScanSessions={(path) => sessionScanner.scanSessions(path)}
+              />
+            )}
+            {!rightMaximized && !bottomMaximized && activeActivity === "projects" && !activeProject && (
+              <div className="flex-1 flex items-center justify-center bg-[var(--app-bg)]">
+                <div className="text-xs text-[var(--app-text-muted)] font-mono">
+                  选择一个项目
+                </div>
+              </div>
+            )}
+            {!rightMaximized && !bottomMaximized && activeActivity !== "skills" && activeActivity !== "hooks" && activeActivity !== "projects" && (
               <MainPanel
                 profile={ctx.selectedProfile}
                 envCheck={envCheck}
