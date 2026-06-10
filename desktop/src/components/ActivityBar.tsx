@@ -1,7 +1,7 @@
 import React from "react";
-import { Layers, Blocks, Webhook, type LucideIcon } from "lucide-react";
+import { Layers, Blocks, Webhook, Folder, type LucideIcon } from "lucide-react";
 
-export type ActivityKey = "profile" | "skills" | "hooks";
+export type ActivityKey = "profile" | "skills" | "hooks" | "projects";
 
 interface ActivityItem {
   key: ActivityKey;
@@ -13,6 +13,7 @@ const ACTIVITIES: ActivityItem[] = [
   { key: "profile", icon: Layers, label: "Profiles" },
   { key: "skills", icon: Blocks, label: "Skills & Plugins" },
   { key: "hooks", icon: Webhook, label: "Hooks" },
+  { key: "projects", icon: Folder, label: "Projects" },
 ];
 
 interface ActivityBarProps {

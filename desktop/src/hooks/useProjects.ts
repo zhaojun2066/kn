@@ -12,6 +12,8 @@ export interface UseProjectsReturn {
   loadProjects: () => Promise<void>;
   addProject: (name: string, path: string) => Promise<void>;
   removeProject: (name: string) => Promise<void>;
+  updateProject: (name: string, newName?: string, newPath?: string, defaultProfile?: string) => Promise<void>;
+  setDefaultProfile: (projectName: string, profile: string | null) => Promise<void>;
 }
 
 export function useProjects(): UseProjectsReturn {
@@ -69,6 +71,26 @@ export function useProjects(): UseProjectsReturn {
     await loadProjects();
   }, [loadProjects]);
 
+  const updateProject = useCallback(async (name: string, newName?: string, newPath?: string, defaultProfile?: string) => {
+    await invoke("update_project", {
+      name,
+      newName: newName ?? null,
+      newPath: newPath ?? null,
+      defaultProfile: defaultProfile ?? null,
+    });
+    await loadProjects();
+  }, [loadProjects]);
+
+  const setDefaultProfile = useCallback(async (projectName: string, profile: string | null) => {
+    await invoke("update_project", {
+      name: projectName,
+      newName: null,
+      newPath: null,
+      defaultProfile: profile ?? "",
+    });
+    await loadProjects();
+  }, [loadProjects]);
+
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
@@ -81,5 +103,7 @@ export function useProjects(): UseProjectsReturn {
     loadProjects,
     addProject,
     removeProject,
+    updateProject,
+    setDefaultProfile,
   };
 }
