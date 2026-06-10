@@ -6,7 +6,7 @@
 //! - **Standalone Skill**: individually toggleable skill not owned by any plugin.
 //! - **System Skill**: built-in, read-only (Codex `.system/` directory).
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,243 +15,17 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::Emitter;
 
-use crate::agent_manager::AgentEntry;
-use crate::commands::find_binary;
+mod content;
+mod transfer;
+mod types;
 
-/// Resolve a CLI binary (claude, codex) to its full path.
-/// Required because Tauri .app bundles have a minimal PATH that
-/// doesn't include Homebrew or npm global install directories.
-fn cli_binary(name: &str) -> String {
-    find_binary(&[name]).unwrap_or_else(|| name.to_string())
-}
+pub use types::*;
 
-// ── Types (mirrors frontend `SkillManager.tsx` types) ────────────
+mod file_utils;
+mod paths;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillEntry {
-    pub name: String,
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PluginEntry {
-    pub id: String,
-    pub cli: String,
-    pub name: String,
-    pub marketplace: String,
-    pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    pub source: String,
-    pub skills: Vec<SkillEntry>,
-    pub agents: Vec<AgentEntry>,
-    pub commands: Vec<CommandEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StandaloneSkill {
-    pub id: String,
-    pub cli: String,
-    pub name: String,
-    pub enabled: bool,
-    #[serde(rename = "linkType")]
-    pub link_type: String,
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandEntry {
-    pub id: String,
-    pub cli: String,
-    pub name: String,
-    pub path: String,
-    pub description: String,
-    pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillManagerData {
-    pub plugins: Vec<PluginEntry>,
-    #[serde(rename = "standaloneSkills")]
-    pub standalone_skills: Vec<StandaloneSkill>,
-    #[serde(rename = "systemSkills")]
-    pub system_skills: Vec<StandaloneSkill>,
-    pub commands: Vec<CommandEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PluginUpdateInfo {
-    pub plugin_id: String,
-    pub current_version: String,
-    pub current_sha: String,
-    pub latest_sha: String,
-    pub has_update: bool,
-}
-
-/// Shared cancel flag for aborting long-running update checks.
-pub struct CancelState {
-    pub cancelled: Arc<AtomicBool>,
-}
-
-// ── Marketplace types ──────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketplacePluginEntry {
-    pub name: String,
-    pub marketplace: String,
-    pub cli: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub installed: bool,
-    /// Number of skills this plugin contains (0 if unknown)
-    pub skill_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketplaceData {
-    pub plugins: Vec<MarketplacePluginEntry>,
-    pub marketplaces: Vec<String>,
-}
-
-// ── Paths ──────────────────────────────────────────────────────
-
-/// Thin wrapper around [`crate::home_dir`] that returns `None` instead of `"."` fallback.
-/// Preserves Option semantics used by the skill scanning call chains.
-fn home_dir() -> Option<PathBuf> {
-    let h = crate::home_dir();
-    if h.as_os_str() == "." { None } else { Some(h) }
-}
-
-fn claude_skills_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".claude").join("skills"))
-}
-
-fn claude_commands_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".claude").join("commands"))
-}
-
-fn claude_plugins_json() -> Option<PathBuf> {
-    home_dir().map(|h| {
-        h.join(".claude")
-            .join("plugins")
-            .join("installed_plugins.json")
-    })
-}
-
-fn claude_settings_json() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".claude").join("settings.json"))
-}
-
-fn codex_skills_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".codex").join("skills"))
-}
-
-fn codex_config_toml() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".codex").join("config.toml"))
-}
-
-fn codex_plugins_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".codex").join("plugins"))
-}
-
-fn qoder_skills_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".qoder-cn").join("skills"))
-}
-
-fn claude_known_marketplaces_json() -> Option<PathBuf> {
-    home_dir().map(|h| {
-        h.join(".claude")
-            .join("plugins")
-            .join("known_marketplaces.json")
-    })
-}
-
-// ── Symlink Resolution ─────────────────────────────────────────
-
-/// Resolve a symlink to its target path. Returns the original path if not a symlink.
-fn resolve_symlink(path: &Path) -> PathBuf {
-    match fs::read_link(path) {
-        Ok(target) => {
-            if target.is_absolute() {
-                target
-            } else {
-                // Relative symlink: resolve relative to the symlink's parent directory
-                path.parent().unwrap_or(Path::new(".")).join(target)
-            }
-        }
-        Err(_) => path.to_path_buf(),
-    }
-}
-
-/// Extract `description` from YAML frontmatter of a markdown file.
-/// Looks for `description:` or `description: >` between `---` delimiters.
-/// Handles both Unix (`\n`) and Windows (`\r\n`) line endings.
-fn extract_description(md_path: &Path) -> Option<String> {
-    let raw = fs::read_to_string(md_path).ok()?;
-    // Normalize Windows CRLF → LF for consistent parsing
-    let text = raw.replace("\r\n", "\n");
-    let content = text.trim_start();
-    // Frontmatter must start with ---
-    if !content.starts_with("---") {
-        return None;
-    }
-    // Find the closing ---
-    let after_first = &content[3..];
-    let end = after_first.find("\n---")?;
-    let frontmatter = &after_first[..end];
-
-    // Look for description line
-    for line in frontmatter.lines() {
-        let trimmed = line.trim();
-        if let Some(val) = trimmed.strip_prefix("description:") {
-            let desc = val.trim().trim_matches('"').trim_matches('\'');
-            if !desc.is_empty() {
-                return Some(desc.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Read description from a Claude skill (.md file) or Codex skill (dir/SKILL.md).
-#[allow(dead_code)]
-fn read_skill_description(skill_path: &Path) -> Option<String> {
-    if skill_path.is_dir() {
-        extract_description(&skill_path.join("SKILL.md"))
-    } else if skill_path.extension().map_or(false, |e| e == "md") {
-        extract_description(skill_path)
-    } else {
-        None
-    }
-}
-
-// ── Entry type detection ───────────────────────────────────────
-
-fn classify_entry(path: &Path) -> &'static str {
-    if path.is_symlink() {
-        "symlink"
-    } else if path.is_dir() {
-        "directory"
-    } else {
-        "file"
-    }
-}
+use file_utils::*;
+use paths::*;
 
 // ═══════════════════════════════════════════════════════════════
 //  CLAUDE SCAN
@@ -679,7 +453,7 @@ fn read_codex_plugin_manifest(
         .get("version")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let marketplace = source.split('@').last().unwrap_or(source);
+    let marketplace = source.split('@').next_back().unwrap_or(source);
 
     let full_id = format!("{}@{}", name, marketplace);
     let enabled = states.get(&full_id).copied().unwrap_or(false);
@@ -762,7 +536,7 @@ fn scan_codex_standalone_skills() -> Vec<StandaloneSkill> {
             if !has_skill_md && !has_skill_md_disabled {
                 // It might be a symlink to a single .md file (Claude-style skill used with Codex)
                 let resolved = resolve_symlink(&path);
-                if resolved.is_file() && resolved.extension().map_or(false, |e| e == "md") {
+                if resolved.is_file() && resolved.extension().is_some_and(|e| e == "md") {
                     skills.push(StandaloneSkill {
                         id: format!("codex:skill:{}", file_name),
                         cli: "codex".into(),
@@ -1455,7 +1229,7 @@ pub fn check_claude_updates(cancel: Arc<AtomicBool>) -> Vec<PluginUpdateInfo> {
 
         let has_update = latest_version
             .as_ref()
-            .map_or(false, |latest| is_version_greater(latest, current_version));
+            .is_some_and(|latest| is_version_greater(latest, current_version));
 
         results.push(PluginUpdateInfo {
             plugin_id: format!("claude:plugin:{}", full_name),
@@ -1697,7 +1471,7 @@ fn scan_codex_marketplace() -> Vec<MarketplacePluginEntry> {
                                                 && !e
                                                     .file_name()
                                                     .to_str()
-                                                    .map_or(true, |n| n.starts_with('.'))
+                                                    .is_none_or(|n| n.starts_with('.'))
                                                 && e.path().join("SKILL.md").exists()
                                         })
                                         .count()
@@ -2232,7 +2006,7 @@ fn install_codex_style_standalone_skill(
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string()
-    } else if source.extension().map_or(false, |e| e == "md") {
+    } else if source.extension().is_some_and(|e| e == "md") {
         // Single .md file: extract name, create directory structure
         source
             .file_stem()
@@ -2625,153 +2399,11 @@ pub fn update_plugin(
     }
 }
 
-// ── Skill content reader ──
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillContent {
-    pub description: String,
-    pub body: String,
-}
-
-/// Read a skill file and extract its description + body content.
 #[tauri::command]
 pub fn read_skill_content(path: String) -> Result<SkillContent, String> {
-    if path.is_empty() {
-        return Ok(SkillContent {
-            description: String::new(),
-            body: String::new(),
-        });
-    }
-
-    let file_path = std::path::Path::new(&path);
-    let actual_path = if file_path.is_dir() {
-        let md = file_path.join("SKILL.md");
-        if md.exists() {
-            md
-        } else {
-            // Check for disabled skill (SKILL.md.disabled) before falling back to skill.md
-            let md_disabled = file_path.join("SKILL.md.disabled");
-            if md_disabled.exists() {
-                md_disabled
-            } else {
-                file_path.join("skill.md")
-            }
-        }
-    } else {
-        file_path.to_path_buf()
-    };
-
-    let content = std::fs::read_to_string(&actual_path).map_err(|e| format!("读取失败: {}", e))?;
-
-    let mut lines = content.lines();
-    let mut description = String::new();
-    let mut body = String::new();
-    let mut in_frontmatter = false;
-    let mut frontmatter_done = false;
-    let mut frontmatter_count = 0;
-
-    for line in &mut lines {
-        if !frontmatter_done {
-            if line.trim() == "---" {
-                frontmatter_count += 1;
-                if frontmatter_count == 1 {
-                    in_frontmatter = true;
-                    continue;
-                } else if frontmatter_count == 2 {
-                    frontmatter_done = true;
-                    continue;
-                }
-            }
-            if in_frontmatter {
-                if let Some(val) = line.strip_prefix("description:") {
-                    description = val.trim().to_string();
-                }
-                continue;
-            }
-            if frontmatter_count == 0 {
-                frontmatter_done = true;
-                body.push_str(line);
-                body.push('\n');
-            }
-        } else {
-            body.push_str(line);
-            body.push('\n');
-        }
-    }
-
-    Ok(SkillContent {
-        description,
-        body: body.trim().to_string(),
-    })
+    content::read_skill_content(path)
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  MOVE / COPY OPERATIONS
-// ═══════════════════════════════════════════════════════════════
-
-/// Info returned after a move so the frontend can undo it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MoveUndoInfo {
-    pub resource_name: String,
-    pub resource_type: String, // "skill" | "agent" | "command"
-    pub from_scope: String,    // "user" | "project"
-    pub to_scope: String,
-    pub backup_path: String,
-    pub original_path: String,
-    pub dest_path: String,
-    /// Lightweight content fingerprint of the source file at move time.
-    /// Used by undo to verify the destination hasn't been modified before deleting it.
-    /// Format: "size:first_256_bytes_as_lossy_utf8"
-    pub content_fingerprint: String,
-}
-
-/// Determine the file name (last component) from a path.
-/// For directories, returns the directory name; for files, returns the file name.
-fn file_name_from_path(path: &Path) -> Option<String> {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|s| s.to_string())
-}
-
-/// Compute a lightweight content fingerprint for a file or directory.
-/// For files: first 256 bytes as lossy UTF-8 + file size.
-/// For directories: entry count + total size.
-fn compute_content_fingerprint(path: &Path) -> String {
-    if path.is_dir() {
-        match std::fs::read_dir(path) {
-            Ok(entries) => {
-                let count = entries.count();
-                format!("dir:{}", count)
-            }
-            Err(_) => "dir:err".to_string(),
-        }
-    } else {
-        let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]);
-                format!("{}:{}", size, preview)
-            }
-            Err(_) => format!("{}:read_err", size),
-        }
-    }
-}
-
-/// Check whether a path is inside a project directory (has `.claude/` structure).
-#[allow(dead_code)]
-fn is_project_scope(path: &str) -> bool {
-    // Project-level resources have ":project-" in their ID
-    // But for paths, we check if the path contains "/.claude/" or "/.codex/" or
-    // "/.qoder-cn/" (user) or "/.qoder/" (project, for agents/skills)
-    path.contains("/.claude/") || path.contains("/.codex/") || path.contains("/.qoder-cn/") || path.contains("/.qoder/")
-}
-
-/// Move a file-based resource (skill, agent, command) from source to destination directory.
-///
-/// Creates a backup (.bak) at the source location for undo support.
-/// Returns undo info so the frontend can reverse the operation.
 #[tauri::command]
 pub fn move_skill_file(
     source_path: String,
@@ -2781,185 +2413,31 @@ pub fn move_skill_file(
     from_scope: String,
     to_scope: String,
 ) -> Result<MoveUndoInfo, String> {
-    let src = Path::new(&source_path);
-    if !src.exists() {
-        return Err(format!("源文件不存在: {}", source_path));
-    }
-
-    let dest_dir_path = Path::new(&dest_dir);
-    // Ensure destination directory exists
-    fs::create_dir_all(dest_dir_path)
-        .map_err(|e| format!("无法创建目标目录: {}", e))?;
-
-    let file_name = file_name_from_path(src)
-        .ok_or_else(|| format!("无法解析文件名: {}", source_path))?;
-
-    // Determine dest path based on resource type
-    let dest_path = if src.is_dir() {
-        // Codex/Qoder skills are directories
-        dest_dir_path.join(&file_name)
-    } else if src.extension().map_or(false, |e| e == "md") {
-        // Claude skills/agents/commands are .md files
-        dest_dir_path.join(format!("{}.md", file_name.trim_end_matches(".md")))
-    } else {
-        // .toml files (Codex agents) or other
-        dest_dir_path.join(&file_name)
-    };
-
-    // Check for conflicts
-    if dest_path.exists() {
-        return Err(format!("目标已存在同名资源: {}", file_name));
-    }
-
-    // Compute fingerprint BEFORE any mutation (for undo verification)
-    let content_fingerprint = compute_content_fingerprint(src);
-
-    // Copy to destination
-    if src.is_dir() {
-        copy_dir_recursive(src, &dest_path)?;
-    } else {
-        fs::copy(src, &dest_path)
-            .map_err(|e| format!("复制文件失败: {}", e))?;
-    }
-
-    // Build timestamped backup path to avoid overwriting previous .bak files
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let backup_path = if src.is_dir() {
-        let mut bak_name = src
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        bak_name.push_str(&format!(".bak.{}", ts));
-        src.parent().unwrap_or(Path::new(".")).join(&bak_name)
-    } else {
-        let stem = src.file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-        let ext = src.extension()
-            .and_then(|n| n.to_str())
-            .map(|e| format!(".{}", e))
-            .unwrap_or_default();
-        let bak_name = format!("{}{}.bak.{}", stem, ext, ts);
-        src.parent().unwrap_or(Path::new(".")).join(&bak_name)
-    };
-
-    // Rename source to backup (soft delete)
-    if let Err(e) = fs::rename(src, &backup_path) {
-        // Transactional rollback: delete the copy we just created at destination
-        let _ = if dest_path.is_dir() {
-            fs::remove_dir_all(&dest_path)
-        } else {
-            fs::remove_file(&dest_path)
-        };
-        return Err(format!("备份源文件失败: {}", e));
-    }
-
-    Ok(MoveUndoInfo {
+    transfer::move_skill_file(
+        source_path,
+        dest_dir,
         resource_name,
         resource_type,
         from_scope,
         to_scope,
-        backup_path: backup_path.to_string_lossy().to_string(),
-        original_path: source_path,
-        dest_path: dest_path.to_string_lossy().to_string(),
-        content_fingerprint,
-    })
+    )
 }
 
-/// Copy a file-based resource without deleting the source.
 #[tauri::command]
 pub fn copy_skill_file(
     source_path: String,
     dest_dir: String,
     resource_name: String,
 ) -> Result<(), String> {
-    let src = Path::new(&source_path);
-    if !src.exists() {
-        return Err(format!("源文件不存在: {}", source_path));
-    }
-
-    let dest_dir_path = Path::new(&dest_dir);
-    fs::create_dir_all(dest_dir_path)
-        .map_err(|e| format!("无法创建目标目录: {}", e))?;
-
-    let file_name = file_name_from_path(src)
-        .ok_or_else(|| format!("无法解析文件名: {}", source_path))?;
-
-    let dest_path = if src.is_dir() {
-        dest_dir_path.join(&file_name)
-    } else if src.extension().map_or(false, |e| e == "md") {
-        dest_dir_path.join(format!("{}.md", file_name.trim_end_matches(".md")))
-    } else {
-        dest_dir_path.join(&file_name)
-    };
-
-    if dest_path.exists() {
-        return Err(format!("目标已存在同名资源: {}", resource_name));
-    }
-
-    if src.is_dir() {
-        copy_dir_recursive(src, &dest_path)?;
-    } else {
-        fs::copy(src, &dest_path)
-            .map_err(|e| format!("复制文件失败: {}", e))?;
-    }
-
-    Ok(())
+    transfer::copy_skill_file(source_path, dest_dir, resource_name)
 }
 
-/// Undo a move operation: delete the destination and restore the backup to original location.
-///
-/// Verifies the destination content hasn't been modified since the move (using a lightweight
-/// fingerprint) before deleting, to avoid destroying user changes.
 #[tauri::command]
-pub fn undo_move_skill(backup_path: String, original_path: String, dest_path: String, content_fingerprint: String) -> Result<(), String> {
-    let bak = Path::new(&backup_path);
-    let orig = Path::new(&original_path);
-    let dest = Path::new(&dest_path);
-
-    // Verify destination content matches the fingerprint saved at move time.
-    // If the user modified the destination after the move, refuse to delete it.
-    if dest.exists() {
-        let current_fp = compute_content_fingerprint(dest);
-        if current_fp != content_fingerprint {
-            return Err("目标文件已被修改，撤销取消。请手动处理".into());
-        }
-        if dest.is_dir() {
-            fs::remove_dir_all(dest).map_err(|e| format!("删除目标失败: {}", e))?;
-        } else {
-            fs::remove_file(dest).map_err(|e| format!("删除目标失败: {}", e))?;
-        }
-    }
-
-    // Restore backup to original location
-    if bak.exists() {
-        fs::rename(bak, orig).map_err(|e| format!("恢复备份失败: {}", e))?;
-    } else {
-        return Err("备份文件不存在，无法撤销".into());
-    }
-
-    Ok(())
-}
-
-/// Recursively copy a directory (used for Codex/Qoder skill directories).
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| format!("创建目录失败: {}", e))?;
-    for entry in fs::read_dir(src).map_err(|e| format!("读取目录失败: {}", e))? {
-        let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
-        let path = entry.path();
-        if path.is_symlink() {
-            continue; // Skip symlinks for safety
-        }
-        let dest_path = dst.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir_recursive(&path, &dest_path)?;
-        } else {
-            fs::copy(&path, &dest_path).map_err(|e| format!("复制文件失败: {}", e))?;
-        }
-    }
-    Ok(())
+pub fn undo_move_skill(
+    backup_path: String,
+    original_path: String,
+    dest_path: String,
+    content_fingerprint: String,
+) -> Result<(), String> {
+    transfer::undo_move_skill(backup_path, original_path, dest_path, content_fingerprint)
 }

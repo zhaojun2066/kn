@@ -11,6 +11,8 @@ import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { QuickSwitcher } from "./components/QuickSwitcher";
 import { UsagePanel } from "./components/UsagePanel";
 import { ActivityBar, type ActivityKey } from "./components/ActivityBar";
+import { StatusBar } from "./components/StatusBar";
+import { ToastViewport } from "./components/ToastViewport";
 import { SkillManager, type SkillManagerData, type SelectedItem, type BatchToggleItem } from "./components/SkillManager";
 import type { PluginUpdateInfo } from "./components/SkillManager";
 import type { AgentManagerData } from "./components/SkillManager";
@@ -26,24 +28,23 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { ImportPreview } from "./components/ImportPreview";
 import { ScanPreview, ScanProfile } from "./components/ScanPreview";
-import { formatShortcut } from "./utils/shortcut";
+import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useFontScale } from "./hooks/useFontScale";
 import { useProfiles } from "./hooks/useProfiles";
 import { useTerminal } from "./hooks/useTerminal";
+import { useTerminalCloseGuard } from "./hooks/useTerminalCloseGuard";
+import { useToasts } from "./hooks/useToasts";
 import { useUsage } from "./hooks/useUsage";
 import { useTheme } from "./hooks/useTheme";
 import { useProjects } from "./hooks/useProjects";
 import type { ScopeTab } from "./lib/types";
 import { basename } from "./lib/path-utils";
+import { buildDestDir, getResourceData, getResourceType, getSubdir, type ResourceData } from "./lib/resource-transfer";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { X, AlertCircle, CheckCircle2 } from "lucide-react";
 import type { EnvCheckResult } from "./lib/types";
-
-type Toast = { id: number; type: "error" | "success"; message: string; undoAction?: () => void; undoLabel?: string };
 
 export function App() {
   const ctx = useProfiles();
@@ -55,6 +56,7 @@ export function App() {
   rightRef.current = rightTerminal;
   const bottomRef = useRef(bottomTerminal);
   bottomRef.current = bottomTerminal;
+  useTerminalCloseGuard(rightRef, bottomRef);
   useFontScale();                                 // 初始化全局 UI 字体缩放
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -64,8 +66,7 @@ export function App() {
   const [quickSwitcherMode, setQuickSwitcherMode] = useState<"profile" | "history">("profile");
   const [importData, setImportData] = useState<{ name: string; desc?: string; env: Record<string, string> } | null>(null);
   const [scanData, setScanData] = useState<ScanProfile[] | null>(null);
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const toastIdRef = useRef(0);
+  const { toasts, setToasts, toastIdRef, addToast, dismissToast } = useToasts();
   const [showNameDialog, setShowNameDialog] = useState(false);
   const [nameDialogTitle, setNameDialogTitle] = useState("");
   const [nameDialogInitial, setNameDialogInitial] = useState("");
@@ -420,65 +421,6 @@ export function App() {
     if (!rightTerminal.isOpen && rightMaximized) setRightMaximized(false);
   }, [rightTerminal.isOpen, rightMaximized]);
 
-  // ── Intercept Cmd+W when focus is in a terminal panel ──────────
-  // Cmd+W is a macOS/Tauri system shortcut for "Close Window". It's
-  // intercepted at the native level before DOM events fire, so a
-  // capture-phase keydown handler can't catch it reliably. Instead we
-  // track the last key pressed and prevent window close in Tauri's
-  // onCloseRequested, manually closing the active pane instead.
-  useEffect(() => {
-    let lastKey = "";
-    const keyHandler = (e: KeyboardEvent) => {
-      lastKey = e.key;
-      // Clear after 200ms so stale key state doesn't block real window closes
-      setTimeout(() => { lastKey = ""; }, 200);
-    };
-    // Use capture phase so this fires BEFORE TerminalPanel's
-    // capture handler calls stopPropagation(), which would
-    // otherwise prevent bubble-phase handlers from running.
-    window.addEventListener("keydown", keyHandler, true);
-
-    const pw = getCurrentWindow();
-    const unlisten = pw.onCloseRequested((event) => {
-      if (lastKey === "w") {
-        const el = document.activeElement as HTMLElement | null;
-        const panel = el?.closest("[data-panel]") as HTMLElement | null;
-        if (panel) {
-          event.preventDefault();
-          lastKey = "";
-          const mode = panel.dataset.panel;
-          // Always prevent the window from closing — this fires
-          // asynchronously (Tauri IPC), so TerminalPanel's capture-phase
-          // handler may have already closed the pane. Only call closePane
-          // if the tab still has multiple panes; otherwise the pane was
-          // already handled and we just need to block the window close.
-          if (mode === "right") {
-            const t = rightRef.current;
-            if (t.activeTabId) {
-              const tab = t.tabs.find((tb) => tb.id === t.activeTabId);
-              if (tab && tab.rootNode.type === "split") {
-                t.closePane(t.activeTabId);
-              }
-            }
-          } else if (mode === "bottom") {
-            const t = bottomRef.current;
-            if (t.activeTabId) {
-              const tab = t.tabs.find((tb) => tb.id === t.activeTabId);
-              if (tab && tab.rootNode.type === "split") {
-                t.closePane(t.activeTabId);
-              }
-            }
-          }
-        }
-      }
-    });
-
-    return () => {
-      window.removeEventListener("keydown", keyHandler, true);
-      unlisten.then((fn) => fn());
-    };
-  }, []);
-
   // Listen for onboarding wizard dismiss event
   useEffect(() => {
     const handler = () => setShowWelcome(false);
@@ -499,15 +441,6 @@ export function App() {
   useEffect(() => {
     invoke<string>("get_app_version").then((v) => setAppVersion(v)).catch(() => {});
   }, []);
-
-  // Toast management
-  const addToast = useCallback((type: "error" | "success", message: string) => {
-    const id = ++toastIdRef.current;
-    setToasts((prev) => [...prev, { id, type, message }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), type === "error" ? 12000 : 4000);
-  }, []);
-
-  const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
 
   // ── Hook Delete ───────────────────────────────────────────
 
@@ -532,6 +465,18 @@ export function App() {
   const hookDataRef = useRef(hookData);
   hookDataRef.current = hookData;
 
+  const joinConfigPath = useCallback((base: string, ...segments: string[]) => {
+    const sep = base.includes("\\") ? "\\" : "/";
+    const trimmedBase = base.replace(/[\\/]+$/, "");
+    const trimmedSegments = segments.map((segment) => segment.replace(/^[\\/]+|[\\/]+$/g, ""));
+    return [trimmedBase, ...trimmedSegments].filter(Boolean).join(sep);
+  }, []);
+
+  const splitBeforeConfigDir = useCallback((path: string, configDir: string) => {
+    const escaped = configDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return path.split(new RegExp(`[\\\\/]${escaped}[\\\\/]`))[0];
+  }, []);
+
   /** Compute the target config file path for a hook move/copy. */
   const getHookTargetPath = useCallback((cli: string, toScope: "user" | "project", sourcePath: string, targetProjectPath?: string): string => {
     const configFile = cli === "codex" ? "config.toml" : "settings.json";
@@ -541,7 +486,7 @@ export function App() {
 
     // Project scope: use target project path directly
     if (toScope === "project" && targetProjectPath) {
-      return `${targetProjectPath}/${cliDirProject}/${configFile}`;
+      return joinConfigPath(targetProjectPath, cliDirProject, configFile);
     }
 
     // User scope: find home directory from an existing user-level hook of the SAME CLI
@@ -550,18 +495,18 @@ export function App() {
       (h) => h.cli === cli && h.source !== "project"
     );
     if (userHook) {
-      const base = userHook.path.split(`/${cliDirUser}/`)[0];
+      const base = splitBeforeConfigDir(userHook.path, cliDirUser);
       if (base && base !== userHook.path) {
-        return `${base}/${cliDirUser}/${configFile}`;
+        return joinConfigPath(base, cliDirUser, configFile);
       }
     }
     // Fallback: derive from sourcePath (works when source is already user-level)
-    if (sourcePath.includes(`/${cliDirUser}/`)) {
-      const base = sourcePath.split(`/${cliDirUser}/`)[0];
-      return `${base}/${cliDirUser}/${configFile}`;
+    const sourceBase = splitBeforeConfigDir(sourcePath, cliDirUser);
+    if (sourceBase && sourceBase !== sourcePath) {
+      return joinConfigPath(sourceBase, cliDirUser, configFile);
     }
-    return `${cliDirUser}/${configFile}`;
-  }, []);
+    return joinConfigPath(cliDirUser, configFile);
+  }, [joinConfigPath, splitBeforeConfigDir]);
 
   // Check if a hook with the same CLI + eventType + command already exists at the target path
   const findDuplicateAtTarget = useCallback((hook: HookEntry, toPath: string): HookEntry | undefined => {
@@ -767,90 +712,6 @@ export function App() {
   }, [addProject, addToast]);
 
   // ── Move / Copy resource ──
-
-  // ── Resource helpers (extracted from duplicated move/copy/batch logic) ──
-
-  /** Common fields present on all SelectedItem data variants. */
-  interface ResourceData {
-    id: string;
-    name: string;
-    path: string;
-    cli?: string;
-    projectName?: string;
-  }
-
-  /** Extract common fields from any SelectedItem with defensive fallbacks. */
-  function getResourceData(item: SelectedItem): ResourceData {
-    const data = item.data as Record<string, unknown>;
-    return {
-      id: (data.id as string) || "",
-      name: (data.name as string) || "",
-      path: (data.path as string) || "",
-      cli: data.cli as string | undefined,
-      projectName: data.projectName as string | undefined,
-    };
-  }
-
-  /** Subdirectory inside the CLI config folder for each resource type. */
-  type ResourceType = "skill" | "agent" | "command";
-
-  function getResourceType(item: SelectedItem): ResourceType {
-    switch (item.type) {
-      case "standalone": case "system": case "plugin-skill": return "skill";
-      case "agent": case "plugin-agent": return "agent";
-      default: return "command";
-    }
-  }
-
-  function getSubdir(rt: ResourceType): string {
-    return rt === "skill" ? "skills" : rt === "agent" ? "agents" : "commands";
-  }
-
-  /** Detect CLI type from a file path (e.g. "/.codex/" → "codex").
-   *  Normalizes Windows backslashes to forward slashes before matching. */
-  function detectCliFromPath(srcPath: string): string {
-    const normalized = srcPath.replace(/\\/g, "/");
-    if (normalized.includes("/.codex/")) return "codex";
-    if (normalized.includes("/.qoder-cn/") || normalized.includes("/.qoder/")) return "qoder";
-    return "claude";
-  }
-
-  /** CLI-appropriate config directory name for user-level scope. */
-  function userConfigDir(cli: string): string {
-    if (cli === "codex" || cli === "cx") return ".codex";
-    if (cli === "qoder") return ".qoder-cn";
-    return ".claude";
-  }
-
-  /** CLI-appropriate config directory name for project-level scope. */
-  function projectConfigDir(cli: string): string {
-    if (cli === "codex" || cli === "cx") return ".codex";
-    if (cli === "qoder") return ".qoder"; // project-level uses .qoder (not .qoder-cn)
-    return ".claude";
-  }
-
-  /** Build destination directory for a move/copy operation. */
-  async function buildDestDir(
-    srcPath: string,
-    cliFromData: string | undefined,
-    toScope: "user" | "project",
-    subdir: string,
-    project?: import("./lib/types").ProjectInfo,
-  ): Promise<string> {
-    if (toScope === "user") {
-      const homeDir = await invoke<string>("get_home_dir");
-      const cli = detectCliFromPath(srcPath);
-      return `${homeDir}/${userConfigDir(cli)}/${subdir}`;
-    }
-    // project scope
-    if (!project) throw new Error("no project");
-    const cli = cliFromData || "claude";
-    return `${project.path}/${projectConfigDir(cli)}/${subdir}`;
-  }
-  // ── end resource helpers ──
-
-  /** @deprecated Use getSubdir(getResourceType(item)) instead. */
-  const subdirForType = (rt: string): string => getSubdir(rt as ResourceType);
 
   const handleMoveResource = useCallback(async (item: SelectedItem, toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
     try {
@@ -1426,78 +1287,25 @@ export function App() {
     if (!ctx.error) lastErrorRef.current = null;
   }, [ctx.error, showAddDialog, showNameDialog]);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      // Cmd+P → profile quick switcher
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "p" || e.key === "P")) {
-        e.preventDefault();
-        setQuickSwitcherMode("profile");
-        setShowQuickSwitcher(true);
-        return;
-      }
-      // Cmd+Shift+P → session history
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "p" || e.key === "P")) {
-        e.preventDefault();
-        setQuickSwitcherMode("history");
-        setShowQuickSwitcher(true);
-        return;
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setShowShortcuts((prev) => !prev);
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
-        e.preventDefault();
-        setShowAddDialog(true);
-      }
-      if (e.key === "Escape") {
-        if (showQuickSwitcher) setShowQuickSwitcher(false);
-        else if (showAddDialog) setShowAddDialog(false);
-        else if (showDeleteConfirm) setShowDeleteConfirm(false);
-        else if (showNameDialog) setShowNameDialog(false);
-        else if (ctx.selectedName) ctx.deselect();
-      }
-      if (e.key === "Backspace" && ctx.selectedName && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
-        setShowDeleteConfirm(true);
-      }
-      // Toggle bottom terminal with Ctrl+`
-      if (e.ctrlKey && e.key === "`") {
-        e.preventDefault();
-        bottomTerminal.toggle();
-      }
-      // Toggle sidebar — Cmd/Ctrl+B (VS Code standard)
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "b") {
-        e.preventDefault();
-        setSidebarVisible((v) => !v);
-      }
-      // Toggle bottom terminal — Cmd/Ctrl+J (VS Code standard)
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "j") {
-        e.preventDefault();
-        bottomTerminal.toggle();
-      }
-      // Maximize/restore terminal — Cmd/Ctrl+Shift+M. Works when terminal panel is focused.
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "m" || e.key === "M")) {
-        e.preventDefault();
-        const el = document.activeElement as HTMLElement | null;
-        const panel = el?.closest("[data-panel]") as HTMLElement | null;
-        if (panel) {
-          if (panel.dataset.panel === "right") {
-            setRightMaximized((v) => !v);
-            setBottomMaximized(false);
-          } else if (panel.dataset.panel === "bottom") {
-            setBottomMaximized((v) => !v);
-            setRightMaximized(false);
-          }
-        } else {
-          // No terminal panel focused — show guidance toast
-          addToast("success", `💡 请先点击终端面板，再使用 ${formatShortcut("mod+⇧M")} 最大化`);
-        }
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [ctx.selectedName, bottomTerminal.toggle, showAddDialog, showDeleteConfirm, showNameDialog, showShortcuts, showQuickSwitcher]);
+  useGlobalShortcuts({
+    selectedName: ctx.selectedName,
+    onDeselect: ctx.deselect,
+    onToggleBottomTerminal: bottomTerminal.toggle,
+    showAddDialog,
+    showDeleteConfirm,
+    showNameDialog,
+    showQuickSwitcher,
+    setShowAddDialog,
+    setShowDeleteConfirm,
+    setShowNameDialog,
+    setShowQuickSwitcher,
+    setShowShortcuts,
+    setQuickSwitcherMode,
+    setSidebarVisible,
+    setRightMaximized,
+    setBottomMaximized,
+    addToast,
+  });
 
   const isDefault = ctx.selectedProfile?.is_default ?? false;
 
@@ -2170,93 +1978,19 @@ export function App() {
         </div>
       </div>
 
-      {/* Status bar */}
-      <div className="flex items-center h-[26px] px-3 bg-app-statusbar border-t border-app-border select-none shrink-0 gap-3">
-        <span className="text-2xs text-app-text-muted font-mono shrink-0">
-          {ctx.loading ? "..." : ctx.profiles.length > 0 ? `${ctx.profiles.length} 个 profile` : "就绪"}
-        </span>
-        {/* PTY session indicator */}
-        {isAnyTerminalOpen && (
-          <span className="text-2xs text-app-accent font-mono shrink-0 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-app-accent" style={{ boxShadow: "0 0 4px var(--app-glow)" }} />
-            终端
-          </span>
-        )}
-        {!isAnyTerminalOpen && (
-          <span className="text-2xs text-app-text-muted font-mono shrink-0 flex items-center gap-1 opacity-50">
-            <span className="w-1.5 h-1.5 rounded-full bg-app-text-muted" />
-            终端
-          </span>
-        )}
-        <span className="flex-1" />
-        <span className="text-2xs text-app-text-muted font-mono shrink-0">
-          {colorScheme ? colorScheme.charAt(0).toUpperCase() + colorScheme.slice(1) : ""}
-        </span>
-        {usage.todayTokens > 0 && (
-          <span
-            className="text-2xs text-app-amber font-mono shrink-0 cursor-pointer hover:text-app-amber-glow transition-colors"
-            onClick={() => setShowUsage(true)}
-            title="查看 Token 用量"
-          >
-            ◉ {usage.todayTokens >= 1000 ? `${(usage.todayTokens / 1000).toFixed(1)}K` : usage.todayTokens}
-          </span>
-        )}
-        {usage.todayTokens === 0 && !usage.loading && (
-          <span
-            className="text-2xs text-app-text-dim font-mono shrink-0 cursor-pointer hover:text-app-text-muted transition-colors"
-            onClick={() => setShowUsage(true)}
-            title="查看 Token 用量"
-          >
-            ◉ 0
-          </span>
-        )}
-        <span className="text-2xs text-app-text-muted font-mono shrink-0">
-          {ctx.selectedName ? (
-            <>
-              <span className="text-app-text-dim">{ctx.selectedName}</span>
-              {ctx.defaultProfile === ctx.selectedName && (
-                <span className="text-app-accent ml-1.5">(默认)</span>
-              )}
-            </>
-          ) : "--"}
-        </span>
-        {appVersion && (
-          <span className="text-2xs text-app-text-dim font-mono shrink-0 pl-3 border-l border-app-border">
-            v{appVersion}
-          </span>
-        )}
-      </div>
+      <StatusBar
+        loading={ctx.loading}
+        profiles={ctx.profiles}
+        terminalOpen={isAnyTerminalOpen}
+        colorScheme={colorScheme}
+        usage={usage}
+        selectedName={ctx.selectedName}
+        defaultProfile={ctx.defaultProfile}
+        appVersion={appVersion}
+        onShowUsage={() => setShowUsage(true)}
+      />
 
-      {/* Toasts */}
-      <div className="fixed bottom-8 right-4 z-50 flex flex-col gap-1.5 max-w-sm">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className={`flex items-start gap-2 px-3 py-2 shadow-lg border animate-[slideUp_150ms_ease-out] text-sm font-mono
-              ${t.type === "error"
-                ? "bg-app-red-bg border-app-border text-app-red shadow-lg"
-                : "bg-app-green-bg border-app-border text-app-green shadow-lg"
-              }`}
-          >
-            {t.type === "error"
-              ? <AlertCircle size={14} className="shrink-0 mt-px" />
-              : <CheckCircle2 size={14} className="shrink-0 mt-px" />
-            }
-            <span className="flex-1">{t.message}</span>
-            {t.undoAction && (
-              <button
-                onClick={() => { t.undoAction!(); dismissToast(t.id); }}
-                className="shrink-0 underline text-[var(--app-amber)] hover:text-[var(--app-amber-glow)] font-mono text-xs"
-              >
-                {t.undoLabel || "撤销"}
-              </button>
-            )}
-            <button onClick={() => dismissToast(t.id)} className="shrink-0 opacity-60 hover:opacity-100">
-              <X size={12} />
-            </button>
-          </div>
-        ))}
-      </div>
+      <ToastViewport toasts={toasts} onDismiss={dismissToast} />
 
       {/* Loading indicator */}
       {ctx.loadingHeavy && (
