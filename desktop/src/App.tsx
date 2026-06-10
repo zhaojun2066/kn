@@ -39,17 +39,22 @@ import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { X, AlertCircle, CheckCircle2 } from "lucide-react";
+import type { EnvCheckResult } from "./lib/types";
 
 type Toast = { id: number; type: "error" | "success"; message: string; undoAction?: () => void; undoLabel?: string };
-
-interface EnvCheckItem { name: string; label: string; status: "ok" | "warn" | "missing"; detail: string; install_cmd?: string; }
-type EnvCheckResult = { items: EnvCheckItem[]; all_ok: boolean } | null;
 
 export function App() {
   const ctx = useProfiles();
   const rightTerminal = useTerminal("right");     // profile「运行」→ 右侧面板
   const bottomTerminal = useTerminal("bottom");   // 工具栏按钮 → 底部面板 (VS Code 风格)
+
+  // Keep refs to terminal instances for use in Tauri close-requested handler
+  const rightRef = useRef(rightTerminal);
+  rightRef.current = rightTerminal;
+  const bottomRef = useRef(bottomTerminal);
+  bottomRef.current = bottomTerminal;
   useFontScale();                                 // 初始化全局 UI 字体缩放
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -212,9 +217,11 @@ export function App() {
 
   // Ensure shell wrapper and usage hooks are installed
   useEffect(() => {
-    invoke("ensure_shell_rc").catch(() => {});
+    invoke("ensure_shell_rc")
+      .then(() => refreshEnvCheck())
+      .catch(() => {});
     invoke("ensure_usage_hooks").catch(() => {});
-  }, []);
+  }, [refreshEnvCheck]);
 
   // Listen for "新建 Profile" custom event from EmptyState quick-action button
   useEffect(() => {
@@ -403,6 +410,73 @@ export function App() {
     if (window.location.search.includes("terminal=1")) {
       bottomTerminal.open();
     }
+  }, []);
+
+  // Reset maximize state when terminal panels close
+  useEffect(() => {
+    if (!bottomTerminal.isOpen && bottomMaximized) setBottomMaximized(false);
+  }, [bottomTerminal.isOpen, bottomMaximized]);
+  useEffect(() => {
+    if (!rightTerminal.isOpen && rightMaximized) setRightMaximized(false);
+  }, [rightTerminal.isOpen, rightMaximized]);
+
+  // ── Intercept Cmd+W when focus is in a terminal panel ──────────
+  // Cmd+W is a macOS/Tauri system shortcut for "Close Window". It's
+  // intercepted at the native level before DOM events fire, so a
+  // capture-phase keydown handler can't catch it reliably. Instead we
+  // track the last key pressed and prevent window close in Tauri's
+  // onCloseRequested, manually closing the active pane instead.
+  useEffect(() => {
+    let lastKey = "";
+    const keyHandler = (e: KeyboardEvent) => {
+      lastKey = e.key;
+      // Clear after 200ms so stale key state doesn't block real window closes
+      setTimeout(() => { lastKey = ""; }, 200);
+    };
+    // Use capture phase so this fires BEFORE TerminalPanel's
+    // capture handler calls stopPropagation(), which would
+    // otherwise prevent bubble-phase handlers from running.
+    window.addEventListener("keydown", keyHandler, true);
+
+    const pw = getCurrentWindow();
+    const unlisten = pw.onCloseRequested((event) => {
+      if (lastKey === "w") {
+        const el = document.activeElement as HTMLElement | null;
+        const panel = el?.closest("[data-panel]") as HTMLElement | null;
+        if (panel) {
+          event.preventDefault();
+          lastKey = "";
+          const mode = panel.dataset.panel;
+          // Always prevent the window from closing — this fires
+          // asynchronously (Tauri IPC), so TerminalPanel's capture-phase
+          // handler may have already closed the pane. Only call closePane
+          // if the tab still has multiple panes; otherwise the pane was
+          // already handled and we just need to block the window close.
+          if (mode === "right") {
+            const t = rightRef.current;
+            if (t.activeTabId) {
+              const tab = t.tabs.find((tb) => tb.id === t.activeTabId);
+              if (tab && tab.rootNode.type === "split") {
+                t.closePane(t.activeTabId);
+              }
+            }
+          } else if (mode === "bottom") {
+            const t = bottomRef.current;
+            if (t.activeTabId) {
+              const tab = t.tabs.find((tb) => tb.id === t.activeTabId);
+              if (tab && tab.rootNode.type === "split") {
+                t.closePane(t.activeTabId);
+              }
+            }
+          }
+        }
+      }
+    });
+
+    return () => {
+      window.removeEventListener("keydown", keyHandler, true);
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   // Listen for onboarding wizard dismiss event
@@ -1458,6 +1532,26 @@ export function App() {
     }
   }, [rightTerminal]);
 
+  /* ── Split active pane and run command in the right panel ── */
+  const handleSplitCommand = useCallback(async (cmd: string) => {
+    const isAiCmd = /^ai\s/.test(cmd);
+
+    if (isAiCmd) {
+      let selected: string | null = null;
+      try {
+        selected = await tauriOpen({
+          directory: true, multiple: false,
+          title: "选择项目工作目录",
+        }) as string | null;
+      } catch { /* cancelled */ }
+      if (!selected || typeof selected !== "string") return;
+
+      await rightTerminal.runInSplitPane(cmd, selected);
+    } else {
+      await rightTerminal.runInSplitPane(cmd, "", cmd.slice(0, 30));
+    }
+  }, [rightTerminal]);
+
   // Export profile to JSON file
   const handleExport = useCallback(async () => {
     if (!ctx.selectedProfile) return;
@@ -1785,14 +1879,21 @@ export function App() {
     onCloseToRight: tm.closeToRight,
     onNewTab: () => tm.newEmptyTab(),
     onSetWorkDir: tm.setWorkDir,
-    onTerminalReady: (tabId: string) => tm.handleTerminalReady(tabId),
-    onTerminalResize: (tabId: string, cols: number, rows: number) => tm.handleTerminalResize(tabId, cols, rows),
+    onTerminalReady: tm.handleTerminalReady,
+    onTerminalResize: tm.handleTerminalResize,
     fontSize: tm.fontSize,
     onSetFontSize: (s: number) => tm.setFontSize(s),
     onResumeSession: (r: any) => tm.resumeSession(r),
     onNewSessionFromHistory: (r: any) => tm.newSessionFromHistory(r),
     onDeleteHistory: (id: string) => tm.deleteHistory(id),
     onClearHistory: () => tm.clearHistory(),
+    // Pane operations
+    onSplitPane: tm.splitPane,
+    onClosePane: tm.closePane,
+    onFocusPane: tm.focusPane,
+    onNavigatePane: tm.navigatePane,
+    onCyclePane: tm.cyclePane,
+    onZoomPane: tm.zoomPane,
   });
 
   const isAnyTerminalOpen = rightTerminal.isOpen || bottomTerminal.isOpen;
@@ -1990,6 +2091,7 @@ export function App() {
             {!rightMaximized && !bottomMaximized && activeActivity !== "skills" && activeActivity !== "hooks" && (
               <MainPanel
                 profile={ctx.selectedProfile}
+                envCheck={envCheck}
                 hasProfiles={ctx.profiles.length > 0}
                 showWelcome={showWelcome}
                 allTags={Array.from(new Set(ctx.profiles.flatMap((p) => p.tags || []))).sort()}
@@ -2002,6 +2104,7 @@ export function App() {
                   if (ctx.selectedName) await ctx.unsetEnvVar(ctx.selectedName, key);
                 }}
                 onPasteCommand={handlePasteCommand}
+                onSplitCommand={handleSplitCommand}
                 onRenameProfile={handleRenameProfile}
                 onResumeSession={(r) => rightTerminal.resumeSession(r)}
                 onNewSessionFromHistory={(r) => rightTerminal.newSessionFromHistory(r)}
@@ -2167,6 +2270,7 @@ export function App() {
         open={showAddDialog}
         onClose={() => setShowAddDialog(false)}
         onRunCommand={handlePasteCommand}
+        onSplitCommand={handleSplitCommand}
         onInstallTool={handleInstallTool}
         allTags={Array.from(new Set(ctx.profiles.flatMap((p) => p.tags || []))).sort()}
         envCheck={envCheck}

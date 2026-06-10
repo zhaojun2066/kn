@@ -64,3 +64,42 @@ export interface HookExecutionLog {
   errorPreview?: string;
 }
 
+// ── Environment Check ──
+
+export interface InstallOption {
+  id: string;
+  label: string;
+  command?: string;
+  description: string;
+  recommended: boolean;
+  platforms: string[];
+}
+
+export interface EnvCheckItem {
+  name: string;
+  label: string;
+  status: "ok" | "warn" | "missing";
+  severity?: "ok" | "info" | "warn" | "error";
+  category?: "cli" | "shell" | "config";
+  detail: string;
+  detected_path?: string;
+  install_options?: InstallOption[];
+  install_cmd?: string;
+}
+
+export type EnvCheckResult = { items: EnvCheckItem[]; all_ok: boolean } | null;
+
+export function itemSeverity(item: EnvCheckItem): "ok" | "info" | "warn" | "error" {
+  if (item.severity) return item.severity;
+  if (item.status === "ok") return "ok";
+  if (item.status === "warn") return "warn";
+  return "error";
+}
+
+export function recommendedInstallOption(item: EnvCheckItem): InstallOption | null {
+  return item.install_options?.find((o) => o.recommended) ?? item.install_options?.[0] ?? null;
+}
+
+export function recommendedInstallCommand(item: EnvCheckItem): string | null {
+  return recommendedInstallOption(item)?.command ?? item.install_cmd ?? null;
+}

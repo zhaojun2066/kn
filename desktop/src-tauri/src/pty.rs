@@ -25,9 +25,6 @@ pub type SharedChild = Arc<Mutex<Option<Box<dyn portable_pty::Child + Send>>>>;
 pub struct PtyHandle {
     pub writer: SharedWriter,
     pub child: SharedChild,
-    #[cfg(unix)]
-    pub master_fd: std::os::unix::io::RawFd,
-    #[cfg(windows)]
     pub master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
@@ -109,37 +106,46 @@ pub fn start_pty(
     // On Windows, prefer Git Bash (provides Unix environment where shell-rc works).
     // Fall back to PowerShell with execution policy relaxed if Git Bash is absent.
     let home = crate::home_dir().to_string_lossy().to_string();
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(target_os = "windows") {
-            let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
-            let mut candidates: Vec<String> = vec![
-                r"C:\Program Files\Git\bin\bash.exe".into(),
-                r"C:\Program Files (x86)\Git\bin\bash.exe".into(),
-                format!(r"{}\AppData\Local\Programs\Git\bin\bash.exe", home),
-                r"C:\scoop\apps\git\current\bin\bash.exe".into(),
-                r"C:\ProgramData\Git\bin\bash.exe".into(),
-            ];
-            if !local_appdata.is_empty() {
-                candidates.push(format!(
-                    r"{}\Microsoft\WinGet\Links\bash.exe",
-                    local_appdata
-                ));
-            }
-            candidates
-                .iter()
-                .find(|p| std::path::Path::new(p).exists())
-                .cloned()
-                .unwrap_or_else(|| "powershell.exe".into())
-        } else if cfg!(target_os = "macos") {
-            "/bin/zsh".into()
-        } else {
-            "/bin/bash".into()
+    let shell_from_env = std::env::var("SHELL").ok();
+    let shell = if cfg!(target_os = "windows") {
+        let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let mut candidates: Vec<String> = vec![
+            r"C:\Program Files\Git\bin\bash.exe".into(),
+            r"C:\Program Files (x86)\Git\bin\bash.exe".into(),
+            format!(r"{}\AppData\Local\Programs\Git\bin\bash.exe", home),
+            r"C:\scoop\apps\git\current\bin\bash.exe".into(),
+            r"C:\ProgramData\Git\bin\bash.exe".into(),
+        ];
+        if !local_appdata.is_empty() {
+            candidates.push(format!(
+                r"{}\Microsoft\WinGet\Links\bash.exe",
+                local_appdata
+            ));
         }
-    });
+        if let Some(env_shell) = shell_from_env {
+            if std::path::Path::new(&env_shell).exists() {
+                candidates.insert(0, env_shell);
+            }
+        }
+        candidates
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .cloned()
+            .unwrap_or_else(|| "powershell.exe".into())
+    } else {
+        shell_from_env.unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                "/bin/zsh".into()
+            } else {
+                "/bin/bash".into()
+            }
+        })
+    };
 
-    let is_git_bash = cfg!(target_os = "windows") && shell.ends_with("bash.exe");
+    let shell_lower = shell.to_ascii_lowercase();
+    let is_git_bash = cfg!(target_os = "windows") && shell_lower.ends_with("bash.exe");
     let is_powershell = cfg!(target_os = "windows")
-        && (shell.ends_with("powershell.exe") || shell.ends_with("pwsh.exe"));
+        && (shell_lower.ends_with("powershell.exe") || shell_lower.ends_with("pwsh.exe"));
 
     let mut cmd = CommandBuilder::new(&shell);
     if is_git_bash {
@@ -233,19 +239,13 @@ pub fn start_pty(
         .try_clone_reader()
         .map_err(|e| format!("clone reader: {}", e))?;
 
-    // Capture master fd BEFORE take_writer (safety: ensures fd is still valid)
-    #[cfg(unix)]
-    let master_fd = pair.master.as_raw_fd().unwrap_or(-1);
-
     let writer: SharedWriter = Arc::new(Mutex::new(Box::new(
         pair.master
             .take_writer()
             .map_err(|e| format!("take writer: {}", e))?,
     ) as Box<dyn Write + Send>));
 
-    #[cfg(windows)]
     let master: Box<dyn portable_pty::MasterPty + Send> = pair.master;
-
     // Store handle
     {
         let mut handles = state.lock().map_err(|e| format!("lock: {}", e))?;
@@ -254,9 +254,6 @@ pub fn start_pty(
             PtyHandle {
                 writer,
                 child: shared_child.clone(),
-                #[cfg(unix)]
-                master_fd,
-                #[cfg(windows)]
                 master,
             },
         );
@@ -266,6 +263,8 @@ pub fn start_pty(
 
     // Spawn reader thread with its own clone of the shared child handle.
     let reader_child = shared_child;
+    let reader_state = state.inner().clone();
+    let reader_session_id = session_id.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16384];
         let mut utf8_pending: Vec<u8> = Vec::new();
@@ -278,7 +277,6 @@ pub fn start_pty(
                             let _ = on_event.send(PtyEvent::Data(pending));
                         }
                     }
-                    let _ = on_event.send(PtyEvent::Exit(0));
                     break;
                 }
                 Ok(n) => {
@@ -300,10 +298,22 @@ pub fn start_pty(
             }
         }
         // Wait for child to fully exit (takes the child out of the Arc).
-        if let Ok(mut guard) = reader_child.lock() {
+        let exit_code = if let Ok(mut guard) = reader_child.lock() {
             if let Some(mut c) = guard.take() {
-                let _ = c.wait();
+                c.wait()
+                    .map(|status| status.exit_code() as i32)
+                    .unwrap_or(1)
+            } else {
+                0
             }
+        } else {
+            1
+        };
+
+        let _ = on_event.send(PtyEvent::Exit(exit_code));
+
+        if let Ok(mut handles) = reader_state.lock() {
+            handles.handles.remove(&reader_session_id);
         }
     });
 
@@ -349,44 +359,19 @@ pub fn resize_pty(
         pixel_height: 0,
     };
 
-    // On Unix, we need the master_fd. On Windows, we need the master.
-    // Both are fast kernel calls — the lock is held only briefly.
+    // Keep the MasterPty alive for the lifetime of the session and resize
+    // through portable-pty. On Unix this calls TIOCSWINSZ on a valid master
+    // handle and delivers SIGWINCH to full-screen TUIs such as Claude.
     let handles = state.lock().map_err(|e| format!("lock: {}", e))?;
     let handle = handles
         .handles
         .get(&session_id)
         .ok_or_else(|| format!("session not found: {}", session_id))?;
 
-    #[cfg(unix)]
-    {
-        if handle.master_fd < 0 {
-            return Ok(()); // fd not available, can't resize
-        }
-        let ws = libc::winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        if unsafe { libc::ioctl(handle.master_fd, libc::TIOCSWINSZ, &ws) } != 0 {
-            return Err(format!("ioctl TIOCSWINSZ failed"));
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        handle
-            .master
-            .resize(size)
-            .map_err(|e| format!("resize: {}", e))?;
-    }
-
-    // ioctl TIOCSWINSZ on the master fd already triggers SIGWINCH
-    // for the PTY slave's foreground process group via the kernel.
-    // No manual kill needed.
-
-    let _ = size; // suppress unused warning on non-windows
-    Ok(())
+    handle
+        .master
+        .resize(size)
+        .map_err(|e| format!("resize: {}", e))
 }
 
 #[tauri::command]
@@ -394,16 +379,25 @@ pub fn kill_pty(
     state: tauri::State<'_, Arc<Mutex<PtyState>>>,
     session_id: String,
 ) -> Result<(), String> {
-    let mut handles = state.lock().map_err(|e| format!("lock: {}", e))?;
-    if let Some(handle) = handles.handles.get(&session_id) {
+    let child = {
+        let handles = state.lock().map_err(|e| format!("lock: {}", e))?;
+        handles
+            .handles
+            .get(&session_id)
+            .map(|handle| handle.child.clone())
+    };
+
+    if let Some(child) = child {
         // Kill the child process first — this unblocks the reader thread
         // on Windows where ConPTY reads may otherwise hang after the master is dropped.
-        if let Ok(mut guard) = handle.child.lock() {
+        if let Ok(mut guard) = child.lock() {
             if let Some(ref mut c) = *guard {
                 let _ = c.kill();
             }
         }
     }
+
+    let mut handles = state.lock().map_err(|e| format!("lock: {}", e))?;
     // Removing the handle drops the writer and master.
     // On Unix: closing master fd → kernel sends SIGHUP → child terminates.
     // On Windows: dropping master closes ConPTY → reader receives error.

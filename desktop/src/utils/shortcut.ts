@@ -8,6 +8,11 @@ export function modKey(): string {
   return isMac() ? "⌘" : "Ctrl";
 }
 
+/** 返回 Option/Alt 键符号：Mac → "⌥"，Windows/Linux → "Alt" */
+export function altKey(): string {
+  return isMac() ? "⌥" : "Alt";
+}
+
 /**
  * 格式化快捷键字符串，自动替换修饰键占位符
  *

@@ -1,8 +1,8 @@
 use crate::profile_cmd;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 use tauri::command;
 use tauri::Emitter;
-use std::time::Duration;
 
 // ── Config backup paths ────────────────────────────────────
 fn config_dir() -> std::path::PathBuf {
@@ -172,7 +172,7 @@ pub fn read_file_base64(path: String) -> Result<String, String> {
     if !is_safe_path(std::path::Path::new(&path)) {
         return Err("不允许访问此路径".into());
     }
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败: {}", e))?;
     Ok(STANDARD.encode(&bytes))
 }
@@ -219,18 +219,33 @@ fn build_tree_inner(
     let is_dir = root.is_dir();
 
     if !is_dir {
-        return Ok(FileTreeNode { name, path, is_dir: false, children: None });
+        return Ok(FileTreeNode {
+            name,
+            path,
+            is_dir: false,
+            children: None,
+        });
     }
 
     // Symlink cycle guard: detect already-visited directories
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if !visited.insert(canonical) {
-        return Ok(FileTreeNode { name, path, is_dir: true, children: Some(vec![]) });
+        return Ok(FileTreeNode {
+            name,
+            path,
+            is_dir: true,
+            children: Some(vec![]),
+        });
     }
 
     // Depth limit
     if depth >= MAX_TREE_DEPTH {
-        return Ok(FileTreeNode { name, path, is_dir: true, children: Some(vec![]) });
+        return Ok(FileTreeNode {
+            name,
+            path,
+            is_dir: true,
+            children: Some(vec![]),
+        });
     }
 
     let mut children: Vec<FileTreeNode> = Vec::new();
@@ -271,7 +286,12 @@ fn build_tree_inner(
         });
     }
 
-    Ok(FileTreeNode { name, path, is_dir: true, children: Some(children) })
+    Ok(FileTreeNode {
+        name,
+        path,
+        is_dir: true,
+        children: Some(children),
+    })
 }
 
 #[tauri::command]
@@ -280,7 +300,8 @@ pub fn list_directory_tree(path: String) -> Result<FileTreeNode, String> {
 
     // If the path is a single file, return a tree with just that file
     if p.is_file() {
-        let name = p.file_name()
+        let name = p
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
@@ -599,17 +620,34 @@ pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
 /// Resolve a binary name via login-shell PATH lookup.
 /// Tauri GUI apps have a minimal PATH; the login shell has the user's full PATH.
 fn resolve_from_shell_path(name: &str) -> Option<String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let cmd = format!(
-        "command -v {} 2>/dev/null || type {} 2>/dev/null",
-        name, name
-    );
-    let output = std::process::Command::new(&shell)
-        .args(["-lc", &cmd])
-        .output()
-        .ok()?;
+    let output = if cfg!(target_os = "windows") {
+        std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "Get-Command {} -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object Source",
+                    name
+                ),
+            ])
+            .output()
+            .ok()?
+    } else {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        // Use `command -v` first (POSIX standard, clean output).
+        // Fall back to `type` (bash/zsh builtin) but filter error messages.
+        let cmd = format!(
+            "command -v {} 2>/dev/null || (type {} 2>/dev/null | grep -v 'not found')",
+            name, name
+        );
+        std::process::Command::new(&shell)
+            .args(["-lc", &cmd])
+            .output()
+            .ok()?
+    };
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
+    // Filter out shell error messages that leak to stdout (e.g. zsh `type` output)
+    if path.is_empty() || path.contains("not found") {
         None
     } else {
         Some(path)
@@ -697,8 +735,7 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
 
 #[tauri::command]
 pub fn verify_sha256(path: String, expected: String) -> Result<bool, String> {
-    let mut file =
-        std::fs::File::open(&path).map_err(|e| format!("无法打开文件: {}", e))?;
+    let mut file = std::fs::File::open(&path).map_err(|e| format!("无法打开文件: {}", e))?;
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher).map_err(|e| format!("读取文件失败: {}", e))?;
     let actual = format!("{:x}", hasher.finalize());
@@ -734,11 +771,28 @@ pub fn open_file(path: String) -> Result<(), String> {
 // ── Environment check (for onboarding) ───────────────────────
 
 #[derive(Debug, serde::Serialize)]
+pub struct InstallOption {
+    pub id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub description: String,
+    pub recommended: bool,
+    pub platforms: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct EnvCheckItem {
     pub name: String,
     pub label: String,
-    pub status: String, // "ok" | "warn" | "missing"
+    pub status: String,   // "ok" | "warn" | "missing"
+    pub severity: String, // "ok" | "info" | "warn" | "error"
+    pub category: String, // "cli" | "shell" | "config"
     pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_options: Option<Vec<InstallOption>>,
     /// Executable install command (only populated when status == "missing")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_cmd: Option<String>,
@@ -753,7 +807,11 @@ pub struct EnvCheckResult {
 fn check_binary_on_path(name: &str) -> Option<String> {
     // Try full paths first (fast, no shell overhead)
     if let Some(path) = find_binary(&[name]) {
-        if std::path::Path::new(&path).exists() {
+        // Only accept paths that are absolute (start with /) or at least
+        // contain a path separator — bare names from the final fallback
+        // (e.g. "codex") are not real paths and must be resolved via shell.
+        let p = std::path::Path::new(&path);
+        if (p.is_absolute() || path.contains('/') || path.contains('\\')) && p.exists() {
             return Some(path);
         }
     }
@@ -769,18 +827,201 @@ fn check_binary_on_path(name: &str) -> Option<String> {
         &[
             "-lc",
             &format!(
-                "command -v {} 2>/dev/null || type {} 2>/dev/null",
+                "command -v {} 2>/dev/null || (type {} 2>/dev/null | grep -v 'not found')",
                 name, name
             ),
         ]
     };
     if let Ok(output) = std::process::Command::new(&shell).args(shell_args).output() {
         let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !s.is_empty() {
+        // Filter out shell error messages that leak to stdout (e.g. zsh `type` output)
+        if !s.is_empty() && !s.contains("not found") {
             return Some(s);
         }
     }
     None
+}
+
+fn current_platform_id() -> String {
+    if cfg!(target_os = "macos") {
+        "macos".into()
+    } else if cfg!(target_os = "windows") {
+        "windows".into()
+    } else {
+        "linux".into()
+    }
+}
+
+fn install_option(
+    id: &str,
+    label: &str,
+    command: Option<&str>,
+    description: &str,
+    recommended: bool,
+    platforms: &[&str],
+) -> InstallOption {
+    InstallOption {
+        id: id.into(),
+        label: label.into(),
+        command: command.map(|c| c.into()),
+        description: description.into(),
+        recommended,
+        platforms: platforms.iter().map(|p| (*p).into()).collect(),
+    }
+}
+
+fn cli_install_options(name: &str) -> Vec<InstallOption> {
+    let platform = current_platform_id();
+    match name {
+        "claude" => {
+            let script_supported = platform != "windows";
+            vec![
+                install_option(
+                    if script_supported {
+                        "official-script"
+                    } else {
+                        "npm"
+                    },
+                    if script_supported {
+                        "官方脚本"
+                    } else {
+                        "npm 全局安装"
+                    },
+                    Some(if script_supported {
+                        "curl -fsSL https://claude.ai/install.sh | bash"
+                    } else {
+                        "npm i -g @anthropic-ai/claude-code"
+                    }),
+                    if script_supported {
+                        "推荐用于 macOS/Linux，不假设 npm 全局目录。"
+                    } else {
+                        "推荐用于 Windows。"
+                    },
+                    true,
+                    &[&platform],
+                ),
+                install_option(
+                    if script_supported {
+                        "npm"
+                    } else {
+                        "official-docs"
+                    },
+                    if script_supported {
+                        "npm 全局安装"
+                    } else {
+                        "官方安装说明"
+                    },
+                    if script_supported {
+                        Some("npm i -g @anthropic-ai/claude-code")
+                    } else {
+                        None
+                    },
+                    if script_supported {
+                        "适合已经使用 Node/npm 管理 CLI 的用户。"
+                    } else {
+                        "如不使用 npm，请按 Claude Code 官方文档安装。"
+                    },
+                    false,
+                    &[&platform],
+                ),
+            ]
+        }
+        "codex" => {
+            let mut options = vec![install_option(
+                "npm",
+                "npm 全局安装",
+                Some("npm i -g @openai/codex"),
+                "适合已有 Node/npm 环境的用户。",
+                true,
+                &[&platform],
+            )];
+            if platform != "windows" {
+                options.push(install_option(
+                    "homebrew",
+                    "Homebrew 安装",
+                    Some("brew install codex"),
+                    "适合通过 Homebrew 管理 CLI 的 macOS/Linux 用户。",
+                    false,
+                    &[&platform],
+                ));
+            }
+            options.push(install_option(
+                "manual",
+                "手动安装",
+                None,
+                "如使用 pnpm、公司镜像或其他包管理器，请按你的环境安装并确保 codex 在 PATH 中。",
+                false,
+                &[&platform],
+            ));
+            options
+        }
+        "qoderclicn" => vec![
+            install_option(
+                "npm",
+                "npm 全局安装",
+                Some("npm i -g @qodercn-ai/qoderclicn"),
+                "沿用当前应用支持的 qoderclicn 命令名。",
+                true,
+                &[&platform],
+            ),
+            install_option(
+                "manual",
+                "官方/手动安装",
+                None,
+                "如你通过 Qoder 官方安装器或其他渠道安装，请确保 qoderclicn 在 PATH 中。",
+                false,
+                &[&platform],
+            ),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn recommended_install_cmd(options: &[InstallOption]) -> Option<String> {
+    options
+        .iter()
+        .find(|o| o.recommended)
+        .and_then(|o| o.command.clone())
+        .or_else(|| options.iter().find_map(|o| o.command.clone()))
+}
+
+fn cli_ok_item(name: &str, label: &str, path: String) -> EnvCheckItem {
+    EnvCheckItem {
+        name: name.into(),
+        label: label.into(),
+        status: "ok".into(),
+        severity: "ok".into(),
+        category: "cli".into(),
+        detail: path.clone(),
+        detected_path: Some(path),
+        install_options: None,
+        install_cmd: None,
+    }
+}
+
+fn cli_missing_item(name: &str, label: &str) -> EnvCheckItem {
+    let options = cli_install_options(name);
+    let install_cmd = recommended_install_cmd(&options);
+    let detail = match install_cmd.as_deref() {
+        Some(cmd) => format!("未安装，推荐: {}", cmd),
+        None => "未安装，请按官方说明安装并加入 PATH".into(),
+    };
+
+    EnvCheckItem {
+        name: name.into(),
+        label: label.into(),
+        status: "missing".into(),
+        severity: "warn".into(),
+        category: "cli".into(),
+        detail,
+        detected_path: None,
+        install_options: if options.is_empty() {
+            None
+        } else {
+            Some(options)
+        },
+        install_cmd,
+    }
 }
 
 #[tauri::command]
@@ -790,69 +1031,20 @@ pub fn check_environment() -> EnvCheckResult {
 
     // 1. Claude Code
     match check_binary_on_path("claude") {
-        Some(path) => items.push(EnvCheckItem {
-            name: "claude".into(),
-            label: "Claude Code".into(),
-            status: "ok".into(),
-            detail: path,
-            install_cmd: None,
-        }),
-        None => {
-            let (hint, install_cmd) = if cfg!(target_os = "windows") {
-                (
-                    "未安装 (npm i -g @anthropic-ai/claude-code)",
-                    "npm i -g @anthropic-ai/claude-code",
-                )
-            } else {
-                (
-                    "未安装 (curl -fsSL https://claude.ai/install.sh | bash)",
-                    "curl -fsSL https://claude.ai/install.sh | bash",
-                )
-            };
-            items.push(EnvCheckItem {
-                name: "claude".into(),
-                label: "Claude Code".into(),
-                status: "missing".into(),
-                detail: hint.into(),
-                install_cmd: Some(install_cmd.into()),
-            })
-        }
+        Some(path) => items.push(cli_ok_item("claude", "Claude Code", path)),
+        None => items.push(cli_missing_item("claude", "Claude Code")),
     }
 
     // 2. Codex
     match check_binary_on_path("codex") {
-        Some(path) => items.push(EnvCheckItem {
-            name: "codex".into(),
-            label: "Codex".into(),
-            status: "ok".into(),
-            detail: path,
-            install_cmd: None,
-        }),
-        None => items.push(EnvCheckItem {
-            name: "codex".into(),
-            label: "Codex".into(),
-            status: "missing".into(),
-            detail: "未安装 (npm i -g @openai/codex)".into(),
-            install_cmd: Some("npm i -g @openai/codex".into()),
-        }),
+        Some(path) => items.push(cli_ok_item("codex", "Codex", path)),
+        None => items.push(cli_missing_item("codex", "Codex")),
     }
 
     // 4. Qoder
     match check_binary_on_path("qoderclicn") {
-        Some(path) => items.push(EnvCheckItem {
-            name: "qoderclicn".into(),
-            label: "Qoder".into(),
-            status: "ok".into(),
-            detail: path,
-            install_cmd: None,
-        }),
-        None => items.push(EnvCheckItem {
-            name: "qoderclicn".into(),
-            label: "Qoder".into(),
-            status: "missing".into(),
-            detail: "未安装 (npm i -g @qodercn-ai/qoderclicn)".into(),
-            install_cmd: Some("npm i -g @qodercn-ai/qoderclicn".into()),
-        }),
+        Some(path) => items.push(cli_ok_item("qoderclicn", "Qoder", path)),
+        None => items.push(cli_missing_item("qoderclicn", "Qoder")),
     }
 
     // 6. Shell wrapper
@@ -897,11 +1089,23 @@ pub fn check_environment() -> EnvCheckResult {
             } else {
                 "warn".into()
             },
+            severity: if activated {
+                "ok".into()
+            } else {
+                "warn".into()
+            },
+            category: "shell".into(),
             detail: if activated {
                 "已激活".into()
             } else {
                 "已安装但未激活".into()
             },
+            detected_path: Some(if shell_rc.exists() {
+                shell_rc.display().to_string()
+            } else {
+                shell_rc_ps1.display().to_string()
+            }),
+            install_options: None,
             install_cmd: None,
         });
     } else {
@@ -909,11 +1113,15 @@ pub fn check_environment() -> EnvCheckResult {
             name: "shell-wrapper".into(),
             label: "Shell 集成".into(),
             status: "missing".into(),
+            severity: "warn".into(),
+            category: "shell".into(),
             detail: if cfg!(target_os = "windows") {
-                "未安装，请在终端运行 install.ps1".into()
+                "未安装，应用启动时会尝试自动写入 PowerShell 集成".into()
             } else {
-                "未安装，请在终端运行 install.sh".into()
+                "未安装，应用启动时会尝试自动写入 shell 集成".into()
             },
+            detected_path: None,
+            install_options: None,
             install_cmd: None,
         });
     }
@@ -927,7 +1135,11 @@ pub fn check_environment() -> EnvCheckResult {
                 name: "config".into(),
                 label: "配置文件".into(),
                 status: "ok".into(),
+                severity: "ok".into(),
+                category: "config".into(),
                 detail: config_file.display().to_string(),
+                detected_path: Some(config_file.display().to_string()),
+                install_options: None,
                 install_cmd: None,
             });
         } else {
@@ -935,7 +1147,11 @@ pub fn check_environment() -> EnvCheckResult {
                 name: "config".into(),
                 label: "配置文件".into(),
                 status: "warn".into(),
+                severity: "warn".into(),
+                category: "config".into(),
                 detail: "目录存在但无配置文件".into(),
+                detected_path: Some(config_dir.display().to_string()),
+                install_options: None,
                 install_cmd: None,
             });
         }
@@ -944,7 +1160,11 @@ pub fn check_environment() -> EnvCheckResult {
             name: "config".into(),
             label: "配置文件".into(),
             status: "missing".into(),
+            severity: "warn".into(),
+            category: "config".into(),
             detail: "目录不存在".into(),
+            detected_path: None,
+            install_options: None,
             install_cmd: None,
         });
     }
@@ -966,7 +1186,10 @@ mod tests {
         let path = find_binary(&["sh"]);
         assert!(path.is_some(), "find_binary should find 'sh'");
         let path = path.unwrap();
-        assert!(std::path::Path::new(&path).exists(), "returned path should exist");
+        assert!(
+            std::path::Path::new(&path).exists(),
+            "returned path should exist"
+        );
     }
 
     #[test]
@@ -977,9 +1200,35 @@ mod tests {
         // The bare-name fallback may still return a string, but it shouldn't
         // resolve to an actual file on disk
         if let Some(p) = &path {
-            assert!(!std::path::Path::new(p).exists(),
-                "bare-name fallback for nonexistent binary should not resolve to real file");
+            assert!(
+                !std::path::Path::new(p).exists(),
+                "bare-name fallback for nonexistent binary should not resolve to real file"
+            );
         }
+    }
+
+    #[test]
+    fn test_cli_missing_item_has_recommended_install_option() {
+        let item = cli_missing_item("codex", "Codex");
+        assert_eq!(item.status, "missing");
+        assert_eq!(item.severity, "warn");
+        assert_eq!(item.category, "cli");
+        assert!(item.install_cmd.is_some());
+        assert!(item
+            .install_options
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|o| o.recommended && o.command.is_some()));
+    }
+
+    #[test]
+    fn test_qoder_install_command_is_consistent() {
+        let item = cli_missing_item("qoderclicn", "Qoder");
+        assert_eq!(
+            item.install_cmd.as_deref(),
+            Some("npm i -g @qodercn-ai/qoderclicn")
+        );
     }
 
     // ── verify_sha256 ──────────────────────────────────────
@@ -993,7 +1242,11 @@ mod tests {
 
         // sha256 of "hello world\n"
         let expected = "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447";
-        let result = verify_sha256(file_path.to_string_lossy().to_string(), expected.to_string()).unwrap();
+        let result = verify_sha256(
+            file_path.to_string_lossy().to_string(),
+            expected.to_string(),
+        )
+        .unwrap();
         assert!(result, "verify_sha256 should return true for correct hash");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -1021,7 +1274,11 @@ mod tests {
     #[test]
     fn test_home_dir_returns_existing_path() {
         let home = crate::home_dir();
-        assert!(home.exists(), "home_dir should return an existing path: {:?}", home);
+        assert!(
+            home.exists(),
+            "home_dir should return an existing path: {:?}",
+            home
+        );
         assert!(home.is_absolute(), "home_dir should return absolute path");
     }
 
@@ -1030,7 +1287,11 @@ mod tests {
     #[test]
     fn test_backup_file_path() {
         let bak = backup_file();
-        assert!(bak.ends_with("config.yaml.bak"), "backup_file should end with config.yaml.bak, got: {:?}", bak);
+        assert!(
+            bak.ends_with("config.yaml.bak"),
+            "backup_file should end with config.yaml.bak, got: {:?}",
+            bak
+        );
     }
 
     #[test]
@@ -1046,7 +1307,10 @@ mod tests {
     fn temp_config_setup() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let guard = CRUD_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("CLAUDE_PROFILES_HOME", dir.path().to_string_lossy().to_string());
+        std::env::set_var(
+            "CLAUDE_PROFILES_HOME",
+            dir.path().to_string_lossy().to_string(),
+        );
         (guard, dir)
     }
 
@@ -1061,16 +1325,28 @@ mod tests {
         let (_guard, dir) = temp_config_setup();
 
         // Add profiles
-        assert!(add_profile("alpha".into(), Some("first".into())).unwrap().ok);
+        assert!(
+            add_profile("alpha".into(), Some("first".into()))
+                .unwrap()
+                .ok
+        );
         assert!(add_profile("beta".into(), None).unwrap().ok);
-        assert!(add_profile("gamma".into(), Some("third".into())).unwrap().ok);
+        assert!(
+            add_profile("gamma".into(), Some("third".into()))
+                .unwrap()
+                .ok
+        );
 
         // List
         let list = list_profiles().unwrap();
         assert_eq!(list.profiles.len(), 3);
 
         // Set env var
-        assert!(set_env_var("alpha".into(), "KEY1".into(), "val1".into()).unwrap().ok);
+        assert!(
+            set_env_var("alpha".into(), "KEY1".into(), "val1".into())
+                .unwrap()
+                .ok
+        );
         let detail = show_profile("alpha".into()).unwrap();
         assert_eq!(detail.env.get("KEY1"), Some(&"val1".to_string()));
 
@@ -1092,5 +1368,4 @@ mod tests {
 
         cleanup_config(dir);
     }
-
 }

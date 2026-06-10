@@ -1,23 +1,27 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { EnvVarTable } from "./EnvVarTable";
 import { Badge } from "./common/Badge";
-import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock, FolderOpen, Trash2, BookOpen, ChevronDown, ChevronRight } from "lucide-react";
-import type { ProfileDetail } from "../lib/types";
+import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock, FolderOpen, Trash2, BookOpen, ChevronDown, ChevronRight, AlertTriangle, Download } from "lucide-react";
+import type { ProfileDetail, EnvCheckResult } from "../lib/types";
+import { recommendedInstallCommand } from "../lib/types";
 import { parseAiCmd } from "../hooks/useTerminal";
 import type { SessionRecord } from "../hooks/useTerminal";
 import { shortenPath } from "../lib/path-utils";
 import { formatShortcut } from "../utils/shortcut";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { OnboardingWizard } from "./OnboardingWizard";
+
 interface MainPanelProps {
   profile: ProfileDetail | null;
   hasProfiles: boolean;
   showWelcome: boolean;
   allTags: string[];
   history: SessionRecord[];
+  envCheck?: EnvCheckResult;
   onSetEnv: (key: string, value: string) => Promise<void>;
   onDeleteEnv: (key: string) => Promise<void>;
   onPasteCommand: (command: string) => void;
+  onSplitCommand?: (command: string) => void;
   onRenameProfile: (name: string) => void;
   onResumeSession: (record: SessionRecord) => void;
   onNewSessionFromHistory: (record: SessionRecord) => void;
@@ -261,16 +265,26 @@ function CommandBlock({
   commands,
   profileName,
   onPaste,
+  onSplit,
+  envCheck,
 }: {
   commands: { label: string; cmd: string }[];
   profileName: string;
   onPaste: (cmd: string) => void;
+  onSplit?: (cmd: string) => void;
+  envCheck?: EnvCheckResult;
 }) {
   const { copied, copy } = useCopy();
 
   // Extract tool ID from first command for breakdown display
   const toolId = commands.length > 0 ? commands[0].cmd.split(/\s+/)[1] ?? null : null;
   const toolDisplayName = toolId ? (TOOL_DISPLAY_NAMES[toolId] ?? toolId) : null;
+
+  // Check if the tool is installed
+  const toolItem = toolId ? envCheck?.items?.find((item) => item.name === toolId) : null;
+  const toolMissing = !!toolItem && toolItem.status !== "ok";
+  const toolInstallCmd = toolItem ? recommendedInstallCommand(toolItem) : null;
+  const toolMissingHint = toolItem?.detail || (toolId ? `未安装 ${TOOL_DISPLAY_NAMES[toolId] ?? toolId}` : "未安装 CLI 工具");
 
   return (
     <div className="mt-3 bg-[var(--app-cmd-bg)] select-none border-y border-app-border">
@@ -283,6 +297,33 @@ function CommandBlock({
           <span className="text-2xs text-app-text-muted">— {profileName}</span>
         </div>
       </div>
+
+      {/* Tool not installed warning */}
+      {toolMissing && (
+        <div className="px-3 py-2 border-b border-app-border bg-[var(--app-warn-bg)] flex items-start gap-2">
+          <AlertTriangle size={14} className="text-app-amber shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <span className="text-xs text-app-amber font-medium">{toolMissingHint}</span>
+            {toolInstallCmd && (
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <code className="text-2xs text-app-text-dim bg-[var(--app-cmd-bg)] px-1.5 py-0.5 border border-app-border font-mono select-all truncate block">
+                  {toolInstallCmd}
+                </code>
+                <button
+                  onClick={() => copy(toolInstallCmd)}
+                  className="p-1 text-app-text-dim hover:text-app-accent shrink-0"
+                  title="复制安装命令"
+                >
+                  <Copy size={12} />
+                </button>
+              </div>
+            )}
+            <p className="text-2xs text-app-text-muted mt-1">
+              安装后重启应用即可在终端中使用
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="px-3 py-2 space-y-1">
         {commands.map(({ label, cmd }) => {
@@ -300,17 +341,28 @@ function CommandBlock({
                 </code>
               </div>
               <div className="flex items-center gap-0.5 shrink-0 ml-2">
-                <button
-                  onClick={() => onPaste(cmd)}
-                  className="flex items-center justify-center gap-1 w-[52px] py-0.5 text-2xs
-                    text-app-text-dim hover:text-app-green
-                    border border-transparent hover:border-app-border
-                    bg-transparent hover:bg-[var(--app-hover)]"
-                  title="在终端中运行"
-                >
-                  <Play size={11} />
-                  <span>运行</span>
-                </button>
+                <div className="relative group/run">
+                  <button
+                    onClick={(e) => { if (e.altKey && onSplit) onSplit(cmd); else onPaste(cmd); }}
+                    className="flex items-center justify-center gap-1 w-[52px] py-0.5 text-2xs
+                      text-app-text-dim hover:text-app-green
+                      border border-transparent hover:border-app-border
+                      bg-transparent hover:bg-[var(--app-hover)]"
+                  >
+                    <Play size={11} />
+                    <span>运行</span>
+                  </button>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1
+                    bg-[var(--app-panel)] text-[var(--app-text)] text-2xs
+                    border border-[var(--app-border)] shadow-dialog
+                    whitespace-nowrap pointer-events-none
+                    opacity-0 group-hover/run:opacity-100
+                    transition-opacity duration-150 delay-700
+                    group-hover/run:delay-700">
+                    <span>在终端中运行</span>
+                    <span className="text-[var(--app-text-muted)] ml-1">Alt+Click 分屏运行</span>
+                  </div>
+                </div>
                 <button
                   onClick={() => copy(cmd)}
                   className="flex items-center justify-center gap-1 w-[52px] py-0.5 text-2xs
@@ -588,7 +640,7 @@ function TagsRow({ profile, allTags, onSetTags }: { profile: ProfileDetail; allT
 }
 
 /* ── MainPanel ──────────────────────────────────────────── */
-export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history, onSetEnv, onDeleteEnv, onPasteCommand, onRenameProfile, onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearProfileHistory, onInit, onSetTags, onAdd }: MainPanelProps) {
+export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history, envCheck, onSetEnv, onDeleteEnv, onPasteCommand, onSplitCommand, onRenameProfile, onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearProfileHistory, onInit, onSetTags, onAdd }: MainPanelProps) {
   if (showWelcome) return (
     <OnboardingWizard
       hasProfiles={hasProfiles}
@@ -650,7 +702,7 @@ export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history,
       <UsageGuide />
 
       <CommandBlock commands={commands} profileName={profile.name}
-        onPaste={onPasteCommand} />
+        onPaste={onPasteCommand} onSplit={onSplitCommand} envCheck={envCheck} />
 
       {/* History + Env table — share remaining space */}
       <div className="flex-1 flex flex-col min-h-0 mt-3">

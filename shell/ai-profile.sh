@@ -127,11 +127,41 @@ _interactive_pick() {
     fi
 }
 
+# ── Tool install hints ────────────────────────────────────────
+_tool_install_hint() {
+    case "$1" in
+        claude) echo "npm i -g @anthropic-ai/claude-code 或 curl -fsSL https://claude.ai/install.sh | bash" ;;
+        codex)  echo "npm i -g @openai/codex" ;;
+        qoderclicn) echo "请参考 Qoder 官方安装文档" ;;
+        *)      echo "请确认 $1 已正确安装并在 PATH 中" ;;
+    esac
+}
+
+# ── Check if a CLI tool is available ──────────────────────────
+_check_tool() {
+    local tool="$1"
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "" >&2
+        echo "╔══════════════════════════════════════════════════════════════╗" >&2
+        echo "║  ERROR: $tool 未找到                                      ║" >&2
+        echo "╠══════════════════════════════════════════════════════════════╣" >&2
+        echo "║                                                              ║" >&2
+        printf "║  安装: %-52s ║\n" "$(_tool_install_hint "$tool")" >&2
+        echo "║                                                              ║" >&2
+        echo "╚══════════════════════════════════════════════════════════════╝" >&2
+        echo "" >&2
+        return 1
+    fi
+    return 0
+}
+
 # ── Launch tool with profile env injected ──
 _ai_launch_with_profile() {
     local tool="$1"
     local profile_name="$2"
     shift 2
+
+    _check_tool "$tool" || return 127
 
     local env_output
     env_output=$(_profile_env "$profile_name")

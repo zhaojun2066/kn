@@ -1,14 +1,16 @@
 import React, { useRef, useEffect, useCallback, useState } from "react";
-import { X, Plus, FolderOpen, Clock, Trash2, Play, Minus, Maximize2, Minimize2, Search, ChevronUp, ChevronDown, Copy, CopyCheck, Palette } from "lucide-react";
+import { X, Plus, FolderOpen, Clock, Trash2, Play, Minus, Maximize2, Minimize2, Search, ChevronUp, ChevronDown, Copy, CopyCheck, Palette, SplitSquareVertical, SplitSquareHorizontal } from "lucide-react";
 
 
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
-import { XTerm, XTermHandle } from "./XTerm";
+import { XTermHandle } from "./XTerm";
+import { PaneSplitter } from "./PaneSplitter";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu } from "./ContextMenu";
 import type { Terminal } from "@xterm/xterm";
+import { flattenPanes, type PaneNode, type SplitDirection, type NavDirection } from "../lib/pane-types";
 import type { SessionRecord } from "../hooks/useTerminal";
-import { formatShortcut } from "../utils/shortcut";
+import { formatShortcut, isMac } from "../utils/shortcut";
 import { shortenPath } from "../lib/path-utils";
 import { TERMINAL_THEMES, loadTerminalTheme, saveTerminalTheme, isThemeSync, setThemeSync } from "../lib/terminalThemes";
 
@@ -17,6 +19,10 @@ interface TabInfo {
   name: string;
   workDir: string;
   ptyRunning: boolean;
+  // Pane tree fields (for split-pane support)
+  rootNode: PaneNode;
+  activePaneId: string;
+  zoomedPaneId: string | null;
 }
 
 interface TerminalPanelProps {
@@ -28,7 +34,7 @@ interface TerminalPanelProps {
   tabs: TabInfo[];
   activeTabId: string;
   history: SessionRecord[];
-  onAttachTerminal: (tabId: string, term: Terminal) => void;
+  onAttachTerminal: (paneId: string, term: Terminal) => void;
   onClose: () => void;
   onSwitchTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
@@ -36,47 +42,21 @@ interface TerminalPanelProps {
   onCloseToRight: (tabId: string) => void;
   onNewTab: () => void;
   onSetWorkDir: (tabId: string, dir: string) => void;
-  onTerminalReady?: (tabId: string) => void;
-  onTerminalResize?: (tabId: string, cols: number, rows: number) => void;
+  onTerminalReady?: (paneId: string) => void;
+  onTerminalResize?: (paneId: string, cols: number, rows: number) => void;
   fontSize: number;
   onSetFontSize: (size: number) => void;
   onResumeSession: (record: SessionRecord) => void;
   onNewSessionFromHistory: (record: SessionRecord) => void;
   onDeleteHistory: (id: string) => void;
   onClearHistory: () => void;
-}
-
-/* ── Per-tab XTerm wrapper ──────────────────────────────── */
-function TabTerminal({ tabId, onAttach, onReady, onResize, fontSize, onXTermHandle, themeName }: {
-  tabId: string;
-  onAttach: (term: Terminal) => void;
-  onReady?: () => void;
-  onResize?: (cols: number, rows: number) => void;
-  fontSize?: number;
-  onXTermHandle?: (tabId: string, handle: XTermHandle | null) => void;
-  themeName?: string;
-}) {
-  const xtermRef = useRef<XTermHandle>(null);
-  const attached = useRef(false);
-
-  const handleTerminal = useCallback((term: Terminal) => {
-    if (!attached.current) {
-      attached.current = true;
-      onAttach(term);
-      if (onXTermHandle) onXTermHandle(tabId, xtermRef.current);
-    }
-  }, [onAttach, onXTermHandle, tabId]);
-
-  useEffect(() => {
-    attached.current = false;
-    // Notify parent of the handle on mount
-    if (onXTermHandle && xtermRef.current) {
-      onXTermHandle(tabId, xtermRef.current);
-    }
-    return () => { if (onXTermHandle) onXTermHandle(tabId, null); };
-  }, [tabId]);
-
-  return <XTerm ref={xtermRef} onTerminal={handleTerminal} onReady={onReady} onResize={onResize} fontSize={fontSize} themeName={themeName} />;
+  // Pane operations
+  onSplitPane: (tabId: string, direction: SplitDirection, workDir?: string, paneId?: string) => void;
+  onClosePane: (tabId: string, paneId?: string) => void;
+  onFocusPane: (tabId: string, paneId: string) => void;
+  onNavigatePane: (tabId: string, direction: NavDirection) => void;
+  onCyclePane: (tabId: string, forward: boolean) => void;
+  onZoomPane: (tabId: string) => void;
 }
 
 /* ── Format relative time ───────────────────────────────── */
@@ -100,9 +80,10 @@ export function TerminalPanel({
   onSetWorkDir, onTerminalReady, onTerminalResize,
   fontSize, onSetFontSize,
   onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearHistory,
+  onSplitPane, onClosePane, onFocusPane, onNavigatePane, onCyclePane, onZoomPane,
 }: TerminalPanelProps) {
   const activeTab = tabs.find((t) => t.id === activeTabId);
-  const runningCount = tabs.filter((t) => t.ptyRunning).length;
+  const runningCount = tabs.reduce((sum, tab) => sum + flattenPanes(tab.rootNode).filter((l) => l.ptyRunning).length, 0);
   const maximizeTip = `${maximized ? "还原" : "最大化"} (${formatShortcut("mod+⇧M")})`;
   const [showHistory, setShowHistory] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
@@ -132,6 +113,17 @@ export function TerminalPanel({
     e.preventDefault();
     setCtxMenu({ x: e.clientX, y: e.clientY, tabId });
   };
+
+  // ── Pane context menu ───────────────────────────────────
+  const [paneCtxMenu, setPaneCtxMenu] = useState<{
+    x: number; y: number; tabId: string; paneId: string;
+  } | null>(null);
+
+  const handlePaneContextMenu = useCallback((tabId: string, paneId: string, e: React.MouseEvent) => {
+    // Focus the right-clicked pane immediately for visual feedback
+    onFocusPane(tabId, paneId);
+    setPaneCtxMenu({ x: e.clientX, y: e.clientY, tabId, paneId });
+  }, [onFocusPane]);
 
   const handleCopyPath = async (tabId: string) => {
     const tab = tabs.find((t) => t.id === tabId);
@@ -167,27 +159,31 @@ export function TerminalPanel({
     } catch { /* */ }
   };
 
-  // ── XTerm handle tracking (for search addon access) ─────
-  const handleXTermRef = useCallback((tabId: string, handle: XTermHandle | null) => {
+  // ── XTerm handle tracking (for search addon access, keyed by paneId) ──
+  const handleXTermRef = useCallback((paneId: string, handle: XTermHandle | null) => {
     if (handle) {
-      xtermHandlesRef.current.set(tabId, handle);
+      xtermHandlesRef.current.set(paneId, handle);
     } else {
-      xtermHandlesRef.current.delete(tabId);
+      xtermHandlesRef.current.delete(paneId);
     }
   }, []);
 
+  // Active pane for the current tab (for search targeting)
+  const activePaneId = activeTab?.activePaneId || "";
+  const activeRootNode = activeTab?.rootNode;
+
   // ── Search actions ──────────────────────────────────────
   const openSearch = useCallback(() => {
-    const handle = xtermHandlesRef.current.get(activeTabId);
+    const handle = xtermHandlesRef.current.get(activePaneId);
     const searchAddon = handle?.getSearchAddon();
     if (!searchAddon) return;
     setShowSearch(true);
     setSearchMatchIndex(0);
     setTimeout(() => searchInputRef.current?.focus(), 50);
-  }, [activeTabId]);
+  }, [activePaneId]);
 
   const doSearch = useCallback((term: string) => {
-    const handle = xtermHandlesRef.current.get(activeTabId);
+    const handle = xtermHandlesRef.current.get(activePaneId);
     const searchAddon = handle?.getSearchAddon();
     if (!searchAddon) return;
     if (!term) {
@@ -200,10 +196,10 @@ export function TerminalPanel({
       const result = searchAddon.findNext(term, { incremental: true });
       setSearchMatchIndex(result ? 1 : 0);
     } catch { /* search addon may throw on empty/invalid patterns */ }
-  }, [activeTabId]);
+  }, [activePaneId]);
 
   const findNext = useCallback(() => {
-    const handle = xtermHandlesRef.current.get(activeTabId);
+    const handle = xtermHandlesRef.current.get(activePaneId);
     const searchAddon = handle?.getSearchAddon();
     if (!searchAddon || !searchTerm) return;
     try {
@@ -215,10 +211,10 @@ export function TerminalPanel({
         });
       }
     } catch { /* */ }
-  }, [activeTabId, searchTerm]);
+  }, [activePaneId, searchTerm]);
 
   const findPrevious = useCallback(() => {
-    const handle = xtermHandlesRef.current.get(activeTabId);
+    const handle = xtermHandlesRef.current.get(activePaneId);
     const searchAddon = handle?.getSearchAddon();
     if (!searchAddon || !searchTerm) return;
     try {
@@ -230,84 +226,153 @@ export function TerminalPanel({
         });
       }
     } catch { /* */ }
-  }, [activeTabId, searchTerm]);
+  }, [activePaneId, searchTerm]);
 
   const closeSearch = useCallback(() => {
     setShowSearch(false);
-    const handle = xtermHandlesRef.current.get(activeTabId);
+    const handle = xtermHandlesRef.current.get(activePaneId);
     try { handle?.getSearchAddon()?.clearDecorations(); } catch { /* */ }
     setSearchTerm("");
     setSearchMatchIndex(0);
-  }, [activeTabId]);
+  }, [activePaneId]);
 
-  // ── Keyboard listener for Cmd/Ctrl+F ────────────────────
+  // ── Keyboard listener: Cmd/Ctrl+F search + pane shortcuts ──
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        // Check if focus is inside this terminal panel's DOM tree
-        const el = document.activeElement as HTMLElement | null;
-        const panel = el?.closest("[data-panel]") as HTMLElement | null;
-        const matchMode = panel?.dataset.panel === mode;
-        // Also check: is any xterm element inside this panel focused?
-        // xterm.js textarea may not always register in closest() chain
-        const xtermInPanel = el?.closest(".xterm") && el?.closest(`[data-panel="${mode}"]`);
-        if (matchMode || xtermInPanel) {
+      const mod = e.metaKey || e.ctrlKey;
+      const paneMod = isMac() && e.metaKey;
+
+      // Check if focus is inside this terminal panel's DOM tree
+      const el = document.activeElement as HTMLElement | null;
+      const panel = el?.closest("[data-panel]") as HTMLElement | null;
+      const matchMode = panel?.dataset.panel === mode;
+      const xtermInPanel = el?.closest(".xterm") && el?.closest(`[data-panel="${mode}"]`);
+      const isInPanel = matchMode || xtermInPanel;
+
+      // Cmd+F — search (only in this panel)
+      if (mod && e.key === "f") {
+        if (isInPanel) {
           e.preventDefault();
           e.stopPropagation();
           openSearch();
           return;
         }
-        // Fallback: if this TerminalPanel has mounted tabs, allow Cmd+F
-        // even without strict focus match (e.g., focus just landed on terminal bg)
         if (tabs.length > 0 && !el?.closest("[data-panel]")) {
-          // Focus is outside any panel — don't steal Cmd+F (browser find, etc.)
           return;
         }
       }
+
+      // Escape — close search
       if (e.key === "Escape" && showSearch) {
         e.preventDefault();
         closeSearch();
+        return;
+      }
+
+      // ── Pane shortcuts (only when focus is in this panel) ──
+      if (!isInPanel) return;
+      if (!activeTabId) return;
+
+      // Cmd+D — split horizontally (left/right)
+      if (paneMod && !e.shiftKey && e.code === "KeyD") {
+        e.preventDefault();
+        e.stopPropagation();
+        onSplitPane(activeTabId, "horizontal");
+        return;
+      }
+      // Cmd+\ or Cmd+Shift+D — split vertically (top/bottom).
+      // Cmd+Shift+D is intercepted by some browsers ("Bookmark All Tabs"),
+      // so Cmd+\ is the primary shortcut (VS Code convention).
+      if (paneMod && !e.shiftKey && e.code === "Backslash") {
+        e.preventDefault();
+        e.stopPropagation();
+        onSplitPane(activeTabId, "vertical");
+        return;
+      }
+      if (paneMod && e.shiftKey && e.code === "KeyD") {
+        e.preventDefault();
+        e.stopPropagation();
+        onSplitPane(activeTabId, "vertical");
+        return;
+      }
+      // Cmd+W — close active pane
+      if (paneMod && !e.shiftKey && e.code === "KeyW") {
+        e.preventDefault();
+        e.stopPropagation();
+        onClosePane(activeTabId);
+        return;
+      }
+      // Cmd+Opt+Arrow — navigate by direction
+      if (paneMod && e.altKey && e.key.startsWith("Arrow")) {
+        e.preventDefault();
+        e.stopPropagation();
+        const dirMap: Record<string, NavDirection> = {
+          ArrowUp: "up", ArrowDown: "down",
+          ArrowLeft: "left", ArrowRight: "right",
+        };
+        const dir = dirMap[e.key];
+        if (dir) onNavigatePane(activeTabId, dir);
+        return;
+      }
+      // Cmd+] / Cmd+[ — cycle panes
+      if (paneMod && e.key === "]") {
+        e.preventDefault();
+        e.stopPropagation();
+        onCyclePane(activeTabId, true);
+        return;
+      }
+      if (paneMod && e.key === "[") {
+        e.preventDefault();
+        e.stopPropagation();
+        onCyclePane(activeTabId, false);
+        return;
+      }
+      // Cmd+Shift+Enter — toggle zoom
+      if (paneMod && e.shiftKey && e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        onZoomPane(activeTabId);
+        return;
       }
     };
     window.addEventListener("keydown", handler, true); // capture phase to beat xterm.js
     return () => window.removeEventListener("keydown", handler, true);
-  }, [mode, openSearch, showSearch, closeSearch, tabs.length]);
+  }, [mode, openSearch, showSearch, closeSearch, tabs.length, activeTabId, onSplitPane, onClosePane, onNavigatePane, onCyclePane, onZoomPane]);
 
-  // Sync search when active tab changes
+  // Sync search when active tab/pane changes
   useEffect(() => {
     if (showSearch) {
-      // Re-sync search term with new tab's search addon
       if (searchTerm) doSearch(searchTerm);
       else closeSearch();
     }
-  }, [activeTabId]);
+  }, [activeTabId, activePaneId]);
 
-  // When panel size, maximize state, visibility, or active tab changes,
-  // force the terminal to re-fit. Double requestAnimationFrame ensures the
-  // browser has finished layout before we read getBoundingClientRect() inside
-  // fit(). This is more reliable than dispatching a synthetic "resize" event,
-  // which can fire before layout settles.
+  // When panel size, maximize state, visibility, or pane layout changes,
+  // force every visible pane in the active tab to re-fit. Full-screen TUIs
+  // such as Claude need all affected PTYs to receive the new cols/rows.
   useEffect(() => {
     let cancelled = false;
     requestAnimationFrame(() => {
       if (cancelled) return;
       requestAnimationFrame(() => {
         if (cancelled) return;
-        const handle = xtermHandlesRef.current.get(activeTabId);
-        handle?.fit();
+        if (!activeRootNode) return;
+        for (const leaf of flattenPanes(activeRootNode)) {
+          xtermHandlesRef.current.get(leaf.paneId)?.fit();
+        }
       });
     });
     return () => { cancelled = true; };
-  }, [size, maximized, visible, activeTabId]);
+  }, [size, maximized, visible, activeTabId, activePaneId, activeRootNode]);
 
   const isBottom = mode === "bottom";
 
-  // When not visible, collapse the panel to zero size while keeping XTerm mounted.
-  // This preserves the terminal buffer so re-show doesn't show a black/blank screen.
+  // When not visible, collapse the panel to zero — belt-and-suspenders:
+  // height/maxHeight/minHeight all set to 0 to override any flex or child min-size.
   const containerStyle: React.CSSProperties = !visible
     ? (isBottom
-      ? { height: 0, overflow: "hidden", border: "none" }
-      : { width: 0, overflow: "hidden", border: "none" })
+      ? { height: 0, maxHeight: 0, minHeight: 0, overflow: "hidden", border: "none" }
+      : { width: 0, maxWidth: 0, minWidth: 0, overflow: "hidden", border: "none" })
     : maximized
       ? {}
       : (isBottom
@@ -596,7 +661,21 @@ export function TerminalPanel({
       </div>
 
       {/* Terminal area — all tabs mounted, inactive hidden via visibility (not display:none) */}
-      <div className="flex-1 relative bg-[var(--app-terminal-bg)]">
+      <div
+        className="flex-1 relative bg-[var(--app-terminal-bg)]"
+        onMouseUp={(e) => {
+          // After any click in the terminal area, refocus the active xterm
+          // textarea so Cmd+W always reaches our keydown handler.
+          // (Clicking header buttons steals focus from xterm, causing Cmd+W
+          // to be intercepted by Tauri/macOS as "Close Window".)
+          const target = e.target as HTMLElement;
+          if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+          const handle = xtermHandlesRef.current.get(activePaneId);
+          if (handle) {
+            requestAnimationFrame(() => handle.focus());
+          }
+        }}
+      >
         {/* Search bar overlay */}
         {showSearch && (
           <div className="absolute top-0 right-0 z-20 flex items-center gap-1 px-2 py-1
@@ -656,16 +735,22 @@ export function TerminalPanel({
               key={tab.id}
               className="absolute inset-0"
               style={{
-                visibility: isActive ? "visible" : "hidden",
-                pointerEvents: isActive ? "auto" : "none",
+                display: isActive ? undefined : "none",
               }}
             >
-              <TabTerminal tabId={tab.id} onAttach={(term) => onAttachTerminal(tab.id, term)}
-                onReady={onTerminalReady ? () => onTerminalReady(tab.id) : undefined}
-                onResize={onTerminalResize ? (cols, rows) => onTerminalResize(tab.id, cols, rows) : undefined}
+              <PaneSplitter
+                node={tab.rootNode}
+                activePaneId={tab.activePaneId}
+                zoomedPaneId={tab.zoomedPaneId}
                 fontSize={fontSize}
                 themeName={themeName}
-                onXTermHandle={handleXTermRef} />
+                onAttach={onAttachTerminal}
+                onReady={onTerminalReady}
+                onResize={onTerminalResize}
+                onFocus={(paneId) => onFocusPane(tab.id, paneId)}
+                onXTermHandle={handleXTermRef}
+                onPaneContextMenu={(paneId, e) => handlePaneContextMenu(tab.id, paneId, e)}
+              />
             </div>
           );
         })}
@@ -697,6 +782,42 @@ export function TerminalPanel({
           ]}
         />
       )}
+
+      {/* Pane context menu */}
+      {paneCtxMenu && (() => {
+        const tab = tabs.find(t => t.id === paneCtxMenu.tabId);
+        const leafCount = tab ? flattenPanes(tab.rootNode).length : 1;
+        const isZoomed = tab?.zoomedPaneId != null;
+
+        return (
+          <ContextMenu
+            x={paneCtxMenu.x} y={paneCtxMenu.y}
+            onClose={() => setPaneCtxMenu(null)}
+            items={[
+              {
+                label: "水平分割 (左右)",
+                icon: <SplitSquareVertical size={13} />,
+                onClick: () => onSplitPane(paneCtxMenu.tabId, "horizontal", undefined, paneCtxMenu.paneId),
+                disabled: isZoomed,
+              },
+              {
+                label: "垂直分割 (上下)",
+                icon: <SplitSquareHorizontal size={13} />,
+                onClick: () => onSplitPane(paneCtxMenu.tabId, "vertical", undefined, paneCtxMenu.paneId),
+                disabled: isZoomed,
+              },
+              { separator: true },
+              {
+                label: "关闭终端",
+                icon: <X size={13} />,
+                onClick: () => onClosePane(paneCtxMenu.tabId, paneCtxMenu.paneId),
+                danger: true,
+                disabled: leafCount <= 1,
+              },
+            ]}
+          />
+        );
+      })()}
 
       <ConfirmDialog
         open={!!closingTabId}

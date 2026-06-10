@@ -3,6 +3,8 @@ import { X, ChevronRight, ChevronLeft, Check, Terminal, Trash2, Play, Copy, Down
 import { Button } from "./common/Button";
 import { CLIIcon } from "./common/CLIIcon";
 import { CLI_TOOLS, CLIToolDef, ProviderPreset, getToolById, getEnvTemplate, getEnvVarDef } from "../lib/provider-presets";
+import type { EnvCheckResult } from "../lib/types";
+import { recommendedInstallCommand } from "../lib/types";
 import { detectKeyFormat } from "../lib/key-format-detector";
 
 interface ProfileDialogProps {
@@ -10,14 +12,15 @@ interface ProfileDialogProps {
   onClose: () => void;
   onAdd: (name: string, desc: string | undefined, env: Record<string, string>) => Promise<void>;
   onRunCommand?: (cmd: string) => void;
+  onSplitCommand?: (cmd: string) => void;
   onInstallTool?: (cmd: string) => void;
   allTags?: string[];
   existingNames?: string[];
-  envCheck?: { items: { name: string; label: string; status: string; detail: string; install_cmd?: string }[]; all_ok: boolean } | null;
+  envCheck?: EnvCheckResult;
 }
 
 /* ── ProfileDialog ──────────────────────────────────────── */
-export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onInstallTool, allTags = [], existingNames = [], envCheck }: ProfileDialogProps) {
+export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitCommand, onInstallTool, allTags = [], existingNames = [], envCheck }: ProfileDialogProps) {
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
@@ -44,13 +47,13 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onInstallToo
   if (!open) return null;
 
   /* ── Tool availability from env check ──────────────────────── */
-  const toolStatusMap: Record<string, { installed: boolean; installCmd?: string }> = {};
+  const toolStatusMap: Record<string, { installed: boolean; installCmd?: string | null }> = {};
   if (envCheck) {
     for (const item of envCheck.items) {
       if (CLI_TOOLS.some((t) => t.id === item.name)) {
         toolStatusMap[item.name] = {
           installed: item.status === "ok",
-          installCmd: item.install_cmd,
+          installCmd: recommendedInstallCommand(item),
         };
       }
     }
@@ -519,8 +522,9 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onInstallToo
                     </div>
                     <div className="flex items-center gap-0.5 opacity-0 group-hover/item:opacity-100 shrink-0 ml-2">
                       {onRunCommand && (
-                        <button onClick={() => { onRunCommand(cmd); onClose(); }}
-                          className="flex items-center gap-1 px-2 py-0.5 text-2xs text-app-text-dim hover:text-app-green border border-transparent hover:border-app-border bg-transparent hover:bg-[var(--app-hover)]">
+                        <button onClick={(e) => { if (e.altKey && onSplitCommand) { onSplitCommand(cmd); } else { onRunCommand(cmd); } onClose(); }}
+                          className="flex items-center gap-1 px-2 py-0.5 text-2xs text-app-text-dim hover:text-app-green border border-transparent hover:border-app-border bg-transparent hover:bg-[var(--app-hover)]"
+                          title="运行 (Alt+Click 分屏到当前终端)">
                           <Play size={10} />运行
                         </button>
                       )}

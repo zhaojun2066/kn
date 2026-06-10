@@ -8,6 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 
 export interface XTermHandle {
   fit: () => void;
+  focus: () => void;
   getSearchAddon: () => SearchAddon | null;
 }
 
@@ -44,17 +45,12 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
     const rect = containerRef.current.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       try { fitAddonRef.current.fit(); } catch { /* */ }
-      // Force full viewport re-render after resize.
-      // Without this, shrink→expand cycles can leave the cursor/input positioned
-      // below the visible TUI area — the canvas resizes but doesn't fully sync.
-      termRef.current?.refresh(0, termRef.current.rows - 1);
       // Fire onReady once after first successful fit
       if (!readyFiredRef.current && onReadyRef.current) {
         readyFiredRef.current = true;
         onReadyRef.current();
       }
       // Notify PTY immediately — same frame, like Tabby / Terminal.app.
-      // The kernel handles coalescing of frequent TIOCSWINSZ calls during rapid resize.
       if (onResizeRef.current && termRef.current) {
         const cols = termRef.current.cols;
         const rows = termRef.current.rows;
@@ -63,7 +59,11 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
     }
   }, []);  // deps via refs — fit stays stable across renders, ResizeObserver never torn down
 
-  useImperativeHandle(ref, () => ({ fit, getSearchAddon: () => searchAddonRef.current }), [fit]);
+  useImperativeHandle(ref, () => ({
+    fit,
+    focus: () => termRef.current?.focus(),
+    getSearchAddon: () => searchAddonRef.current,
+  }), [fit]);
 
   // Initial mount
   useEffect(() => {
@@ -128,6 +128,11 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
   }, []);
 
   // Resize: ResizeObserver + window resize — RAF coalesced, no artificial delay.
+  // fit() runs in the same animation frame as the resize event. xterm.js does
+  // NOT reflow alternate screen buffer content. SIGWINCH is sent immediately
+  // after fit() — Claude redraws at the new dimensions on its next frame.
+  // The `refresh(0, rows-1)` that was here before has been removed — it forcibly
+  // re-rendered every row, destroying alternate-buffer escape sequences.
   useEffect(() => {
     if (!containerRef.current) return;
     let pending = false;

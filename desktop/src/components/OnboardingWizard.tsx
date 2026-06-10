@@ -3,20 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { formatShortcut } from "../utils/shortcut";
 import { Terminal, Check, X as XIcon, AlertTriangle, ChevronRight, ChevronLeft, Search, Plus, Play } from "lucide-react";
 import { Button } from "./common/Button";
+import type { EnvCheckItem, EnvCheckResult } from "../lib/types";
+import { itemSeverity } from "../lib/types";
 
 // ── Types ──────────────────────────────────────────────────
-
-interface EnvCheckItem {
-  name: string;
-  label: string;
-  status: "ok" | "warn" | "missing";
-  detail: string;
-}
-
-interface EnvCheckResult {
-  items: EnvCheckItem[];
-  all_ok: boolean;
-}
 
 interface OnboardingWizardProps {
   hasProfiles: boolean;
@@ -25,11 +15,12 @@ interface OnboardingWizardProps {
   onDismiss?: () => void;
 }
 
-// ── Status icon ────────────────────────────────────────────
-function StatusIcon({ status }: { status: EnvCheckItem["status"] }) {
-  if (status === "ok") return <Check size={13} className="text-app-green" />;
-  if (status === "warn") return <AlertTriangle size={13} className="text-app-amber" />;
-  return <XIcon size={13} className="text-app-red" />;
+function StatusIconForItem({ item }: { item: EnvCheckItem }) {
+  const severity = itemSeverity(item);
+  if (severity === "ok") return <Check size={13} className="text-app-green" />;
+  if (severity === "warn") return <AlertTriangle size={13} className="text-app-amber" />;
+  if (severity === "error") return <XIcon size={13} className="text-app-red" />;
+  return <AlertTriangle size={13} className="text-app-text-muted" />;
 }
 
 // ── Step indicators ────────────────────────────────────────
@@ -130,12 +121,12 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
               ) : envCheck ? (
                 envCheck.items.map((item) => (
                   <div key={item.name} className="flex items-center gap-2.5">
-                    <StatusIcon status={item.status} />
+                    <StatusIconForItem item={item} />
                     <span className="text-sm text-app-text font-mono flex-1">{item.label}</span>
                     <span className={`text-2xs font-mono max-w-[220px] truncate text-right
-                      ${item.status === "ok" ? "text-app-text-muted"
-                        : item.status === "warn" ? "text-app-amber"
-                        : "text-app-text-dim"}`}
+                      ${itemSeverity(item) === "ok" ? "text-app-text-muted"
+                        : itemSeverity(item) === "warn" ? "text-app-amber"
+                        : itemSeverity(item) === "error" ? "text-app-red" : "text-app-text-dim"}`}
                     >
                       {item.detail}
                     </span>
@@ -151,10 +142,10 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
             {!envCheck?.all_ok && !checking && (
               <div className="px-4 py-2 border-t border-app-border bg-[var(--app-subtle)]">
                 <div className="text-2xs text-app-text-muted font-mono leading-relaxed">
-                  {envCheck?.items.some(i => i.name === "claude" || i.name === "codex") &&
-                    "💡 提示：缺少的 CLI 工具可以通过 npm 全局安装。"}
-                  {envCheck?.items.find(i => i.name === "shell-wrapper")?.status === "missing" &&
-                    " 请在终端运行 install.sh 以激活 Shell 集成。"}
+                  {envCheck?.items.some(i => i.category === "cli" && i.status !== "ok") &&
+                    "💡 提示：缺少的 CLI 工具可在顶部系统诊断中选择安装方式。"}
+                  {envCheck?.items.find(i => i.name === "shell-wrapper")?.status !== "ok" &&
+                    " Shell 集成会在应用启动时自动尝试写入。"}
                 </div>
               </div>
             )}

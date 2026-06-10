@@ -1,10 +1,17 @@
 import { useState, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { Terminal } from "@xterm/xterm";
+import type { PaneNode, PaneLeaf, PaneSplit, SplitDirection, NavDirection } from "../lib/pane-types";
+import {
+  isLeaf, isSplit,
+  flattenPanes, findLeaf, findParentSplit, replaceNode, firstLeaf,
+  navigateFromLeaf, createInitialLeaf,
+} from "../lib/pane-types";
 
 const MAX_HISTORY = 30;
 const PTY_READY_SETTLE_MS = 80;
 const PTY_COMMAND_SETTLE_MS = 300;
+const TERMINAL_READY_TIMEOUT_MS = 1500;
 
 let tabCounter = 1;
 
@@ -12,6 +19,11 @@ interface TabSession {
   id: string;
   name: string;
   workDir: string;
+  // Pane tree — the single source of truth for PTY sessions within this tab
+  rootNode: PaneNode;
+  activePaneId: string;
+  zoomedPaneId: string | null;
+  // Backward-compat convenience fields (synced from active pane)
   sessionId: string;
   ptyRunning: boolean;
 }
@@ -57,12 +69,40 @@ type PtyEvent =
   | { event: "exit"; data: number }
   | { event: "error"; data: string };
 
-function newTab(name?: string, workDir?: string): TabSession {
+// ── Internal helpers ────────────────────────────────────────────────
+
+/** Sync backward-compat fields (sessionId, ptyRunning) from the active pane */
+function syncActivePaneFields(tab: TabSession): TabSession {
+  const activeLeaf = findLeaf(tab.rootNode, tab.activePaneId);
   return {
-    id: `tab-${tabCounter++}`,
-    name: name || `终端 ${tabCounter - 1}`,
+    ...tab,
+    sessionId: activeLeaf?.sessionId || "",
+    ptyRunning: activeLeaf?.ptyRunning || false,
+  };
+}
+
+/** Find a pane leaf across all tabs */
+function findPaneInTabs(tabs: TabSession[], paneId: string): PaneLeaf | null {
+  for (const tab of tabs) {
+    const leaf = findLeaf(tab.rootNode, paneId);
+    if (leaf) return leaf;
+  }
+  return null;
+}
+
+function newTab(name?: string, workDir?: string): TabSession {
+  const tabId = `tab-${tabCounter++}`;
+  const tabName = name || `终端 ${tabCounter - 1}`;
+  const sessionId = `pty-${Date.now().toString(36)}-${tabCounter}`;
+  const leaf = createInitialLeaf(tabName, workDir || "", sessionId);
+  return {
+    id: tabId,
+    name: tabName,
     workDir: workDir || "",
-    sessionId: `pty-${Date.now().toString(36)}-${tabCounter}`,
+    rootNode: leaf,
+    activePaneId: leaf.paneId,
+    zoomedPaneId: null,
+    sessionId,
     ptyRunning: false,
   };
 }
@@ -123,11 +163,10 @@ export function useTerminal(panelId: string = "right") {
   // Per-profile run counter (incremented on each "运行" click)
   const [usageCounts, setUsageCounts] = useState<Record<string, number>>({});
 
-  // Per-tab: Terminal instance
+  // ── Per-pane refs (paneId-keyed, not tabId) ────────────────────
   const termRefs = useRef<Map<string, Terminal>>(new Map());
 
-  // Per-tab write batching: accumulate data within a frame, flush once via RAF.
-  // Prevents xterm.js parser overload when IPC delivers many small chunks rapidly.
+  // Per-pane write batching: accumulate data within a frame, flush once via RAF.
   const writeBufRef = useRef<Map<string, string>>(new Map());
   const rafWriteRef = useRef<Map<string, number>>(new Map());
 
@@ -136,18 +175,22 @@ export function useTerminal(panelId: string = "right") {
   const sessionsRef = useRef(tabs);
   sessionsRef.current = tabs;
 
+  // Per-pane resize debounce timers — during drag, only the final size is sent to PTY
+  const MIN_COLS = 5;
+  const MIN_ROWS = 2;
+
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 
-  /* ── Spawn PTY for a tab ───────────────────────────────── */
-  const spawnPty = useCallback((tab: TabSession): Promise<void> => {
-    writeBufRef.current.delete(tab.id);
-    const rafId = rafWriteRef.current.get(tab.id);
-    if (rafId) { cancelAnimationFrame(rafId); rafWriteRef.current.delete(tab.id); }
+  /* ── Spawn PTY for a pane ─────────────────────────────── */
+  const spawnPty = useCallback((pane: PaneLeaf): Promise<void> => {
+    writeBufRef.current.delete(pane.paneId);
+    const rafId = rafWriteRef.current.get(pane.paneId);
+    if (rafId) { cancelAnimationFrame(rafId); rafWriteRef.current.delete(pane.paneId); }
 
     return new Promise(async (resolve, reject) => {
-      try { await invoke("kill_pty", { sessionId: tab.sessionId }); } catch { /* */ }
+      try { await invoke("kill_pty", { sessionId: pane.sessionId }); } catch { /* */ }
 
-      const term = termRefs.current.get(tab.id);
+      const term = termRefs.current.get(pane.paneId);
       term?.clear();
 
       const channel = new Channel<PtyEvent>();
@@ -157,65 +200,84 @@ export function useTerminal(panelId: string = "right") {
             resolve();
             break;
           case "data": {
-            // RAF-batched write: accumulate data, flush once per animation frame.
-            // Prevents parser overload when PTY produces many small chunks rapidly
-            // (e.g. Claude Code TUI streaming with ANSI escape sequences).
-            const existing = writeBufRef.current.get(tab.id) || "";
-            writeBufRef.current.set(tab.id, existing + msg.data);
+            const existing = writeBufRef.current.get(pane.paneId) || "";
+            writeBufRef.current.set(pane.paneId, existing + msg.data);
 
-            if (!rafWriteRef.current.has(tab.id)) {
+            if (!rafWriteRef.current.has(pane.paneId)) {
               const rafId = requestAnimationFrame(() => {
-                rafWriteRef.current.delete(tab.id);
-                const data = writeBufRef.current.get(tab.id) || "";
-                writeBufRef.current.set(tab.id, "");
-                termRefs.current.get(tab.id)?.write(data);
+                rafWriteRef.current.delete(pane.paneId);
+                const data = writeBufRef.current.get(pane.paneId) || "";
+                writeBufRef.current.set(pane.paneId, "");
+                termRefs.current.get(pane.paneId)?.write(data);
               });
-              rafWriteRef.current.set(tab.id, rafId);
+              rafWriteRef.current.set(pane.paneId, rafId);
             }
             break;
           }
           case "exit":
-            // Flush any pending writes before showing exit message
             {
-              const pending = writeBufRef.current.get(tab.id);
+              const pending = writeBufRef.current.get(pane.paneId);
               if (pending) {
-                termRefs.current.get(tab.id)?.write(pending);
-                writeBufRef.current.set(tab.id, "");
+                termRefs.current.get(pane.paneId)?.write(pending);
+                writeBufRef.current.set(pane.paneId, "");
               }
             }
-            termRefs.current.get(tab.id)?.writeln(`\r\n\x1b[90m[exit: ${msg.data}]\x1b[0m`);
-            setTabs((prev) => prev.map((s) => s.id === tab.id ? { ...s, ptyRunning: false } : s));
+            termRefs.current.get(pane.paneId)?.writeln(`\r\n\x1b[90m[exit: ${msg.data}]\x1b[0m`);
+            // Mark pane as stopped
+            setTabs((prev) =>
+              prev.map((tab) => {
+                const leaf = findLeaf(tab.rootNode, pane.paneId);
+                if (!leaf) return tab;
+                const updatedLeaf: PaneLeaf = { ...leaf, ptyRunning: false };
+                return syncActivePaneFields({
+                  ...tab,
+                  rootNode: replaceNode(tab.rootNode, pane.paneId, updatedLeaf),
+                });
+              }),
+            );
             break;
           case "error":
-            termRefs.current.get(tab.id)?.writeln(`\r\n\x1b[31m[error: ${msg.data}]\x1b[0m`);
+            termRefs.current.get(pane.paneId)?.writeln(`\r\n\x1b[31m[error: ${msg.data}]\x1b[0m`);
             break;
         }
       };
 
       try {
-        // Use actual xterm viewport dimensions, not a hardcoded fallback.
-        const t = termRefs.current.get(tab.id);
+        const t = termRefs.current.get(pane.paneId);
         const cols = t?.cols ?? 100;
         const rows = t?.rows ?? 30;
         await invoke("start_pty", {
-          sessionId: tab.sessionId,
-          workDir: tab.workDir || null,
+          sessionId: pane.sessionId,
+          workDir: pane.workDir || null,
           cols,
           rows,
           onEvent: channel,
         });
       } catch (e) {
-        tab.ptyRunning = false;
-        termRefs.current.get(tab.id)?.writeln(`\r\n\x1b[31m[无法启动终端: ${e}]\x1b[0m`);
+        setTabs((prev) =>
+          prev.map((tab) => {
+            const leaf = findLeaf(tab.rootNode, pane.paneId);
+            if (!leaf) return tab;
+            const updatedLeaf: PaneLeaf = { ...leaf, ptyRunning: false };
+            return syncActivePaneFields({
+              ...tab,
+              rootNode: replaceNode(tab.rootNode, pane.paneId, updatedLeaf),
+            });
+          }),
+        );
+        termRefs.current.get(pane.paneId)?.writeln(`\r\n\x1b[31m[无法启动终端: ${e}]\x1b[0m`);
         errorCallbackRef.current?.(`终端启动失败: ${e}`);
         reject(e);
       }
     });
   }, []);
 
-  // Promise resolvers for onReady (tabId → resolve function)
+  // Promise resolvers for onReady (paneId → resolve function)
   const errorCallbackRef = useRef<((msg: string) => void) | null>(null);
   const setErrorCallback = useCallback((cb: (msg: string) => void) => { errorCallbackRef.current = cb; }, []);
+  const reportTerminalError = useCallback((action: string, error: unknown) => {
+    errorCallbackRef.current?.(`${action}: ${error}`);
+  }, []);
 
   // Valid profile names (for validating history restore)
   const profileNamesRef = useRef<Set<string>>(new Set());
@@ -227,100 +289,135 @@ export function useTerminal(panelId: string = "right") {
     const parsed = parseAiCmd(record.command);
     if (!parsed) return true;
     if (profileNamesRef.current.has(parsed.profile)) return true;
-    // Profile gone — delete the stale record
     deleteHistoryRef.current?.(record.id);
     errorCallbackRef.current?.(`Profile "${parsed.profile}" 不存在，已删除历史记录`);
     return false;
   }, []);
 
-  const readyPromiseRefs = useRef<Map<string, () => void>>(new Map());
+  const readyPaneIdsRef = useRef<Set<string>>(new Set());
+  const readyPromiseRefs = useRef<Map<string, {
+    resolve: () => void;
+    timeout: ReturnType<typeof setTimeout>;
+  }>>(new Map());
+
+  const cleanupReadyWait = useCallback((paneId: string) => {
+    readyPaneIdsRef.current.delete(paneId);
+    const pending = readyPromiseRefs.current.get(paneId);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      readyPromiseRefs.current.delete(paneId);
+      pending.resolve();
+    }
+  }, []);
 
   /* ── Handle terminal ready (fit completed) ─────────────── */
-  const handleTerminalReady = useCallback((tabId: string) => {
-    // After a fresh XTerm mount (e.g. font size change), the PTY session is
-    // still running. The resize_pty call (triggered by fit → onResize) sends
-    // SIGWINCH to the child process, which causes TUI apps like Claude Code
-    // to redraw themselves. No text replay needed — raw ANSI sequences would
-    // corrupt the fresh terminal display.
-
-    const resolve = readyPromiseRefs.current.get(tabId);
-    if (resolve) {
-      readyPromiseRefs.current.delete(tabId);
-      resolve();
+  const handleTerminalReady = useCallback((paneId: string) => {
+    readyPaneIdsRef.current.add(paneId);
+    const pending = readyPromiseRefs.current.get(paneId);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      readyPromiseRefs.current.delete(paneId);
+      pending.resolve();
     }
   }, []);
 
   /* ── Wait for terminal ready ───────────────────────────── */
-  const waitForReady = useCallback((tabId: string): Promise<void> => {
+  const waitForReady = useCallback((paneId: string): Promise<void> => {
+    if (readyPaneIdsRef.current.has(paneId)) return Promise.resolve();
+
     return new Promise((resolve) => {
-      readyPromiseRefs.current.set(tabId, resolve);
+      const existing = readyPromiseRefs.current.get(paneId);
+      if (existing) {
+        clearTimeout(existing.timeout);
+        existing.resolve();
+      }
+
+      const timeout = setTimeout(() => {
+        readyPromiseRefs.current.delete(paneId);
+        resolve();
+      }, TERMINAL_READY_TIMEOUT_MS);
+
+      readyPromiseRefs.current.set(paneId, { resolve, timeout });
     });
   }, []);
 
   /* ── Handle terminal resize (called from XTerm onFit) ──── */
-  const handleTerminalResize = useCallback((tabId: string, cols: number, rows: number) => {
-    const tab = tabs.find((t) => t.id === tabId);
-    if (tab?.ptyRunning) {
-      invoke("resize_pty", { sessionId: tab.sessionId, cols, rows }).catch(() => {});
-    }
-  }, [tabs]);
+  const handleTerminalResize = useCallback((paneId: string, cols: number, rows: number) => {
+    // Skip tiny dimensions — they're intermediate states during drag
+    if (cols < MIN_COLS || rows < MIN_ROWS) return;
 
-  /* ── Attach XTerm to a tab ─────────────────────────────── */
-  const attachTerminal = useCallback((tabId: string, term: Terminal) => {
-    termRefs.current.set(tabId, term);
+    const leaf = findPaneInTabs(sessionsRef.current, paneId);
+    if (leaf?.ptyRunning) {
+      invoke("resize_pty", { sessionId: leaf.sessionId, cols, rows }).catch(() => {});
+    }
+  }, []);
+
+  /* ── Attach XTerm to a pane ────────────────────────────── */
+  const attachTerminal = useCallback((paneId: string, term: Terminal) => {
+    termRefs.current.set(paneId, term);
 
     term.onData((data: string) => {
-      const tab = sessionsRef.current.find((t) => t.id === tabId);
-      if (tab?.ptyRunning) {
-        invoke("write_pty", { sessionId: tab.sessionId, data }).catch(() => {});
+      const leaf = findPaneInTabs(sessionsRef.current, paneId);
+      if (leaf?.ptyRunning) {
+        invoke("write_pty", { sessionId: leaf.sessionId, data }).catch(() => {});
       }
     });
-
-    // PTY resize is handled via handleTerminalResize (called from XTerm's fit → onResize).
-    // Removing the term.onResize handler here avoids duplicate TIOCSWINSZ calls:
-    // fitAddon.fit() internally fires term.onResize, then fit() also calls onResize() —
-    // both would invoke resize_pty back-to-back with the same dimensions.
   }, []);
 
   /* ── Create empty tab ──────────────────────────────────── */
   const newEmptyTab = useCallback(async () => {
-    const tab = newTab("终端");
-    setTabs((prev) => [...prev, tab]);
-    setActiveTabId(tab.id);
-    if (!isOpen) setIsOpen(true);
-    // Wait for XTerm to mount then spawn PTY (panel may or may not be open yet).
-    await waitForReady(tab.id);
-    await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
-    await spawnPty(tab);
-    setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, ptyRunning: true } : t));
-  }, [isOpen, spawnPty, waitForReady]);
+    try {
+      const tab = newTab("终端");
+      const activeLeaf = findLeaf(tab.rootNode, tab.activePaneId)!;
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
+      if (!isOpen) setIsOpen(true);
+      await waitForReady(activeLeaf.paneId);
+      await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
+      await spawnPty(activeLeaf);
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== tab.id) return t;
+          const updatedLeaf: PaneLeaf = { ...activeLeaf, ptyRunning: true };
+          return syncActivePaneFields({ ...t, rootNode: replaceNode(t.rootNode, activeLeaf.paneId, updatedLeaf) });
+        }),
+      );
+    } catch (e) {
+      reportTerminalError("新建终端失败", e);
+    }
+  }, [isOpen, spawnPty, waitForReady, reportTerminalError]);
 
   /* ── Open terminal panel ────────────────────────────────── */
   const open = useCallback(async () => {
-    setIsOpen(true);
-    const tab = tabs.find((t) => t.id === activeTabId);
-    if (!tab || tab.ptyRunning) return;
+    try {
+      setIsOpen(true);
+      const tab = tabs.find((t) => t.id === activeTabId);
+      if (!tab) return;
+      const activeLeaf = findLeaf(tab.rootNode, tab.activePaneId);
+      if (!activeLeaf || activeLeaf.ptyRunning) return;
 
-    // Wait for XTerm to mount + first fit (onReady signal)
-    await waitForReady(tab.id);
-    // Brief delay for resize_pty to settle before spawning
-    await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
+      await waitForReady(activeLeaf.paneId);
+      await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
 
-    await spawnPty(tab);
-    setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, ptyRunning: true } : t));
-  }, [activeTabId, tabs, spawnPty, waitForReady]);
+      await spawnPty(activeLeaf);
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== tab.id) return t;
+          const updatedLeaf: PaneLeaf = { ...activeLeaf, ptyRunning: true };
+          return syncActivePaneFields({ ...t, rootNode: replaceNode(t.rootNode, activeLeaf.paneId, updatedLeaf) });
+        }),
+      );
+    } catch (e) {
+      reportTerminalError("打开终端失败", e);
+    }
+  }, [activeTabId, tabs, spawnPty, waitForReady, reportTerminalError]);
 
   /* ── Close ─────────────────────────────────────────────── */
   const close = useCallback(() => {
-    // Capture current tabs for async cleanup (don't depend on stale closure)
     const currentTabs = sessionsRef.current;
 
-    // 1. Update UI immediately — hide the panel first.
-    //    This ensures the terminal closes instantly even if PTY
-    //    operations are blocked (e.g. full ConPTY buffer on Windows).
     setIsOpen(false);
 
-    // 2. Reset tabs state synchronously
     if (isBottom) {
       const fresh = newTab("终端");
       setTabs([fresh]);
@@ -332,17 +429,23 @@ export function useTerminal(panelId: string = "right") {
       setActiveTabId("");
     }
 
-    // 3. Clean up all refs
-    termRefs.current.clear();
     writeBufRef.current.clear();
+    readyPaneIdsRef.current.clear();
+    for (const [, pending] of readyPromiseRefs.current) {
+      clearTimeout(pending.timeout);
+      pending.resolve();
+    }
+    readyPromiseRefs.current.clear();
+    termRefs.current.clear();
     for (const [, id] of rafWriteRef.current) { cancelAnimationFrame(id); }
     rafWriteRef.current.clear();
 
-    // 4. Kill PTY sessions in background — fire-and-forget.
-    //    Don't await: even if kill_pty blocks, the UI is already closed.
+    // Kill all PTYs across all panes
     for (const tab of currentTabs) {
-      if (tab.ptyRunning) {
-        invoke("kill_pty", { sessionId: tab.sessionId }).catch(() => {});
+      for (const leaf of flattenPanes(tab.rootNode)) {
+        if (leaf.ptyRunning) {
+          invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
+        }
       }
     }
   }, [isBottom]);
@@ -354,7 +457,7 @@ export function useTerminal(panelId: string = "right") {
 
   const openingRef = useRef(false);
   const toggle = useCallback(() => {
-    if (isOpen) { hide(); }                       // soft hide — keep PTYs alive
+    if (isOpen) { hide(); }
     else if (!openingRef.current) {
       openingRef.current = true;
       open().finally(() => { openingRef.current = false; });
@@ -363,65 +466,73 @@ export function useTerminal(panelId: string = "right") {
 
   /* ── Create a new tab and run command ──────────────────── */
   const runInNewTab = useCallback(async (cmd: string, workDir: string, label?: string) => {
-    const tab = newTab(label || cmd.slice(0, 20), workDir);
-    setTabs((prev) => [...prev, tab]);
-    setActiveTabId(tab.id);
+    try {
+      const tab = newTab(label || cmd.slice(0, 20), workDir);
+      const activeLeaf = findLeaf(tab.rootNode, tab.activePaneId)!;
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
 
-    if (!isOpen) setIsOpen(true);
+      if (!isOpen) setIsOpen(true);
 
-    // Wait for XTerm mount + first fit (onReady signal)
-    await waitForReady(tab.id);
-    // Brief delay for resize signal to settle
-    await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
+      await waitForReady(activeLeaf.paneId);
+      await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
 
-    await spawnPty(tab);
-    setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, ptyRunning: true } : t));
+      await spawnPty(activeLeaf);
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== tab.id) return t;
+          const updatedLeaf: PaneLeaf = { ...activeLeaf, ptyRunning: true };
+          return syncActivePaneFields({ ...t, rootNode: replaceNode(t.rootNode, activeLeaf.paneId, updatedLeaf) });
+        }),
+      );
 
-    // Save to history — right panel only (bottom panel is manual workspace)
-    if (!isBottom) {
-      const parsed = parseAiCmd(cmd);
-      if (parsed) {
-        setUsageCounts((prev) => ({ ...prev, [parsed.profile]: (prev[parsed.profile] || 0) + 1 }));
+      if (!isBottom) {
+        const parsed = parseAiCmd(cmd);
+        if (parsed) {
+          setUsageCounts((prev) => ({ ...prev, [parsed.profile]: (prev[parsed.profile] || 0) + 1 }));
+        }
+        const record: SessionRecord = {
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          command: cmd,
+          resumeCommand: buildResumeCmd(cmd),
+          resumeLastCommand: buildResumeLastCmd(cmd),
+          workDir,
+          label: label || cmd,
+          tool: parsed?.tool || null,
+          timestamp: Date.now(),
+        };
+        setHistory((prev) => {
+          const filtered = prev.filter((r) => !(r.command === cmd && r.workDir === workDir));
+          const next = [record, ...filtered].slice(0, MAX_HISTORY);
+          saveHistory(next);
+          return next;
+        });
       }
-      const record: SessionRecord = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      command: cmd,
-      resumeCommand: buildResumeCmd(cmd),
-      resumeLastCommand: buildResumeLastCmd(cmd),
-      workDir,
-      label: label || cmd,
-      tool: parsed?.tool || null,
-      timestamp: Date.now(),
-    };
-    setHistory((prev) => {
-      const filtered = prev.filter((r) => !(r.command === cmd && r.workDir === workDir));
-      const next = [record, ...filtered].slice(0, MAX_HISTORY);
-      // Persist using computed next value, not stale closure
-      saveHistory(next);
-      return next;
-    });
-    } // !isBottom — history only for right panel
 
-    // Wait for shell prompt + resize signal to settle, then send command
-    await new Promise((r) => setTimeout(r, PTY_COMMAND_SETTLE_MS));
-    invoke("write_pty", {
-      sessionId: tab.sessionId,
-      data: cmd + "\r",
-    }).catch(() => {});
-  }, [isOpen, spawnPty, history, waitForReady, isBottom]);
+      await new Promise((r) => setTimeout(r, PTY_COMMAND_SETTLE_MS));
+      invoke("write_pty", {
+        sessionId: activeLeaf.sessionId,
+        data: cmd + "\r",
+      }).catch(() => {});
+    } catch (e) {
+      reportTerminalError("运行终端命令失败", e);
+    }
+  }, [isOpen, spawnPty, waitForReady, isBottom, reportTerminalError]);
 
   /* ── Open existing or create new tab ───────────────────── */
   const runInTerminal = useCallback(async (cmd: string, workDir: string) => {
     await runInNewTab(cmd, workDir, cmd.slice(0, 30));
   }, [runInNewTab]);
 
-  /* ── Paste into active tab ─────────────────────────────── */
+  /* ── Paste into active pane ────────────────────────────── */
   const pasteCommand = useCallback(async (cmd: string): Promise<boolean> => {
-    const tab = tabs.find((t) => t.id === activeTabId);
-    if (!tab?.ptyRunning) return false;
-    invoke("write_pty", { sessionId: tab.sessionId, data: cmd + "\r" }).catch(() => {});
+    const tab = sessionsRef.current.find((t) => t.id === activeTabIdRef.current);
+    if (!tab) return false;
+    const activeLeaf = findLeaf(tab.rootNode, tab.activePaneId);
+    if (!activeLeaf?.ptyRunning) return false;
+    invoke("write_pty", { sessionId: activeLeaf.sessionId, data: cmd + "\r" }).catch(() => {});
     return true;
-  }, [tabs, activeTabId]);
+  }, []);
 
   /* ── Resume from history ───────────────────────────────── */
   const resumeSession = useCallback(async (record: SessionRecord) => {
@@ -476,23 +587,26 @@ export function useTerminal(panelId: string = "right") {
   const closeTab = useCallback((tabId: string) => {
     const tab = sessionsRef.current.find((t) => t.id === tabId);
 
-    // Update UI immediately, then kill PTY in background.
-    // This prevents UI freeze if the PTY operation blocks (Windows ConPTY).
-    termRefs.current.delete(tabId);
-    writeBufRef.current.delete(tabId);
-    const rafId = rafWriteRef.current.get(tabId);
-    if (rafId) { cancelAnimationFrame(rafId); rafWriteRef.current.delete(tabId); }
+    // Clean up all pane refs for this tab
+    if (tab) {
+      for (const leaf of flattenPanes(tab.rootNode)) {
+        termRefs.current.delete(leaf.paneId);
+        writeBufRef.current.delete(leaf.paneId);
+        cleanupReadyWait(leaf.paneId);
+        const rafId = rafWriteRef.current.get(leaf.paneId);
+        if (rafId) { cancelAnimationFrame(rafId); rafWriteRef.current.delete(leaf.paneId); }
+      }
+    }
 
-    // Compute side-effects inside the setTabs updater so they operate on
-    // the *latest* state, not stale sessionsRef (React batches setState calls,
-    // so reading sessionsRef after setTabs sees pre-update data).
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
       if (next.length === 0 && isBottom) {
-        return [newTab("终端")];
+        const fresh = newTab("终端");
+        activeTabIdRef.current = fresh.id;
+        setActiveTabId(fresh.id);
+        return [fresh];
       }
 
-      // Right panel: close when last tab removed
       if (next.length === 0 && !isBottom) {
         setIsOpen(false);
       } else if (activeTabIdRef.current === tabId) {
@@ -501,31 +615,36 @@ export function useTerminal(panelId: string = "right") {
       return next;
     });
 
-    // Kill PTY in background (fire-and-forget)
-    if (tab?.ptyRunning) {
-      invoke("kill_pty", { sessionId: tab.sessionId }).catch(() => {});
+    // Kill PTYs for all panes in this tab
+    if (tab) {
+      for (const leaf of flattenPanes(tab.rootNode)) {
+        if (leaf.ptyRunning) {
+          invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
+        }
+      }
     }
-  }, [isBottom]);
+  }, [isBottom, cleanupReadyWait]);
 
   /* ── Close all tabs except the specified one ───────────── */
   const closeOthers = useCallback((tabId: string) => {
     const allTabs = sessionsRef.current;
-    // Kill PTYs in background, update UI immediately
     for (const tab of allTabs) {
-      if (tab.id !== tabId && tab.ptyRunning) {
-        invoke("kill_pty", { sessionId: tab.sessionId }).catch(() => {});
-      }
-      if (tab.id !== tabId) {
-        termRefs.current.delete(tab.id);
-        writeBufRef.current.delete(tab.id);
-        const rid = rafWriteRef.current.get(tab.id);
-        if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(tab.id); }
+      if (tab.id === tabId) continue;
+      for (const leaf of flattenPanes(tab.rootNode)) {
+        if (leaf.ptyRunning) {
+          invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
+        }
+        termRefs.current.delete(leaf.paneId);
+        writeBufRef.current.delete(leaf.paneId);
+        cleanupReadyWait(leaf.paneId);
+        const rid = rafWriteRef.current.get(leaf.paneId);
+        if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(leaf.paneId); }
       }
     }
     const kept = allTabs.find((t) => t.id === tabId);
     setTabs(kept ? [kept] : (isBottom ? [newTab("终端")] : []));
     setActiveTabId(tabId);
-  }, [isBottom]);
+  }, [isBottom, cleanupReadyWait]);
 
   /* ── Close tabs to the right of the specified one ──────── */
   const closeToRight = useCallback((tabId: string) => {
@@ -534,20 +653,272 @@ export function useTerminal(panelId: string = "right") {
     if (idx < 0) return;
     const toClose = allTabs.slice(idx + 1);
     for (const tab of toClose) {
-      if (tab.ptyRunning) {
-        invoke("kill_pty", { sessionId: tab.sessionId }).catch(() => {});
+      for (const leaf of flattenPanes(tab.rootNode)) {
+        if (leaf.ptyRunning) {
+          invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
+        }
+        termRefs.current.delete(leaf.paneId);
+        writeBufRef.current.delete(leaf.paneId);
+        cleanupReadyWait(leaf.paneId);
+        const rid = rafWriteRef.current.get(leaf.paneId);
+        if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(leaf.paneId); }
       }
-      termRefs.current.delete(tab.id);
-      writeBufRef.current.delete(tab.id);
-      const rid = rafWriteRef.current.get(tab.id);
-      if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(tab.id); }
     }
     setTabs((prev) => prev.slice(0, idx + 1));
-    // If active tab was among closed ones, switch to the right-clicked tab
     if (toClose.some((t) => t.id === activeTabIdRef.current)) {
       setActiveTabId(tabId);
     }
+  }, [cleanupReadyWait]);
+
+  // ═══════════════════════════════════════════════════════════════
+  //  NEW: Pane split/close/navigate/zoom operations
+  // ═══════════════════════════════════════════════════════════════
+
+  /** Split the given pane (defaults to active) in the given tab. Returns the new pane's sessionId. */
+  const splitPane = useCallback(async (
+    tabId: string,
+    direction: SplitDirection,
+    workDir?: string,
+    paneId?: string,
+  ): Promise<string | undefined> => {
+    try {
+      // Read current state to create the new leaf
+      const tab = sessionsRef.current.find((t) => t.id === tabId);
+      if (!tab || tab.zoomedPaneId) return;
+
+      const targetPaneId = paneId ?? tab.activePaneId;
+      const targetLeaf = findLeaf(tab.rootNode, targetPaneId);
+      if (!targetLeaf) return;
+
+      // Create a new leaf for the split
+      const newSessionId = `pty-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const newLeaf = createInitialLeaf(tab.name, workDir || targetLeaf.workDir, newSessionId);
+
+      // Create a split node replacing the target leaf
+      const splitId = `split-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const split: PaneSplit = {
+        type: "split",
+        id: splitId,
+        direction,
+        ratio: 0.5,
+        children: [targetLeaf, newLeaf],
+      };
+
+      const readyPromise = waitForReady(newLeaf.paneId);
+
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== tabId) return t;
+          return syncActivePaneFields({
+            ...t,
+            rootNode: replaceNode(t.rootNode, targetLeaf.paneId, split),
+            activePaneId: newLeaf.paneId, // focus the new pane
+          });
+        }),
+      );
+
+      await readyPromise;
+      await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
+
+      // Spawn after the xterm has mounted and fitted, so the PTY starts with
+      // the pane's real dimensions instead of the fallback 100x30.
+      await spawnPty(newLeaf);
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== tabId) return t;
+          const leaf = findLeaf(t.rootNode, newLeaf.paneId);
+          if (!leaf) return t;
+          const updatedLeaf: PaneLeaf = { ...leaf, ptyRunning: true };
+          return syncActivePaneFields({ ...t, rootNode: replaceNode(t.rootNode, newLeaf.paneId, updatedLeaf) });
+        }),
+      );
+
+      const term = termRefs.current.get(newLeaf.paneId);
+      if (term && term.cols > 0 && term.rows > 0) {
+        invoke("resize_pty", {
+          sessionId: newSessionId,
+          cols: term.cols,
+          rows: term.rows,
+        }).catch(() => {});
+      }
+
+      return newSessionId;
+    } catch (e) {
+      reportTerminalError("分屏终端失败", e);
+      return undefined;
+    }
+  }, [spawnPty, waitForReady, reportTerminalError]);
+
+  /* ── Split active pane and run command in the new pane ── */
+  const runInSplitPane = useCallback(async (cmd: string, workDir: string, label?: string) => {
+    try {
+      const tabId = activeTabIdRef.current;
+      const tab = sessionsRef.current.find((t) => t.id === tabId);
+
+      if (!tab || !tabId) {
+        // No active tab — fall back to new tab
+        await runInNewTab(cmd, workDir, label);
+        return;
+      }
+
+      if (!isOpen) setIsOpen(true);
+
+      // splitPane returns the new pane's sessionId directly, spawns PTY internally
+      const newSessionId = await splitPane(tabId, "horizontal", workDir);
+      if (!newSessionId) return;
+
+      // Wait for PTY to settle, then write the command directly (same as runInNewTab)
+      await new Promise((r) => setTimeout(r, PTY_COMMAND_SETTLE_MS));
+      invoke("write_pty", {
+        sessionId: newSessionId,
+        data: cmd + "\r",
+      }).catch(() => {});
+
+      // Record history + increment count (same as runInNewTab's non-bottom logic)
+      if (!isBottom) {
+        const parsed = parseAiCmd(cmd);
+        if (parsed) {
+          setUsageCounts((prev) => ({ ...prev, [parsed.profile]: (prev[parsed.profile] || 0) + 1 }));
+        }
+        const record: SessionRecord = {
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          command: cmd,
+          resumeCommand: buildResumeCmd(cmd),
+          resumeLastCommand: buildResumeLastCmd(cmd),
+          workDir,
+          label: label || cmd,
+          tool: parsed?.tool || null,
+          timestamp: Date.now(),
+        };
+        setHistory((prev) => {
+          const filtered = prev.filter((r) => !(r.command === cmd && r.workDir === workDir));
+          const next = [record, ...filtered].slice(0, MAX_HISTORY);
+          saveHistory(next);
+          return next;
+        });
+      }
+    } catch (e) {
+      reportTerminalError("分屏运行命令失败", e);
+    }
+  }, [isOpen, isBottom, splitPane, runInNewTab, reportTerminalError]);
+
+  /** Close the given pane (defaults to active) in the given tab. Falls back to closeTab for last pane. */
+  const closePane = useCallback((tabId: string, paneId?: string) => {
+    const tab = sessionsRef.current.find((t) => t.id === tabId);
+    if (!tab) return;
+
+    const leaves = flattenPanes(tab.rootNode);
+    if (leaves.length <= 1) {
+      // Last pane — can't close, show a hint
+      errorCallbackRef.current?.("至少保留一个终端");
+      return;
+    }
+
+    const targetPaneId = paneId ?? tab.activePaneId;
+    const targetLeaf = findLeaf(tab.rootNode, targetPaneId);
+    if (!targetLeaf) return;
+
+    // Kill the PTY for this pane
+    if (targetLeaf.ptyRunning) {
+      invoke("kill_pty", { sessionId: targetLeaf.sessionId }).catch(() => {});
+    }
+    termRefs.current.delete(targetLeaf.paneId);
+    writeBufRef.current.delete(targetLeaf.paneId);
+    cleanupReadyWait(targetLeaf.paneId);
+    const rafId = rafWriteRef.current.get(targetLeaf.paneId);
+    if (rafId) { cancelAnimationFrame(rafId); rafWriteRef.current.delete(targetLeaf.paneId); }
+
+    // Remove the pane from the tree: find parent split, replace with the sibling
+    const parentInfo = findParentSplit(tab.rootNode, targetLeaf.paneId);
+    let newRoot: PaneNode;
+    let newFocusId: string;
+
+    if (parentInfo) {
+      const sibling = parentInfo.parent.children[parentInfo.index === 0 ? 1 : 0];
+      newRoot = replaceNode(tab.rootNode, parentInfo.parent.id, sibling);
+      newFocusId = firstLeaf(sibling)?.paneId || tab.activePaneId;
+    } else {
+      // Shouldn't happen, but fallback
+      newRoot = tab.rootNode;
+      newFocusId = leaves.find((l) => l.paneId !== targetLeaf.paneId)?.paneId || "";
+    }
+
+    // If the zoomed pane is being closed, clear zoom state so PaneSplitter
+    // doesn't render a stale zoomedPaneId that no longer exists in the tree.
+    const shouldClearZoom = tab.zoomedPaneId && tab.zoomedPaneId === targetLeaf.paneId;
+
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId) return t;
+        return syncActivePaneFields({
+          ...t,
+          rootNode: newRoot,
+          activePaneId: newFocusId,
+          zoomedPaneId: shouldClearZoom ? null : t.zoomedPaneId,
+        });
+      }),
+    );
+  }, [cleanupReadyWait]);
+
+  /** Focus a specific pane */
+  const focusPane = useCallback((tabId: string, paneId: string) => {
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId || t.activePaneId === paneId) return t;
+        return syncActivePaneFields({ ...t, activePaneId: paneId });
+      }),
+    );
   }, []);
+
+  /** Navigate to adjacent pane by cardinal direction */
+  const navigatePane = useCallback((tabId: string, direction: NavDirection) => {
+    setTabs((prev) => {
+      const tab = prev.find((t) => t.id === tabId);
+      if (!tab) return prev;
+
+      const target = navigateFromLeaf(tab.rootNode, tab.activePaneId, direction);
+      if (!target) return prev;
+
+      return prev.map((t) => {
+        if (t.id !== tabId) return t;
+        return syncActivePaneFields({ ...t, activePaneId: target.paneId });
+      });
+    });
+  }, []);
+
+  /** Cycle through panes in tab order */
+  const cyclePane = useCallback((tabId: string, forward: boolean) => {
+    setTabs((prev) => {
+      const tab = prev.find((t) => t.id === tabId);
+      if (!tab) return prev;
+
+      const leaves = flattenPanes(tab.rootNode);
+      if (leaves.length <= 1) return prev;
+
+      const idx = leaves.findIndex((l) => l.paneId === tab.activePaneId);
+      const nextIdx = forward
+        ? (idx + 1) % leaves.length
+        : (idx - 1 + leaves.length) % leaves.length;
+
+      return prev.map((t) => {
+        if (t.id !== tabId) return t;
+        return syncActivePaneFields({ ...t, activePaneId: leaves[nextIdx].paneId });
+      });
+    });
+  }, []);
+
+  /** Toggle zoom for the active pane */
+  const zoomPane = useCallback((tabId: string) => {
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId) return t;
+        const newZoomed = t.zoomedPaneId ? null : t.activePaneId;
+        return syncActivePaneFields({ ...t, zoomedPaneId: newZoomed });
+      }),
+    );
+  }, []);
+
+  // ── Font size / panel size / work dir ──────────────────────
 
   const setFontSize = useCallback((s: number) => {
     const clamped = Math.min(Math.max(s, 10), 20);
@@ -565,7 +936,20 @@ export function useTerminal(panelId: string = "right") {
   }, [isBottom, MIN_SIZE, STORAGE_SIZE]);
 
   const setWorkDir = useCallback((tabId: string, dir: string) => {
-    setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, workDir: dir } : t));
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId) return t;
+        // Update workDir on tab AND on the active pane leaf
+        const activeLeaf = findLeaf(t.rootNode, t.activePaneId);
+        if (!activeLeaf) return { ...t, workDir: dir };
+        const updatedLeaf: PaneLeaf = { ...activeLeaf, workDir: dir };
+        return syncActivePaneFields({
+          ...t,
+          workDir: dir,
+          rootNode: replaceNode(t.rootNode, activeLeaf.paneId, updatedLeaf),
+        });
+      }),
+    );
   }, []);
 
   return {
@@ -582,6 +966,7 @@ export function useTerminal(panelId: string = "right") {
     handleTerminalReady,
     handleTerminalResize,
     pasteCommand,
+    runInSplitPane,
     runInTerminal,
     runInNewTab,
     newEmptyTab,
@@ -594,5 +979,12 @@ export function useTerminal(panelId: string = "right") {
     setWorkDir,
     setSize,
     fontSize, setFontSize,
+    // New pane operations
+    splitPane,
+    closePane,
+    focusPane,
+    navigatePane,
+    cyclePane,
+    zoomPane,
   };
 }

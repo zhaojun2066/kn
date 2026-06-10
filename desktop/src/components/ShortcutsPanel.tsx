@@ -1,10 +1,11 @@
 import React from "react";
-import { X, Keyboard, Monitor, Terminal } from "lucide-react";
-import { modKey, isMac } from "../utils/shortcut";
+import { X, Keyboard, Monitor, Terminal, Split } from "lucide-react";
+import { modKey, altKey, isMac } from "../utils/shortcut";
 
 interface ShortcutItem { keys: string[]; desc: string; }
 
 const mod = modKey();
+const alt = altKey();
 
 const appShortcuts: ShortcutItem[] = [
   { keys: [mod, "N"], desc: "新建 Profile" },
@@ -22,6 +23,18 @@ const terminalShortcuts: ShortcutItem[] = [
   { keys: ["↑", "↓"], desc: "浏览历史命令" },
   { keys: ["Ctrl", "L"], desc: "清屏" },
   { keys: ["Ctrl", "C"], desc: "终止当前进程" },
+];
+
+const paneShortcuts: ShortcutItem[] = [
+  { keys: [mod, "D"], desc: "垂直分屏（左右）" },
+  { keys: [mod, "\\"], desc: "水平分屏（上下）" },
+  { keys: [mod, "⇧", "D"], desc: "水平分屏（上下·备选）" },
+  { keys: [mod, "W"], desc: "关闭活跃窗格" },
+  { keys: [mod, alt, "←↑↓→"], desc: "方向键切换窗格" },
+  { keys: [mod, "]"], desc: "切换到下一个窗格" },
+  { keys: [mod, "["], desc: "切换到上一个窗格" },
+  { keys: [mod, "⇧", "⏎"], desc: "窗格缩放 / 还原" },
+  { keys: [alt, "Click"], desc: "点击运行按钮 — 在新窗格中运行" },
 ];
 
 function ShortcutSection({ title, icon, items }: { title: string; icon: React.ReactNode; items: ShortcutItem[] }) {
@@ -72,6 +85,7 @@ export function ShortcutsPanel({ onClose }: { onClose: () => void }) {
         <div className="p-3 max-h-[380px] overflow-y-auto">
           <ShortcutSection title="应用" icon={<Monitor size={11} className="text-app-text-muted" />} items={appShortcuts} />
           <ShortcutSection title="终端" icon={<Terminal size={11} className="text-app-text-muted" />} items={terminalShortcuts} />
+          <ShortcutSection title="分屏窗格" icon={<Split size={11} className="text-app-text-muted" />} items={paneShortcuts} />
         </div>
         <div className="px-4 py-2 border-t border-app-border bg-[var(--app-subtle)] text-2xs text-app-text-muted font-mono text-center">
           按 Esc 或点击外部关闭
