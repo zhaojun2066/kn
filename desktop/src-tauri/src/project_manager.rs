@@ -22,6 +22,7 @@ pub struct ProjectInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+// TODO: remove expect once SessionInfo is used by session scanners (Task 2)
 #[expect(dead_code)]
 pub struct SessionInfo {
     pub session_id: String,
@@ -178,7 +179,9 @@ pub fn update_project(name: String, new_name: Option<String>, new_path: Option<S
     save_projects(&projects)?;
 
     if default_profile.is_some() {
-        let _ = write_ai_profile_file(&projects[idx].path, projects[idx].default_profile.as_deref());
+        if let Err(e) = write_ai_profile_file(&projects[idx].path, projects[idx].default_profile.as_deref()) {
+            eprintln!("[project_manager] 写入 .ai-profile 失败: {}", e);
+        }
     }
     Ok(())
 }
@@ -217,13 +220,20 @@ pub fn read_ai_profile(project_path: String) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let content = fs::read_to_string(&path).map_err(|e| format!("读取 .ai-profile 失败: {}", e))?;
+    // Try YAML-style "default_profile: <name>"
     for line in content.lines() {
         let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
         if let Some(val) = trimmed.strip_prefix("default_profile:") {
             let profile = val.trim().trim_matches('"').trim_matches('\'');
-            if profile.is_empty() { return Ok(None); }
-            return Ok(Some(profile.to_string()));
+            if !profile.is_empty() { return Ok(Some(profile.to_string())); }
         }
+    }
+    // Fallback: use the first non-empty, non-comment line as bare profile name
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+        return Ok(Some(trimmed.to_string()));
     }
     Ok(None)
 }
