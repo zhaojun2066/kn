@@ -154,28 +154,55 @@ interface SessionInfo {
 扫描时机：项目被选中时触发，结果缓存 30s。
 
 ```
-后端扫描流程:
-  1. 扫描 ~/.claude/projects/<encoded-path>/  → Claude sessions
-     - 读 {uuid}.jsonl → 提取首条 prompt 作为标题
-     - 读 PID.json → 获取 status, updatedAt
-  2. 扫描 ~/.codex/session_index.jsonl  → Codex sessions
+后端扫描流程 (按 CLI 分别处理):
+
+  1. Claude Code — 手动扫描文件系统
+     - 扫描 ~/.claude/projects/<encoded-path>/ 目录
+     - 读 PID.json → 获取 sessionId, status, updatedAt
+     - 读 {uuid}.jsonl → 提取首条 user prompt 作为标题
+     - 路径编码: / 替换为 - (如 /Users/xxx/p → -Users-xxx-p)
+
+  2. Codex — 解析 session_index.jsonl
+     - 读 ~/.codex/session_index.jsonl (JSONL 格式,每行一个 session)
      - thread_name 直接用做标题
-     - 过滤当前项目路径相关的 session
-  3. 扫描 ~/.qoder-cn/projects/<encoded-path>/  → Qoder sessions
-     - 格式推测与 Claude 相同
-  4. 合并去重 + 按 updated_at 倒序
-  5. 状态修正: status "busy" 但 updated_at > 24h → 强制标记为 "ended"
+     - 过滤 workDir 匹配当前项目路径的 session
+
+  3. Qoder — 优先用 CLI 命令 (推荐)
+     - 调用 qoderclicn --list-sessions (在项目目录下执行)
+     - 输出自带: 序号、标题(首条prompt)、相对时间、UUID
+     - 解析输出即可,无需手动读 jsonl
+     - 降级方案: 如 CLI 不可用,扫描 ~/.qoder-cn/projects/<path>/ (同 Claude 格式)
+     - 额外支持: qoderclicn --delete-session <index> 删除会话
+
+  4. 合并去重 + 按时间倒序
+  5. 状态修正: PID.json 中 status "busy" 但 updated_at > 24h → 强制 "ended"
 ```
+
+**三种 CLI 会话能力对比:**
+
+| 能力 | Claude Code | Codex | Qoder (qoderclicn) |
+|------|------------|-------|---------------------|
+| 列出会话 | ❌ 无 CLI 命令 | `resume` picker | ✅ `--list-sessions` |
+| 恢复会话 | `-r [id]` / `-c` | `resume [id]` / `--last` | `-r [id]` / `-c` |
+| 删除会话 | ❌ | ❌ | ✅ `--delete-session <index>` |
+| 存储格式 | `{uuid}.jsonl` | `session_index.jsonl` | `{uuid}.jsonl` (同 Claude) |
+| 标题来源 | jsonl 首条 prompt | `thread_name` 字段 | `--list-sessions` 直接输出 |
 
 **CLI 存储路径映射:**
 
-| CLI | 用户级 | 项目级 Session 路径 | 标题来源 |
+| CLI | 用户级 | 项目级 Session 路径 | 扫描方式 |
 |------|--------|---------------------|---------|
-| Claude Code | `~/.claude/` | `~/.claude/projects/<path>/{uuid}.jsonl` | jsonl 首条 user prompt |
-| Codex | `~/.codex/` | `~/.codex/session_index.jsonl` | `thread_name` 字段 |
-| Qoder | `~/.qoder-cn/` | `~/.qoder-cn/projects/<path>/` | 推测同 Claude |
+| Claude Code | `~/.claude/` | `~/.claude/projects/<encoded-path>/` | 文件系统扫描 |
+| Codex | `~/.codex/` | `~/.codex/session_index.jsonl` | 解析 JSONL 索引 |
+| Qoder | `~/.qoder-cn/` | `~/.qoder-cn/projects/<encoded-path>/` | **CLI 命令优先** → 降级文件扫描 |
 
-**路径编码规则** (Claude): 绝对路径中的 `/` 替换为 `-`，如 `/Users/xxx/my-project` → `-Users-xxx-my-project`。
+**恢复命令构建:**
+
+| CLI | 恢复指定会话 | 恢复最近会话 |
+|------|------------|------------|
+| Claude | `ai claude <profile> --resume <id>` | `ai claude <profile> -c` |
+| Codex | `ai codex <profile> resume <id>` | `ai codex <profile> resume --last` |
+| Qoder | `ai qoder <profile> -r <id>` | `ai qoder <profile> -c` |
 
 ### 5. Rust 后端新增命令
 
