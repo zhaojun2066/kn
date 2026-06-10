@@ -96,6 +96,12 @@ function _Find-ProjectProfile {
     return $null
 }
 
+function _Toml-String {
+    param([string]$value)
+    $escaped = $value.Replace('\', '\\').Replace('"', '\"')
+    return '"' + $escaped + '"'
+}
+
 function _Launch-WithProfile {
     param([string]$tool, [string]$profileName, [string[]]$toolArgs)
 
@@ -149,8 +155,8 @@ function _Launch-WithProfile {
             $model = $envs['OPENAI_MODEL']
             $authFile = "$env:USERPROFILE\.codex\auth.json"
             $extraArgs = @()
-            if ($model) { $extraArgs += '-c', "model=$model" }
-            if ($baseUrl) { $extraArgs += '-c', "model_providers.custom.base_url=$baseUrl" }
+            if ($model) { $extraArgs += '-c', "model=$(_Toml-String $model)" }
+            if ($baseUrl) { $extraArgs += '-c', "model_providers.custom.base_url=$(_Toml-String $baseUrl)" }
             if ($apiKey) {
                 $codexDir = Split-Path $authFile -Parent
                 if (-not (Test-Path $codexDir)) { New-Item -ItemType Directory -Force $codexDir | Out-Null }

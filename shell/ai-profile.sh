@@ -109,6 +109,10 @@ _find_project_profile() {
     done; return 1
 }
 
+_toml_string() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/'
+}
+
 # ── Interactive profile picker ──
 _interactive_pick() {
     local tool="$1"
@@ -232,8 +236,8 @@ print(json.dumps({'env': env}))
             local _kn_base=$(echo "$env_output" | sed -n "s/^export OPENAI_BASE_URL='\\(.*\\)'/\\1/p")
             local _kn_model=$(echo "$env_output" | sed -n "s/^export OPENAI_MODEL='\\(.*\\)'/\\1/p")
             local _kn_auth="$HOME/.codex/auth.json"
-            [ -n "$_kn_model" ] && set -- -c "model=$_kn_model" "$@"
-            [ -n "$_kn_base" ] && set -- -c "model_providers.custom.base_url=$_kn_base" "$@"
+            [ -n "$_kn_model" ] && set -- -c "model=$(_toml_string "$_kn_model")" "$@"
+            [ -n "$_kn_base" ] && set -- -c "model_providers.custom.base_url=$(_toml_string "$_kn_base")" "$@"
             if [ -n "$_kn_apikey" ]; then
                 [ -d "$HOME/.codex" ] || mkdir -p "$HOME/.codex"
                 [ -f "$_kn_auth" ] && cp "$_kn_auth" "$_kn_auth.kn-bak"

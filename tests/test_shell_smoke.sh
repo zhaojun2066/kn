@@ -28,6 +28,15 @@ if declare -f ai >/dev/null 2>&1; then pass "ai() defined"; else fail "ai() not 
 for fn in _profile_env _profile_list _profile_show _default_profile _find_project_profile _interactive_pick _ai_launch_with_profile _ai_help; do
     if declare -f "$fn" >/dev/null 2>&1; then pass "  $fn()"; else fail "  $fn()"; fi
 done
+if declare -f _toml_string >/dev/null 2>&1; then pass "  _toml_string()"; else fail "  _toml_string()"; fi
+
+toml_model=$(_toml_string 'mimo-pro-codex')
+[ "$toml_model" = '"mimo-pro-codex"' ] && pass "_toml_string quotes model" \
+    || fail "_toml_string quotes model: got '$toml_model'"
+
+toml_url=$(_toml_string 'https://api.example.com/v1')
+[ "$toml_url" = '"https://api.example.com/v1"' ] && pass "_toml_string quotes URL" \
+    || fail "_toml_string quotes URL: got '$toml_url'"
 
 # -- Env extraction with temp config --
 echo ""
