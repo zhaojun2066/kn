@@ -239,6 +239,7 @@ pub fn run() {
             commands::fetch_url,
             commands::download_file,
             commands::verify_sha256,
+            commands::open_in_terminal,
             commands::open_file,
             commands::check_environment,
             commands::config_backup_exists,

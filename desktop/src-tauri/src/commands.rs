@@ -743,6 +743,43 @@ pub fn verify_sha256(path: String, expected: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub fn open_in_terminal(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Terminal", &path])
+            .spawn()
+            .map_err(|e| format!("打开终端失败: {}", e))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut spawned = false;
+        for term in &["gnome-terminal", "konsole", "xterm"] {
+            if std::process::Command::new(term)
+                .arg("--working-directory")
+                .arg(&path)
+                .spawn()
+                .is_ok()
+            {
+                spawned = true;
+                break;
+            }
+        }
+        if !spawned {
+            return Err("未找到可用的终端模拟器".into());
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "cmd", "/k", &format!("cd /d \"{}\"", path)])
+            .spawn()
+            .map_err(|e| format!("打开终端失败: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn open_file(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
