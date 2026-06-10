@@ -23,6 +23,7 @@ reqwest = { version = "0.12", features = ["blocking"] }
 toml = "0.8"
 toml_edit = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+regex-lite = "0.1.9"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

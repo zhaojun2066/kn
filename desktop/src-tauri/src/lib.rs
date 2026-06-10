@@ -290,6 +290,7 @@ pub fn run() {
             project_manager::update_project,
             project_manager::write_ai_profile,
             project_manager::read_ai_profile,
+            project_manager::scan_project_sessions,
             hook_manager::scan_hooks,
             hook_manager::toggle_hook,
             hook_manager::delete_hook,
