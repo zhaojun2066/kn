@@ -186,15 +186,13 @@ pub struct FileTreeNode {
     pub children: Option<Vec<FileTreeNode>>,
 }
 
-/// Directories & files to skip when building the file tree
+/// Directories & files to skip when building the file tree.
+/// Hidden files (dot-prefixed) are now shown; only massive/noisy dirs are skipped.
 const SKIP_NAMES: &[&str] = &[
     ".git",
     "node_modules",
     "__pycache__",
     ".DS_Store",
-    ".claude",
-    ".codex",
-    ".qoder-cn",
 ];
 
 /// Maximum recursion depth to prevent runaway on deeply nested structures
@@ -256,7 +254,7 @@ fn build_tree_inner(
 
     for entry in entries.flatten() {
         let fname = entry.file_name().to_string_lossy().to_string();
-        if fname.starts_with('.') || SKIP_NAMES.contains(&fname.as_str()) {
+        if SKIP_NAMES.contains(&fname.as_str()) {
             continue;
         }
         let fpath = entry.path();
@@ -326,6 +324,63 @@ pub fn list_directory_tree(path: String) -> Result<FileTreeNode, String> {
     }
 
     build_tree(&root)
+}
+
+/// Read a single directory level (no recursion).
+/// Directories are returned with `children: None` to indicate "not yet expanded".
+/// The frontend lazily loads children when the user expands a directory node.
+#[tauri::command]
+pub fn list_directory_children(path: String) -> Result<Vec<FileTreeNode>, String> {
+    let p = std::path::Path::new(&path);
+    if !p.is_dir() {
+        return Err("路径不是目录".into());
+    }
+    if !p.exists() {
+        return Err(format!("路径不存在: {}", p.display()));
+    }
+    if !is_safe_path(p) {
+        return Err("不允许访问此路径".into());
+    }
+
+    let mut dirs: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut files: Vec<(String, std::path::PathBuf)> = Vec::new();
+
+    let entries = std::fs::read_dir(p).map_err(|e| format!("读取目录失败: {}", e))?;
+    for entry in entries.flatten() {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if SKIP_NAMES.contains(&fname.as_str()) {
+            continue;
+        }
+        let fpath = entry.path();
+        if fpath.is_dir() {
+            dirs.push((fname, fpath));
+        } else {
+            files.push((fname, fpath));
+        }
+    }
+
+    dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+    let mut children: Vec<FileTreeNode> = Vec::with_capacity(dirs.len() + files.len());
+    for (name, fpath) in &dirs {
+        children.push(FileTreeNode {
+            name: name.clone(),
+            path: fpath.display().to_string(),
+            is_dir: true,
+            children: None, // not yet expanded
+        });
+    }
+    for (fname, fpath) in &files {
+        children.push(FileTreeNode {
+            name: fname.clone(),
+            path: fpath.display().to_string(),
+            is_dir: false,
+            children: None,
+        });
+    }
+
+    Ok(children)
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -802,6 +857,50 @@ pub fn open_file(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("{}", e))?;
     }
+    Ok(())
+}
+
+/// Open a path in an external editor or file manager.
+/// `editor`: "code" (VS Code), "cursor" (Cursor), "idea" (IntelliJ IDEA), "terminal", "finder" (file manager)
+#[tauri::command]
+pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
+    match editor.as_str() {
+        "code" => open_with_editor(&path, "code", &["code", "code.cmd"]),
+        "cursor" => open_with_editor(&path, "cursor", &["cursor", "cursor.cmd"]),
+        "idea" => {
+            #[cfg(target_os = "macos")]
+            {
+                // Try `idea` CLI first, fall back to `open -a`
+                if let Some(bin) = crate::commands::find_binary(&["idea"]) {
+                    std::process::Command::new(&bin).arg(&path).spawn()
+                        .map_err(|e| format!("启动 IntelliJ IDEA 失败: {}", e))?;
+                } else {
+                    std::process::Command::new("open")
+                        .args(["-a", "IntelliJ IDEA", &path])
+                        .spawn()
+                        .map_err(|e| format!("启动 IntelliJ IDEA 失败: {}", e))?;
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                open_with_editor(&path, "IntelliJ IDEA", &["idea", "idea64"])?;
+            }
+            Ok(())
+        }
+        "terminal" => crate::commands::open_in_terminal(path),
+        "finder" => crate::commands::open_file(path),
+        _ => Err(format!("不支持的编辑器: {}", editor)),
+    }
+}
+
+/// Try to open a path with a given editor binary.
+fn open_with_editor(path: &str, name: &str, binaries: &[&str]) -> Result<(), String> {
+    let binary = crate::commands::find_binary(binaries)
+        .ok_or_else(|| format!("未找到 {}，请先安装", name))?;
+    std::process::Command::new(&binary)
+        .arg(path)
+        .spawn()
+        .map_err(|e| format!("启动 {} 失败: {}", name, e))?;
     Ok(())
 }
 

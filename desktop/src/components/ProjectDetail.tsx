@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { FileTree, type FileTreeNode } from "./FileTree";
 import { FileContentBlock } from "./common/FileContentBlock";
 import { SessionList } from "./SessionList";
@@ -32,11 +33,39 @@ export function ProjectDetail({
   const [fileContent, setFileContent] = useState<string>("");
   const [showProfilePicker, setShowProfilePicker] = useState(false);
   const [pickerPosition, setPickerPosition] = useState({ x: 0, y: 0 });
+  const [treeWidth, setTreeWidth] = useState(240);
 
-  // Scan sessions when project changes
+  // Track which project path sessions were last scanned for, so we only
+  // scan when the user actually clicks the "sessions" tab.
+  const sessionsScannedForRef = useRef<string | null>(null);
+
+  // Scan sessions only when user switches to the sessions tab and data is stale
+  const handleTabChange = useCallback((newTab: DetailTab) => {
+    setTab(newTab);
+    if (newTab === "sessions" && sessionsScannedForRef.current !== project.path) {
+      sessionsScannedForRef.current = project.path;
+      onScanSessions(project.path);
+    }
+  }, [project.path, onScanSessions]);
+
+  // Debounce timer for session scanning when project changes rapidly (e.g. arrow key nav)
+  const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // When project changes while on the sessions tab, debounce the scan to avoid
+  // stuttering during rapid arrow-key navigation. File tree updates instantly.
   useEffect(() => {
-    onScanSessions(project.path);
-  }, [project.path]);
+    sessionsScannedForRef.current = null;
+    if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
+    if (tab === "sessions") {
+      scanTimerRef.current = setTimeout(() => {
+        sessionsScannedForRef.current = project.path;
+        onScanSessions(project.path);
+      }, 300);
+    }
+    return () => {
+      if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
+    };
+  }, [project.path, tab]);
 
   // Load file content when selected file changes
   useEffect(() => {
@@ -51,7 +80,10 @@ export function ProjectDetail({
 
   const handleRunClick = useCallback((e: React.MouseEvent) => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setPickerPosition({ x: rect.left, y: rect.bottom + 4 });
+    // Prevent dropdown from overflowing the right edge of the viewport
+    const dropdownMinWidth = 200;
+    const x = Math.min(rect.left, window.innerWidth - dropdownMinWidth - 12);
+    setPickerPosition({ x, y: rect.bottom + 4 });
     setShowProfilePicker((v) => !v);
   }, []);
 
@@ -76,6 +108,23 @@ export function ProjectDetail({
   const handleCopyPath = useCallback(() => {
     navigator.clipboard.writeText(project.path).catch(() => {});
   }, [project.path]);
+
+  // File tree resize — horizontal drag
+  const handleTreeResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = treeWidth;
+    const onMouseMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      setTreeWidth(Math.max(160, Math.min(600, startWidth + delta)));
+    };
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [treeWidth]);
 
   return (
     <div className="flex-1 flex flex-col bg-[var(--app-bg)] overflow-hidden">
@@ -139,7 +188,7 @@ export function ProjectDetail({
         {(["files", "sessions"] as DetailTab[]).map((t) => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => handleTabChange(t)}
             className={`px-3 py-1.5 text-2xs font-mono transition-colors
               ${tab === t
                 ? "text-[var(--app-accent)] border-b border-[var(--app-accent)]"
@@ -154,12 +203,23 @@ export function ProjectDetail({
       {/* Tab content */}
       {tab === "files" ? (
         <div className="flex-1 flex overflow-hidden min-h-0">
-          <div className="w-[220px] shrink-0 border-r border-[var(--app-border)] overflow-y-auto">
+          <div
+            className="shrink-0 border-r border-[var(--app-border)] overflow-y-auto"
+            style={{ width: treeWidth }}
+          >
             <FileTree
+              key={project.path}
               rootPath={project.path}
               onSelect={setSelectedFile}
               activePath={selectedFile?.path}
             />
+          </div>
+          {/* Resize handle */}
+          <div
+            className="w-[5px] shrink-0 cursor-col-resize hover:bg-[var(--app-accent)]/20 transition-colors duration-fast group/resize flex items-center justify-center"
+            onMouseDown={handleTreeResize}
+          >
+            <div className="w-px h-full bg-[var(--app-border)] group-hover/resize:bg-[var(--app-accent)]/50" />
           </div>
           <div className="flex-1 overflow-y-auto">
             {selectedFile && !selectedFile.is_dir ? (
@@ -184,8 +244,8 @@ export function ProjectDetail({
         </div>
       )}
 
-      {/* Profile picker dropdown */}
-      {showProfilePicker && (
+      {/* Profile picker dropdown — portal to body to avoid overflow clipping */}
+      {showProfilePicker && createPortal(
         <>
           <div
             className="fixed z-50 bg-[var(--app-panel)] border border-[var(--app-border)] shadow-lg min-w-[200px] max-h-[300px] overflow-y-auto"
@@ -231,7 +291,8 @@ export function ProjectDetail({
             className="fixed inset-0 z-40"
             onClick={() => setShowProfilePicker(false)}
           />
-        </>
+        </>,
+        document.body
       )}
     </div>
   );

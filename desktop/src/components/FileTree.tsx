@@ -63,7 +63,7 @@ function FileIcon({ name, isDir, expanded }: { name: string; isDir: boolean; exp
   }
 }
 
-/* ──────────────────── Tree node ──────────────────── */
+/* ──────────────────── Tree node (lazy) ──────────────────── */
 
 const INDENT = 16;
 
@@ -81,16 +81,36 @@ function TreeNode({
   defaultExpanded: boolean;
 }) {
   const [expanded, setExpanded] = useState(depth === 0 ? true : defaultExpanded);
+  // children === undefined → not loaded yet; [] → loaded, empty; [...] → loaded with entries
+  const [lazyChildren, setLazyChildren] = useState<FileTreeNode[] | undefined>(node.children);
+  const [loadingChildren, setLoadingChildren] = useState(false);
   const isActive = activePath === node.path;
-  const hasChildren = node.is_dir && node.children && node.children.length > 0;
+  const hasChildren = node.is_dir;
+  const isLoaded = lazyChildren !== undefined;
+  const isEmpty = isLoaded && lazyChildren.length === 0;
 
-  const handleClick = useCallback(() => {
+  const handleClick = useCallback(async () => {
     if (node.is_dir) {
-      if (hasChildren) setExpanded((v) => !v);
+      if (isLoaded) {
+        // Toggle expanded
+        setExpanded((v) => !v);
+      } else {
+        // First expand: load children lazily
+        setLoadingChildren(true);
+        try {
+          const kids = await invoke<FileTreeNode[]>("list_directory_children", { path: node.path });
+          setLazyChildren(kids);
+          setExpanded(true);
+        } catch {
+          setLazyChildren([]);
+        } finally {
+          setLoadingChildren(false);
+        }
+      }
     } else {
       onSelect(node);
     }
-  }, [node, hasChildren, onSelect]);
+  }, [node, isLoaded, onSelect]);
 
   return (
     <div>
@@ -99,20 +119,24 @@ function TreeNode({
         style={{ paddingLeft: depth * INDENT + 8 }}
         onClick={handleClick}
       >
-        {/* Expand/collapse chevron for directories */}
+        {/* Expand/collapse indicator */}
         {node.is_dir ? (
           <span className="w-4 h-4 flex items-center justify-center shrink-0">
-            <ChevronRight
-              size={12}
-              className={`text-[var(--app-text-muted)] transition-transform duration-150 ${
-                expanded ? "rotate-90" : ""
-              }`}
-            />
+            {loadingChildren ? (
+              <Loader size={11} className="animate-spin text-[var(--app-text-muted)]" />
+            ) : (
+              <ChevronRight
+                size={12}
+                className={`text-[var(--app-text-muted)] transition-transform duration-150 ${
+                  expanded ? "rotate-90" : ""
+                }`}
+              />
+            )}
           </span>
         ) : (
           <span className="w-4 shrink-0" />
         )}
-        <FileIcon name={node.name} isDir={node.is_dir} expanded={expanded} />
+        <FileIcon name={node.name} isDir={node.is_dir} expanded={expanded && isLoaded} />
         <span
           className={`text-[11px] font-mono truncate leading-6 ${
             isActive
@@ -128,9 +152,9 @@ function TreeNode({
         )}
       </div>
       {/* Children */}
-      {expanded && hasChildren && (
+      {expanded && !loadingChildren && isLoaded && lazyChildren.length > 0 && (
         <div>
-          {node.children!.map((child) => (
+          {lazyChildren.map((child) => (
             <TreeNode
               key={child.path}
               node={child}
@@ -143,9 +167,9 @@ function TreeNode({
         </div>
       )}
       {/* Empty directory indicator */}
-      {expanded && node.is_dir && (!node.children || node.children.length === 0) && (
+      {expanded && isEmpty && (
         <div
-          className="flex items-center gap-1.5 text-[10px] text-[var(--app-text-muted)] font-mono pl-4"
+          className="flex items-center gap-1.5 text-[10px] text-[var(--app-text-muted)] font-mono"
           style={{ paddingLeft: (depth + 1) * INDENT + 20 }}
         >
           <Folder size={10} className="opacity-40 shrink-0" />
@@ -175,18 +199,38 @@ export function FileTree({ rootPath, onSelect, activePath, defaultOpenFile }: Fi
     setError(null);
 
     let cancelled = false;
-    invoke<FileTreeNode>("list_directory_tree", { path: rootPath })
-      .then((t) => {
-        if (cancelled) return;
-        setTree(t);
-        const file = defaultOpenFileRef.current;
-        if (file) {
+
+    // When defaultOpenFile is needed, use full tree to find the target file by name.
+    // Otherwise, lazy-load the top level only for instant first render.
+    const file = defaultOpenFileRef.current;
+    if (file) {
+      invoke<FileTreeNode>("list_directory_tree", { path: rootPath })
+        .then((t) => {
+          if (cancelled) return;
+          setTree(t);
           const found = findNode(t, file);
           if (found) onSelectRef.current(found);
-        }
-      })
-      .catch((e) => { if (!cancelled) setError(String(e)); })
-      .finally(() => { if (!cancelled) setLoading(false); });
+        })
+        .catch((e) => { if (!cancelled) setError(String(e)); })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    } else {
+      // Lazy mode: load only root level entries, directories have children=undefined
+      invoke<FileTreeNode[]>("list_directory_children", { path: rootPath })
+        .then((kids) => {
+          if (cancelled) return;
+          // Wrap in a synthetic root node so existing rendering still works
+          const root: FileTreeNode = {
+            name: rootPath.split("/").filter(Boolean).pop() || rootPath,
+            path: rootPath,
+            is_dir: true,
+            children: kids,
+          };
+          setTree(root);
+        })
+        .catch((e) => { if (!cancelled) setError(String(e)); })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    }
+
     return () => { cancelled = true; loadedRef.current = null; };
   }, [rootPath]);
 
@@ -220,6 +264,7 @@ export function FileTree({ rootPath, onSelect, activePath, defaultOpenFile }: Fi
   return (
     <div className="py-2">
       <TreeNode
+        key={rootPath}
         node={tree}
         depth={0}
         activePath={activePath}

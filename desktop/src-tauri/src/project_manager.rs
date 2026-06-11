@@ -18,6 +18,24 @@ pub struct ProjectInfo {
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// Lightweight session stats for a project (fast, no title extraction).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectStats {
+    pub project_path: String,
+    pub session_count: u32,
+    pub latest_timestamp: u64,
+    pub cli_types: Vec<String>,
+    pub claude_count: u32,
+    pub codex_count: u32,
+    pub qoder_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,7 +151,7 @@ pub fn add_project(name: String, path: String) -> Result<(), String> {
         return Err(format!("项目 '{}' 已存在", name));
     }
 
-    projects.push(ProjectInfo { name, path, default_profile: None });
+    projects.push(ProjectInfo { name, path, default_profile: None, description: None, pinned: false });
     save_projects(&projects)
 }
 
@@ -151,7 +169,7 @@ pub fn remove_project(name: String) -> Result<(), String> {
 // ── Update project ─────────────────────────────────────────────
 
 #[tauri::command]
-pub fn update_project(name: String, new_name: Option<String>, new_path: Option<String>, default_profile: Option<String>) -> Result<(), String> {
+pub fn update_project(name: String, new_name: Option<String>, new_path: Option<String>, default_profile: Option<String>, description: Option<String>, pinned: Option<bool>) -> Result<(), String> {
     let mut projects = load_projects();
     let idx = projects.iter().position(|p| p.name == name)
         .ok_or_else(|| format!("项目 '{}' 不存在", name))?;
@@ -174,6 +192,16 @@ pub fn update_project(name: String, new_name: Option<String>, new_path: Option<S
             projects[idx].default_profile = Some(dp.clone());
         }
     }
+    if let Some(ref desc) = description {
+        if desc.is_empty() {
+            projects[idx].description = None;
+        } else {
+            projects[idx].description = Some(desc.clone());
+        }
+    }
+    if let Some(p) = pinned {
+        projects[idx].pinned = p;
+    }
     save_projects(&projects)?;
 
     if default_profile.is_some() {
@@ -182,6 +210,145 @@ pub fn update_project(name: String, new_name: Option<String>, new_path: Option<S
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn toggle_pin_project(name: String, pinned: bool) -> Result<(), String> {
+    let mut projects = load_projects();
+    let idx = projects.iter().position(|p| p.name == name)
+        .ok_or_else(|| format!("项目 '{}' 不存在", name))?;
+    projects[idx].pinned = pinned;
+    save_projects(&projects)
+}
+
+/// Get lightweight session stats for a list of project paths.
+/// For each project, returns session count, latest timestamp, and CLI types present.
+/// Designed for fast sidebar display — stat-only for Claude/Qoder, first-line read for Codex.
+#[tauri::command]
+pub fn get_project_stats(project_paths: Vec<String>) -> std::collections::HashMap<String, ProjectStats> {
+    let home = crate::home_dir();
+    let mut map = std::collections::HashMap::new();
+
+    for path in &project_paths {
+        let mut latest = 0u64;
+        let mut cli_types: Vec<String> = Vec::new();
+
+        // ── Claude ──
+        let encoded = encode_project_path(path);
+        let claude_dir = home.join(".claude").join("projects").join(&encoded);
+        let mut claude_count = 0u32;
+        if let Ok(entries) = fs::read_dir(&claude_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                    claude_count += 1;
+                    if let Ok(meta) = p.metadata() {
+                        if let Ok(mtime) = meta.modified() {
+                            if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                                let ts = dur.as_millis() as u64;
+                                if ts > latest { latest = ts; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if claude_count > 0 { cli_types.push("claude".to_string()); }
+
+        // ── Qoder ──
+        let qoder_dir = home.join(".qoder-cn").join("projects").join(&encoded);
+        let mut qoder_count = 0u32;
+        if let Ok(entries) = fs::read_dir(&qoder_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                    qoder_count += 1;
+                    if let Ok(meta) = p.metadata() {
+                        if let Ok(mtime) = meta.modified() {
+                            if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                                let ts = dur.as_millis() as u64;
+                                if ts > latest { latest = ts; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if qoder_count > 0 { cli_types.push("qoder".to_string()); }
+
+        // ── Codex: walk sessions tree, filter by cwd ──
+        let codex_root = home.join(".codex").join("sessions");
+        let mut codex_count = 0u32;
+        let mut codex_latest = 0u64;
+        collect_codex_stats(&codex_root, path, &mut codex_count, &mut codex_latest);
+        if codex_count > 0 {
+            if codex_latest > latest { latest = codex_latest; }
+            cli_types.push("codex".to_string());
+        }
+
+        let total = claude_count + qoder_count + codex_count;
+
+        map.insert(path.clone(), ProjectStats {
+            project_path: path.clone(),
+            session_count: total,
+            latest_timestamp: latest,
+            cli_types,
+            claude_count,
+            codex_count,
+            qoder_count,
+        });
+    }
+
+    map
+}
+
+/// Walk Codex sessions directory and count sessions matching a project path.
+fn collect_codex_stats(root: &std::path::Path, project_path: &str, count: &mut u32, latest: &mut u64) {
+    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                    if let Some(session_cwd) = read_codex_session_cwd_fast(&p) {
+                        if session_cwd == project_path
+                            || session_cwd.starts_with(&format!("{}/", project_path))
+                            || project_path.starts_with(&format!("{}/", session_cwd))
+                        {
+                            *count += 1;
+                            if let Ok(meta) = p.metadata() {
+                                if let Ok(mtime) = meta.modified() {
+                                    if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                                        let ts = dur.as_millis() as u64;
+                                        if ts > *latest { *latest = ts; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Quick first-line read of a Codex session to get the cwd (no title extraction).
+fn read_codex_session_cwd_fast(path: &std::path::Path) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line).ok()?;
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first_line) {
+        if v.get("type").and_then(|t| t.as_str()) == Some("session_meta") {
+            if let Some(payload) = v.get("payload") {
+                return payload.get("cwd").and_then(|c| c.as_str()).map(|s| s.to_string());
+            }
+        }
+    }
+    None
 }
 
 // ── .ai-profile file helpers ──────────────────────────────────
@@ -246,7 +413,12 @@ fn encode_project_path(path: &str) -> String {
 }
 
 /// Scan Claude Code sessions for a given project path.
-fn scan_claude_sessions(project_path: &str) -> Vec<SessionInfo> {
+///
+/// Two-phase approach for performance:
+/// 1. Stat all jsonl files to get timestamps (fast, no file content read)
+/// 2. Sort by timestamp, take the `max_sessions` most recent
+/// 3. Extract titles only for those top sessions
+fn scan_claude_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionInfo> {
     let home = crate::home_dir();
     let encoded = encode_project_path(project_path);
     let sessions_dir = home.join(".claude").join("projects").join(&encoded);
@@ -254,74 +426,278 @@ fn scan_claude_sessions(project_path: &str) -> Vec<SessionInfo> {
         return Vec::new();
     }
 
-    let mut sessions: Vec<SessionInfo> = Vec::new();
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
-    if let Ok(entries) = fs::read_dir(&sessions_dir) {
-        for entry in entries.flatten() {
+    // Phase 1: collect paths + timestamps (stat only, no file content)
+    let mut entries: Vec<(String, std::path::PathBuf, u64)> = Vec::new();
+    if let Ok(dir_entries) = fs::read_dir(&sessions_dir) {
+        for entry in dir_entries.flatten() {
             let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext != "jsonl" {
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            let session_id = stem.to_string();
-
-            let title = extract_claude_title(&path).unwrap_or_else(|| "无标题".to_string());
-
             let timestamp = path.metadata().ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
-
-            // Heuristic: if modified within last hour, consider "active"
-            let status = if timestamp > 0 && (now_ms - timestamp) < 3600_000 {
-                "active"
-            } else {
-                "ended"
-            };
-
-            sessions.push(SessionInfo {
-                session_id,
-                title,
-                cli: "claude".to_string(),
-                profile: None,
-                project_path: project_path.to_string(),
-                work_dir: project_path.to_string(),
-                timestamp,
-                status: status.to_string(),
-            });
+            entries.push((stem.to_string(), path, timestamp));
         }
     }
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    // Sort by timestamp descending, keep only the most recent
+    entries.sort_by(|a, b| b.2.cmp(&a.2));
+    entries.truncate(max_sessions);
+
+    // Phase 2: extract titles only for the top sessions
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let mut sessions: Vec<SessionInfo> = Vec::with_capacity(entries.len());
+    for (session_id, path, timestamp) in entries {
+        let title = extract_claude_title(&path).unwrap_or_else(|| "无标题".to_string());
+        let status = if timestamp > 0 && (now_ms - timestamp) < 3600_000 {
+            "active"
+        } else {
+            "ended"
+        };
+        sessions.push(SessionInfo {
+            session_id,
+            title,
+            cli: "claude".to_string(),
+            profile: None,
+            project_path: project_path.to_string(),
+            work_dir: project_path.to_string(),
+            timestamp,
+            status: status.to_string(),
+        });
+    }
+
     sessions
 }
 
-/// Extract the first user prompt from a Claude jsonl transcript file.
+/// Extract a human-readable title from a Claude Code jsonl transcript file.
+///
+/// Uses BufReader (streaming) to avoid loading the entire file into memory.
+/// Scans at most 80 lines in a single pass — ai-title and last-prompt always
+/// appear early in the file.
 fn extract_claude_title(jsonl_path: &Path) -> Option<String> {
-    let content = fs::read_to_string(jsonl_path).ok()?;
-    for line in content.lines().take(50) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if v.get("role").and_then(|r| r.as_str()) == Some("user") {
-                if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
-                    let title = content.trim();
-                    if !title.is_empty() {
-                        let short: String = title.chars().take(80).collect();
-                        return Some(short);
+    use std::io::{BufRead, BufReader};
+    let file = fs::File::open(jsonl_path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut last_prompt: Option<String> = None;
+    let mut first_user_msg: Option<String> = None;
+
+    for line in reader.lines().take(80) {
+        let line = line.ok()?;
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+            match v.get("type").and_then(|t| t.as_str()) {
+                Some("ai-title") => {
+                    if let Some(title) = v.get("aiTitle").and_then(|t| t.as_str()) {
+                        let title = title.trim();
+                        if !title.is_empty() {
+                            return Some(title.chars().take(80).collect());
+                        }
                     }
-                } else if let Some(parts) = v.get("content").and_then(|c| c.as_array()) {
-                    for part in parts {
-                        if part.get("type").and_then(|t| t.as_str()) == Some("text") {
-                            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                                let title = text.trim();
-                                if !title.is_empty() {
-                                    let short: String = title.chars().take(80).collect();
-                                    return Some(short);
+                }
+                Some("last-prompt") => {
+                    if let Some(prompt) = v.get("lastPrompt").and_then(|p| p.as_str()) {
+                        let p = prompt.trim();
+                        if !p.is_empty() {
+                            last_prompt = Some(p.chars().take(80).collect());
+                        }
+                    }
+                }
+                Some("user") => {
+                    if first_user_msg.is_none()
+                        && v.get("isMeta").and_then(|m| m.as_bool()) != Some(true)
+                    {
+                        if let Some(msg) = v.get("message") {
+                            if let Some(content) = msg.get("content") {
+                                if let Some(text) = content.as_str() {
+                                    let t = text.trim();
+                                    if !t.is_empty() {
+                                        first_user_msg = Some(t.chars().take(80).collect());
+                                    }
                                 }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Priority: last-prompt > first user message
+    last_prompt.or(first_user_msg)
+}
+
+/// Scan Codex sessions and filter by project path.
+///
+/// Walks `~/.codex/sessions/` directory tree directly (NOT session_index.jsonl,
+/// which is not reliably updated). For each transcript file, reads the first line
+/// (`session_meta`) to get the session id, cwd, and timestamp. Titles are resolved
+/// from session_index.jsonl when available, falling back to the first user message
+/// in the transcript.
+fn scan_codex_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionInfo> {
+    let home = crate::home_dir();
+    let sessions_root = home.join(".codex").join("sessions");
+    if !sessions_root.is_dir() {
+        return Vec::new();
+    }
+
+    // Load session_index.jsonl for titles (may be stale, that's ok — just for titles)
+    let index_titles = load_codex_index_titles(&home);
+
+    // Walk the sessions directory tree and collect matching sessions
+    let mut sessions: Vec<SessionInfo> = Vec::new();
+    walk_codex_sessions_dir(
+        &sessions_root,
+        project_path,
+        &index_titles,
+        &mut sessions,
+    );
+
+    // Sort by timestamp descending, take top
+    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    sessions.truncate(max_sessions);
+    sessions
+}
+
+/// Build a HashMap<session_id, title> from session_index.jsonl.
+fn load_codex_index_titles(home: &Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let index_path = home.join(".codex").join("session_index.jsonl");
+    let content = match fs::read_to_string(&index_path) {
+        Ok(c) => c,
+        Err(_) => return map,
+    };
+    for line in content.lines() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+            if let (Some(id), Some(name)) = (
+                v.get("id").and_then(|i| i.as_str()),
+                v.get("thread_name").and_then(|t| t.as_str()),
+            ) {
+                map.insert(id.to_string(), name.chars().take(80).collect());
+            }
+        }
+    }
+    map
+}
+
+/// Recursively walk the `~/.codex/sessions/YYYY/MM/DD/` tree.
+fn walk_codex_sessions_dir(
+    root: &Path,
+    project_path: &str,
+    index_titles: &std::collections::HashMap<String, String>,
+    out: &mut Vec<SessionInfo>,
+) {
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                    if let Some(session) = read_codex_session_meta(&path, project_path, index_titles) {
+                        out.push(session);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Read session_meta from the first line of a Codex transcript file.
+/// Returns Some only if the session's cwd matches the project path.
+fn read_codex_session_meta(
+    path: &Path,
+    project_path: &str,
+    index_titles: &std::collections::HashMap<String, String>,
+) -> Option<SessionInfo> {
+    use std::io::{BufRead, BufReader};
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line).ok()?;
+
+    let v: serde_json::Value = serde_json::from_str(&first_line).ok()?;
+    if v.get("type").and_then(|t| t.as_str()) != Some("session_meta") {
+        return None;
+    }
+
+    let payload = v.get("payload")?;
+    let id = payload.get("id").and_then(|i| i.as_str())?;
+    let cwd = payload.get("cwd").and_then(|c| c.as_str())?;
+
+    // Project path matching
+    let matches = cwd == project_path
+        || cwd.starts_with(&format!("{}/", project_path))
+        || project_path.starts_with(&format!("{}/", cwd));
+    if !matches {
+        return None;
+    }
+
+    let timestamp = payload
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(|s| parse_iso8601_to_ms(s))
+        .unwrap_or(0);
+
+    // Title: prefer index, fall back to first user message from transcript
+    let title = index_titles
+        .get(id)
+        .cloned()
+        .or_else(|| read_codex_first_user_msg(&mut reader))
+        .unwrap_or_else(|| "无标题".to_string());
+
+    Some(SessionInfo {
+        session_id: id.to_string(),
+        title,
+        cli: "codex".to_string(),
+        profile: None,
+        project_path: project_path.to_string(),
+        work_dir: cwd.to_string(),
+        timestamp,
+        status: "ended".to_string(),
+    })
+}
+
+/// Read the first meaningful user message from a Codex transcript (after session_meta).
+/// Codex messages are in response_item events with payload.type="message".
+fn read_codex_first_user_msg<R: std::io::BufRead>(reader: &mut R) -> Option<String> {
+    for _ in 0..150 {
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 {
+            break;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+            let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if ty != "response_item" {
+                continue;
+            }
+            let payload = v.get("payload")?;
+            if payload.get("type").and_then(|t| t.as_str()) != Some("message") {
+                continue;
+            }
+            // Only user messages
+            let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            if role != "user" {
+                continue;
+            }
+            if let Some(content) = payload.get("content").and_then(|c| c.as_array()) {
+                for part in content {
+                    let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    if part_type == "input_text" {
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            let t = text.trim();
+                            // Skip system instructions
+                            if !t.is_empty() && !t.starts_with('<') && t.len() > 5 {
+                                return Some(t.chars().take(80).collect());
                             }
                         }
                     }
@@ -330,47 +706,6 @@ fn extract_claude_title(jsonl_path: &Path) -> Option<String> {
         }
     }
     None
-}
-
-/// Scan Codex sessions from ~/.codex/session_index.jsonl.
-fn scan_codex_sessions(project_path: &str) -> Vec<SessionInfo> {
-    let home = crate::home_dir();
-    let index_path = home.join(".codex").join("session_index.jsonl");
-    if !index_path.exists() {
-        return Vec::new();
-    }
-    let content = match fs::read_to_string(&index_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut sessions: Vec<SessionInfo> = Vec::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("");
-            let thread_name = v.get("thread_name").and_then(|t| t.as_str()).unwrap_or("无标题");
-            let updated_at = v.get("updated_at").and_then(|t| t.as_str()).unwrap_or("");
-            let timestamp = parse_iso8601_to_ms(updated_at).unwrap_or(0);
-            let title: String = thread_name.chars().take(80).collect();
-
-            sessions.push(SessionInfo {
-                session_id: id.to_string(),
-                title,
-                cli: "codex".to_string(),
-                profile: None,
-                project_path: project_path.to_string(),
-                work_dir: String::new(),
-                timestamp,
-                status: "ended".to_string(),
-            });
-        }
-    }
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    sessions
 }
 
 fn parse_iso8601_to_ms(s: &str) -> Option<u64> {
@@ -403,28 +738,51 @@ fn parse_iso8601_to_ms(s: &str) -> Option<u64> {
     Some(total_secs.max(0) as u64 * 1000)
 }
 
-/// Scan Qoder sessions — CLI command first, filesystem fallback.
+/// Scan Qoder sessions — filesystem first (fast readdir), CLI as fallback with timeout.
 fn scan_qoder_sessions(project_path: &str) -> Vec<SessionInfo> {
-    if let Some(sessions) = scan_qoder_cli(project_path) {
-        if !sessions.is_empty() {
-            return sessions;
-        }
+    // Filesystem scan is fast (pure readdir + jsonl parsing), try it first.
+    let fs_sessions = scan_qoder_filesystem(project_path);
+    if !fs_sessions.is_empty() {
+        return fs_sessions;
     }
-    scan_qoder_filesystem(project_path)
+    // Fall back to CLI only when filesystem scan is empty (e.g. sessions were
+    // created by a newer qoder version that changed its storage format).
+    scan_qoder_cli(project_path).unwrap_or_default()
 }
 
 fn scan_qoder_cli(project_path: &str) -> Option<Vec<SessionInfo>> {
     let binary = crate::commands::find_binary(&["qoderclicn"])?;
-    let output = std::process::Command::new(binary)
+    let mut child = std::process::Command::new(binary)
         .args(["--list-sessions"])
         .current_dir(project_path)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .ok()?;
-    if !output.status.success() {
-        return None;
+
+    // Wait up to 2 seconds for the CLI to respond, then kill if still running
+    let timeout = std::time::Duration::from_secs(2);
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let stdout = std::io::read_to_string(child.stdout.take()?).ok()?;
+                return parse_qoder_list_output(&stdout, project_path);
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_qoder_list_output(&stdout, project_path)
 }
 
 /// Parse qoderclicn --list-sessions output:
@@ -521,21 +879,169 @@ fn scan_qoder_filesystem(project_path: &str) -> Vec<SessionInfo> {
     sessions
 }
 
+/// Read the first few meaningful messages from a session transcript for inline preview.
+#[tauri::command]
+pub fn read_session_preview(cli: String, project_path: String, session_id: String) -> Vec<String> {
+    let home = crate::home_dir();
+    let file_path = find_session_file(&home, &cli, &project_path, &session_id);
+    let file_path = match file_path {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+
+    use std::io::{BufRead, BufReader};
+    let file = match fs::File::open(&file_path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let reader = BufReader::new(file);
+    let mut messages: Vec<String> = Vec::new();
+
+    for line in reader.lines().take(150) {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+            let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            let text = match ty {
+                "user" => {
+                    v.get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            v.get("message")
+                                .and_then(|m| m.get("content"))
+                                .and_then(|c| c.as_array())
+                                .and_then(|parts| {
+                                    parts.iter()
+                                        .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
+                                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                                        .collect::<Vec<_>>()
+                                        .join("")
+                                        .into()
+                                })
+                        })
+                }
+                "assistant" => {
+                    v.get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                        .and_then(|parts| {
+                            let texts: Vec<&str> = parts.iter()
+                                .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
+                                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                                .collect();
+                            if texts.is_empty() { None } else { Some(texts.join(" ")) }
+                        })
+                        .or_else(|| {
+                            v.get("message")
+                                .and_then(|m| m.get("content"))
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string())
+                        })
+                }
+                // Codex format: messages are nested in response_item.payload
+                // payload = {type:"message", content:[{type:"input_text"|"output_text", text:"..."}]}
+                "response_item" => {
+                    v.get("payload").and_then(|payload| {
+                        if payload.get("type").and_then(|t| t.as_str()) != Some("message") {
+                            return None;
+                        }
+                        payload.get("content")
+                            .and_then(|c| c.as_array())
+                            .map(|parts| {
+                                parts.iter()
+                                    .filter(|p| {
+                                        let t = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                        t == "input_text" || t == "output_text"
+                                    })
+                                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            })
+                            .filter(|s| !s.is_empty())
+                    })
+                }
+                _ => None,
+            };
+
+            if let Some(t) = text {
+                let trimmed = t.trim();
+                if trimmed.len() > 5
+                    && !trimmed.starts_with('<')
+                    && !trimmed.starts_with("Filesystem")
+                {
+                    messages.push(trimmed.chars().take(200).collect());
+                    if messages.len() >= 4 { break; }
+                }
+            }
+        }
+    }
+
+    messages
+}
+
+/// Find a session transcript file on disk.
+fn find_session_file(home: &Path, cli: &str, project_path: &str, session_id: &str) -> Option<PathBuf> {
+    match cli {
+        "claude" => {
+            let encoded = encode_project_path(project_path);
+            let dir = home.join(".claude").join("projects").join(&encoded);
+            let path = dir.join(format!("{}.jsonl", session_id));
+            if path.exists() { Some(path) } else { None }
+        }
+        "codex" => {
+            // Walk sessions tree to find the file containing this session ID
+            let root = home.join(".codex").join("sessions");
+            let mut stack = vec![root];
+            while let Some(dir) = stack.pop() {
+                if let Ok(entries) = fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.is_dir() {
+                            stack.push(p);
+                        } else if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                            let fname = p.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("");
+                            if fname.contains(session_id) {
+                                return Some(p);
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        "qoder" => {
+            let encoded = encode_project_path(project_path);
+            let dir = home.join(".qoder-cn").join("projects").join(&encoded);
+            let path = dir.join(format!("{}.jsonl", session_id));
+            if path.exists() { Some(path) } else { None }
+        }
+        _ => None,
+    }
+}
+
 #[tauri::command]
 pub fn scan_project_sessions(project_path: String, cli: Option<String>) -> Vec<SessionInfo> {
+    const MAX_SESSIONS: usize = 50;
     let cli_filter = cli.unwrap_or_default();
     let mut all: Vec<SessionInfo> = Vec::new();
 
     if cli_filter.is_empty() || cli_filter == "claude" {
-        all.extend(scan_claude_sessions(&project_path));
+        all.extend(scan_claude_sessions(&project_path, MAX_SESSIONS));
     }
     if cli_filter.is_empty() || cli_filter == "codex" {
-        all.extend(scan_codex_sessions(&project_path));
+        all.extend(scan_codex_sessions(&project_path, MAX_SESSIONS));
     }
     if cli_filter.is_empty() || cli_filter == "qoder" {
         all.extend(scan_qoder_sessions(&project_path));
     }
 
     all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    all.truncate(MAX_SESSIONS);
     all
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ProjectInfo } from "../lib/types";
+import type { ProjectInfo, ProjectStats } from "../lib/types";
 
 const STORAGE_KEY = "kn-active-project";
 
@@ -8,18 +8,33 @@ export interface UseProjectsReturn {
   projects: ProjectInfo[];
   activeProject: ProjectInfo | null;
   loading: boolean;
+  statsMap: Record<string, ProjectStats>;
   setActiveProject: (project: ProjectInfo | null) => void;
   loadProjects: () => Promise<void>;
   addProject: (name: string, path: string) => Promise<void>;
   removeProject: (name: string) => Promise<void>;
-  updateProject: (name: string, newName?: string, newPath?: string, defaultProfile?: string) => Promise<void>;
+  updateProject: (name: string, newName?: string, newPath?: string, defaultProfile?: string, description?: string, pinned?: boolean) => Promise<void>;
   setDefaultProfile: (projectName: string, profile: string | null) => Promise<void>;
+  setDescription: (projectName: string, description: string) => Promise<void>;
+  togglePin: (projectName: string, pinned: boolean) => Promise<void>;
 }
 
 export function useProjects(): UseProjectsReturn {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [activeProject, setActiveProjectState] = useState<ProjectInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  const [statsMap, setStatsMap] = useState<Record<string, ProjectStats>>({});
+
+  const loadStats = useCallback(async (list: ProjectInfo[]) => {
+    if (list.length === 0) { setStatsMap({}); return; }
+    try {
+      const paths = list.map((p) => p.path);
+      const stats: Record<string, ProjectStats> = await invoke("get_project_stats", { projectPaths: paths });
+      setStatsMap(stats);
+    } catch (e) {
+      console.error("[useProjects] loadStats failed:", e);
+    }
+  }, []);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -37,12 +52,15 @@ export function useProjects(): UseProjectsReturn {
           setActiveProjectState(null);
         }
       }
+
+      // Async load stats (non-blocking)
+      loadStats(list);
     } catch (e) {
       console.error("[useProjects] load failed:", e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadStats]);
 
   const setActiveProject = useCallback((project: ProjectInfo | null) => {
     setActiveProjectState(project);
@@ -60,7 +78,6 @@ export function useProjects(): UseProjectsReturn {
 
   const removeProject = useCallback(async (name: string) => {
     await invoke("remove_project", { name });
-    // Clear active if it was removed
     setActiveProjectState((prev) => {
       if (prev?.name === name) {
         localStorage.removeItem(STORAGE_KEY);
@@ -71,12 +88,14 @@ export function useProjects(): UseProjectsReturn {
     await loadProjects();
   }, [loadProjects]);
 
-  const updateProject = useCallback(async (name: string, newName?: string, newPath?: string, defaultProfile?: string) => {
+  const updateProject = useCallback(async (name: string, newName?: string, newPath?: string, defaultProfile?: string, description?: string, pinned?: boolean) => {
     await invoke("update_project", {
       name,
       newName: newName ?? null,
       newPath: newPath ?? null,
       defaultProfile: defaultProfile ?? null,
+      description: description ?? null,
+      pinned: pinned ?? null,
     });
     await loadProjects();
   }, [loadProjects]);
@@ -87,7 +106,26 @@ export function useProjects(): UseProjectsReturn {
       newName: null,
       newPath: null,
       defaultProfile: profile ?? "",
+      description: null,
+      pinned: null,
     });
+    await loadProjects();
+  }, [loadProjects]);
+
+  const setDescription = useCallback(async (projectName: string, description: string) => {
+    await invoke("update_project", {
+      name: projectName,
+      newName: null,
+      newPath: null,
+      defaultProfile: null,
+      description,
+      pinned: null,
+    });
+    await loadProjects();
+  }, [loadProjects]);
+
+  const togglePin = useCallback(async (projectName: string, pinned: boolean) => {
+    await invoke("toggle_pin_project", { name: projectName, pinned });
     await loadProjects();
   }, [loadProjects]);
 
@@ -99,11 +137,14 @@ export function useProjects(): UseProjectsReturn {
     projects,
     activeProject,
     loading,
+    statsMap,
     setActiveProject,
     loadProjects,
     addProject,
     removeProject,
     updateProject,
     setDefaultProfile,
+    setDescription,
+    togglePin,
   };
 }

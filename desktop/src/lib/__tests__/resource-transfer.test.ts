@@ -35,7 +35,7 @@ describe("resource-transfer helpers", () => {
       "qoder",
       "project",
       "skills",
-      { name: "repo", path: "C:\\work\\repo" },
+      { name: "repo", path: "C:\\work\\repo", pinned: false },
     )).resolves.toBe("C:\\work\\repo\\.qoder\\skills");
   });
 });

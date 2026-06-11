@@ -39,6 +39,18 @@ export interface ProjectInfo {
   name: string;
   path: string;
   defaultProfile?: string;
+  description?: string;
+  pinned: boolean;
+}
+
+export interface ProjectStats {
+  projectPath: string;
+  sessionCount: number;
+  latestTimestamp: number;
+  cliTypes: string[];
+  claudeCount: number;
+  codexCount: number;
+  qoderCount: number;
 }
 
 export type ScopeTab = "user" | "project" | "all";
@@ -105,12 +117,22 @@ export function recommendedInstallCommand(item: EnvCheckItem): string | null {
   return recommendedInstallOption(item)?.command ?? item.install_cmd ?? null;
 }
 
+// ── CLI type ──
+
+export const CLI_TYPES = [
+  { id: "claude", label: "Claude" },
+  { id: "codex", label: "Codex" },
+  { id: "qoder", label: "Qoder" },
+] as const;
+
+export type CliKind = (typeof CLI_TYPES)[number]["id"];
+
 // ── Session (CLI native) ──
 
 export interface SessionInfo {
   sessionId: string;
   title: string;
-  cli: "claude" | "codex" | "qoder";
+  cli: CliKind;
   profile: string | null;
   projectPath: string;
   workDir: string;

@@ -103,7 +103,7 @@ export function App() {
   const [hookDataLoading, setHookDataLoading] = useState(false);
   const [selectedHook, setSelectedHook] = useState<HookEntry | null>(null);
   const [activeScope, setActiveScope] = useState<ScopeTab>("user");
-  const { projects, activeProject, setActiveProject, addProject, loadProjects, removeProject, updateProject } = useProjects();
+  const { projects, activeProject, setActiveProject, addProject, loadProjects, removeProject, updateProject, statsMap, setDescription, togglePin } = useProjects();
   const sessionScanner = useSessionScanner();
 
   // Compute scan paths: null = user only, or a list of project paths to scan
@@ -721,11 +721,17 @@ export function App() {
     rightTerminal.runInNewTab(cmd, activeProject.path, `${activeProject.name} · ${profileName}`);
   }, [activeProject, rightTerminal]);
 
+  // Run profile in a specific project (used from sidebar where activeProject may be stale)
+  const handleRunProjectProfileDirect = useCallback((projectPath: string, projectName: string, profileName: string, cliType: string) => {
+    const cmd = `ai ${cliType} ${profileName}`;
+    rightTerminal.runInNewTab(cmd, projectPath, `${projectName} · ${profileName}`);
+  }, [rightTerminal]);
+
   const handleResumeSession = useCallback((session: SessionInfo) => {
     const cmdMap: Record<string, string> = {
       claude: `ai claude ${session.profile || ""} --resume ${session.sessionId}`,
       codex: `ai codex ${session.profile || ""} resume ${session.sessionId}`,
-      qoder: `ai qoder ${session.profile || ""} -r ${session.sessionId}`,
+      qoder: `ai qoderclicn ${session.profile || ""} -r ${session.sessionId}`,
     };
     const cmd = cmdMap[session.cli] || `ai claude --resume ${session.sessionId}`;
     const label = session.title.slice(0, 30);
@@ -742,6 +748,12 @@ export function App() {
     });
     setShowNameDialog(true);
   }, [updateProject, addToast]);
+
+  const handleOpenInEditor = useCallback((path: string, editor: string) => {
+    invoke("open_in_editor", { path, editor }).catch((e) =>
+      addToast("error", `打开失败: ${String(e).slice(0, 120)}`)
+    );
+  }, [addToast]);
 
   const handleChangeProjectPath = useCallback(async (name: string) => {
     try {
@@ -1910,8 +1922,12 @@ export function App() {
               onSelect={(p) => setActiveProject(p)}
               onAddProject={handleAddProject}
               onDeleteProject={handleDeleteProjectFromSidebar}
-              onRenameProject={handleRenameProjectFromSidebar}
-              onChangePath={handleChangeProjectPath}
+              onRunProfile={handleRunProjectProfileDirect}
+              onSetDescription={setDescription}
+              onTogglePin={togglePin}
+              onOpenInEditor={handleOpenInEditor}
+              profiles={ctx.profiles}
+              statsMap={statsMap}
             />
           )}
 
