@@ -43,6 +43,12 @@ export interface ProjectInfo {
   pinned: boolean;
 }
 
+export interface ActiveProjectContext {
+  activeProject: ProjectInfo | null;
+  setActiveProject: (project: ProjectInfo | null) => void;
+  activateProjectByPath: (path: string | null | undefined) => void;
+}
+
 export interface ProjectStats {
   projectPath: string;
   sessionCount: number;

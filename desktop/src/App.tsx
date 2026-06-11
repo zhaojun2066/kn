@@ -13,6 +13,10 @@ import { UsagePanel } from "./components/UsagePanel";
 import { ActivityBar, type ActivityKey } from "./components/ActivityBar";
 import { StatusBar } from "./components/StatusBar";
 import { ToastViewport } from "./components/ToastViewport";
+import { ProfileDrawer } from "./components/ProfileDrawer";
+import { ResourceDrawer } from "./components/ResourceDrawer";
+import { ProjectWorkspace } from "./components/ProjectWorkspace";
+import type { LocalCliUsageRow } from "./components/LocalCliUsage";
 import { SkillManager, type SkillManagerData, type SelectedItem, type BatchToggleItem } from "./components/SkillManager";
 import type { PluginUpdateInfo } from "./components/SkillManager";
 import type { AgentManagerData } from "./components/SkillManager";
@@ -37,10 +41,10 @@ import { useToasts } from "./hooks/useToasts";
 import { useUsage } from "./hooks/useUsage";
 import { useTheme } from "./hooks/useTheme";
 import { useProjects } from "./hooks/useProjects";
+import { useProjectContext } from "./hooks/useProjectContext";
 import { useSessionScanner } from "./hooks/useSessionScanner";
 import { ProjectSidebar } from "./components/ProjectSidebar";
-import { ProjectDetail } from "./components/ProjectDetail";
-import type { ScopeTab, SessionInfo } from "./lib/types";
+import type { ProjectInfo, ScopeTab, SessionInfo } from "./lib/types";
 import { basename } from "./lib/path-utils";
 import { buildDestDir, getResourceData, getResourceType, getSubdir, type ResourceData } from "./lib/resource-transfer";
 import { Command } from "@tauri-apps/plugin-shell";
@@ -103,8 +107,56 @@ export function App() {
   const [hookDataLoading, setHookDataLoading] = useState(false);
   const [selectedHook, setSelectedHook] = useState<HookEntry | null>(null);
   const [activeScope, setActiveScope] = useState<ScopeTab>("user");
-  const { projects, activeProject, setActiveProject, addProject, loadProjects, removeProject, updateProject, statsMap, setDescription, togglePin } = useProjects();
+  const {
+    projects,
+    addProject,
+    loadProjects,
+    removeProject,
+    updateProject,
+    statsMap,
+    setDescription,
+    togglePin,
+  } = useProjects();
+  const projectContext = useProjectContext(projects);
+  const activeProject = projectContext.activeProject;
+  const setActiveProject = projectContext.setActiveProject;
+  const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
+  const [resourceDrawerOpen, setResourceDrawerOpen] = useState(false);
   const sessionScanner = useSessionScanner();
+
+  const buildCliUsageRows = useCallback((project: ProjectInfo): LocalCliUsageRow[] => {
+    const stats = statsMap[project.path];
+    const hasRecentUsage = Boolean(stats?.latestTimestamp);
+    return [
+      {
+        cli: "Claude",
+        version: "检测中",
+        installed: true,
+        runs: stats?.claudeCount ?? 0,
+        sessions: stats?.claudeCount ?? 0,
+        tokens: 0,
+        lastUsed: hasRecentUsage ? "最近" : "-",
+      },
+      {
+        cli: "Codex",
+        version: "检测中",
+        installed: true,
+        runs: stats?.codexCount ?? 0,
+        sessions: stats?.codexCount ?? 0,
+        tokens: 0,
+        lastUsed: hasRecentUsage ? "最近" : "-",
+      },
+      {
+        cli: "Qoder",
+        version: "检测中",
+        installed: true,
+        runs: stats?.qoderCount ?? 0,
+        sessions: stats?.qoderCount ?? 0,
+        tokens: 0,
+        lastUsed: hasRecentUsage ? "最近" : "-",
+      },
+    ];
+  }, [statsMap]);
 
   // Compute scan paths: null = user only, or a list of project paths to scan
   const scanProjectPaths = useMemo<(string | null)[]>(() => {
@@ -1796,6 +1848,9 @@ export function App() {
           setQuickSwitcherMode("history");
           setShowQuickSwitcher(true);
         }}
+        activeProject={activeProject}
+        onOpenProfiles={() => setProfileDrawerOpen(true)}
+        onOpenResources={() => setResourceDrawerOpen(true)}
       />
 
       {/* Main content — ActivityBar | Sidebar/SkillManager | (MainPanel + BottomTerminal) | RightTerminal */}
@@ -1978,14 +2033,26 @@ export function App() {
               </div>
             )}
             {!rightMaximized && !bottomMaximized && activeActivity === "projects" && activeProject && (
-              <ProjectDetail
+              <ProjectWorkspace
                 project={activeProject}
-                profiles={ctx.profiles}
                 sessions={sessionScanner.sessions}
-                sessionsLoading={sessionScanner.loading}
-                onResumeSession={handleResumeSession}
-                onRunProfile={handleRunProjectProfile}
-                onScanSessions={(path) => sessionScanner.scanSessions(path)}
+                cliUsageRows={buildCliUsageRows(activeProject)}
+                onRunDefault={() => {
+                  const profileName = activeProject.defaultProfile || ctx.defaultProfile;
+                  if (!profileName) {
+                    addToast("error", "请先设置项目默认 Profile");
+                    return;
+                  }
+                  const profile = ctx.profiles.find((p) => p.name === profileName);
+                  const cliType = profile?.cli_type || "claude";
+                  rightTerminal.runProjectCommand(
+                    `ai ${cliType} ${profileName}`,
+                    activeProject,
+                    profileName,
+                    `${activeProject.name} · ${profileName}`,
+                  );
+                }}
+                onChangeDefaultProfile={() => setProfileDrawerOpen(true)}
               />
             )}
             {!rightMaximized && !bottomMaximized && activeActivity === "projects" && !activeProject && (
@@ -2087,6 +2154,7 @@ export function App() {
         defaultProfile={ctx.defaultProfile}
         appVersion={appVersion}
         onShowUsage={() => setShowUsage(true)}
+        activeProject={activeProject}
       />
 
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
@@ -2099,6 +2167,36 @@ export function App() {
       )}
 
       {/* Dialogs */}
+      <ProfileDrawer
+        open={profileDrawerOpen}
+        profiles={ctx.profiles}
+        selectedProfile={ctx.selectedProfile}
+        selectedName={ctx.selectedName}
+        searchQuery={ctx.searchQuery}
+        onClose={() => setProfileDrawerOpen(false)}
+        onSelect={(name) => ctx.selectProfile(name)}
+        onSearch={(query) => ctx.search(query)}
+        onAdd={() => setShowAddDialog(true)}
+        onRunInCurrentProject={(profileName) => {
+          if (!activeProject) {
+            addToast("error", "请先选择项目");
+            return;
+          }
+          const profile = ctx.profiles.find((p) => p.name === profileName);
+          const cliType = profile?.cli_type || "claude";
+          rightTerminal.runProjectCommand(
+            `ai ${cliType} ${profileName}`,
+            activeProject,
+            profileName,
+            `${activeProject.name} · ${profileName}`,
+          );
+        }}
+      />
+      <ResourceDrawer
+        open={resourceDrawerOpen}
+        onClose={() => setResourceDrawerOpen(false)}
+      />
+
       <ProfileDialog
         open={showAddDialog}
         onClose={() => setShowAddDialog(false)}

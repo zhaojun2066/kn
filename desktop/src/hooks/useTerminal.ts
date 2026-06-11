@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { Terminal } from "@xterm/xterm";
+import type { ProjectInfo } from "../lib/types";
 import type { PaneNode, PaneLeaf, PaneSplit, SplitDirection, NavDirection } from "../lib/pane-types";
 import {
   isLeaf, isSplit,
@@ -524,6 +525,15 @@ export function useTerminal(panelId: string = "right") {
     await runInNewTab(cmd, workDir, cmd.slice(0, 30));
   }, [runInNewTab]);
 
+  const runProjectCommand = useCallback(async (
+    cmd: string,
+    project: ProjectInfo,
+    _profileName?: string,
+    label?: string,
+  ) => {
+    await runInNewTab(cmd, project.path, label ?? `${project.name} · ${cmd.slice(0, 30)}`);
+  }, [runInNewTab]);
+
   /* ── Paste into active pane ────────────────────────────── */
   const pasteCommand = useCallback(async (cmd: string): Promise<boolean> => {
     const tab = sessionsRef.current.find((t) => t.id === activeTabIdRef.current);
@@ -969,6 +979,7 @@ export function useTerminal(panelId: string = "right") {
     runInSplitPane,
     runInTerminal,
     runInNewTab,
+    runProjectCommand,
     newEmptyTab,
     resumeSession,
     newSessionFromHistory,

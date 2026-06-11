@@ -1,4 +1,4 @@
-import type { ProfileSummary } from "../lib/types";
+import type { ProfileSummary, ProjectInfo } from "../lib/types";
 
 interface UsageStatus {
   todayTokens: number;
@@ -15,6 +15,7 @@ interface StatusBarProps {
   defaultProfile: string | null;
   appVersion: string;
   onShowUsage: () => void;
+  activeProject?: ProjectInfo | null;
 }
 
 export function StatusBar({
@@ -27,6 +28,7 @@ export function StatusBar({
   defaultProfile,
   appVersion,
   onShowUsage,
+  activeProject,
 }: StatusBarProps) {
   return (
     <div className="flex items-center h-[26px] px-3 bg-app-statusbar border-t border-app-border select-none shrink-0 gap-3">
@@ -45,6 +47,9 @@ export function StatusBar({
         </span>
       )}
       <span className="flex-1" />
+      <span className="text-2xs text-app-text-muted font-mono shrink-0 max-w-[220px] truncate">
+        {activeProject ? `项目: ${activeProject.name}` : "未选择项目"}
+      </span>
       <span className="text-2xs text-app-text-muted font-mono shrink-0">
         {colorScheme ? colorScheme.charAt(0).toUpperCase() + colorScheme.slice(1) : ""}
       </span>

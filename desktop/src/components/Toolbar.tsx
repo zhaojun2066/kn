@@ -7,7 +7,7 @@ import {
 import { formatShortcut } from "../utils/shortcut";
 import { Button } from "./common/Button";
 import { useTheme, ThemeMode, COLOR_SCHEMES } from "../hooks/useTheme";
-import type { EnvCheckItem, EnvCheckResult } from "../lib/types";
+import type { EnvCheckItem, EnvCheckResult, ProjectInfo } from "../lib/types";
 import { itemSeverity } from "../lib/types";
 
 interface ToolbarProps {
@@ -26,6 +26,9 @@ interface ToolbarProps {
   onRefreshEnvCheck?: () => void;
   onQuickSwitcher: () => void;
   onQuickHistory: () => void;
+  activeProject?: ProjectInfo | null;
+  onOpenProfiles?: () => void;
+  onOpenResources?: () => void;
 }
 
 const themeIcons: Record<ThemeMode, React.ReactNode> = {
@@ -82,13 +85,37 @@ export function Toolbar({
   terminalVisible, rightTerminalVisible, onToggleRightTerminal,
   envCheck, onInstallTool, onRefreshEnvCheck,
   onQuickSwitcher, onQuickHistory,
+  activeProject,
+  onOpenProfiles,
+  onOpenResources,
 }: ToolbarProps) {
   const { mode, colorScheme, setColorScheme, setTheme } = useTheme();
   const cycleTheme = () => setTheme(themeNext[mode]);
 
   return (
     <div className="flex items-center gap-1.5 h-[38px] px-3 bg-app-toolbar border-b border-app-border select-none shrink-0 overflow-visible">
-      {/* Spacer */}
+      <div className="flex items-center gap-1 min-w-0">
+        <div className="max-w-[220px] truncate px-2 py-1 text-xs font-mono border border-app-border bg-app-panel text-app-text-dim">
+          {activeProject ? activeProject.name : "未选择项目"}
+        </div>
+        {onOpenProfiles && (
+          <button
+            onClick={onOpenProfiles}
+            className="px-2 py-1 text-xs font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
+          >
+            Profiles
+          </button>
+        )}
+        {onOpenResources && (
+          <button
+            onClick={onOpenResources}
+            className="px-2 py-1 text-xs font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
+          >
+            Resources
+          </button>
+        )}
+      </div>
+
       <div className="flex-1" />
 
       {/* ── Right side — Quick Switcher + layout controls (VS Code style) ── */}
