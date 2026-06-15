@@ -36,6 +36,39 @@ Commands:
 
 # ── Query commands ────────────────────────────────────────────
 
+def _detect_cli_type(profile):
+    """Detect which CLI tool this profile is for, based on env var keys."""
+    env = profile.get("env", {})
+    if env.get("_KN_CLI_TYPE"):
+        cli_type = env["_KN_CLI_TYPE"]
+        return "claude" if cli_type == "both" else cli_type
+    if "dashscope" in env.get("OPENAI_BASE_URL", ""):
+        return "qoderclicn"
+    env_keys = set(env.keys())
+    has_anthropic = any(k.startswith("ANTHROPIC_") for k in env_keys)
+    has_openai = any(k.startswith("OPENAI_") for k in env_keys)
+    if has_anthropic and not has_openai:
+        return "claude"
+    if has_openai:
+        return "codex"
+    return "generic"
+
+
+# Brand colors (ANSI true color)
+_CLI_COLORS = {
+    "claude": "\033[38;2;217;119;87m",   # #D97757 coral orange
+    "codex":  "\033[38;2;122;157;255m",  # #7A9DFF blue-purple
+    "qoder":  "\033[38;2;42;219;92m",    # #2ADB5C green
+}
+_CLI_ICONS = {
+    "claude": "⬢",   # Claude Code
+    "codex":  "⬣",   # Codex (hexagon-like)
+    "qoder":  "⬡",   # Qoder
+    "generic": "○",
+}
+_RESET = "\033[0m"
+
+
 def cmd_list(config):
     """List all profiles with descriptions."""
     profiles = config.get("profiles", {})
@@ -48,7 +81,17 @@ def cmd_list(config):
         marker = " *" if name == default else "  "
         desc = profiles[name].get("desc", "")
         env_count = len(profiles[name].get("env", {}))
-        print(f" {marker} {name:<{width}}  {desc} ({env_count} vars)")
+        cli_type = _detect_cli_type(profiles[name])
+        color = _CLI_COLORS.get(cli_type, "")
+        icon = _CLI_ICONS.get(cli_type, _CLI_ICONS["generic"])
+        # Manual padding to avoid ANSI escape codes breaking alignment
+        visible = f"{icon} {name}"
+        padding = " " * (width - len(name))
+        if color:
+            label = f"{color}{visible}{_RESET}{padding}"
+        else:
+            label = f"{visible}{padding}"
+        print(f" {marker} {label}  {desc} ({env_count} vars)")
 
 
 def cmd_show(config, name):
@@ -126,28 +169,28 @@ def cmd_names(config):
         print(f"{name}\t{desc}")
 
 
-def cmd_init(config):
+def cmd_init(config, json_mode=False):
     """Bootstrap from existing config files (Claude Code + Codex)."""
     imported_any = False
 
     # 1. Import from ~/.claude/settings.json
-    if _import_claude_settings(config):
+    if _import_claude_settings(config, json_mode=json_mode):
         imported_any = True
 
     # 2. Import from ~/.codex/config.toml
-    if _import_codex_config(config):
+    if _import_codex_config(config, json_mode=json_mode):
         imported_any = True
 
     if not imported_any:
-        print("No existing config found. Creating empty config.")
+        print("No existing config found. Creating empty config.", file=sys.stderr if json_mode else sys.stdout)
         if not config.get("profiles"):
             config["profiles"] = {}
         cfg.write_config(config)
 
-    print(f"Config saved to {cfg.CONFIG_FILE}")
+    print(f"Config saved to {cfg.CONFIG_FILE}", file=sys.stderr if json_mode else sys.stdout)
 
 
-def _import_claude_settings(config):
+def _import_claude_settings(config, json_mode=False):
     """Import profile from ~/.claude/settings.json. Returns True on success."""
     settings_file = os.path.expanduser("~/.claude/settings.json")
     if not os.path.exists(settings_file):
@@ -174,11 +217,11 @@ def _import_claude_settings(config):
     if not config.get("default"):
         config["default"] = name
     cfg.write_config(config)
-    print(f"Imported {len(env)} env vars from settings.json → profile '{name}'")
+    print(f"Imported {len(env)} env vars from settings.json → profile '{name}'", file=sys.stderr if json_mode else sys.stdout)
     return True
 
 
-def _import_codex_config(config):
+def _import_codex_config(config, json_mode=False):
     """Import profile from ~/.codex/config.toml + ~/.codex/auth.json. Returns True on success."""
     env = {}
     provider_name = ""
@@ -208,7 +251,7 @@ def _import_codex_config(config):
         if not config.get("default"):
             config["default"] = name
         cfg.write_config(config)
-        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'")
+        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'", file=sys.stderr if json_mode else sys.stdout)
         return True
 
     # Parse TOML (requires Python 3.11+)
@@ -228,7 +271,7 @@ def _import_codex_config(config):
         if not config.get("default"):
             config["default"] = name
         cfg.write_config(config)
-        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'")
+        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'", file=sys.stderr if json_mode else sys.stdout)
         return True
     except Exception as e:
         print(f"Warning: error reading {codex_file}: {e}", file=sys.stderr)
@@ -242,7 +285,7 @@ def _import_codex_config(config):
         if not config.get("default"):
             config["default"] = name
         cfg.write_config(config)
-        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'")
+        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'", file=sys.stderr if json_mode else sys.stdout)
         return True
 
     # Extract top-level model as OPENAI_MODEL (if not already from auth.json)
@@ -294,7 +337,7 @@ def _import_codex_config(config):
     if not config.get("default"):
         config["default"] = name
     cfg.write_config(config)
-    print(f"Imported {len(env)} env vars from config.toml → profile '{name}'")
+    print(f"Imported {len(env)} env vars from config.toml → profile '{name}'", file=sys.stderr if json_mode else sys.stdout)
     return True
 
 
@@ -554,7 +597,7 @@ def main():
     elif cmd == "names":
         cmd_names(config)
     elif cmd == "init":
-        cmd_init(config)
+        cmd_init(config, json_mode=json_mode)
         if json_mode:
             _json_ok(action="init")
     # Mutation commands

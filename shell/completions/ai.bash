@@ -1,5 +1,5 @@
 # AI Profile Manager — Bash completion script
-# Installed by install.sh and desktop app to ~/.claude-profiles/completions/ai.bash
+# Installed by install.sh and desktop app to ~/.kn/completions/ai.bash
 #
 # Provides completions for the ai() shell function:
 #   ai <tab>             → claude / codex / qoderclicn / profile
@@ -9,7 +9,10 @@
 #   ai profile switch <tab> → profile names
 
 _ai_profiles() {
-    local config="$HOME/.claude-profiles/config.yaml"
+    local config="${KN_HOME:-$HOME/.kn}/config.yaml"
+    if [ ! -f "$config" ] && [ -f "$HOME/.claude-profiles/config.yaml" ]; then
+        config="$HOME/.claude-profiles/config.yaml"
+    fi
     [ -f "$config" ] || return 0
     sed -n 's/^  \([a-zA-Z][a-zA-Z0-9_-]*\):.*/\1/p' "$config"
 }

@@ -115,7 +115,7 @@ Release notes 由 [git-cliff](https://git-cliff.org) 根据 conventional commits
 | HTTP fetch | `reqwest::blocking` (pure Rust) | same | same |
 | SHA256 | `sha2` crate (pure Rust) | same | same |
 | Open file | `/usr/bin/open` | `xdg-open` | `cmd /c start` |
-| PTY shell | `/bin/zsh -i -l` | `/bin/bash -i -l` | `powershell.exe` |
+| PTY shell | `/bin/zsh -i -l` | `/bin/bash -i -l` | Git Bash if present, else `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` |
 | File lock | `fcntl.flock` (Python) + `fs2::lock_exclusive` (Rust) | same | `msvcrt.locking` (Python) + `fs2` (Rust; not interoperable with msvcrt on Windows — `with_write_lock` Mutex protects intra-Rust) |
 | Shell RC | `.zshrc` + `.bashrc` | `.zshrc` + `.bashrc` | PowerShell profile + `.bashrc` |
 
@@ -123,7 +123,7 @@ Key implementation details:
 - `commands.rs::find_binary()` — searches hardcoded platform paths → shell PATH fallback (`shell -lc "command -v"`) → bare command name. Windows extra paths: `System32`, Scoop shims (`~/scoop/shims`), npm global (`~/AppData/Roaming/npm`), `Program Files`.
 - `commands.rs::home_dir()` — checks `HOME` (Unix) then `USERPROFILE` (Windows). **Always use this function — never inline `std::env::var("HOME").or_else(...)`.** `pty.rs` previously had the priority reversed (USERPROFILE before HOME) which was a bug on Cygwin/Git Bash.
 - `install.sh` + `ensure_shell_rc()` — configures both `.zshrc` and `.bashrc` idempotently
-- `pty.rs` — always spawns with `-i -l` (login + interactive), ensures `TERM=xterm-256color`
+- `pty.rs` — Unix/Git Bash spawns with `-i -l` (login + interactive); Windows PowerShell fallback uses an absolute executable path and dot-sources `~/.kn/shell-rc.ps1`; always ensures `TERM=xterm-256color`
 
 ## Key Conventions
 

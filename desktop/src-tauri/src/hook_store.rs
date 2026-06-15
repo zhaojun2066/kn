@@ -46,35 +46,30 @@ fn hooks_dir() -> PathBuf {
     crate::config_dir().join("hooks")
 }
 
-/// Locate bash.exe on Windows, searching Git for Windows install paths
-/// that `find_binary` doesn't cover (it only checks System32 / Program Files roots).
+/// Locate bash.exe on Windows using the shared Git Bash candidate list.
 #[cfg(windows)]
-fn find_bash_on_windows() -> String {
+fn find_bash_on_windows() -> Option<String> {
     use std::path::Path;
-    let candidates: &[&str] = &[
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-        r"C:\scoop\apps\git\current\bin\bash.exe",
-    ];
+    let home = crate::home_dir().to_string_lossy().to_string();
     let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    // Check LOCALAPPDATA last (user-scoped Git install)
-    for p in candidates {
-        if Path::new(p).exists() {
-            return p.to_string();
+    for p in crate::commands::git_bash_candidates(&home, &local) {
+        if Path::new(&p).exists() {
+            return Some(p);
         }
     }
-    if !local.is_empty() {
-        let user_git = format!(r"{}\Programs\Git\bin\bash.exe", local);
-        if Path::new(&user_git).exists() {
-            return user_git;
-        }
-    }
-    // Fall back to whatever find_binary can locate, or bare "bash.exe"
-    crate::commands::find_binary(&["bash.exe"]).unwrap_or_else(|| "bash.exe".into())
+    crate::commands::find_binary(&["bash.exe"])
+        .filter(|p| Path::new(p).exists())
 }
 #[cfg(not(windows))]
-fn find_bash_on_windows() -> String {
-    "bash".into()
+fn find_bash_on_windows() -> Option<String> {
+    Some("bash".into())
+}
+
+fn shell_script_command(script_path: &std::path::Path, bash: Option<String>) -> Result<String, String> {
+    let bash = bash.ok_or_else(|| {
+        "当前 Windows 环境未找到 bash.exe。请先安装 Git for Windows 后再安装 .sh hook。".to_string()
+    })?;
+    Ok(format!("\"{}\" \"{}\"", bash, script_path.display()))
 }
 
 // ── Hook Definitions ─────────────────────────────────────────────
@@ -623,8 +618,7 @@ pub fn install_store_hook(hook_id: String, cli: String) -> Result<(), String> {
     let cmd = if cfg!(windows) {
         match hook.script_ext.as_str() {
             "sh" => {
-                let bash = find_bash_on_windows();
-                format!("\"{}\" \"{}\"", bash, script_path.display())
+                shell_script_command(&script_path, find_bash_on_windows())?
             }
             "py" => {
                 let python = crate::commands::find_binary(&["python3.exe", "python.exe"])
@@ -755,4 +749,29 @@ pub fn uninstall_store_hook(hook_id: String, cli: String) -> Result<(), String> 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_script_command_errors_when_bash_missing() {
+        let err = shell_script_command(std::path::Path::new(r"C:\Users\Alice\.kn\hooks\a.sh"), None)
+            .unwrap_err();
+        assert!(err.contains("未找到 bash.exe"));
+    }
+
+    #[test]
+    fn shell_script_command_quotes_bash_and_script_path() {
+        let cmd = shell_script_command(
+            std::path::Path::new(r"C:\Users\Alice\.kn\hooks\a.sh"),
+            Some(r"C:\Program Files\Git\bin\bash.exe".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            cmd,
+            r#""C:\Program Files\Git\bin\bash.exe" "C:\Users\Alice\.kn\hooks\a.sh""#
+        );
+    }
 }

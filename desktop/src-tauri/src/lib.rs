@@ -257,7 +257,7 @@ pub(crate) fn home_dir() -> PathBuf {
     }
     // Fallback: try shell to resolve home directory
     if cfg!(target_os = "windows") {
-        if let Ok(output) = std::process::Command::new("powershell.exe")
+        if let Ok(output) = std::process::Command::new(crate::commands::powershell_exe_path())
             .args(["-NoProfile", "-Command", "Write-Output $env:USERPROFILE"])
             .output()
         {
@@ -291,7 +291,7 @@ pub(crate) fn windows_documents_dir() -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().to_string());
     let home_path = std::path::Path::new(&home);
 
-    let api_result = std::process::Command::new("powershell")
+    let api_result = std::process::Command::new(crate::commands::powershell_exe_path())
         .args([
             "-NoProfile",
             "-Command",

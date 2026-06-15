@@ -356,7 +356,7 @@ fn read_codex_plugin_states() -> HashMap<String, bool> {
 
     if let Some(plugins) = config.plugins {
         for (full_name, cfg) in plugins {
-            states.insert(full_name, cfg.enabled.unwrap_or(false));
+            states.insert(full_name, cfg.enabled.unwrap_or(true));
         }
     }
     // Also read [marketplaces] section — user-added marketplaces are registered here
@@ -499,6 +499,11 @@ fn scan_codex_plugins() -> Vec<PluginEntry> {
                 }
             }
         }
+
+        // Source 1b: Cached marketplace plugins in ~/.codex/plugins/cache/
+        // Structure: cache/<marketplace>/<plugin>/<version>/.codex-plugin/plugin.json
+        let cache_dir = user_dir.join("cache");
+        scan_codex_cache_dir(&cache_dir, &plugin_states, &mut plugins);
     }
 
     // Source 2: Marketplace plugins (bundled + runtime + user-added)
@@ -522,7 +527,163 @@ fn scan_codex_plugins() -> Vec<PluginEntry> {
         scan_codex_marketplace_dir(&runtime, &plugin_states, "bundled", &mut plugins);
     }
 
+    // Deduplicate by plugin name: same plugin from different marketplaces
+    // should appear only once in the UI. Keep the entry from the highest-
+    // priority source (user > bundled > cache), breaking ties by version.
+    deduplicate_plugins_by_name(&mut plugins);
+
     plugins
+}
+
+/// Scan the cache directory where Codex stores marketplace plugins locally.
+/// Structure: cache/<marketplace>/<plugin>/<version>/.codex-plugin/plugin.json
+fn scan_codex_cache_dir(
+    root: &Path,
+    states: &HashMap<String, bool>,
+    plugins: &mut Vec<PluginEntry>,
+) {
+    if !root.exists() {
+        return;
+    }
+    let dir = match fs::read_dir(root) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    for mkt_entry in dir.flatten() {
+        let mkt_path = mkt_entry.path();
+        if !mkt_path.is_dir() {
+            continue;
+        }
+        let mkt_name = mkt_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        if mkt_name.starts_with('.') {
+            continue;
+        }
+        // Iterate plugin dirs inside this marketplace
+        let plugins_dir = match fs::read_dir(&mkt_path) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        for plugin_entry in plugins_dir.flatten() {
+            let plugin_top = plugin_entry.path();
+            if !plugin_top.is_dir() {
+                continue;
+            }
+            // Inside each plugin dir, find the version subdirectory
+            let version_dir = match fs::read_dir(&plugin_top) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            for version_entry in version_dir.flatten() {
+                let version_path = version_entry.path();
+                if !version_path.is_dir() {
+                    continue;
+                }
+                let source = format!("cache@{}", mkt_name);
+                if let Some(plugin) =
+                    read_codex_plugin_manifest(&version_path, states, &source)
+                {
+                    if !plugins.iter().any(|existing| existing.id == plugin.id) {
+                        plugins.push(plugin);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Deduplicate plugins that share the same name (from different marketplaces).
+/// Priority: user > bundled > cache > flat.  Within the same priority tier,
+/// keep the highest version.
+fn deduplicate_plugins_by_name(plugins: &mut Vec<PluginEntry>) {
+    let source_rank = |source: &str| -> u8 {
+        if source.starts_with("user") {
+            0
+        } else if source.starts_with("bundled") {
+            1
+        } else if source.starts_with("cache") {
+            2
+        } else {
+            3 // flat, unknown
+        }
+    };
+
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut drop_indices: Vec<usize> = Vec::new();
+
+    for (i, plugin) in plugins.iter().enumerate() {
+        if let Some(&existing_idx) = seen.get(&plugin.name) {
+            let existing = &plugins[existing_idx];
+            let existing_rank = source_rank(&existing.source);
+            let this_rank = source_rank(&plugin.source);
+
+            let keep_this = if this_rank < existing_rank {
+                true
+            } else if this_rank == existing_rank {
+                // Same priority — keep higher version
+                let this_ver = parse_semver(&plugin.version);
+                let existing_ver = parse_semver(&existing.version);
+                this_ver > existing_ver
+            } else {
+                false
+            };
+
+            if keep_this {
+                // Drop the old, keep this one
+                drop_indices.push(existing_idx);
+                seen.insert(plugin.name.clone(), i);
+            } else {
+                drop_indices.push(i);
+            }
+        } else {
+            seen.insert(plugin.name.clone(), i);
+        }
+    }
+
+    // Collect kept items, merging enabled state from all same-name entries
+    let name_to_enabled: std::collections::HashMap<String, bool> = plugins
+        .iter()
+        .fold(std::collections::HashMap::new(), |mut acc, p| {
+            let entry = acc.entry(p.name.clone()).or_insert(false);
+            *entry = *entry || p.enabled;
+            acc
+        });
+
+    // Build the deduplicated list
+    let all_indices: std::collections::HashSet<usize> = drop_indices.into_iter().collect();
+    let mut result: Vec<PluginEntry> = Vec::new();
+    for (i, mut plugin) in plugins.drain(..).enumerate() {
+        if all_indices.contains(&i) {
+            continue;
+        }
+        // Merge enabled state: enabled if ANY same-name instance was enabled
+        if let Some(&merged) = name_to_enabled.get(&plugin.name) {
+            plugin.enabled = merged;
+        }
+        result.push(plugin);
+    }
+    *plugins = result;
+}
+
+/// Parse a semver-like string into (major, minor, patch) for comparison.
+fn parse_semver(version: &Option<String>) -> (u32, u32, u32) {
+    let v = match version {
+        Some(v) => v,
+        None => return (0, 0, 0),
+    };
+    let parts: Vec<u32> = v
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .take(3)
+        .map(|s| s.parse::<u32>().unwrap_or(0))
+        .collect();
+    (
+        parts.first().copied().unwrap_or(0),
+        parts.get(1).copied().unwrap_or(0),
+        parts.get(2).copied().unwrap_or(0),
+    )
 }
 
 fn scan_codex_marketplace_dir(
@@ -615,7 +776,7 @@ fn read_codex_plugin_manifest(
     let marketplace = source.split('@').next_back().unwrap_or(source);
 
     let full_id = format!("{}@{}", name, marketplace);
-    let enabled = states.get(&full_id).copied().unwrap_or(false);
+    let enabled = states.get(&full_id).copied().unwrap_or(true);
 
     // Look for skills subdirectory
     let skills_dir = manifest
@@ -1297,9 +1458,108 @@ fn toggle_claude_plugin_at(
 }
 
 /// Toggle a Codex plugin: set `enabled = true/false` in config.toml.
+/// Also toggles ALL marketplace variants of the same plugin so that
+/// disabling a plugin once actually prevents Codex from loading it
+/// from any source (built-in curated marketplace, user-added marketplace, etc.).
 pub fn toggle_codex_plugin(plugin_id: &str, enabled: bool) -> Result<(), String> {
     let path = codex_config_toml().ok_or("无法找到 Codex config.toml")?;
-    toggle_codex_plugin_at(&path, plugin_id, enabled)
+    // Extract base name (before '@') to match all marketplace variants
+    let base_name = plugin_id.split('@').next().unwrap_or(plugin_id);
+    // Read config once, toggle all matching [plugins] entries
+    let text =
+        fs::read_to_string(&path).map_err(|e| format!("读取 Codex config.toml 失败: {}", e))?;
+    // Backup
+    let bak = path.with_extension("toml.bak");
+    let _ = fs::write(&bak, &text);
+    let mut config: toml::Table =
+        toml::from_str(&text).map_err(|e| format!("解析 TOML 失败: {}", e))?;
+    if !config.contains_key("plugins") {
+        config.insert("plugins".into(), toml::Value::Table(toml::Table::new()));
+    }
+    let plugins = config["plugins"]
+        .as_table_mut()
+        .ok_or_else(|| "[plugins] 格式错误".to_string())?;
+    // Collect all keys that match this plugin's base name
+    let matching_keys: Vec<String> = plugins
+        .keys()
+        .filter(|k| {
+            *k == base_name || k.starts_with(&format!("{}@", base_name))
+        })
+        .cloned()
+        .collect();
+    for key in &matching_keys {
+        if let Some(plugin_table) = plugins.get_mut(key).and_then(|v| v.as_table_mut()) {
+            plugin_table.insert("enabled".into(), toml::Value::Boolean(enabled));
+        }
+    }
+    // Also scan on-disk for marketplace instances that don't have
+    // a [plugins] entry yet, and create entries for them.
+    let all_plugins = scan_codex_plugins();
+    for p in &all_plugins {
+        if p.name != base_name {
+            continue;
+        }
+        let mkt_key = format!("{}@{}", p.name, p.marketplace);
+        if !matching_keys.contains(&mkt_key)
+            && !matching_keys.contains(&p.name)
+        {
+            let mut new_plugin = toml::Table::new();
+            new_plugin.insert("enabled".into(), toml::Value::Boolean(enabled));
+            plugins.insert(mkt_key, toml::Value::Table(new_plugin));
+        }
+    }
+    // If no matching keys found at all (shouldn't happen, but be safe),
+    // still toggle the original plugin_id
+    if matching_keys.is_empty() && all_plugins.iter().all(|p| p.name != base_name) {
+        if let Some(plugin_table) = plugins.get_mut(plugin_id).and_then(|v| v.as_table_mut()) {
+            plugin_table.insert("enabled".into(), toml::Value::Boolean(enabled));
+        } else {
+            let mut new_plugin = toml::Table::new();
+            new_plugin.insert("enabled".into(), toml::Value::Boolean(enabled));
+            plugins.insert(plugin_id.to_string(), toml::Value::Table(new_plugin));
+        }
+    }
+    let new_text = toml::to_string(&config).map_err(|e| format!("序列化失败: {}", e))?;
+    fs::write(&path, new_text).map_err(|e| format!("写入失败: {}", e))?;
+
+    // Flat-installed plugins (e.g. in .tmp/plugins/) are loaded by Codex
+    // directly from the filesystem — config.toml [plugins] entries don't
+    // control them.  Disable/enable by renaming their plugin.json.
+    toggle_codex_flat_plugin_on_disk(base_name, enabled)?;
+
+    Ok(())
+}
+
+/// Toggle a flat-installed plugin by renaming `.codex-plugin/plugin.json`
+/// to `.codex-plugin/plugin.json.disabled` (disable) or the reverse (enable).
+/// Searches `~/.codex/.tmp/plugins/plugins/<name>/`.
+fn toggle_codex_flat_plugin_on_disk(name: &str, enabled: bool) -> Result<(), String> {
+    let home = home_dir().ok_or("无法获取 HOME 目录")?;
+    let flat_root = home.join(".codex").join(".tmp").join("plugins").join("plugins");
+    if !flat_root.exists() {
+        return Ok(());
+    }
+    let plugin_dir = flat_root.join(name);
+    if !plugin_dir.exists() {
+        return Ok(());
+    }
+    let manifest = plugin_dir.join(".codex-plugin").join("plugin.json");
+    let disabled = plugin_dir.join(".codex-plugin").join("plugin.json.disabled");
+
+    if enabled {
+        // Enable: rename .disabled → active
+        if disabled.exists() && !manifest.exists() {
+            fs::rename(&disabled, &manifest)
+                .map_err(|e| format!("启用 {} 失败: {}", name, e))?;
+        }
+    } else {
+        // Disable: rename active → .disabled
+        if manifest.exists() {
+            fs::rename(&manifest, &disabled)
+                .map_err(|e| format!("禁用 {} 失败: {}", name, e))?;
+        }
+    }
+    Ok(())
 }
 
 fn toggle_codex_project_plugin(

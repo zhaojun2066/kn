@@ -128,6 +128,28 @@ class TestImportClaudeSettings(unittest.TestCase):
         self.assertEqual(config["default"], "existing")
 
 
+class TestDetectCliType(unittest.TestCase):
+    """Tests for profile list CLI type detection parity with desktop."""
+
+    def test_explicit_cli_type_wins(self):
+        p = {"env": {"_KN_CLI_TYPE": "qoderclicn", "OPENAI_API_KEY": "sk-test"}}
+        self.assertEqual(profile._detect_cli_type(p), "qoderclicn")
+
+    def test_dashscope_openai_profile_is_qoder(self):
+        p = {"env": {
+            "OPENAI_API_KEY": "sk-test",
+            "OPENAI_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        }}
+        self.assertEqual(profile._detect_cli_type(p), "qoderclicn")
+
+    def test_deepseek_openai_profile_remains_codex(self):
+        p = {"env": {
+            "OPENAI_API_KEY": "sk-test",
+            "OPENAI_BASE_URL": "https://api.deepseek.com/v1",
+        }}
+        self.assertEqual(profile._detect_cli_type(p), "codex")
+
+
 class TestImportCodexConfig(unittest.TestCase):
     """Tests for _import_codex_config()."""
 
@@ -341,7 +363,7 @@ class TestCmdInit(unittest.TestCase):
         cfg.write_config({"profiles": {}})
         config = cfg.read_config()
 
-        def fake_claude(c):
+        def fake_claude(c, **_kwargs):
             c.setdefault("profiles", {})["deepseek"] = {
                 "desc": "test", "env": {"KEY": "val"},
             }
@@ -363,7 +385,7 @@ class TestCmdInit(unittest.TestCase):
         cfg.write_config({"profiles": {}})
         config = cfg.read_config()
 
-        def fake_codex(c):
+        def fake_codex(c, **_kwargs):
             c.setdefault("profiles", {})["codex-imported"] = {
                 "desc": "test", "env": {"OPENAI_API_KEY": "sk-test"},
             }
@@ -385,13 +407,13 @@ class TestCmdInit(unittest.TestCase):
         cfg.write_config({"profiles": {}})
         config = cfg.read_config()
 
-        def fake_claude(c):
+        def fake_claude(c, **_kwargs):
             c.setdefault("profiles", {})["deepseek"] = {"desc": "c", "env": {"K": "v"}}
             c["default"] = "deepseek"
             cfg.write_config(c)
             return True
 
-        def fake_codex(c):
+        def fake_codex(c, **_kwargs):
             c.setdefault("profiles", {})["codex-imported"] = {"desc": "x", "env": {"K2": "v2"}}
             cfg.write_config(c)
             return True

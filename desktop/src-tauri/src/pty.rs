@@ -109,19 +109,10 @@ pub fn start_pty(
     let shell_from_env = std::env::var("SHELL").ok();
     let shell = if cfg!(target_os = "windows") {
         let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
-        let mut candidates: Vec<String> = vec![
-            r"C:\Program Files\Git\bin\bash.exe".into(),
-            r"C:\Program Files (x86)\Git\bin\bash.exe".into(),
-            format!(r"{}\AppData\Local\Programs\Git\bin\bash.exe", home),
-            r"C:\scoop\apps\git\current\bin\bash.exe".into(),
-            r"C:\ProgramData\Git\bin\bash.exe".into(),
-        ];
-        if !local_appdata.is_empty() {
-            candidates.push(format!(
-                r"{}\Microsoft\WinGet\Links\bash.exe",
-                local_appdata
-            ));
-        }
+        let mut candidates = crate::commands::git_bash_candidates(&home, &local_appdata);
+        // PowerShell full path — avoid bare-name resolution on fresh
+        // Windows where GUI process PATH may lack the subdirectory.
+        candidates.push(crate::commands::powershell_exe_path());
         if let Some(env_shell) = shell_from_env {
             if std::path::Path::new(&env_shell).exists() {
                 candidates.insert(0, env_shell);

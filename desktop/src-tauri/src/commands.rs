@@ -653,22 +653,10 @@ pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
                 format!("/usr/local/bin/{}", name),
             ]
         } else {
-            // Windows: check common system paths with .exe suffix
-            let exe_name = if name.ends_with(".exe") {
-                name.to_string()
-            } else {
-                format!("{}.exe", name)
-            };
-            let system32 = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
             let home = crate::home_dir();
-            let home_str = home.to_string_lossy();
-            vec![
-                format!(r"{}\System32\{}", system32, exe_name),
-                format!(r"{}\scoop\shims\{}", home_str, exe_name),
-                format!(r"{}\AppData\Roaming\npm\{}", home_str, exe_name),
-                format!(r"C:\Program Files\{}", exe_name),
-                format!(r"C:\Program Files (x86)\{}", exe_name),
-            ]
+            let local_appdata = std::env::var("LOCALAPPDATA")
+                .unwrap_or_else(|_| home.join("AppData").join("Local").to_string_lossy().to_string());
+            windows_binary_candidates(&local_appdata, name)
         };
         for p in &paths {
             if std::path::Path::new(p).exists() {
@@ -686,11 +674,56 @@ pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
     names.first().map(|n| n.to_string())
 }
 
+fn windows_binary_candidates(local_appdata: &str, name: &str) -> Vec<String> {
+    let system32 = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let home = crate::home_dir();
+    let home_str = home.to_string_lossy();
+    let bases = [
+        format!(r"{}\System32", system32),
+        format!(r"{}\scoop\shims", home_str),
+        format!(r"{}\AppData\Roaming\npm", home_str),
+        format!(r"{}\Programs", local_appdata),
+        r"C:\Program Files\PowerShell\7".to_string(),
+        r"C:\ProgramData\chocolatey\bin".to_string(),
+        r"C:\msys64\usr\bin".to_string(),
+        r"C:\cygwin64\bin".to_string(),
+        r"C:\Program Files".to_string(),
+        r"C:\Program Files (x86)".to_string(),
+    ];
+    let exts: &[&str] = if name.ends_with(".exe")
+        || name.ends_with(".cmd")
+        || name.ends_with(".bat")
+    {
+        &[""]
+    } else {
+        &[".exe", ".cmd", ""]
+    };
+    let mut paths = Vec::new();
+    for base in &bases {
+        for ext in exts {
+            paths.push(if ext.is_empty() {
+                format!(r"{}\{}", base, name)
+            } else {
+                format!(r"{}\{}{}", base, name, ext)
+            });
+        }
+    }
+    paths
+}
+
+fn login_shell_for_path_lookup() -> String {
+    if cfg!(target_os = "windows") {
+        powershell_exe_path()
+    } else {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    }
+}
+
 /// Resolve a binary name via login-shell PATH lookup.
 /// Tauri GUI apps have a minimal PATH; the login shell has the user's full PATH.
 fn resolve_from_shell_path(name: &str) -> Option<String> {
     let output = if cfg!(target_os = "windows") {
-        std::process::Command::new("powershell.exe")
+        std::process::Command::new(login_shell_for_path_lookup())
             .args([
                 "-NoProfile",
                 "-Command",
@@ -702,7 +735,7 @@ fn resolve_from_shell_path(name: &str) -> Option<String> {
             .output()
             .ok()?
     } else {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let shell = login_shell_for_path_lookup();
         // Use `command -v` first (POSIX standard, clean output).
         // Fall back to `type` (bash/zsh builtin) but filter error messages.
         let cmd = format!(
@@ -747,57 +780,56 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
         return Err("不允许下载到此路径".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let curl = find_binary(&["curl"]).unwrap_or_else(|| "curl".into());
-        let mut child = std::process::Command::new(&curl)
-            .args(["-L", "--max-time", "600", "-o", &path, &url])
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("curl 启动失败: {}", e))?;
+        use std::io::{Read, Write};
 
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| "无法获取 stderr".to_string())?;
+        let mut response = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(3600))
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?
+            .get(&url)
+            .send()
+            .map_err(|e| format!("请求失败: {}", e))?
+            .error_for_status()
+            .map_err(|e| format!("HTTP 错误: {}", e))?;
 
-        // Read curl stderr for progress.
-        //
-        // Curl's progress meter format (when stderr is piped / not a TTY):
-        //   % Total    % Received % Xferd  ...
-        //                                  Dload ...
-        //   \r  PERCENT  bytes1  PERCENT2 bytes2  PERCENT3 bytes3 ...
-        //
-        // The first numeric field after whitespace is the *total* completion
-        // percentage (0–100) — a bare integer, **without** a '%' suffix.
-        // The '%' symbol only appears in the column headers.
-        //
-        // We split on \r and extract the leading integer from each fragment,
-        // skipping the header and separator lines.
-        use std::io::{BufRead, BufReader};
-        let reader = BufReader::new(stderr);
-        for line_result in reader.split(b'\r') {
-            let chunk = line_result.unwrap_or_default();
-            let trimmed = String::from_utf8_lossy(&chunk);
-            let trimmed = trimmed.trim();
-            // Skip headers, separators, and empty lines
-            if trimmed.is_empty()
-                || trimmed.contains('%')
-                || trimmed.contains("Dload")
-                || trimmed.contains("----")
-            {
-                continue;
+        let total = response.content_length();
+
+        let mut file =
+            std::fs::File::create(&path).map_err(|e| format!("创建文件失败: {}", e))?;
+
+        let mut downloaded: u64 = 0;
+        let mut last_pct: u8 = 0;
+        let mut buf = [0u8; 8192];
+
+        // Stream response body, writing to file and emitting
+        // progress events based on Content-Length when available.
+        loop {
+            let n = response
+                .read(&mut buf)
+                .map_err(|e| format!("下载失败: {}", e))?;
+            if n == 0 {
+                break;
             }
-            // First whitespace-delimited token is the progress percentage
-            if let Some(first) = trimmed.split_whitespace().next() {
-                if let Ok(pct) = first.parse::<u8>() {
-                    let _ = app.emit("download-progress", pct);
+            file.write_all(&buf[..n])
+                .map_err(|e| format!("写入文件失败: {}", e))?;
+            downloaded += n as u64;
+
+            if let Some(total) = total {
+                if total > 0 {
+                    let pct =
+                        ((downloaded as f64 / total as f64) * 100.0).min(99.0) as u8;
+                    if pct != last_pct {
+                        last_pct = pct;
+                        let _ = app.emit("download-progress", pct);
+                    }
                 }
             }
         }
 
-        let status = child.wait().map_err(|e| format!("curl 等待失败: {}", e))?;
-        if !status.success() {
-            return Err("下载失败，请检查网络连接".into());
-        }
+        file.flush().map_err(|e| format!("刷新文件失败: {}", e))?;
+        file.sync_all().map_err(|e| format!("同步文件失败: {}", e))?;
+
         // Emit 100% at completion to ensure the UI shows done
         let _ = app.emit("download-progress", 100u8);
         Ok(())
@@ -953,6 +985,54 @@ fn open_with_editor(path: &str, name: &str, binaries: &[&str]) -> Result<(), Str
     Ok(())
 }
 
+/// Shared list of Git Bash installation paths used by both PTY shell
+/// resolution and environment check (Claude Code runtime dependency).
+pub(crate) fn git_bash_candidates(home: &str, local_appdata: &str) -> Vec<String> {
+    let mut candidates = vec![
+        r"C:\Program Files\Git\bin\bash.exe".into(),
+        r"C:\Program Files (x86)\Git\bin\bash.exe".into(),
+        format!(r"{}\AppData\Local\Programs\Git\bin\bash.exe", home),
+        r"C:\scoop\apps\git\current\bin\bash.exe".into(),
+        r"C:\ProgramData\Git\bin\bash.exe".into(),
+    ];
+    if !local_appdata.is_empty() {
+        candidates.push(format!(
+            r"{}\Microsoft\WinGet\Links\bash.exe",
+            local_appdata
+        ));
+    }
+    candidates
+}
+
+/// Check whether a bash.exe or pwsh.exe (PowerShell 7) binary can be found.
+/// Returns the found path if any. Used to verify Claude Code runtime
+/// dependencies on Windows.
+pub(crate) fn find_bash_or_pwsh() -> Option<String> {
+    let home = crate::home_dir().to_string_lossy().to_string();
+    let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    // Check Git Bash candidates first, then pwsh
+    for p in git_bash_candidates(&home, &local_appdata) {
+        if std::path::Path::new(&p).exists() {
+            return Some(p);
+        }
+    }
+    // Try pwsh (PowerShell 7) via find_binary
+    find_binary(&["pwsh", "pwsh.exe"])
+}
+
+/// Full path to the system PowerShell binary (Windows PowerShell 5.1).
+/// Uses `SystemRoot` so it works even when Windows is not on C:.
+///
+/// Always prefer this over a bare `"powershell.exe"` name — Tauri GUI apps
+/// may have a limited PATH that excludes the PowerShell subdirectory.
+pub(crate) fn powershell_exe_path() -> String {
+    let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    format!(
+        r"{}\System32\WindowsPowerShell\v1.0\powershell.exe",
+        sysroot
+    )
+}
+
 // ── Environment check (for onboarding) ───────────────────────
 
 #[derive(Debug, serde::Serialize)]
@@ -1004,11 +1084,7 @@ fn check_binary_on_path(name: &str) -> Option<String> {
         }
     }
     // Use login shell to resolve user PATH (brew, npx, etc.)
-    let shell = if cfg!(target_os = "windows") {
-        "powershell.exe".to_string()
-    } else {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
-    };
+    let shell = login_shell_for_path_lookup();
     let shell_args: &[&str] = if cfg!(target_os = "windows") {
         &["-Command", &format!("Get-Command {} -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object Source", name)]
     } else {
@@ -1291,37 +1367,81 @@ fn cli_missing_item(name: &str, label: &str) -> EnvCheckItem {
     }
 }
 
+/// Build a warn item when a CLI binary is found but its Windows runtime
+/// dependency (bash.exe / pwsh.exe) is missing.
+fn cli_no_runtime_item(
+    name: &str,
+    label: &str,
+    path: String,
+    version: Option<String>,
+) -> EnvCheckItem {
+    let detail = format!(
+        "已安装但缺少运行时依赖。{} 在 Windows 上需要 Git Bash 或 PowerShell 7。\n\
+         安装后请重启 KN。\n\
+         Git for Windows: https://git-scm.com/downloads/win\n\
+         PowerShell 7: https://aka.ms/powershell",
+        label
+    );
+    EnvCheckItem {
+        name: name.into(),
+        label: label.into(),
+        status: "warn".into(),
+        severity: "warn".into(),
+        category: "cli".into(),
+        detail,
+        detected_path: Some(path),
+        version,
+        install_options: Some(vec![
+            install_option(
+                "git-bash",
+                "安装 Git for Windows",
+                None,
+                "提供 bash.exe，同时解决 KN 终端和 CLI 运行时依赖。",
+                true,
+                &["windows"],
+            ),
+            install_option(
+                "powershell-7",
+                "安装 PowerShell 7",
+                None,
+                "提供 pwsh.exe，Node.js CLI 原生支持。",
+                false,
+                &["windows"],
+            ),
+        ]),
+        install_cmd: None,
+    }
+}
+
+/// Check if a CLI binary is installed, and on Windows verify runtime
+/// dependencies (bash.exe / pwsh.exe) are also present.
+fn push_cli_item(items: &mut Vec<EnvCheckItem>, binary: &str, label: &str) {
+    match check_binary_on_path(binary) {
+        Some(path) => {
+            let version = get_cli_version(&path);
+            if cfg!(target_os = "windows") && find_bash_or_pwsh().is_none() {
+                items.push(cli_no_runtime_item(binary, label, path, version));
+            } else {
+                items.push(cli_ok_item(binary, label, path, version));
+            }
+        }
+        None => items.push(cli_missing_item(binary, label)),
+    }
+}
+
 #[tauri::command]
 pub fn check_environment() -> EnvCheckResult {
     let home = home_dir();
     let mut items = Vec::new();
 
     // 1. Claude Code
-    match check_binary_on_path("claude") {
-        Some(path) => {
-            let version = get_cli_version(&path);
-            items.push(cli_ok_item("claude", "Claude Code", path, version));
-        }
-        None => items.push(cli_missing_item("claude", "Claude Code")),
-    }
+    push_cli_item(&mut items, "claude", "Claude Code");
 
     // 2. Codex
-    match check_binary_on_path("codex") {
-        Some(path) => {
-            let version = get_cli_version(&path);
-            items.push(cli_ok_item("codex", "Codex", path, version));
-        }
-        None => items.push(cli_missing_item("codex", "Codex")),
-    }
+    push_cli_item(&mut items, "codex", "Codex");
 
-    // 4. Qoder
-    match check_binary_on_path("qoderclicn") {
-        Some(path) => {
-            let version = get_cli_version(&path);
-            items.push(cli_ok_item("qoderclicn", "Qoder", path, version));
-        }
-        None => items.push(cli_missing_item("qoderclicn", "Qoder")),
-    }
+    // 3. Qoder
+    push_cli_item(&mut items, "qoderclicn", "Qoder");
 
     // 6. Shell wrapper
     let kn_dir = home.join(".kn");
@@ -1585,6 +1705,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_login_shell_for_path_lookup_prefers_sh_on_unix() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
+        let old_shell = std::env::var_os("SHELL");
+        std::env::remove_var("SHELL");
+        assert_eq!(login_shell_for_path_lookup(), "/bin/sh");
+        if let Some(value) = old_shell {
+            std::env::set_var("SHELL", value);
+        } else {
+            std::env::remove_var("SHELL");
+        }
+    }
+
+    #[test]
+    fn test_windows_binary_candidates_include_powershell_7_path() {
+        let home = r"C:\Users\Alice";
+        let candidates = super::windows_binary_candidates(
+            &format!(r"{}\AppData\Local", home),
+            "pwsh.exe",
+        );
+        assert!(candidates.iter().any(|p| p == r"C:\Program Files\PowerShell\7\pwsh.exe"));
+    }
+
+    #[test]
+    fn test_git_bash_candidates_include_user_localappdata_install() {
+        let candidates = git_bash_candidates(
+            r"C:\Users\Alice",
+            r"C:\Users\Alice\AppData\Local",
+        );
+        assert!(candidates.iter().any(|p| {
+            p == r"C:\Users\Alice\AppData\Local\Programs\Git\bin\bash.exe"
+        }));
+    }
+
+    #[test]
+    fn test_powershell_exe_path_uses_systemroot() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os("SystemRoot");
+        std::env::set_var("SystemRoot", r"D:\Windows");
+        assert_eq!(
+            powershell_exe_path(),
+            r"D:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        );
+        if let Some(value) = old {
+            std::env::set_var("SystemRoot", value);
+        } else {
+            std::env::remove_var("SystemRoot");
+        }
+    }
+
     // ── verify_sha256 ──────────────────────────────────────
 
     #[test]
@@ -1690,11 +1860,20 @@ mod tests {
 
     #[test]
     fn test_is_safe_path_allows_home_subdir() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
+        let old_home = std::env::var_os("HOME");
+        let tmp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp_home.path());
         let home = home_dir();
         let safe = home.join(".kn-test-safe-path");
         std::fs::create_dir_all(&safe).ok();
         assert!(is_safe_path(&safe), "path under home should be allowed");
         std::fs::remove_dir_all(&safe).ok();
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 
     #[test]

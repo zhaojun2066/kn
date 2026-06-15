@@ -168,11 +168,27 @@ class TestSetStdin(TempConfigMixin, unittest.TestCase):
 
 class TestMutationJson(unittest.TestCase):
     def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="kn-test-json-mutation-")
+        self._old_kn_home = os.environ.get("KN_HOME")
+        self._old_legacy_home = os.environ.get("CLAUDE_PROFILES_HOME")
+        os.environ["KN_HOME"] = self._tmpdir
+        os.environ.pop("CLAUDE_PROFILES_HOME", None)
         # Ensure test profile doesn't exist first
         subprocess.run(
             [sys.executable, PROFILE_CLI, "remove", "jstest"],
             capture_output=True,
         )
+
+    def tearDown(self):
+        if self._old_kn_home is None:
+            os.environ.pop("KN_HOME", None)
+        else:
+            os.environ["KN_HOME"] = self._old_kn_home
+        if self._old_legacy_home is None:
+            os.environ.pop("CLAUDE_PROFILES_HOME", None)
+        else:
+            os.environ["CLAUDE_PROFILES_HOME"] = self._old_legacy_home
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_add_and_remove_json(self):
         # Add
@@ -188,6 +204,41 @@ class TestMutationJson(unittest.TestCase):
         result = json.loads(stdout)
         self.assertTrue(result["ok"])
         self.assertEqual(result["profile"], "jstest")
+
+
+class TestInitJson(unittest.TestCase):
+    def test_init_json_stdout_is_parseable_when_importing_claude_settings(self):
+        with tempfile.TemporaryDirectory(prefix="kn-test-json-init-") as tmpdir:
+            home = os.path.join(tmpdir, "home")
+            config_home = os.path.join(tmpdir, "kn")
+            claude_dir = os.path.join(home, ".claude")
+            os.makedirs(claude_dir, exist_ok=True)
+            os.makedirs(config_home, exist_ok=True)
+            with open(os.path.join(claude_dir, "settings.json"), "w") as f:
+                json.dump({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "sk-test-token",
+                        "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+                    }
+                }, f)
+
+            env = os.environ.copy()
+            env["HOME"] = home
+            env["KN_HOME"] = config_home
+            env.pop("CLAUDE_PROFILES_HOME", None)
+            result = subprocess.run(
+                [sys.executable, PROFILE_CLI, "--json", "init"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data.get("ok"), True)
+            self.assertEqual(data.get("action"), "init")
+            self.assertIn("Imported", result.stderr)
+            self.assertNotIn("Imported", result.stdout)
 
 
 class TestBackwardCompat(TempConfigMixin, unittest.TestCase):

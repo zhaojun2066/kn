@@ -74,6 +74,32 @@ echo "$output" | grep -q "export EMPTY_VAR=''" \
     && pass "EMPTY_VAR extracted as empty" || fail "EMPTY_VAR extraction"
 
 echo ""
+echo "--- Completion config path ---"
+
+COMPLETION_HOME="$TMP_DIR/completion-home"
+mkdir -p "$COMPLETION_HOME/.kn"
+cat > "$COMPLETION_HOME/.kn/config.yaml" << 'YEOF'
+default: alpha
+profiles:
+  alpha:
+    desc: "Alpha"
+    env:
+      API_KEY: sk-alpha
+  beta:
+    desc: "Beta"
+    env:
+      API_KEY: sk-beta
+YEOF
+
+completion_output=$(HOME="$COMPLETION_HOME" bash -c '
+    source "$1"
+    _ai_profiles
+' _ "$SCRIPT_DIR/shell/completions/ai.bash")
+echo "$completion_output" | grep -q "alpha" \
+    && pass "bash completion reads ~/.kn/config.yaml" \
+    || fail "bash completion did not read ~/.kn/config.yaml"
+
+echo ""
 echo "--- Project auto-switch (.ai-profile) ---"
 
 # Setup: project directory with .ai-profile
