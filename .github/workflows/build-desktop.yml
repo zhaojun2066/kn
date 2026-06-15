@@ -214,7 +214,7 @@ jobs:
           if [ -f "$DMG" ]; then
             SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
             FNAME=$(basename "$DMG" | sed 's/ /./g')
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+            jq --arg url "https://github.com/zhaojun2066/kn/releases/download/v$APP_VERSION/$FNAME" \
                --arg sha "$SHA" \
                '.platforms["darwin-aarch64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi
@@ -224,7 +224,7 @@ jobs:
           if [ -f "$DMG" ]; then
             SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
             FNAME=$(basename "$DMG" | sed 's/ /./g')
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+            jq --arg url "https://github.com/zhaojun2066/kn/releases/download/v$APP_VERSION/$FNAME" \
                --arg sha "$SHA" \
                '.platforms["darwin-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi
@@ -235,13 +235,13 @@ jobs:
           if [ -f "$EXE" ]; then
             SHA=$(sha256sum "$EXE" | cut -d' ' -f1)
             FNAME=$(basename "$EXE")
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+            jq --arg url "https://github.com/zhaojun2066/kn/releases/download/v$APP_VERSION/$FNAME" \
                --arg sha "$SHA" \
                '.platforms["windows-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           elif [ -f "$MSI" ]; then
             SHA=$(sha256sum "$MSI" | cut -d' ' -f1)
             FNAME=$(basename "$MSI")
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+            jq --arg url "https://github.com/zhaojun2066/kn/releases/download/v$APP_VERSION/$FNAME" \
                --arg sha "$SHA" \
                '.platforms["windows-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi
@@ -252,13 +252,13 @@ jobs:
           if [ -f "$EXE" ]; then
             SHA=$(sha256sum "$EXE" | cut -d' ' -f1)
             FNAME=$(basename "$EXE")
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+            jq --arg url "https://github.com/zhaojun2066/kn/releases/download/v$APP_VERSION/$FNAME" \
                --arg sha "$SHA" \
                '.platforms["windows-arm64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           elif [ -f "$MSI" ]; then
             SHA=$(sha256sum "$MSI" | cut -d' ' -f1)
             FNAME=$(basename "$MSI")
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+            jq --arg url "https://github.com/zhaojun2066/kn/releases/download/v$APP_VERSION/$FNAME" \
                --arg sha "$SHA" \
                '.platforms["windows-arm64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi
@@ -268,7 +268,7 @@ jobs:
           if [ -f "$DEB" ]; then
             SHA=$(sha256sum "$DEB" | cut -d' ' -f1)
             FNAME=$(basename "$DEB")
-            jq --arg url "https://github.com/zhaojun2066/ai-profile-manager/releases/download/v$APP_VERSION/$FNAME" \
+            jq --arg url "https://github.com/zhaojun2066/kn/releases/download/v$APP_VERSION/$FNAME" \
                --arg sha "$SHA" \
                '.platforms["linux-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
           fi

@@ -15,7 +15,7 @@ body = """
 {% for commit in commits %}
   - {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
 {{ commit.message | upper_first }}\
- ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/zhaojun2066/ai-profile-manager/commit/{{ commit.id }}))\
+ ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/zhaojun2066/kn/commit/{{ commit.id }}))\
 {% if commit.breaking %} **BREAKING**{% endif %}\
 {% endfor %}
 {% endfor %}
@@ -23,7 +23,7 @@ body = """
 
 ### Full Changelog
 
-[{{ previous.version }}...{{ version }}](https://github.com/zhaojun2066/ai-profile-manager/compare/{{ previous.version }}...{{ version }})
+[{{ previous.version }}...{{ version }}](https://github.com/zhaojun2066/kn/compare/{{ previous.version }}...{{ version }})
 {% endif %}\
 """
 trim = true
@@ -57,9 +57,9 @@ ignore_tags = ""
 topo_order = false
 sort_commits = "oldest"
 link_parsers = [
-  { pattern = "#(\\d+)", href = "https://github.com/zhaojun2066/ai-profile-manager/issues/$1" },
+  { pattern = "#(\\d+)", href = "https://github.com/zhaojun2066/kn/issues/$1" },
 ]
 
 [remote.github]
 owner = "zhaojun2066"
-repo = "ai-profile-manager"
+repo = "kn"
