@@ -946,8 +946,46 @@ pub fn open_file(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
     match editor.as_str() {
-        "code" => open_with_editor(&path, "code", &["code", "code.cmd"]),
-        "cursor" => open_with_editor(&path, "cursor", &["cursor", "cursor.cmd"]),
+        "code" => {
+            // Try `code` CLI first, fall back to opening VS Code.app directly.
+            // macOS users may not have installed the "code" shell command.
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(bin) = crate::commands::find_binary(&["code"]) {
+                    std::process::Command::new(&bin).arg(&path).spawn()
+                        .map_err(|e| format!("启动 VS Code 失败: {}", e))?;
+                } else {
+                    std::process::Command::new("open")
+                        .args(["-a", "Visual Studio Code", &path])
+                        .spawn()
+                        .map_err(|e| format!("启动 VS Code 失败: {}", e))?;
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                open_with_editor(&path, "code", &["code", "code.cmd"])?;
+            }
+            Ok(())
+        }
+        "cursor" => {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(bin) = crate::commands::find_binary(&["cursor"]) {
+                    std::process::Command::new(&bin).arg(&path).spawn()
+                        .map_err(|e| format!("启动 Cursor 失败: {}", e))?;
+                } else {
+                    std::process::Command::new("open")
+                        .args(["-a", "Cursor", &path])
+                        .spawn()
+                        .map_err(|e| format!("启动 Cursor 失败: {}", e))?;
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                open_with_editor(&path, "cursor", &["cursor", "cursor.cmd"])?;
+            }
+            Ok(())
+        }
         "idea" => {
             #[cfg(target_os = "macos")]
             {
@@ -975,6 +1013,9 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
 }
 
 /// Try to open a path with a given editor binary.
+/// On macOS, each editor uses `open -a` as fallback; this helper is only
+/// needed on Linux / Windows where no such universal launcher exists.
+#[cfg(not(target_os = "macos"))]
 fn open_with_editor(path: &str, name: &str, binaries: &[&str]) -> Result<(), String> {
     let binary = crate::commands::find_binary(binaries)
         .ok_or_else(|| format!("未找到 {}，请先安装", name))?;
