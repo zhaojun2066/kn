@@ -953,12 +953,12 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
             {
                 if let Some(bin) = crate::commands::find_binary(&["code"]) {
                     std::process::Command::new(&bin).arg(&path).spawn()
-                        .map_err(|e| format!("启动 VS Code 失败: {}", e))?;
+                        .map_err(|_| "启动 VS Code 失败，请确认已安装或重试".to_string())?;
                 } else {
                     std::process::Command::new("open")
                         .args(["-a", "Visual Studio Code", &path])
                         .spawn()
-                        .map_err(|_| "未找到 VS Code。请确认已安装，或执行 Cmd+Shift+P → 'Install code command in PATH'".to_string())?;
+                        .map_err(|_| "未找到 VS Code。请确认已安装，或在 VS Code 中执行 Cmd+Shift+P → 'Install code command in PATH'".to_string())?;
                 }
             }
             #[cfg(not(target_os = "macos"))]
@@ -972,12 +972,12 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
             {
                 if let Some(bin) = crate::commands::find_binary(&["cursor"]) {
                     std::process::Command::new(&bin).arg(&path).spawn()
-                        .map_err(|e| format!("启动 Cursor 失败: {}", e))?;
+                        .map_err(|_| "启动 Cursor 失败，请确认已安装或重试".to_string())?;
                 } else {
                     std::process::Command::new("open")
                         .args(["-a", "Cursor", &path])
                         .spawn()
-                        .map_err(|_| "未找到 Cursor。请确认已安装，或执行 Cmd+Shift+P → 'Install cursor command in PATH'".to_string())?;
+                        .map_err(|_| "未找到 Cursor。请确认已安装，或在 Cursor 中执行 Cmd+Shift+P → 'Install cursor command in PATH'".to_string())?;
                 }
             }
             #[cfg(not(target_os = "macos"))]
@@ -992,12 +992,12 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
                 // Try `idea` CLI first, fall back to `open -a`
                 if let Some(bin) = crate::commands::find_binary(&["idea"]) {
                     std::process::Command::new(&bin).arg(&path).spawn()
-                        .map_err(|e| format!("启动 IntelliJ IDEA 失败: {}", e))?;
+                        .map_err(|_| "启动 IntelliJ IDEA 失败，请确认已安装或重试".to_string())?;
                 } else {
                     std::process::Command::new("open")
                         .args(["-a", "IntelliJ IDEA", &path])
                         .spawn()
-                        .map_err(|e| format!("启动 IntelliJ IDEA 失败: {}", e))?;
+                        .map_err(|_| "未找到 IntelliJ IDEA。请确认已安装，下载: https://jetbrains.com/idea".to_string())?;
                 }
             }
             #[cfg(not(target_os = "macos"))]
@@ -1019,17 +1019,27 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
 fn open_with_editor(path: &str, name: &str, binaries: &[&str]) -> Result<(), String> {
     let binary = crate::commands::find_binary(binaries)
         .ok_or_else(|| {
-            let hint = match binaries[0] {
-                "code" | "code.cmd" =>
-                    "请安装 VS Code 并确保 code 命令在 PATH 中。\n\
-                     macOS: Cmd+Shift+P → 'Install code command in PATH'\n\
-                     Windows: 安装时勾选 'Add to PATH'，或从安装目录运行",
-                "cursor" | "cursor.cmd" =>
-                    "请安装 Cursor 并确保 cursor 命令在 PATH 中。\n\
-                     macOS: Cmd+Shift+P → 'Install cursor command in PATH'",
-                "idea" | "idea64" =>
-                    "请安装 IntelliJ IDEA 并确保 idea 命令在 PATH 中。",
-                _ => "请先安装该编辑器。",
+            let hint = if cfg!(target_os = "linux") {
+                match binaries[0] {
+                    "code" | "code.cmd" =>
+                        "请安装 VS Code。\n  snap: snap install code --classic\n  apt: sudo apt install code",
+                    "cursor" | "cursor.cmd" =>
+                        "请安装 Cursor。下载: https://cursor.com",
+                    "idea" | "idea64" =>
+                        "请安装 IntelliJ IDEA。\n  snap: snap install intellij-idea-community --classic",
+                    _ => "请先安装该编辑器。",
+                }
+            } else {
+                // Windows
+                match binaries[0] {
+                    "code" | "code.cmd" =>
+                        "请安装 VS Code。安装时勾选「Add to PATH」，\n  或从安装目录运行: %LocalAppData%\\Programs\\Microsoft VS Code\\bin\\code.cmd",
+                    "cursor" | "cursor.cmd" =>
+                        "请安装 Cursor。下载: https://cursor.com",
+                    "idea" | "idea64" =>
+                        "请安装 IntelliJ IDEA。下载: https://jetbrains.com/idea",
+                    _ => "请先安装该编辑器。",
+                }
             };
             format!("未找到 {}。{}", name, hint)
         })?;
