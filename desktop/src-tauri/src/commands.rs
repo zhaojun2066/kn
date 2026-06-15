@@ -6,8 +6,10 @@ use tauri::Emitter;
 
 // ── Config backup paths ────────────────────────────────────
 fn config_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("CLAUDE_PROFILES_HOME") {
-        return std::path::PathBuf::from(dir);
+    for var in &["KN_HOME", "CLAUDE_PROFILES_HOME"] {
+        if let Ok(dir) = std::env::var(var) {
+            return std::path::PathBuf::from(dir);
+        }
     }
     crate::config_dir()
 }
@@ -150,12 +152,24 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
 }
 
 fn is_safe_path(path: &std::path::Path) -> bool {
-    // Resolve .. and symlinks before checking prefix
-    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    // Resolve .. and symlinks before checking prefix.
+    // If canonicalize fails (path doesn't exist or can't be resolved),
+    // reject the operation — don't fall back to un-resolved path which
+    // could bypass the safety check (TOCTOU race).
+    let resolved = match path.canonicalize() {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
     let home = home_dir();
     let tmp = std::env::temp_dir();
-    let home_resolved = home.canonicalize().unwrap_or_else(|_| home.clone());
-    let tmp_resolved = tmp.canonicalize().unwrap_or_else(|_| tmp.clone());
+    let home_resolved = match home.canonicalize() {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let tmp_resolved = match tmp.canonicalize() {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
     resolved.starts_with(&home_resolved) || resolved.starts_with(&tmp_resolved)
 }
 
@@ -407,7 +421,7 @@ pub fn read_app_config() -> Result<AppConfig, String> {
         // Development fallback
         cwd.join("update.json"),
         // Global fallback
-        home_dir().join(".claude-profiles").join("update.json"),
+        crate::config_dir().join("update.json"),
     ];
     for path in &paths {
         if path.exists() {
@@ -728,6 +742,10 @@ pub async fn fetch_url(url: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> Result<(), String> {
+    // Safety: restrict write destination to home dir or temp dir
+    if !is_safe_path(std::path::Path::new(&path)) {
+        return Err("不允许下载到此路径".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let curl = find_binary(&["curl"]).unwrap_or_else(|| "curl".into());
         let mut child = std::process::Command::new(&curl)
@@ -801,21 +819,52 @@ pub fn verify_sha256(path: String, expected: String) -> Result<bool, String> {
 pub fn open_in_terminal(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .args(["-a", "Terminal", &path])
-            .spawn()
-            .map_err(|e| format!("打开终端失败: {}", e))?;
-    }
-    #[cfg(target_os = "linux")]
-    {
+        // Try common macOS terminals: iTerm2, Warp, then default Terminal.app
         let mut spawned = false;
-        for term in &["gnome-terminal", "konsole", "xterm"] {
-            if std::process::Command::new(term)
-                .arg("--working-directory")
-                .arg(&path)
+        for app in &["iTerm", "Warp", "Terminal"] {
+            if std::process::Command::new("open")
+                .args(["-a", app, &path])
                 .spawn()
                 .is_ok()
             {
+                spawned = true;
+                break;
+            }
+        }
+        if !spawned {
+            return Err("未找到可用的终端应用 (iTerm/Warp/Terminal)".into());
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Common modern terminals ordered by popularity,
+        // each with appropriate working-directory flag
+        let terminals: &[(&str, &[&str])] = &[
+            ("gnome-terminal", &["--working-directory"]),
+            ("konsole", &["--workdir"]),
+            ("alacritty", &["--working-directory"]),
+            ("kitty", &["--directory"]),
+            ("wezterm", &["start", "--cwd"]),
+            ("foot", &["--working-directory"]),
+            ("tilix", &["--working-directory"]),
+            ("xfce4-terminal", &["--working-directory"]),
+            ("lxterminal", &["--working-directory"]),
+            ("terminator", &["--working-directory"]),
+            ("xterm", &["-e"]), // xterm uses -e + cd combo
+        ];
+        let mut spawned = false;
+        for (term, workdir_flag) in terminals {
+            let mut cmd = std::process::Command::new(term);
+            for flag in *workdir_flag {
+                cmd.arg(flag);
+            }
+            // xterm needs `cd <path> ; exec $SHELL` via -e
+            if *term == "xterm" {
+                cmd.arg(format!("cd '{}' ; exec $SHELL", path));
+            } else {
+                cmd.arg(&path);
+            }
+            if cmd.spawn().is_ok() {
                 spawned = true;
                 break;
             }
@@ -927,6 +976,9 @@ pub struct EnvCheckItem {
     pub detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detected_path: Option<String>,
+    /// CLI version detected from package.json or --version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_options: Option<Vec<InstallOption>>,
     /// Executable install command (only populated when status == "missing")
@@ -973,6 +1025,82 @@ fn check_binary_on_path(name: &str) -> Option<String> {
         // Filter out shell error messages that leak to stdout (e.g. zsh `type` output)
         if !s.is_empty() && !s.contains("not found") {
             return Some(s);
+        }
+    }
+    None
+}
+
+/// Try to detect a CLI's version without running it.
+///
+/// Strategy 1 (fast, no subprocess): canonicalize the binary path, walk up
+/// the directory tree to find `package.json`, and read the `version` field.
+/// This covers all npm-based installs (Homebrew, nvm, fnm, Volta, pnpm, etc.).
+///
+/// Strategy 2 (fallback): run `<binary> --version` with a 3-second timeout.
+/// Catches standalone binaries and non-npm installs.
+fn get_cli_version(binary_path: &str) -> Option<String> {
+    // Strategy 1 — resolve symlink → find a sibling package.json
+    if let Ok(real) = std::fs::canonicalize(binary_path) {
+        let mut dir = real.parent().map(|p| p.to_path_buf());
+        while let Some(current) = dir {
+            let pkg = current.join("package.json");
+            if pkg.exists() {
+                if let Ok(contents) = std::fs::read_to_string(&pkg) {
+                    // Quick extraction: find "version" key without pulling in a
+                    // full JSON parser. package.json is small and this avoids
+                    // another dependency.
+                    if let Some(ver) = extract_version_from_json(&contents) {
+                        return Some(ver);
+                    }
+                }
+            }
+            // Stop walking at filesystem root — don't cross into /
+            if current.parent().is_none() || current.as_os_str().is_empty() {
+                break;
+            }
+            dir = current.parent().map(|p| p.to_path_buf());
+        }
+    }
+
+    // Strategy 2 — run --version (3 second timeout)
+    if let Ok(output) = std::process::Command::new(binary_path)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract the "version" field value from a package.json string slice.
+/// Uses a simple scan to avoid a full JSON parse dependency.
+fn extract_version_from_json(json: &str) -> Option<String> {
+    for line in json.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("\"version\"") {
+            // Expect: "version": "1.2.3"  or  "version":"1.2.3"
+            let after_key = rest.trim_start();
+            if let Some(val_part) = after_key.strip_prefix(':') {
+                let val = val_part.trim();
+                // Strip trailing comma BEFORE unwrapping quotes
+                // ("version": "1.2.3", → val = "\"1.2.3\"," → strip comma → "\"1.2.3\"")
+                let val = val.strip_suffix(',').unwrap_or(val);
+                // Unwrap surrounding quotes
+                if val.len() >= 2 && val.starts_with('"') && val.ends_with('"') {
+                    let inner = &val[1..val.len() - 1];
+                    if !inner.is_empty() {
+                        return Some(inner.to_string());
+                    }
+                }
+            }
         }
     }
     None
@@ -1121,15 +1249,17 @@ fn recommended_install_cmd(options: &[InstallOption]) -> Option<String> {
         .or_else(|| options.iter().find_map(|o| o.command.clone()))
 }
 
-fn cli_ok_item(name: &str, label: &str, path: String) -> EnvCheckItem {
+fn cli_ok_item(name: &str, label: &str, path: String, version: Option<String>) -> EnvCheckItem {
+    let detail = version.as_deref().unwrap_or(&path);
     EnvCheckItem {
         name: name.into(),
         label: label.into(),
         status: "ok".into(),
         severity: "ok".into(),
         category: "cli".into(),
-        detail: path.clone(),
+        detail: detail.to_string(),
         detected_path: Some(path),
+        version,
         install_options: None,
         install_cmd: None,
     }
@@ -1151,6 +1281,7 @@ fn cli_missing_item(name: &str, label: &str) -> EnvCheckItem {
         category: "cli".into(),
         detail,
         detected_path: None,
+        version: None,
         install_options: if options.is_empty() {
             None
         } else {
@@ -1167,35 +1298,45 @@ pub fn check_environment() -> EnvCheckResult {
 
     // 1. Claude Code
     match check_binary_on_path("claude") {
-        Some(path) => items.push(cli_ok_item("claude", "Claude Code", path)),
+        Some(path) => {
+            let version = get_cli_version(&path);
+            items.push(cli_ok_item("claude", "Claude Code", path, version));
+        }
         None => items.push(cli_missing_item("claude", "Claude Code")),
     }
 
     // 2. Codex
     match check_binary_on_path("codex") {
-        Some(path) => items.push(cli_ok_item("codex", "Codex", path)),
+        Some(path) => {
+            let version = get_cli_version(&path);
+            items.push(cli_ok_item("codex", "Codex", path, version));
+        }
         None => items.push(cli_missing_item("codex", "Codex")),
     }
 
     // 4. Qoder
     match check_binary_on_path("qoderclicn") {
-        Some(path) => items.push(cli_ok_item("qoderclicn", "Qoder", path)),
+        Some(path) => {
+            let version = get_cli_version(&path);
+            items.push(cli_ok_item("qoderclicn", "Qoder", path, version));
+        }
         None => items.push(cli_missing_item("qoderclicn", "Qoder")),
     }
 
     // 6. Shell wrapper
-    let shell_rc = home.join(".claude-profiles").join("shell-rc");
-    let shell_rc_ps1 = home.join(".claude-profiles").join("shell-rc.ps1");
+    let kn_dir = home.join(".kn");
+    let shell_rc = kn_dir.join("shell-rc");
+    let shell_rc_ps1 = kn_dir.join("shell-rc.ps1");
     if shell_rc.exists() || shell_rc_ps1.exists() {
         let in_rc = if let Ok(zshrc) = std::fs::read_to_string(home.join(".zshrc")) {
-            zshrc.contains("shell-rc") || zshrc.contains(".claude-profiles")
+            zshrc.contains(".kn/shell-rc") || zshrc.contains(".claude-profiles")
         } else {
             false
         };
         // On non-macOS also check .bashrc (Linux + Windows Git Bash)
         let in_bashrc = !cfg!(target_os = "macos") && {
             if let Ok(bashrc) = std::fs::read_to_string(home.join(".bashrc")) {
-                bashrc.contains("shell-rc") || bashrc.contains(".claude-profiles")
+                bashrc.contains(".kn/shell-rc") || bashrc.contains(".claude-profiles")
             } else {
                 false
             }
@@ -1211,7 +1352,7 @@ pub fn check_environment() -> EnvCheckResult {
                 .join("Microsoft.PowerShell_profile.ps1");
             let check = |p: &std::path::Path| -> bool {
                 std::fs::read_to_string(p)
-                    .map(|c| c.contains("shell-rc") || c.contains(".claude-profiles"))
+                    .map(|c| c.contains(".kn/shell-rc") || c.contains(".claude-profiles"))
                     .unwrap_or(false)
             };
             check(&ps7) || check(&ps5)
@@ -1241,30 +1382,75 @@ pub fn check_environment() -> EnvCheckResult {
             } else {
                 shell_rc_ps1.display().to_string()
             }),
+            version: None,
             install_options: None,
             install_cmd: None,
         });
     } else {
-        items.push(EnvCheckItem {
-            name: "shell-wrapper".into(),
-            label: "Shell 集成".into(),
-            status: "missing".into(),
-            severity: "warn".into(),
-            category: "shell".into(),
-            detail: if cfg!(target_os = "windows") {
-                "未安装，应用启动时会尝试自动写入 PowerShell 集成".into()
+        // Fallback: also check legacy ~/.claude-profiles/ for users who haven't migrated
+        let legacy_dir = home.join(".claude-profiles");
+        let legacy_rc = legacy_dir.join("shell-rc");
+        let legacy_rc_ps1 = legacy_dir.join("shell-rc.ps1");
+        if legacy_rc.exists() || legacy_rc_ps1.exists() {
+            let in_rc = if let Ok(zshrc) = std::fs::read_to_string(home.join(".zshrc")) {
+                zshrc.contains("shell-rc")
             } else {
-                "未安装，应用启动时会尝试自动写入 shell 集成".into()
-            },
-            detected_path: None,
-            install_options: None,
-            install_cmd: None,
-        });
+                false
+            };
+            let in_bashrc = !cfg!(target_os = "macos") && {
+                if let Ok(bashrc) = std::fs::read_to_string(home.join(".bashrc")) {
+                    bashrc.contains("shell-rc")
+                } else {
+                    false
+                }
+            };
+            let activated = in_rc || in_bashrc;
+            items.push(EnvCheckItem {
+                name: "shell-wrapper".into(),
+                label: "Shell 集成".into(),
+                status: if activated { "ok".into() } else { "warn".into() },
+                severity: if activated { "ok".into() } else { "warn".into() },
+                category: "shell".into(),
+                detail: if activated {
+                    "已激活（旧目录 ~/.claude-profiles/，建议迁移）".into()
+                } else {
+                    "已安装但未激活（旧目录 ~/.claude-profiles/）".into()
+                },
+                detected_path: Some(if legacy_rc.exists() {
+                    legacy_rc.display().to_string()
+                } else {
+                    legacy_rc_ps1.display().to_string()
+                }),
+                version: None,
+                install_options: None,
+                install_cmd: None,
+            });
+        } else {
+            items.push(EnvCheckItem {
+                name: "shell-wrapper".into(),
+                label: "Shell 集成".into(),
+                status: "missing".into(),
+                severity: "warn".into(),
+                category: "shell".into(),
+                detail: if cfg!(target_os = "windows") {
+                    "未安装，应用启动时会尝试自动写入 PowerShell 集成".into()
+                } else {
+                    "未安装，应用启动时会尝试自动写入 shell 集成".into()
+                },
+                detected_path: None,
+                version: None,
+                install_options: None,
+                install_cmd: None,
+            });
+        }
     }
 
     // 7. Config directory
-    let config_dir = home.join(".claude-profiles");
+    let config_dir = home.join(".kn");
     let config_file = config_dir.join("config.yaml");
+    // Also check legacy location for migration hint
+    let legacy_config_dir = home.join(".claude-profiles");
+    let legacy_config_file = legacy_config_dir.join("config.yaml");
     if config_dir.exists() {
         if config_file.exists() {
             items.push(EnvCheckItem {
@@ -1275,6 +1461,7 @@ pub fn check_environment() -> EnvCheckResult {
                 category: "config".into(),
                 detail: config_file.display().to_string(),
                 detected_path: Some(config_file.display().to_string()),
+                version: None,
                 install_options: None,
                 install_cmd: None,
             });
@@ -1287,10 +1474,40 @@ pub fn check_environment() -> EnvCheckResult {
                 category: "config".into(),
                 detail: "目录存在但无配置文件".into(),
                 detected_path: Some(config_dir.display().to_string()),
+                version: None,
                 install_options: None,
                 install_cmd: None,
             });
         }
+        // If legacy dir still exists and has config, suggest cleanup
+        if legacy_config_file.exists() {
+            items.push(EnvCheckItem {
+                name: "config-legacy".into(),
+                label: "旧配置文件".into(),
+                status: "info".into(),
+                severity: "info".into(),
+                category: "config".into(),
+                detail: format!("旧目录仍存在: {}，建议迁移后清理", legacy_config_dir.display()),
+                detected_path: Some(legacy_config_file.display().to_string()),
+                version: None,
+                install_options: None,
+                install_cmd: None,
+            });
+        }
+    } else if legacy_config_dir.exists() && legacy_config_file.exists() {
+        // Legacy config still present, hasn't been migrated
+        items.push(EnvCheckItem {
+            name: "config".into(),
+            label: "配置文件".into(),
+            status: "warn".into(),
+            severity: "warn".into(),
+            category: "config".into(),
+            detail: format!("旧目录: {} → 重启应用将自动迁移到 ~/.kn/", legacy_config_dir.display()),
+            detected_path: Some(legacy_config_file.display().to_string()),
+            version: None,
+            install_options: None,
+            install_cmd: None,
+        });
     } else {
         items.push(EnvCheckItem {
             name: "config".into(),
@@ -1300,6 +1517,7 @@ pub fn check_environment() -> EnvCheckResult {
             category: "config".into(),
             detail: "目录不存在".into(),
             detected_path: None,
+            version: None,
             install_options: None,
             install_cmd: None,
         });
@@ -1438,10 +1656,8 @@ mod tests {
 
     // ── Profile CRUD ────────────────────────────────────────
 
-    static CRUD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn temp_config_setup() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
-        let guard = CRUD_LOCK.lock().unwrap();
+        let guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var(
             "CLAUDE_PROFILES_HOME",
@@ -1451,9 +1667,42 @@ mod tests {
     }
 
     fn cleanup_config(dir: tempfile::TempDir) {
+        std::env::remove_var("KN_HOME");
         std::env::remove_var("CLAUDE_PROFILES_HOME");
         drop(dir);
         // CRUD_LOCK guard is dropped by caller
+    }
+
+    // ── is_safe_path tests ──
+
+    #[test]
+    fn test_is_safe_path_rejects_parent_dir_traversal() {
+        let bad = std::path::Path::new("../etc/passwd");
+        assert!(!is_safe_path(bad), "parent-dir traversal should be rejected");
+    }
+
+    #[test]
+    fn test_is_safe_path_rejects_non_existent_path() {
+        // canonicalize fails → reject (don't fall back to un-resolved path)
+        let bad = std::path::Path::new("/nonexistent-xyz-kn-test-file");
+        assert!(!is_safe_path(bad), "non-existent path should be rejected");
+    }
+
+    #[test]
+    fn test_is_safe_path_allows_home_subdir() {
+        let home = home_dir();
+        let safe = home.join(".kn-test-safe-path");
+        std::fs::create_dir_all(&safe).ok();
+        assert!(is_safe_path(&safe), "path under home should be allowed");
+        std::fs::remove_dir_all(&safe).ok();
+    }
+
+    #[test]
+    fn test_is_safe_path_allows_temp_dir() {
+        let tmp = std::env::temp_dir().join("kn-test-temp-safe");
+        std::fs::create_dir_all(&tmp).ok();
+        assert!(is_safe_path(&tmp), "path under temp dir should be allowed");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

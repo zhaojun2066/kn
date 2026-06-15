@@ -59,7 +59,7 @@ const faqs = [
   },
   {
     q: 'API key 安全吗？',
-    a: 'key 明文存储在 ~/.claude-profiles/config.yaml 中。建议确保目录权限为 700：chmod 700 ~/.claude-profiles',
+    a: 'key 明文存储在 ~/.kn/config.yaml 中。建议确保目录权限为 700：chmod 700 ~/.kn',
   },
   {
     q: '怎么让 profile 对整个项目目录生效？',
@@ -67,7 +67,7 @@ const faqs = [
   },
   {
     q: 'Desktop App 和 CLI 的数据如何同步？',
-    a: '两者共用同一份 ~/.claude-profiles/config.yaml 文件，通过文件锁保证并发安全，任何一方的修改另一方立即可见。',
+    a: '两者共用同一份 ~/.kn/config.yaml 文件，通过文件锁保证并发安全，任何一方的修改另一方立即可见。',
   },
   {
     q: '支持哪些 CLI 工具？',

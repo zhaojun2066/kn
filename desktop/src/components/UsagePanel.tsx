@@ -85,7 +85,7 @@ export function UsagePanel({ open, onClose }: UsagePanelProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
@@ -389,8 +389,13 @@ export function UsagePanel({ open, onClose }: UsagePanelProps) {
               )}
             </>
           ) : (
-            <div className="text-center py-8 text-sm text-app-text-muted font-mono">
-              {loading ? "加载中..." : "暂无用量数据"}
+            <div className="flex flex-col items-center gap-2 text-center py-8 text-sm text-app-text-muted font-mono">
+              {loading ? (
+                <div className="w-4 h-4 border-2 border-app-border border-t-app-accent animate-spin rounded-full" />
+              ) : (
+                <BarChart3 size={20} className="opacity-30" />
+              )}
+              <span>{loading ? "加载中..." : "暂无用量数据"}</span>
               <br />
               <span className="text-2xs text-app-text-dim mt-1 block">
                 在设置中开启 Token 用量追踪，使用 AI CLI 后数据自动记录

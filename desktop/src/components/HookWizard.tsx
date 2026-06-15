@@ -176,9 +176,9 @@ function StepDots({ current, total }: { current: number; total: number }) {
           <div
             className={`w-5 h-5 rounded-full flex items-center justify-center text-2xs font-bold font-mono
               ${i < current
-                ? "bg-[var(--app-green)] text-white"
+                ? "bg-[var(--app-green)] text-[var(--app-bg)]"
                 : i === current
-                  ? "bg-[var(--app-accent)] text-white"
+                  ? "bg-[var(--app-accent)] text-[var(--app-bg)]"
                   : "bg-[var(--app-bg)] text-[var(--app-text-muted)] border border-[var(--app-border)]"
               }`}
           >
@@ -212,7 +212,7 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
   // Build the label for run-with-log.sh wrapper
   const logLabel = hookName.trim() || `${cli}-${eventType}`;
   const wrapCommand = (cmd: string) =>
-    `~/.claude-profiles/hooks/run-with-log.sh ${logLabel} ${cmd}`;
+    `~/.kn/hooks/run-with-log.sh ${logLabel} ${cmd}`;
 
   // Available hook types for the selected CLI, filtered by event type
   const currentHookTypes = useMemo(() => {
@@ -370,7 +370,7 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
                   >
                     <input type="radio" name="cli" value={tool.id} checked={cli === tool.id} onChange={() => handleCliChange(tool.id)} className="hidden" />
                     <div className={`w-8 h-8 rounded flex items-center justify-center font-mono text-xs font-bold
-                      ${cli === tool.id ? "bg-[var(--app-accent)] text-white" : "bg-[var(--app-bg)] text-[var(--app-text-dim)]"}`}>
+                      ${cli === tool.id ? "bg-[var(--app-accent)] text-[var(--app-bg)]" : "bg-[var(--app-bg)] text-[var(--app-text-dim)]"}`}>
                       {tool.name[0]}
                     </div>
                     <div className="flex-1">

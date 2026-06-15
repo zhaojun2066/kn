@@ -1,21 +1,23 @@
-# Install AI Profile Manager (Windows / PowerShell)
-# Everything lives under ~/.claude-profiles/
+# Install kn — AI CLI Workspace Manager (Windows / PowerShell)
+# Everything lives under ~/.kn/
 #
-#   ~/.claude-profiles/
+#   ~/.kn/
 #   ├── bin/profile        ← CLI
 #   ├── lib/config.py      ← shared module
 #   ├── shell-rc.ps1       ← PowerShell wrapper
 #   ├── config.yaml        ← user data
 #   └── .config.lock       ← file lock
+#
+# Legacy data at ~/.claude-profiles/ is automatically migrated on first run.
 
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$InstallDir = Join-Path $env:USERPROFILE ".claude-profiles"
-$MarkerStart = "# >>> AI Profile Manager >>>"
-$MarkerEnd = "# <<< AI Profile Manager <<<"
+$InstallDir = Join-Path $env:USERPROFILE ".kn"
+$MarkerStart = "# >>> kn >>>"
+$MarkerEnd = "# <<< kn <<<"
 
-Write-Host "==> Installing AI Profile Manager -> $InstallDir"
+Write-Host "==> Installing kn -> $InstallDir"
 
 # Create directory structure
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "bin") | Out-Null

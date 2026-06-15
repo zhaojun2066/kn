@@ -889,6 +889,14 @@ button, a, input, select {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+@keyframes profileDrawerSlideUp {
+  from { opacity: 0.98; transform: translateY(100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes profileDrawerSlideRight {
+  from { opacity: 0.98; transform: translateX(100%); }
+  to   { opacity: 1; transform: translateX(0); }
+}
 @keyframes loading {
   0%   { transform: translateX(-100%); }
   100% { transform: translateX(400%); }

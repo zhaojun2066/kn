@@ -1,8 +1,8 @@
 // Shared CLI color/label constants — single source of truth.
-// Previously duplicated in SkillManager.tsx, HookList.tsx, SkillDetail.tsx,
+// Previously duplicated in ResourceList.tsx, HookList.tsx, ResourceDetail.tsx,
 // HookDetail.tsx, and MarketplaceBrowser.tsx.
 
-import type { CliKind } from "../components/SkillManager";
+import type { CliKind } from "./types";
 
 /** Hex colors for use in inline styles (e.g. dependency graph nodes) */
 export const CLI_HEX_COLORS: Record<CliKind, string> = {

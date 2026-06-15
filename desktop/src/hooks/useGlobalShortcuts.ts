@@ -9,6 +9,8 @@ interface GlobalShortcutOptions {
   showDeleteConfirm: boolean;
   showNameDialog: boolean;
   showQuickSwitcher: boolean;
+  profileDrawerOpen: boolean;
+  resourceDrawerOpen: boolean;
   setShowAddDialog: (show: boolean) => void;
   setShowDeleteConfirm: (show: boolean) => void;
   setShowNameDialog: (show: boolean) => void;
@@ -18,6 +20,8 @@ interface GlobalShortcutOptions {
   setSidebarVisible: (updater: (visible: boolean) => boolean) => void;
   setRightMaximized: (updater: (maximized: boolean) => boolean) => void;
   setBottomMaximized: (updater: (maximized: boolean) => boolean) => void;
+  setProfileDrawerOpen: (open: boolean) => void;
+  setResourceDrawerOpen: (open: boolean) => void;
   addToast: (type: "error" | "success", message: string) => void;
 }
 
@@ -33,6 +37,8 @@ export function useGlobalShortcuts({
   showDeleteConfirm,
   showNameDialog,
   showQuickSwitcher,
+  profileDrawerOpen,
+  resourceDrawerOpen,
   setShowAddDialog,
   setShowDeleteConfirm,
   setShowNameDialog,
@@ -42,6 +48,8 @@ export function useGlobalShortcuts({
   setSidebarVisible,
   setRightMaximized,
   setBottomMaximized,
+  setProfileDrawerOpen,
+  setResourceDrawerOpen,
   addToast,
 }: GlobalShortcutOptions) {
   useEffect(() => {
@@ -71,6 +79,8 @@ export function useGlobalShortcuts({
         else if (showAddDialog) setShowAddDialog(false);
         else if (showDeleteConfirm) setShowDeleteConfirm(false);
         else if (showNameDialog) setShowNameDialog(false);
+        else if (profileDrawerOpen) setProfileDrawerOpen(false);
+        else if (resourceDrawerOpen) setResourceDrawerOpen(false);
         else if (selectedName) onDeselect();
       }
       if (event.key === "Backspace" && selectedName && !isTextInput(event.target)) {
@@ -102,6 +112,14 @@ export function useGlobalShortcuts({
           addToast("success", `💡 请先点击终端面板，再使用 ${formatShortcut("mod+⇧M")} 最大化`);
         }
       }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === "KeyG") {
+        event.preventDefault();
+        setProfileDrawerOpen(!profileDrawerOpen);
+      }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === "KeyY") {
+        event.preventDefault();
+        setResourceDrawerOpen(!resourceDrawerOpen);
+      }
     };
 
     window.addEventListener("keydown", handler);
@@ -114,6 +132,8 @@ export function useGlobalShortcuts({
     showDeleteConfirm,
     showNameDialog,
     showQuickSwitcher,
+    profileDrawerOpen,
+    resourceDrawerOpen,
     setShowAddDialog,
     setShowDeleteConfirm,
     setShowNameDialog,
@@ -123,6 +143,8 @@ export function useGlobalShortcuts({
     setSidebarVisible,
     setRightMaximized,
     setBottomMaximized,
+    setProfileDrawerOpen,
+    setResourceDrawerOpen,
     addToast,
   ]);
 }

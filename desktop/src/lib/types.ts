@@ -102,6 +102,7 @@ export interface EnvCheckItem {
   category?: "cli" | "shell" | "config";
   detail: string;
   detected_path?: string;
+  version?: string;
   install_options?: InstallOption[];
   install_cmd?: string;
 }
@@ -144,4 +145,38 @@ export interface SessionInfo {
   workDir: string;
   timestamp: number;
   status: "active" | "ended";
+}
+
+// ── Project Overview ──
+
+export interface CliCounts {
+  total: number;
+  claude: number;
+  codex: number;
+  qoder: number;
+}
+
+export interface OverviewResources {
+  skills: CliCounts;
+  plugins: CliCounts;
+  commands: CliCounts;
+  agents: CliCounts;
+}
+
+export interface CliConfigStatus {
+  cli: "claude" | "codex" | "qoder";
+  dirName: string;
+  dirExists: boolean;
+  hasConfig: boolean;
+  hooksTotal: number;
+  hooksEnabled: number;
+  skillsCount: number;
+  agentsCount: number;
+}
+
+export interface ProjectOverviewData {
+  sessions: CliCounts;
+  resources: OverviewResources;
+  configMatrix: CliConfigStatus[];
+  recentSessions: SessionInfo[];
 }

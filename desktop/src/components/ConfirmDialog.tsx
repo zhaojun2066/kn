@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, ArrowRight } from "lucide-react";
+import { AlertTriangle, ArrowRight, X } from "lucide-react";
 import { Button } from "./common/Button";
 import { Dialog } from "./common/Dialog";
 
@@ -45,7 +45,7 @@ export function ConfirmDialog({
           aria-label="关闭"
           className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
         >
-          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <X size={14} />
         </button>
       </div>
 

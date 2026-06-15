@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { Terminal, Lock, FolderOpen, Play, Ban, Trash2, Info, Pencil, Check, X, FileText, Loader, Zap, ArrowRight, Clock, ChevronDown, ChevronRight, RotateCw, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { Button } from "./common/Button";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { CLI_HEX_COLORS } from "../lib/cli-constants";
+import { CLI_HEX_COLORS, CLI_LABELS } from "../lib/cli-constants";
+import type { CliKind } from "../lib/types";
 import { getHookExecutionLogs } from "../lib/tauri-api";
 import type { HookExecutionLog } from "../lib/types";
 const CLI_COLORS: Record<string, string> = CLI_HEX_COLORS;
@@ -10,7 +12,7 @@ const CLI_COLORS: Record<string, string> = CLI_HEX_COLORS;
 // run-with-log.sh wrapper utilities
 // Usage: run-with-log.sh <hook_id> <command...>
 // hook_id is a label (first arg), everything else is the real command.
-const LOG_WRAPPER = "~/.claude-profiles/hooks/run-with-log.sh";
+const LOG_WRAPPER = "~/.kn/hooks/run-with-log.sh";
 function isLogWrapped(cmd: string): boolean { return cmd.includes("run-with-log.sh"); }
 function unwrapLog(cmd: string): string {
   // Strip "run-with-log.sh <hook_id> " prefix, keep everything after as the original command.
@@ -42,6 +44,7 @@ export interface HookEntry {
   name?: string;
   description?: string;
   projectName?: string;
+  inherited?: boolean;
 }
 
 /* ──────────────────── Props ──────────────────── */
@@ -49,14 +52,10 @@ export interface HookEntry {
 interface HookDetailProps {
   hook: HookEntry | null;
   onRefresh?: () => void;
+  /** Context where the component is rendered — tailors the empty-state text. */
+  scope?: "user" | "project";
 }
 
-
-const CLI_LABELS: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  qoder: "Qoder",
-};
 
 const EVENT_LABELS: Record<string, string> = {
   UserPromptSubmit: "用户提交提示词",
@@ -101,7 +100,16 @@ function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }
 
 /* ─────────────────── Empty State ──────────────────── */
 
-function EmptyState() {
+function EmptyState({ scope }: { scope?: "user" | "project" }) {
+  const isUser = scope === "user";
+  const isProject = scope === "project";
+  const scopeLabel = isUser ? "用户级" : isProject ? "项目级" : "";
+  const scopeNote = isUser
+    ? "管理当前用户下所有 CLI 工具的 Hook，存储在用户主目录。"
+    : isProject
+    ? "管理当前项目下的 Hook，存储在项目目录中，可随 Git 提交与团队共享。"
+    : "";
+
   return (
     <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-8">
       <div
@@ -112,16 +120,18 @@ function EmptyState() {
       </div>
 
       <div>
-        <h3 className="text-sm font-mono text-[var(--app-text-dim)] mb-1">Hook 管理器</h3>
+        <h3 className="text-sm font-mono font-semibold text-[var(--app-text)] mb-1">
+          {scopeLabel ? `${scopeLabel} Hooks` : "Hooks"}
+        </h3>
         <p className="text-xs text-[var(--app-text-muted)] leading-relaxed max-w-sm">
-          从左侧列表选择一个 Hook 查看详情，或点击 + 新建自定义 Hook。
+          {scopeNote || "从左侧列表选择一个 Hook 查看详情，或点击 + 新建自定义 Hook。"}
         </p>
       </div>
 
       {/* What are hooks */}
       <div className="text-xs text-[var(--app-text-muted)] font-mono text-left space-y-1.5
         bg-[var(--app-cmd-bg)] border border-[var(--app-border)] p-3 w-full max-w-sm">
-        <div className="text-[var(--app-text-dim)] font-semibold">什么是 Hook？</div>
+        <div className="text-[var(--app-text)] font-semibold">什么是 Hook？</div>
         <div className="leading-relaxed">
           Hook 是在 AI CLI 工具<b className="text-[var(--app-text)]">关键事件发生时自动执行</b>的脚本。
           比如在提交提示词前注入上下文、工具调用后记录日志、会话结束时发送通知等。
@@ -134,7 +144,7 @@ function EmptyState() {
       {/* Common events */}
       <div className="text-xs text-[var(--app-text-muted)] font-mono text-left
         bg-[var(--app-cmd-bg)] border border-[var(--app-border)] p-3 w-full max-w-sm">
-        <div className="text-[var(--app-text-dim)] font-semibold mb-1.5">常用触发事件</div>
+        <div className="text-[var(--app-text)] font-semibold mb-1.5">常用触发事件</div>
         <div className="space-y-1 leading-relaxed">
           {[
             ["UserPromptSubmit", "用户提交提示词时"],
@@ -155,7 +165,9 @@ function EmptyState() {
 
       {/* Tip */}
       <p className="text-2xs text-[var(--app-text-muted)] max-w-xs">
-        创建 Hook 时选择 CLI 工具、事件类型和脚本命令，保存后自动写入对应工具的配置文件。
+        {isProject
+          ? "项目级 Hook 存储在项目目录的 CLI 配置文件中，可通过 Git 与团队共享。"
+          : "创建 Hook 时选择 CLI 工具、事件类型和脚本命令，保存后自动写入对应工具的配置文件。"}
       </p>
     </div>
   );
@@ -177,8 +189,8 @@ function formatLogTime(iso: string): string {
 
 /* ──────────────────── Main ──────────────────── */
 
-export function HookDetail({ hook, onRefresh }: HookDetailProps) {
-  if (!hook) return <EmptyState />;
+export function HookDetail({ hook, onRefresh, scope }: HookDetailProps) {
+  if (!hook) return <EmptyState scope={scope} />;
 
   const cliColor = CLI_COLORS[hook.cli] || "#6B7280";
   const eventLabel = EVENT_LABELS[hook.eventType] || hook.eventType;
@@ -290,6 +302,7 @@ export function HookDetail({ hook, onRefresh }: HookDetailProps) {
         groupIdx: h.groupIdx,
         hookIdx: h.hookIdx,
         enabled: !h.enabled,
+        path: h.path,
       });
       onRefresh?.();
     } catch (e) {
@@ -335,7 +348,7 @@ export function HookDetail({ hook, onRefresh }: HookDetailProps) {
                 className="text-2xs font-mono px-1.5 py-px border shrink-0"
                 style={{ color: cliColor, borderColor: cliColor, opacity: 0.75 }}
               >
-                {CLI_LABELS[hook.cli] || hook.cli}
+                {CLI_LABELS[hook.cli as CliKind] || hook.cli}
               </span>
               {/* Edit name/description button */}
               {!isReadonly && (
@@ -374,7 +387,7 @@ export function HookDetail({ hook, onRefresh }: HookDetailProps) {
       <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
         <div className="space-y-1">
           <MetaRow label="CLI">
-            <span style={{ color: cliColor }}>{CLI_LABELS[hook.cli] || hook.cli}</span>
+            <span style={{ color: cliColor }}>{CLI_LABELS[hook.cli as CliKind] || hook.cli}</span>
           </MetaRow>
           <MetaRow label="类型">
             <span className="text-[var(--app-accent)]">{hook.hookType}</span>
@@ -504,26 +517,28 @@ export function HookDetail({ hook, onRefresh }: HookDetailProps) {
               </div>
             )}
           <div className="mt-3 flex items-center gap-1">
-            <button
+            <Button
+              variant="icon"
+              size="sm"
               onClick={handleToggle}
-              className={`p-1.5 border transition-all duration-fast
-                ${hook.enabled
-                  ? "text-[var(--app-text-muted)] border-[var(--app-border)] hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
-                  : "text-[var(--app-text-muted)] border-[var(--app-border)] hover:text-[var(--app-accent)] hover:border-[var(--app-accent)] hover:bg-[var(--app-green-bg)]"
-                }`}
+              className={`p-1.5 border-[var(--app-border)] ${
+                hook.enabled
+                  ? "hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
+                  : "hover:text-[var(--app-accent)] hover:border-[var(--app-accent)] hover:bg-[var(--app-green-bg)]"
+              }`}
               title={hook.enabled ? "禁用" : "启用"}
             >
               {hook.enabled ? <Ban size={14} /> : <Play size={14} />}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="icon"
+              size="sm"
               onClick={() => setShowDeleteConfirm(true)}
-              className="p-1.5 border border-[var(--app-border)] text-[var(--app-text-muted)]
-                hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]
-                transition-all duration-fast"
+              className="p-1.5 border-[var(--app-border)] hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
               title="删除"
             >
               <Trash2 size={14} />
-            </button>
+            </Button>
           </div>
           </>
         )}

@@ -8,10 +8,11 @@ interface ToastViewportProps {
 
 export function ToastViewport({ toasts, onDismiss }: ToastViewportProps) {
   return (
-    <div className="fixed bottom-8 right-4 z-50 flex flex-col gap-1.5 max-w-sm">
+    <div className="fixed bottom-8 right-4 z-50 flex flex-col gap-1.5 max-w-sm" role="alert" aria-live="polite">
       {toasts.map((toast) => (
         <div
           key={toast.id}
+          role="status"
           className={`flex items-start gap-2 px-3 py-2 shadow-lg border animate-[slideUp_150ms_ease-out] text-sm font-mono
             ${toast.type === "error"
               ? "bg-app-red-bg border-app-border text-app-red shadow-lg"

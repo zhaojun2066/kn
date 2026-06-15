@@ -7,7 +7,8 @@ import {
   FolderOpen, Upload, Package, Filter, Plus, Trash2, Link,
 } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog";
-import type { CliKind, MarketplacePluginEntry, MarketplaceData } from "./SkillManager";
+import type { MarketplacePluginEntry, MarketplaceData } from "./ResourceList";
+import type { CliKind } from "../lib/types";
 import { SearchInput } from "./common/SearchInput";
 import { basename } from "../lib/path-utils";
 
@@ -17,6 +18,10 @@ interface MarketplaceBrowserProps {
   open: boolean;
   onClose: () => void;
   onInstalled: () => void;
+  /** When set, plugins/skills are installed at project level instead of user level. */
+  projectPath?: string | null;
+  /** Display name for project-scoped installs. */
+  projectName?: string | null;
 }
 
 /* ──────────────────── Helpers ──────────────────── */
@@ -68,6 +73,8 @@ const RECOMMENDED_MARKETPLACES: RecommendedMarket[] = [
 
 interface InstallResult {
   name?: string;
+  marketplace?: string;
+  installKey?: string;
   pluginId?: string;
   cli: string;
   success: boolean;
@@ -76,7 +83,7 @@ interface InstallResult {
 
 /* ──────────────────── Component ──────────────────── */
 
-export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBrowserProps) {
+export function MarketplaceBrowser({ open, onClose, onInstalled, projectPath, projectName }: MarketplaceBrowserProps) {
   const [data, setData] = useState<MarketplaceData | null>(null);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -97,7 +104,15 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
   const [removingMarket, setRemovingMarket] = useState<Set<string>>(new Set());
   const [marketMsg, setMarketMsg] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<{ cli: string; name: string } | null>(null);
+  const [overwriteConfirm, setOverwriteConfirm] = useState<{
+    skillName: string;
+    cli: string;
+    sourcePath: string;
+  } | null>(null);
   const [addingRecommended, setAddingRecommended] = useState<Set<string>>(new Set());
+
+  const pluginInstallKey = (p: Pick<MarketplacePluginEntry, "cli" | "marketplace" | "name">) =>
+    `${p.cli}:${p.marketplace}:${p.name}`;
 
   // Auto-clear messages with cleanup (prevents state updates on unmounted component)
   useEffect(() => {
@@ -117,26 +132,27 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
     if (!open) return;
     setLoading(true);
     setData(null);
-    invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all" })
+    invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all", projectPath: projectPath ?? null })
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
-  }, [open]);
+  }, [open, projectPath]);
 
   // Listen for install complete events
   useEffect(() => {
     if (!open) return;
     const unlistenInstall = listen<InstallResult>("plugin-install-complete", (event) => {
-      const { name, success, message } = event.payload;
+      const { name, success, message, installKey } = event.payload;
       // Refresh marketplace data
-      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all" })
+      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all", projectPath: projectPath ?? null })
         .then(setData)
         .catch(() => {});
       // Remove from installing set
-      if (name) {
+      if (installKey || name) {
         setInstalling((prev) => {
           const next = new Set(prev);
-          next.delete(name);
+          if (installKey) next.delete(installKey);
+          if (name) next.delete(name);
           return next;
         });
       }
@@ -149,9 +165,9 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
     });
 
     const unlistenUninstall = listen<InstallResult>("plugin-uninstall-complete", (_event) => {
-      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all" })
-        .then(setData)
-        .catch(() => {});
+        invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all", projectPath: projectPath ?? null })
+          .then(setData)
+          .catch(() => {});
       onInstalled();
     });
 
@@ -168,7 +184,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
       "marketplace-changed",
       async (event) => {
         // Refresh marketplace data
-        invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all" })
+        invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all", projectPath: projectPath ?? null })
           .then(setData)
           .catch(() => {});
         // Only show message if not already handled by the primary invoke path
@@ -194,7 +210,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
       setMarketMsg(msg);
       setNewMarketSource("");
       // Refresh marketplace data
-      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all" })
+      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all", projectPath: projectPath ?? null })
         .then(setData)
         .catch(() => {});
       onInstalled();
@@ -226,7 +242,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
       setErrorMsg(errors.join(" | "));
     } else {
       // Refresh marketplace data after successful adds
-      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all" })
+      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all", projectPath: projectPath ?? null })
         .then(setData)
         .catch(() => {});
       onInstalled();
@@ -245,7 +261,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
       const msg = await invoke<string>("remove_marketplace", { cli, name });
       setMarketMsg(msg);
       // Refresh marketplace data
-      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all" })
+      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all", projectPath: projectPath ?? null })
         .then(setData)
         .catch(() => {});
       onInstalled();
@@ -280,25 +296,22 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
   const hasRecommendedUninstalled = RECOMMENDED_MARKETPLACES.some((m) => !isRecommendedInstalled(m));
 
   const handleInstall = async (p: MarketplacePluginEntry) => {
+    const key = pluginInstallKey(p);
     setInstalling((prev) => {
       const next = new Set(prev);
-      next.add(p.name);
+      next.add(key);
       return next;
     });
     setErrorMsg("");
     try {
-      await invoke("install_plugin", { cli: p.cli, name: p.name, marketplace: p.marketplace });
-      // Refresh marketplace data
-      invoke<MarketplaceData>("list_marketplace_plugins", { cli: "all" })
-        .then(setData)
-        .catch(() => {});
-      onInstalled();
+      await invoke("install_plugin", { cli: p.cli, name: p.name, marketplace: p.marketplace, projectPath: projectPath ?? null });
+      // Refresh + onInstalled are handled by the "plugin-install-complete" event listener above
     } catch (e) {
       setErrorMsg(String(e));
     } finally {
       setInstalling((prev) => {
         const next = new Set(prev);
-        next.delete(p.name);
+        next.delete(key);
         return next;
       });
     }
@@ -320,7 +333,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
     }
   };
 
-  const handleInstallSkill = async () => {
+  const handleInstallSkill = async (overwrite = false) => {
     if (!skillSource) return;
     setSkillInstalling(true);
     setSkillMessage("");
@@ -328,12 +341,25 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
       const msg = await invoke<string>("install_standalone_skill", {
         cli: skillCli,
         sourcePath: skillSource,
+        overwrite,
+        projectPath: projectPath ?? null,
       });
       setSkillMessage(msg);
       setSkillSource("");
       onInstalled();
     } catch (e) {
-      setSkillMessage(String(e));
+      const errMsg = String(e);
+      if (!overwrite && errMsg.includes("已存在")) {
+        // Show overwrite confirmation
+        const name = skillSource.split("/").pop()?.replace(/\.md$/, "") || skillSource;
+        setOverwriteConfirm({
+          skillName: name,
+          cli: skillCli,
+          sourcePath: skillSource,
+        });
+      } else {
+        setSkillMessage(errMsg);
+      }
     } finally {
       setSkillInstalling(false);
     }
@@ -350,9 +376,16 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-3 border-b border-[var(--app-border-light)]">
           <Globe size={16} className="text-[var(--app-accent)] shrink-0" />
-          <span className="text-sm font-mono text-[var(--app-text)] flex-1">
-            Plugin Marketplace
-          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-mono text-[var(--app-text)] truncate">
+              Plugin Marketplace
+            </div>
+            {projectPath && projectName && (
+              <div className="text-2xs font-mono text-[var(--app-text-muted)] truncate" title={projectName}>
+                项目 · {projectName}
+              </div>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="p-1 text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-hover)] transition-colors"
@@ -463,8 +496,12 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
           {!loading && data && filtered.length > 0 && (
             <div className="space-y-2">
               {filtered.map((p) => {
-                const isInstalling = installing.has(p.name);
                 const id = `${p.cli}:${p.marketplace}:${p.name}`;
+                const isInstalling = installing.has(id);
+                const isProjectMode = !!projectPath;
+                const userInstalled = p.userInstalled ?? p.installed;
+                const projectInstalled = p.projectInstalled ?? p.installed;
+                const isInstalledHere = isProjectMode ? projectInstalled : p.installed;
                 return (
                   <div
                     key={id}
@@ -495,6 +532,11 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
                         <span className="text-2xs text-[var(--app-text-muted)] font-mono">
                           @{p.marketplace}
                         </span>
+                        {isProjectMode && userInstalled && !projectInstalled && (
+                          <span className="text-2xs text-[var(--app-text-dim)] font-mono">
+                            用户级已安装
+                          </span>
+                        )}
                         {p.skillCount > 0 && (
                           <span className="text-2xs text-[var(--app-text-dim)] font-mono">
                             {p.skillCount} skills
@@ -507,10 +549,10 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
                     </div>
 
                     {/* Action */}
-                    {p.installed ? (
+                    {isInstalledHere ? (
                       <span className="flex items-center gap-1 text-2xs text-[var(--app-accent)] font-mono shrink-0 opacity-70">
                         <Check size={11} />
-                        已安装
+                        {isProjectMode ? "项目已安装" : "已安装"}
                       </span>
                     ) : (
                       <button
@@ -530,7 +572,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
                         ) : (
                           <>
                             <Download size={11} />
-                            安装
+                            {isProjectMode && userInstalled ? "加入项目" : isProjectMode ? "安装到项目" : "安装"}
                           </>
                         )}
                       </button>
@@ -582,7 +624,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
 
             {/* Install button */}
             <button
-              onClick={handleInstallSkill}
+              onClick={() => handleInstallSkill()}
               disabled={!skillSource || skillInstalling}
               className={`flex items-center gap-1 px-3 py-1.5 text-xs font-mono border transition-all duration-fast shrink-0
                 ${!skillSource
@@ -814,6 +856,26 @@ export function MarketplaceBrowser({ open, onClose, onInstalled }: MarketplaceBr
             setConfirmRemove(null);
           }}
           onCancel={() => setConfirmRemove(null)}
+        />
+      )}
+
+      {/* Skill overwrite confirmation */}
+      {overwriteConfirm && (
+        <ConfirmDialog
+          open={true}
+          title="覆盖确认"
+          message={`${overwriteConfirm.cli} 已有 Skill "${overwriteConfirm.skillName}"，是否覆盖安装？\n\n覆盖会用新的版本替换已有 Skill。`}
+          confirmLabel="覆盖"
+          onConfirm={() => {
+            setOverwriteConfirm(null);
+            setSkillSource(overwriteConfirm.sourcePath);
+            setSkillCli(overwriteConfirm.cli as CliKind);
+            handleInstallSkill(true);
+          }}
+          onCancel={() => {
+            setOverwriteConfirm(null);
+            setSkillInstalling(false);
+          }}
         />
       )}
     </div>

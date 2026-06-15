@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Install AI Profile Manager
-# Everything lives under ~/.claude-profiles/
+# Install kn — AI CLI Workspace Manager
+# Everything lives under ~/.kn/
 #
-#   ~/.claude-profiles/
+#   ~/.kn/
 #   ├── bin/profile        ← CLI
 #   ├── lib/config.py      ← shared module
 #   ├── completions/       ← shell completions
@@ -11,17 +11,19 @@
 #   ├── shell-rc           ← shell wrapper
 #   ├── config.yaml        ← user data
 #   └── .config.lock       ← file lock
+#
+# Legacy data at ~/.claude-profiles/ is automatically migrated on first run.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_DIR="$HOME/.claude-profiles"
-MARKER_START="# >>> AI Profile Manager >>>"
-MARKER_END="# <<< AI Profile Manager <<<"
-COMPLETIONS_MARKER_START="# >>> AI Profile Completions >>>"
-COMPLETIONS_MARKER_END="# <<< AI Profile Completions <<<"
+INSTALL_DIR="$HOME/.kn"
+MARKER_START="# >>> kn >>>"
+MARKER_END="# <<< kn <<<"
+COMPLETIONS_MARKER_START="# >>> kn Completions >>>"
+COMPLETIONS_MARKER_END="# <<< kn Completions <<<"
 
-echo "==> Installing AI Profile Manager → $INSTALL_DIR"
+echo "==> Installing kn → $INSTALL_DIR"
 
 # Clean up old installation from ~/.local/bin (legacy)
 if [ -f "$HOME/.local/bin/profile" ]; then

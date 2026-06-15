@@ -13,11 +13,15 @@ pub(super) fn cli_binary(name: &str) -> String {
 
 // ── Paths ──────────────────────────────────────────────────────
 
-/// Thin wrapper around [`crate::home_dir`] that returns `None` instead of `"."` fallback.
+/// Thin wrapper around [`crate::home_dir`] that returns `None` instead of
+/// the temp-dir fallback (which indicates home directory resolution failed).
 /// Preserves Option semantics used by the skill scanning call chains.
 pub(super) fn home_dir() -> Option<PathBuf> {
     let h = crate::home_dir();
-    if h.as_os_str() == "." { None } else { Some(h) }
+    let temp = std::env::temp_dir();
+    // If home_dir() returned the temp dir, it means resolution failed —
+    // treat as None so callers skip scanning rather than reading wrong paths.
+    if h == temp { None } else { Some(h) }
 }
 
 pub(super) fn claude_skills_dir() -> Option<PathBuf> {

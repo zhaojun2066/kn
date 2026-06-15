@@ -1,6 +1,6 @@
-"""AI Profile Manager — shared config module.
+"""kn — shared config module.
 
-Reads/writes ~/.claude-profiles/config.yaml.
+Reads/writes ~/.kn/config.yaml.
 Imported by both CLI (bin/profile) and future UI.
 Uses fcntl.flock for concurrent write safety.
 """
@@ -16,8 +16,11 @@ except ImportError:
     _HAS_FCNTL = False
     import msvcrt
 
-_default_config_dir = os.path.join(os.path.expanduser("~"), ".claude-profiles")
-CONFIG_DIR = os.environ.get("CLAUDE_PROFILES_HOME", _default_config_dir)
+_default_config_dir = os.path.join(os.path.expanduser("~"), ".kn")
+CONFIG_DIR = os.environ.get("KN_HOME", _default_config_dir)
+# Legacy env var support
+if CONFIG_DIR == _default_config_dir:
+    CONFIG_DIR = os.environ.get("CLAUDE_PROFILES_HOME", CONFIG_DIR)
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.yaml")
 BACKUP_FILE = os.path.join(CONFIG_DIR, "config.yaml.bak")
 LOCK_FILE = os.path.join(CONFIG_DIR, ".config.lock")
@@ -150,17 +153,32 @@ def _release_lock(lock_file):
 
 # ── YAML Parser (hand-rolled, zero-dependency) ─────────────────
 
+def _detect_indent_unit(text):
+    """Detect the indent unit from the first indented line. Defaults to 2."""
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            indent = len(line) - len(line.lstrip(" "))
+            if indent > 0:
+                return indent
+    return 2
+
 def _parse_yaml(text):
     """Parse our constrained YAML subset.
 
-    Indent structure (standard YAML):
+    Indent structure (levels = multiples of detected unit):
       - 0: top-level scalars (default:)
-      - 2: profile names (keys in the profiles mapping)
-      - 4: desc: and env: (keys inside a profile mapping)
-      - 6: env var key: value entries (keys inside the env mapping)
+      - 1 unit: profile names (keys in the profiles mapping)
+      - 2 units: desc: and env: (keys inside a profile mapping)
+      - 3 units: env var key: value entries (keys inside the env mapping)
 
+    The indent unit is auto-detected from the first indented line;
+    defaults to 2 spaces if only top-level lines exist.
     Supports block scalars (| / >) for multi-line desc and env var values.
     """
+    # Auto-detect indent unit from first non-zero indent line
+    indent_unit = _detect_indent_unit(text)
+
     config = {"profiles": {}}
     current_profile = None
     in_env = False
@@ -205,7 +223,7 @@ def _parse_yaml(text):
                 # Flush any previous block scalar first
                 _flush_block_scalar()
                 block_scalar_key = key.strip()
-                block_scalar_indent = indent + 2
+                block_scalar_indent = indent + indent_unit
                 continue
 
         # Collect continuation lines for current block scalar
@@ -226,7 +244,7 @@ def _parse_yaml(text):
                     config["default"] = val
             continue
 
-        if indent == 2:
+        if indent == indent_unit:
             in_env = False
             if ":" in stripped and not stripped.startswith("desc:") and not stripped.startswith("env:"):
                 key = stripped.partition(":")[0].strip()
@@ -234,7 +252,7 @@ def _parse_yaml(text):
                 config["profiles"][current_profile] = {"desc": "", "env": {}}
             continue
 
-        if indent == 4 and current_profile:
+        if indent == indent_unit * 2 and current_profile:
             if ":" in stripped:
                 key, _, val = stripped.partition(":")
                 key = key.strip()
@@ -245,7 +263,7 @@ def _parse_yaml(text):
                     in_env = (val != "{}")
                 continue
 
-        if indent == 6 and in_env and current_profile:
+        if indent == indent_unit * 3 and in_env and current_profile:
             if ":" in stripped:
                 key, _, val = stripped.partition(":")
                 key = key.strip()

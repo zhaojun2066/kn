@@ -5,7 +5,7 @@
 //! - `run-with-log.sh` is a wrapper script embedded at compile time. Users configure
 //!   their hooks to run `run-with-log.sh <hook_id> -- <actual_command>` instead of
 //!   the command directly. The wrapper measures duration, captures exit code and
-//!   output previews, then writes a JSON log to `~/.claude-profiles/hook-logs/`.
+//!   output previews, then writes a JSON log to `~/.kn/hook-logs/`.
 //! - `get_hook_execution_logs` is a Tauri command that scans the log directory,
 //!   parses JSON files, and returns filtered/sorted results for the UI.
 
@@ -16,13 +16,13 @@ use std::path::PathBuf;
 // ── Embedded wrapper script ────────────────────────────────────
 
 /// The `run-with-log.sh` wrapper script, embedded at compile time.
-/// Written to `~/.claude-profiles/hooks/run-with-log.sh` on app startup.
+/// Written to `~/.kn/hooks/run-with-log.sh` on app startup.
 pub const RUN_WITH_LOG_SCRIPT: &str = r##"#!/usr/bin/env bash
 # run-with-log.sh — Hook execution wrapper with logging
 # Usage: run-with-log.sh <hook_id> <command...>
 #
 # Runs the given command, captures exit code / stdout preview / stderr preview /
-# duration, and writes a JSON log to ~/.claude-profiles/hook-logs/.
+# duration, and writes a JSON log to ~/.kn/hook-logs/.
 # The command's stdout and stderr are passed through to the parent process
 # so the hook's output is still available to Claude Code / Codex.
 set -euo pipefail
@@ -35,7 +35,7 @@ fi
 HOOK_ID="$1"
 shift
 
-LOGS_DIR="${HOME}/.claude-profiles/hook-logs"
+LOGS_DIR="${KN_HOME:-${HOME}/.kn}/hook-logs"
 mkdir -p "${LOGS_DIR}"
 
 # Find working python (python3 on Unix, python on Windows)
@@ -193,7 +193,7 @@ fn hooks_dir() -> PathBuf {
 
 // ── Write wrapper script on startup ───────────────────────────
 
-/// Write `run-with-log.sh` to `~/.claude-profiles/hooks/run-with-log.sh`.
+/// Write `run-with-log.sh` to `~/.kn/hooks/run-with-log.sh`.
 ///
 /// Only overwrites if the content has changed (preserves user customizations).
 /// Call this from `ensure_shell_rc()` or on app startup.
@@ -229,7 +229,7 @@ pub fn write_run_with_log_script() -> Result<(), String> {
 
 /// Get hook execution logs, optionally filtered by `hook_id`.
 ///
-/// Scans `~/.claude-profiles/hook-logs/` for JSON log files, parses them,
+/// Scans `~/.kn/hook-logs/` for JSON log files, parses them,
 /// filters by hook_id if provided, sorts by timestamp descending, and
 /// returns up to `limit` entries.
 #[tauri::command]

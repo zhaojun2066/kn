@@ -1,9 +1,10 @@
 //! Project Manager — project registry and project-level resource discovery.
 //!
-//! Stores a lightweight project list in `~/.claude-profiles/projects.json`.
+//! Stores a lightweight project list in `~/.kn/projects.json`.
 //! Each project maps a display name to an absolute directory path on disk.
 
 use crate::atomic_rename;
+use crate::with_cross_process_lock;
 use crate::with_write_lock;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -74,6 +75,7 @@ fn load_projects() -> ProjectList {
 
 fn save_projects(projects: &ProjectList) -> Result<(), String> {
     with_write_lock(|| {
+    with_cross_process_lock(|| {
     let path = projects_file();
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
@@ -100,6 +102,7 @@ fn save_projects(projects: &ProjectList) -> Result<(), String> {
     }
     atomic_rename(&tmp, &path)?;
     Ok(())
+    }) // with_cross_process_lock
     }) // with_write_lock
 }
 
@@ -137,6 +140,12 @@ fn validate_project_path(path: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn list_projects() -> ProjectList {
     load_projects()
+        .into_iter()
+        .map(|mut project| {
+            project.default_profile = read_ai_profile(project.path.clone()).unwrap_or(None);
+            project
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -202,13 +211,10 @@ pub fn update_project(name: String, new_name: Option<String>, new_path: Option<S
     if let Some(p) = pinned {
         projects[idx].pinned = p;
     }
-    save_projects(&projects)?;
-
     if default_profile.is_some() {
-        if let Err(e) = write_ai_profile_file(&projects[idx].path, projects[idx].default_profile.as_deref()) {
-            eprintln!("[project_manager] 写入 .ai-profile 失败: {}", e);
-        }
+        write_ai_profile_file(&projects[idx].path, projects[idx].default_profile.as_deref())?;
     }
+    save_projects(&projects)?;
     Ok(())
 }
 
@@ -313,9 +319,10 @@ fn collect_codex_stats(root: &std::path::Path, project_path: &str, count: &mut u
                     stack.push(p);
                 } else if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
                     if let Some(session_cwd) = read_codex_session_cwd_fast(&p) {
+                        // Match: session cwd is the project dir, or a subdirectory of it.
+                        // Do NOT match sessions from parent directories.
                         if session_cwd == project_path
                             || session_cwd.starts_with(&format!("{}/", project_path))
-                            || project_path.starts_with(&format!("{}/", session_cwd))
                         {
                             *count += 1;
                             if let Ok(meta) = p.metadata() {
@@ -375,7 +382,12 @@ fn write_ai_profile_file(project_path: &str, default_profile: Option<&str>) -> R
 
 #[tauri::command]
 pub fn write_ai_profile(project_path: String, default_profile: String) -> Result<(), String> {
-    write_ai_profile_file(&project_path, Some(&default_profile))
+    let profile = default_profile.trim();
+    if profile.is_empty() {
+        write_ai_profile_file(&project_path, None)
+    } else {
+        write_ai_profile_file(&project_path, Some(profile))
+    }
 }
 
 #[tauri::command]
@@ -561,6 +573,13 @@ fn scan_codex_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionIn
         &mut sessions,
     );
 
+    eprintln!(
+        "[overview] Codex sessions found for project={}: {} total (before truncate to {})",
+        project_path,
+        sessions.len(),
+        max_sessions,
+    );
+
     // Sort by timestamp descending, take top
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     sessions.truncate(max_sessions);
@@ -634,10 +653,27 @@ fn read_codex_session_meta(
     let id = payload.get("id").and_then(|i| i.as_str())?;
     let cwd = payload.get("cwd").and_then(|c| c.as_str())?;
 
-    // Project path matching
-    let matches = cwd == project_path
-        || cwd.starts_with(&format!("{}/", project_path))
-        || project_path.starts_with(&format!("{}/", cwd));
+    // Project path matching: session cwd must be the project dir or a subdirectory.
+    // Do NOT match sessions from parent directories of the project.
+    //
+    // Normalize path separators (handle Windows backslash) and use
+    // Path::strip_prefix for reliable directory-boundary matching.
+    // The trailing separator ensures `/home/user/proj` does NOT match
+    // `/home/user/proj-2/sub`.
+    let cwd_normalized = cwd.replace('\\', "/");
+    let proj_normalized = project_path.replace('\\', "/");
+    let matches = cwd_normalized == proj_normalized
+        || (cwd_normalized.starts_with(&proj_normalized)
+            && cwd_normalized.as_bytes().get(proj_normalized.len()) == Some(&b'/'));
+    if matches {
+        eprintln!(
+            "[overview] Codex session MATCH: id={} cwd={} project={} via={}",
+            id,
+            cwd,
+            project_path,
+            if cwd == project_path { "exact" } else { "subdir" }
+        );
+    }
     if !matches {
         return None;
     }
@@ -1044,4 +1080,537 @@ pub fn scan_project_sessions(project_path: String, cli: Option<String>) -> Vec<S
     all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     all.truncate(MAX_SESSIONS);
     all
+}
+
+// ── Project Overview ──────────────────────────────────────────
+
+/// Lightweight aggregated data for the project overview dashboard.
+/// Uses fast filesystem scans (read_dir only, no file content parsing
+/// for skills/agents/commands) to keep the dashboard feeling instant.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectOverviewData {
+    pub sessions: CliCounts,
+    pub resources: OverviewResources,
+    pub config_matrix: Vec<CliConfigStatus>,
+    pub recent_sessions: Vec<SessionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliCounts {
+    pub total: u32,
+    pub claude: u32,
+    pub codex: u32,
+    pub qoder: u32,
+}
+
+impl CliCounts {
+    fn new() -> Self {
+        CliCounts { total: 0, claude: 0, codex: 0, qoder: 0 }
+    }
+    fn compute_total(&mut self) {
+        self.total = self.claude + self.codex + self.qoder;
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewResources {
+    pub skills: CliCounts,
+    pub plugins: CliCounts,
+    pub commands: CliCounts,
+    pub agents: CliCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliConfigStatus {
+    pub cli: String,
+    pub dir_name: String,
+    pub dir_exists: bool,
+    pub has_config: bool,
+    pub hooks_total: u32,
+    pub hooks_enabled: u32,
+    pub skills_count: u32,
+    pub agents_count: u32,
+}
+
+// ── Counting helpers (fs::read_dir only, no file content reads) ──
+
+/// Count standalone skills at project level (not plugin-owned).
+/// Claude: flat `.md` files + subdirs with SKILL.md
+/// Codex/Qoder: subdirs with SKILL.md
+fn count_standalone_skills(root: &Path) -> CliCounts {
+    let mut counts = CliCounts::new();
+
+    // Claude: <root>/.claude/skills/
+    counts.claude = count_dir_skills_claude(&root.join(".claude").join("skills"));
+
+    // Codex: <root>/.codex/skills/
+    counts.codex = count_dir_skills_dir_based(&root.join(".codex").join("skills"));
+
+    // Qoder: <root>/.qoder/skills/
+    counts.qoder = count_dir_skills_dir_based(&root.join(".qoder").join("skills"));
+
+    counts.compute_total();
+    counts
+}
+
+fn count_dir_skills_claude(dir: &Path) -> u32 {
+    let mut count = 0u32;
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with('.') { continue; }
+        if path.is_dir() {
+            // Directory skill: count if SKILL.md or SKILL.md.disabled exists
+            if path.join("SKILL.md").exists() || path.join("SKILL.md.disabled").exists() {
+                count += 1;
+            }
+        } else if path.is_file() {
+            // Flat file: .md (enabled) or .md.disabled
+            if name.ends_with(".md") {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn count_dir_skills_dir_based(dir: &Path) -> u32 {
+    let mut count = 0u32;
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with('.') { continue; }
+        if path.is_dir()
+            && (path.join("SKILL.md").exists() || path.join("SKILL.md.disabled").exists())
+        {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Count project-level plugins.
+/// Claude: read `<project>/.claude/settings.json` enabledPlugins
+/// Codex: read `<project>/.codex/config.toml` [plugins]
+/// Qoder: no plugin support
+fn count_plugins(root: &Path) -> CliCounts {
+    let mut counts = CliCounts::new();
+
+    // Claude: count entries in enabledPlugins
+    counts.claude = count_claude_plugins(root);
+
+    // Codex: count [plugins] entries in config.toml
+    counts.codex = count_codex_plugins(root);
+
+    counts.compute_total();
+    counts
+}
+
+fn count_claude_plugins(root: &Path) -> u32 {
+    let mut total = 0u32;
+
+    // Source 1: installed_plugins.json — entries with scope=project.
+    // Resource tab's scan_all merges these into the project plugin list
+    // with source="project", so the overview must match.
+    let home = crate::home_dir();
+    let installed_json = home.join(".claude").join("plugins").join("installed_plugins.json");
+    if let Ok(text) = fs::read_to_string(&installed_json) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(plugins_obj) = val.get("plugins").and_then(|v| v.as_object()) {
+                for (_name, installs) in plugins_obj {
+                    if let Some(arr) = installs.as_array() {
+                        for inst in arr {
+                            let scope = inst.get("scope").and_then(|v| v.as_str()).unwrap_or("user");
+                            if scope == "project" {
+                                total += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Source 2: project-level enabledPlugins in settings.json.
+    // scan_claude_project_plugins also reads these and marks source="project".
+    let settings_path = root.join(".claude").join("settings.json");
+    if let Ok(text) = fs::read_to_string(&settings_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(plugins_obj) = val.get("enabledPlugins").and_then(|v| v.as_object()) {
+                total += plugins_obj.len() as u32;
+            }
+        }
+    }
+
+    total
+}
+
+fn count_codex_plugins(root: &Path) -> u32 {
+    let config_path = root.join(".codex").join("config.toml");
+    let text = match fs::read_to_string(&config_path) {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    let root_val: toml::Value = match text.parse() {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let plugins = match root_val.get("plugins").and_then(|v| v.as_table()) {
+        Some(t) => t,
+        None => return 0,
+    };
+    plugins.len() as u32
+}
+
+/// Count project-level commands (Claude only).
+fn count_commands(root: &Path) -> CliCounts {
+    let mut counts = CliCounts::new();
+
+    // Claude: <root>/.claude/commands/
+    let commands_dir = root.join(".claude").join("commands");
+    if let Ok(entries) = fs::read_dir(&commands_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') { continue; }
+            // Count .md (enabled) and .md.disabled
+            if name.ends_with(".md") {
+                counts.claude += 1;
+            }
+        }
+    }
+
+    counts.compute_total();
+    counts
+}
+
+/// Count project-level agents.
+fn count_agents(root: &Path) -> CliCounts {
+    let mut counts = CliCounts::new();
+
+    // Claude: <root>/.claude/agents/ — .md files
+    counts.claude = count_files_with_ext(&root.join(".claude").join("agents"), "md");
+
+    // Codex: <root>/.codex/agents/ — .toml files
+    counts.codex = count_files_with_ext(&root.join(".codex").join("agents"), "toml");
+
+    // Qoder: <root>/.qoder/agents/ — .md files
+    counts.qoder = count_files_with_ext(&root.join(".qoder").join("agents"), "md");
+
+    counts.compute_total();
+    counts
+}
+
+fn count_files_with_ext(dir: &Path, ext: &str) -> u32 {
+    let mut count = 0u32;
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let target = format!(".{}", ext);
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') { continue; }
+        // Count both .ext (enabled) and .ext.disabled
+        if name.ends_with(&target) {
+            count += 1;
+        }
+    }
+    count
+}
+
+// ── Hook counting (minimal file parse, no metadata merge) ──
+
+/// Count hooks in a JSON settings file (Claude / Qoder).
+/// Returns (total, enabled).
+fn count_hooks_json(settings_path: &Path) -> (u32, u32) {
+    let text = match fs::read_to_string(settings_path) {
+        Ok(t) => t,
+        Err(_) => return (0, 0),
+    };
+    let root: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return (0, 0),
+    };
+    let hooks_obj = match root.get("hooks").and_then(|v| v.as_object()) {
+        Some(o) => o,
+        None => return (0, 0),
+    };
+
+    let mut total = 0u32;
+    let mut enabled = 0u32;
+    for (_event_type, event_array) in hooks_obj {
+        let arr = match event_array.as_array() {
+            Some(a) => a,
+            None => continue,
+        };
+        for group in arr {
+            let inner_hooks = match group.get("hooks").and_then(|v| v.as_array()) {
+                Some(a) => a,
+                None => continue,
+            };
+            for hook in inner_hooks {
+                total += 1;
+                let disabled = hook.get("_disabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !disabled { enabled += 1; }
+            }
+        }
+    }
+    (total, enabled)
+}
+
+/// Count hooks in a Codex TOML config file.
+/// Returns (total, enabled).
+fn count_hooks_toml(config_path: &Path) -> (u32, u32) {
+    let text = match fs::read_to_string(config_path) {
+        Ok(t) => t,
+        Err(_) => return (0, 0),
+    };
+    let root: toml::Value = match text.parse() {
+        Ok(v) => v,
+        Err(_) => return (0, 0),
+    };
+
+    // Check features.hooks
+    let hooks_feature = root
+        .get("features")
+        .and_then(|v| v.get("hooks"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !hooks_feature {
+        return (0, 0);
+    }
+
+    let hooks_table = match root.get("hooks").and_then(|v| v.as_table()) {
+        Some(t) => t,
+        None => return (0, 0),
+    };
+
+    let mut total = 0u32;
+    let mut enabled = 0u32;
+    for (event_type, event_value) in hooks_table {
+        if event_type == "state" { continue; }
+        let arr = match event_value.as_array() {
+            Some(a) => a,
+            None => continue,
+        };
+
+        let has_nested = arr.iter().any(
+            |entry| entry.get("hooks").and_then(|v| v.as_array()).is_some()
+        );
+
+        if has_nested {
+            for group in arr {
+                let inner = match group.get("hooks").and_then(|v| v.as_array()) {
+                    Some(a) => a,
+                    None => continue,
+                };
+                total += inner.len() as u32;
+                for hook in inner {
+                    let cmd = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                    if !cmd.is_empty() { enabled += 1; }
+                }
+            }
+        } else {
+            // Flat format
+            total += arr.len() as u32;
+            for hook in arr {
+                let cmd = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                if !cmd.is_empty() { enabled += 1; }
+            }
+        }
+    }
+    (total, enabled)
+}
+
+// ── Config matrix ─────────────────────────────────────────────
+
+fn build_config_matrix(root: &Path) -> Vec<CliConfigStatus> {
+    vec![
+        build_cli_status(root, "claude", ".claude", "settings.json"),
+        build_cli_status(root, "codex", ".codex", "config.toml"),
+        build_cli_status(root, "qoder", ".qoder", "settings.json"),
+    ]
+}
+
+fn build_cli_status(root: &Path, cli: &str, dir_name: &str, config_file: &str) -> CliConfigStatus {
+    let cli_dir = root.join(dir_name);
+    let config_path = cli_dir.join(config_file);
+    let dir_exists = cli_dir.exists() && cli_dir.is_dir();
+    let has_config = config_path.exists();
+
+    let (hooks_total, hooks_enabled) = if has_config {
+        match cli {
+            "codex" => count_hooks_toml(&config_path),
+            _ => count_hooks_json(&config_path),
+        }
+    } else {
+        (0, 0)
+    };
+
+    // Skills/agents counts (same logic as the overview counting functions)
+    let skills_count = match cli {
+        "claude" => count_dir_skills_claude(&cli_dir.join("skills")),
+        "codex" | "qoder" => count_dir_skills_dir_based(&cli_dir.join("skills")),
+        _ => 0,
+    };
+
+    let agents_count = match cli {
+        "codex" => count_files_with_ext(&cli_dir.join("agents"), "toml"),
+        _ => count_files_with_ext(&cli_dir.join("agents"), "md"),
+    };
+
+    CliConfigStatus {
+        cli: cli.to_string(),
+        dir_name: dir_name.to_string(),
+        dir_exists,
+        has_config,
+        hooks_total,
+        hooks_enabled,
+        skills_count,
+        agents_count,
+    }
+}
+
+/// Internal: scan sessions with configurable max (bypasses the
+/// fixed 50 limit in the public command).
+fn scan_recent_sessions(project_path: &str, max: usize) -> Vec<SessionInfo> {
+    let mut all: Vec<SessionInfo> = Vec::new();
+    all.extend(scan_claude_sessions(project_path, max));
+    all.extend(scan_codex_sessions(project_path, max));
+    all.extend(scan_qoder_sessions(project_path));
+    all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    all.truncate(max);
+    all
+}
+
+/// Aggregate all overview data in a single lightweight call.
+#[tauri::command]
+pub fn get_project_overview(project_path: String) -> Result<ProjectOverviewData, String> {
+    let root = Path::new(&project_path);
+    if !root.is_dir() {
+        return Err("项目路径不存在或不是目录".into());
+    }
+
+    // 1. Session stats (reuses get_project_stats logic, fast stat-only scan)
+    let stats_map = get_project_stats(vec![project_path.clone()]);
+    let mut sessions = if let Some(s) = stats_map.get(&project_path) {
+        CliCounts {
+            total: s.session_count,
+            claude: s.claude_count,
+            codex: s.codex_count,
+            qoder: s.qoder_count,
+        }
+    } else {
+        CliCounts::new()
+    };
+    sessions.compute_total();
+
+    // 2. Resource counts (lightweight read_dir scans)
+    let resources = OverviewResources {
+        skills: count_standalone_skills(root),
+        plugins: count_plugins(root),
+        commands: count_commands(root),
+        agents: count_agents(root),
+    };
+
+    // 3. Config status matrix
+    let config_matrix = build_config_matrix(root);
+
+    // 4. Recent sessions (capped at 8 for the overview)
+    let recent_sessions = scan_recent_sessions(&project_path, 8);
+
+    Ok(ProjectOverviewData {
+        sessions,
+        resources,
+        config_matrix,
+        recent_sessions,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_config_setup() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+        let guard = crate::TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var(
+            "CLAUDE_PROFILES_HOME",
+            dir.path().join("config").to_string_lossy().to_string(),
+        );
+        (guard, dir)
+    }
+
+    fn cleanup_config(dir: tempfile::TempDir) {
+        std::env::remove_var("KN_HOME");
+        std::env::remove_var("CLAUDE_PROFILES_HOME");
+        drop(dir);
+    }
+
+    #[test]
+    fn list_projects_reads_default_profile_from_ai_profile_file() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "demo".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: Some("stale-global-default".to_string()),
+            description: None,
+            pinned: false,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        assert_eq!(list_projects()[0].default_profile, None);
+
+        fs::write(project_dir.join(".ai-profile"), "default_profile: project-profile\n").unwrap();
+        assert_eq!(
+            list_projects()[0].default_profile.as_deref(),
+            Some("project-profile")
+        );
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn update_project_returns_error_when_ai_profile_write_fails() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("project");
+        fs::write(&project_dir, "not a directory").unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "demo".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let result = update_project(
+            "demo".to_string(),
+            None,
+            None,
+            Some("project-profile".to_string()),
+            None,
+            None,
+        );
+
+        assert!(result.is_err());
+
+        cleanup_config(dir);
+    }
 }

@@ -4,7 +4,7 @@
 # 跟踪工具调用次数，接近上限时警告
 set -euo pipefail
 
-COUNTER_FILE="${HOME}/.claude-profiles/hooks/.context-counter"
+COUNTER_FILE="${KN_HOME:-${HOME}/.kn}/hooks/.context-counter"
 
 # 读取当前计数
 count=0

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { SelectedItem } from "../components/SkillManager";
+import type { SelectedItem } from "../components/ResourceList";
 import type { ProjectInfo } from "./types";
 
 export interface ResourceData {
@@ -60,11 +60,12 @@ function projectConfigDir(cli: string): string {
   return ".claude";
 }
 
+/** Join path segments with `/` (Rust normalises separators on all platforms). */
 function joinPath(base: string, ...segments: string[]): string {
-  const sep = base.includes("\\") ? "\\" : "/";
-  const trimmedBase = base.replace(/[\\/]+$/, "");
-  const trimmedSegments = segments.map((segment) => segment.replace(/^[\\/]+|[\\/]+$/g, ""));
-  return [trimmedBase, ...trimmedSegments].filter(Boolean).join(sep);
+  // Normalize all separators to `/` — Rust handles both on Windows
+  const normalized = base.replace(/\\/g, "/").replace(/\/+$/, "");
+  const trimmedSegments = segments.map((segment) => segment.replace(/[\\/]+/g, "/").replace(/^\/|\/$/g, ""));
+  return [normalized, ...trimmedSegments].filter(Boolean).join("/");
 }
 
 export async function buildDestDir(

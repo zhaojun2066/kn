@@ -50,6 +50,7 @@ export default {
       },
       // 使用 rem 单位（基准 13px），配合 useFontScale 实现全局字体缩放
       fontSize: {
+        "3xs":  ["0.692rem", "1rem"],       // 9px / 13px @13px base
         "2xs":  ["0.769rem", "1.077rem"],   // 10px / 14px @13px base
         xs:     ["0.846rem", "1.231rem"],   // 11px / 16px
         sm:     ["0.923rem", "1.385rem"],   // 12px / 18px
@@ -72,6 +73,7 @@ export default {
         "8":   "32px",
       },
       borderRadius: {
+        DEFAULT: "2px",
         none: "0px",
         sm: "0px",
         md: "0px",

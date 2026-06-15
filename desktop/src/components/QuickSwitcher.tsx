@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { relativeTime } from "../lib/time-utils";
 import { CLIIcon } from "./common/CLIIcon";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import type { ProfileSummary, ProjectInfo } from "../lib/types";
@@ -78,14 +79,6 @@ function profileCommand(name: string, cliType?: string): string | null {
 
 // ── Time formatter ───────────────────────────────────────────
 
-function relativeTime(ts: number): string {
-  const sec = Math.floor((Date.now() - ts) / 1000);
-  if (sec < 60) return "刚刚";
-  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)} 小时前`;
-  if (sec < 604800) return `${Math.floor(sec / 86400)} 天前`;
-  return new Date(ts).toLocaleDateString("zh-CN");
-}
 
 // ── Component ────────────────────────────────────────────────
 

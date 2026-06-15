@@ -39,8 +39,8 @@ describe("dirname", () => {
   it("returns parent directory on Unix", () => {
     expect(dirname("/a/b/c/file.txt")).toBe("/a/b/c");
   });
-  it("returns parent directory on Windows", () => {
-    expect(dirname("C:\\a\\b\\c\\file.txt")).toBe("C:/a/b/c");
+  it("returns parent directory on Windows (preserves backslashes)", () => {
+    expect(dirname("C:\\a\\b\\c\\file.txt")).toBe("C:\\a\\b\\c");
   });
   it("returns empty for top-level file", () => {
     expect(dirname("file.txt")).toBe("");

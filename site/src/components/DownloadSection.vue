@@ -7,7 +7,7 @@ import { APP_VERSION, GITHUB_RELEASES } from '../config'
     <div class="container">
       <div class="dl-header reveal">
         <span class="section-label">下载</span>
-        <h2 class="section-title">获取 AI Profile Manager</h2>
+        <h2 class="section-title">获取 KN</h2>
         <p class="section-desc">支持 macOS (ARM + Intel)、Windows、Linux 全平台。</p>
       </div>
 

@@ -1,5 +1,5 @@
 import React from "react";
-import type { CliKind } from "../SkillManager";
+import type { CliKind } from "../../lib/types";
 import { CLI_LABELS, CLI_CSS_COLORS } from "../../lib/cli-constants";
 
 interface CliBadgeProps {

@@ -8,6 +8,7 @@ import type { ProfileSummary } from "../lib/types";
 import { ExpandableToolbar } from "./ExpandableToolbar";
 
 interface SidebarProps {
+  className?: string;
   profiles: ProfileSummary[];
   selectedName: string | null;
   searchQuery: string;
@@ -32,10 +33,12 @@ interface SidebarProps {
   onRefresh?: () => void;
   onBackup?: () => void;
   onRestore?: () => void;
+  // Keyboard navigation
+  onProfileEnter?: (name: string, cliType: string) => void;
 }
 
 /* ── Sidebar ────────────────────────────────────────────── */
-export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearch, onCopy, onRename, onDelete, onSetDefault, usageCounts, isDefault = false, hasSelection = false, backupExists = false, onAdd, onCopyProfile, onInit, onImport, onExport, onBatchDelete, onBatchExport, onRefresh, onBackup, onRestore }: SidebarProps) {
+export function Sidebar({ className, profiles, selectedName, searchQuery, onSelect, onSearch, onCopy, onRename, onDelete, onSetDefault, usageCounts, isDefault = false, hasSelection = false, backupExists = false, onAdd, onCopyProfile, onInit, onImport, onExport, onBatchDelete, onBatchExport, onRefresh, onBackup, onRestore, onProfileEnter }: SidebarProps) {
   // Tag filter
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const allTags = useMemo(() => {
@@ -106,8 +109,63 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
   const [pendingName, setPendingName] = useState<string | null>(null);
   useEffect(() => { setPendingName(null); }, [selectedName]);
 
+  // ── Keyboard navigation ──
+  const [focusedIndex, setFocusedIndex] = useState(-1);
+  const listRef = useRef<HTMLDivElement>(null);
+  // Auto-focus when profiles become available
+  useEffect(() => {
+    if (sortedProfiles.length > 0 && listRef.current) {
+      listRef.current.focus();
+    }
+  }, [sortedProfiles.length]);
+
+  // Sync keyboard focus index with the externally-set selectedName.
+  // When the parent opens the drawer and pre-selects a profile, or when
+  // the user clicks a profile directly, this keeps the keyboard nav index
+  // aligned so Enter works without requiring an arrow key press first.
+  useEffect(() => {
+    if (selectedName && sortedProfiles.length > 0) {
+      const idx = sortedProfiles.findIndex((p) => p.name === selectedName);
+      if (idx >= 0) setFocusedIndex(idx);
+    }
+  }, [selectedName, sortedProfiles]);
+
+  const handleListKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (sortedProfiles.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setFocusedIndex((i) => {
+        const next = i >= sortedProfiles.length - 1 ? 0 : i + 1;
+        onSelect(sortedProfiles[next].name);
+        return next;
+      });
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setFocusedIndex((i) => {
+        const next = i <= 0 ? sortedProfiles.length - 1 : i - 1;
+        onSelect(sortedProfiles[next].name);
+        return next;
+      });
+    } else if (e.key === "Enter" && focusedIndex >= 0) {
+      e.preventDefault();
+      const p = sortedProfiles[focusedIndex];
+      if (p) {
+        onProfileEnter?.(p.name, p.cli_type || "claude");
+      }
+    } else if (e.key === "Escape") {
+      setFocusedIndex(-1);
+    }
+  }, [sortedProfiles, focusedIndex, onSelect, onProfileEnter]);
+
+  // Scroll focused item into view
+  useEffect(() => {
+    if (focusedIndex < 0 || !listRef.current) return;
+    const el = listRef.current.querySelector(`[data-profile-index="${focusedIndex}"]`);
+    if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
+  }, [focusedIndex]);
+
   return (
-    <div className="w-[300px] shrink-0 flex flex-col bg-app-sidebar border-r border-app-border select-none">
+    <div className={className ?? "w-[280px] shrink-0 flex flex-col bg-app-sidebar border-r border-app-border select-none"}>
       <div className="px-2.5 pt-2.5 pb-2">
         <div className="flex items-center gap-1.5 mb-2.5">
           <Hash size={13} className="text-[var(--app-accent)] shrink-0" />
@@ -162,7 +220,7 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
           <ArrowUpDown size={13} />
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto overflow-x-hidden py-0.5">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden py-0.5 outline-none" tabIndex={0} ref={listRef} onKeyDown={handleListKeyDown}>
         {profiles.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 px-4 text-center">
             <Hash size={22} className="text-app-text-muted opacity-25" />
@@ -176,9 +234,11 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
             const isSelected = p.name === selectedName;
             const isPending = p.name === pendingName;
             const isChecked = selectedSet.has(p.name);
+            const isFocused = idx === focusedIndex;
             return (
               <div
                 key={p.name}
+                data-profile-index={idx}
                 onClick={(e) => handleClick(p.name, idx, e)}
                 onContextMenu={(e) => onContextMenu(e, p.name)}
                 className={`group flex items-center gap-2 mx-1 my-px px-2.5 py-1.5 cursor-pointer
@@ -187,7 +247,9 @@ export function Sidebar({ profiles, selectedName, searchQuery, onSelect, onSearc
                     ? "bg-app-selected text-app-text border-l-[3px] border-l-app-accent shadow-[inset_0_0_8px_var(--app-glow)]"
                     : isChecked
                       ? "bg-app-hover text-app-text border-l-[3px] border-l-app-amber"
-                      : "text-app-text border-l-[3px] border-l-transparent hover:bg-app-hover active:bg-app-active"
+                      : isFocused
+                        ? "bg-app-selected text-app-text border-l-[3px] border-l-app-accent shadow-[inset_0_0_8px_var(--app-glow)]"
+                        : "text-app-text border-l-[3px] border-l-transparent hover:bg-app-hover active:bg-app-active"
                   }`}
               >
                 {/* Checkbox — visible on hover or when checked */}

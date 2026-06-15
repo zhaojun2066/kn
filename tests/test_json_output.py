@@ -3,11 +3,31 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 PROFILE_CLI = os.path.join(os.path.dirname(__file__), "..", "bin", "profile")
+
+# Template for a minimal config.yaml with a "deepseek" test profile
+_MINIMAL_CONFIG = """default: deepseek
+
+profiles:
+  deepseek:
+    desc: Test DeepSeek profile
+    env:
+      ANTHROPIC_AUTH_TOKEN: sk-test-token-12345
+      ANTHROPIC_BASE_URL: https://api.deepseek.com
+      ANTHROPIC_MODEL: deepseek-v4-pro
+  claude-config:
+    desc: Test Claude profile
+    env:
+      ANTHROPIC_AUTH_TOKEN: sk-claude-test-token
+      ANTHROPIC_BASE_URL: https://api.anthropic.com
+      ANTHROPIC_MODEL: claude-sonnet-4-6
+"""
 
 
 def run_cli(*args, stdin_data=None):
@@ -21,7 +41,26 @@ def run_cli(*args, stdin_data=None):
     return result.returncode, result.stdout, result.stderr
 
 
-class TestListJson(unittest.TestCase):
+class TempConfigMixin:
+    """Mixin that creates a temporary config directory with a known profile."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.mkdtemp(prefix="kn-test-json-")
+        # Write a minimal config.yaml so "deepseek" profile always exists
+        os.makedirs(cls._tmpdir, exist_ok=True)
+        cfg = os.path.join(cls._tmpdir, "config.yaml")
+        with open(cfg, "w") as f:
+            f.write(_MINIMAL_CONFIG)
+        os.environ["CLAUDE_PROFILES_HOME"] = cls._tmpdir
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls._tmpdir, ignore_errors=True)
+        os.environ.pop("CLAUDE_PROFILES_HOME", None)
+
+
+class TestListJson(TempConfigMixin, unittest.TestCase):
     def test_valid_json_output(self):
         rc, stdout, stderr = run_cli("--json", "list")
         self.assertEqual(rc, 0)
@@ -49,7 +88,7 @@ class TestListJson(unittest.TestCase):
             self.assertGreaterEqual(default_count, 1)
 
 
-class TestShowJson(unittest.TestCase):
+class TestShowJson(TempConfigMixin, unittest.TestCase):
     def test_valid_json_output(self):
         rc, stdout, stderr = run_cli("--json", "show", "deepseek")
         self.assertEqual(rc, 0)
@@ -73,7 +112,7 @@ class TestShowJson(unittest.TestCase):
         self.assertNotIn("****", token)
 
 
-class TestEnvJson(unittest.TestCase):
+class TestEnvJson(TempConfigMixin, unittest.TestCase):
     def test_valid_json_output(self):
         rc, stdout, stderr = run_cli("--json", "env", "deepseek")
         self.assertEqual(rc, 0)
@@ -89,7 +128,7 @@ class TestEnvJson(unittest.TestCase):
         self.assertFalse(err["ok"])
 
 
-class TestSetStdin(unittest.TestCase):
+class TestSetStdin(TempConfigMixin, unittest.TestCase):
     def test_set_via_stdin(self):
         # Set a known value
         rc, stdout, stderr = run_cli(
@@ -151,7 +190,7 @@ class TestMutationJson(unittest.TestCase):
         self.assertEqual(result["profile"], "jstest")
 
 
-class TestBackwardCompat(unittest.TestCase):
+class TestBackwardCompat(TempConfigMixin, unittest.TestCase):
     """Ensure human-readable output is unchanged."""
 
     def test_list_human_readable(self):

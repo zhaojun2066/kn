@@ -1,6 +1,6 @@
 //! Hook Metadata Store — persists user-authored names and descriptions for hooks.
 //!
-//! Stores metadata in `~/.claude-profiles/hook-meta.yaml`, keyed by the
+//! Stores metadata in `~/.kn/hook-meta.yaml`, keyed by the
 //! four-tuple `{cli, event_type, group_idx, hook_idx}` that uniquely identifies
 //! each hook across all CLI config files.
 //!

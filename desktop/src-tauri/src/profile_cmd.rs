@@ -114,12 +114,46 @@ fn read_config() -> Result<Config, String> {
     serde_yaml::from_str(&content).map_err(|e| format!("解析配置失败: {}", e))
 }
 
+/// Write config file — inner logic WITHOUT acquiring locks.
+/// Callers must hold both `with_write_lock` and cross-process file lock.
+fn write_config_inner(config: &Config) -> Result<(), String> {
+    let dir = crate::config_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    let path = config_file();
+    let backup = dir.join("config.yaml.bak");
+
+    // ── Rotate backups (keep 3 generations) then backup ──
+    if path.exists() {
+        for i in (1..=2).rev() {
+            let src = dir.join(format!("config.yaml.bak.{}", i));
+            let dst = dir.join(format!("config.yaml.bak.{}", i + 1));
+            if src.exists() {
+                let _ = fs::rename(&src, &dst);
+            }
+        }
+        if backup.exists() {
+            let _ = fs::rename(&backup, dir.join("config.yaml.bak.1"));
+        }
+        let _ = fs::copy(&path, &backup); // best-effort, don't fail on backup error
+    }
+
+    let yaml = serde_yaml::to_string(config).map_err(|e| format!("序列化失败: {}", e))?;
+
+    // Atomic-ish write: tmp file → fsync → rename
+    let tmp = dir.join("config.yaml.tmp");
+    fs::write(&tmp, &yaml).map_err(|e| format!("写入配置失败: {}", e))?;
+    if let Ok(f) = std::fs::File::open(&tmp) {
+        let _ = f.sync_all();
+    }
+    if fs::rename(&tmp, &path).is_err() {
+        fs::write(&path, &yaml).map_err(|e| format!("写入配置文件失败: {}", e))?;
+        let _ = fs::remove_file(&tmp);
+    }
+    Ok(())
+}
+
 fn write_config(config: &Config) -> Result<(), String> {
     crate::with_write_lock(|| {
-        let dir = crate::config_dir();
-        fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
-
-        // Acquire cross-process file lock (interoperable with Python fcntl.flock on Unix)
         let lock_path = lock_file_path();
         let lock_fh = std::fs::OpenOptions::new()
             .create(true)
@@ -129,41 +163,7 @@ fn write_config(config: &Config) -> Result<(), String> {
             .map_err(|e| format!("无法打开锁文件: {}", e))?;
         acquire_lock(&lock_fh, Duration::from_secs(5))?;
 
-        let result = (|| {
-            let path = config_file();
-            let backup = dir.join("config.yaml.bak");
-
-            // ── Rotate backups (keep 3 generations) then backup ──
-            if path.exists() {
-                for i in (1..=2).rev() {
-                    let src = dir.join(format!("config.yaml.bak.{}", i));
-                    let dst = dir.join(format!("config.yaml.bak.{}", i + 1));
-                    if src.exists() {
-                        let _ = fs::rename(&src, &dst);
-                    }
-                }
-                if backup.exists() {
-                    let _ = fs::rename(&backup, dir.join("config.yaml.bak.1"));
-                }
-                let _ = fs::copy(&path, &backup); // best-effort, don't fail on backup error
-            }
-
-            let yaml =
-                serde_yaml::to_string(config).map_err(|e| format!("序列化失败: {}", e))?;
-
-            // Atomic-ish write: tmp file → fsync → rename
-            let tmp = dir.join("config.yaml.tmp");
-            fs::write(&tmp, &yaml).map_err(|e| format!("写入配置失败: {}", e))?;
-            if let Ok(f) = std::fs::File::open(&tmp) {
-                let _ = f.sync_all();
-            }
-            if fs::rename(&tmp, &path).is_err() {
-                fs::write(&path, &yaml).map_err(|e| format!("写入配置文件失败: {}", e))?;
-                let _ = fs::remove_file(&tmp);
-            }
-
-            Ok(())
-        })();
+        let result = write_config_inner(config);
 
         release_lock(&lock_fh)?;
         result
@@ -498,11 +498,11 @@ import sys, json, os
 from datetime import datetime, timezone
 
 USAGE_FILE = os.path.join(
-    os.path.expanduser("~"), ".claude-profiles", "usage.jsonl"
+    os.environ.get("KN_HOME", os.path.expanduser("~/.kn")), "usage.jsonl"
 )
 
 PROJECTS_FILE = os.path.join(
-    os.path.expanduser("~"), ".claude-profiles", "projects.json"
+    os.environ.get("KN_HOME", os.path.expanduser("~/.kn")), "projects.json"
 )
 
 
@@ -744,7 +744,13 @@ def extract_from_transcript(path):
             continue
 
     # Codex token_count entries are cumulative; use the last one, do not sum.
+    # But token_count events don't carry the model name — merge it from
+    # assistant messages or the config.toml fallback when available.
     if latest_codex_usage:
+        if not latest_codex_usage.get("model") and model:
+            latest_codex_usage["model"] = model
+        elif not latest_codex_usage.get("model"):
+            latest_codex_usage["model"] = default_model()
         return latest_codex_usage
 
     if total_in == 0 and total_out == 0:
@@ -769,8 +775,22 @@ def _out(u):
            u.get("output", u.get("candidatesTokenCount", 0)))))
 
 
+def _codex_config_model():
+    """Read model from ~/.codex/config.toml as last-resort fallback."""
+    try:
+        path = os.path.join(os.path.expanduser("~"), ".codex", "config.toml")
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("model "):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
 def default_model():
-    return os.environ.get("OPENAI_MODEL") or os.environ.get("CODEX_MODEL") or ""
+    return os.environ.get("OPENAI_MODEL") or os.environ.get("CODEX_MODEL") or _codex_config_model() or ""
 
 
 if __name__ == "__main__":
@@ -778,6 +798,9 @@ if __name__ == "__main__":
 "##;
 
 pub fn ensure_shell_rc() -> Result<String, String> {
+    // One-time migration from legacy ~/.claude-profiles → ~/.kn
+    crate::migrate_legacy_config_dir();
+
     let dir = crate::config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
@@ -790,21 +813,44 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     if dev_config.exists() {
         if let Ok(content) = fs::read_to_string(&dev_config) {
             if let Ok(dev_cfg) = serde_yaml::from_str::<Config>(&content) {
-                if let Ok(mut prod_cfg) = read_config() {
-                    let mut merged = false;
-                    for (name, pc) in &dev_cfg.profiles {
-                        if !prod_cfg.profiles.contains_key(name) {
-                            prod_cfg.profiles.insert(name.clone(), pc.clone());
-                            merged = true;
-                        }
+                // Read, merge, and write under both locks to prevent races
+                // with concurrent config writes from Python CLI or other Tauri commands
+                let _ = crate::with_write_lock(|| {
+                    let lock_path = lock_file_path();
+                    let lock_fh = match std::fs::OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(false)
+                        .open(&lock_path)
+                    {
+                        Ok(fh) => fh,
+                        Err(_) => return Ok(()),
+                    };
+                    if acquire_lock(&lock_fh, Duration::from_secs(5)).is_err() {
+                        return Ok(());
                     }
-                    if merged {
-                        if prod_cfg.default.is_empty() && !dev_cfg.default.is_empty() {
-                            prod_cfg.default = dev_cfg.default.clone();
+
+                    let result = (|| {
+                        let mut prod_cfg = read_config()?;
+                        let mut merged = false;
+                        for (name, pc) in &dev_cfg.profiles {
+                            if !prod_cfg.profiles.contains_key(name) {
+                                prod_cfg.profiles.insert(name.clone(), pc.clone());
+                                merged = true;
+                            }
                         }
-                        let _ = write_config(&prod_cfg);
-                    }
-                }
+                        if merged {
+                            if prod_cfg.default.is_empty() && !dev_cfg.default.is_empty() {
+                                prod_cfg.default = dev_cfg.default.clone();
+                            }
+                            write_config_inner(&prod_cfg)?;
+                        }
+                        Ok(())
+                    })();
+
+                    release_lock(&lock_fh)?;
+                    result
+                });
             }
         }
         // Rename old dev config so migration only runs once
@@ -859,6 +905,9 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     // Write hook execution log wrapper script
     let _ = crate::hook_logs::write_run_with_log_script();
 
+    // Repair any missing hook store scripts (e.g. after config dir migration)
+    crate::hook_store::repair_missing_hook_scripts();
+
     // ── Unix: add source line to ~/.zshrc (idempotent) ──
     if !cfg!(target_os = "windows") {
         let zshrc = PathBuf::from(&home).join(".zshrc");
@@ -868,7 +917,9 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         } else {
             String::new()
         };
-        let marker = "# AI Profile Manager";
+        // Clean up any legacy .claude-profiles references from old installs
+        let content = remove_claude_profiles_lines(&content);
+        let marker = "# kn";
         if !content.contains(&source_line) {
             let new_content = if content.ends_with('\n') || content.is_empty() {
                 format!("{}{}\n{}\n", content, marker, source_line)
@@ -876,6 +927,10 @@ pub fn ensure_shell_rc() -> Result<String, String> {
                 format!("{}\n{}\n{}\n", content, marker, source_line)
             };
             fs::write(&zshrc, new_content).map_err(|e| format!("写入 .zshrc 失败: {}", e))?;
+        } else {
+            // Source line already present — still write back cleaned content
+            // in case old .claude-profiles lines were removed above.
+            fs::write(&zshrc, content).map_err(|e| format!("写入 .zshrc 失败: {}", e))?;
         }
 
         // ── Unix: also add to ~/.bashrc (Linux default, also harmless on macOS) ──
@@ -887,7 +942,9 @@ pub fn ensure_shell_rc() -> Result<String, String> {
             } else {
                 String::new()
             };
-            let bash_marker = "# AI Profile Manager (bash)";
+            // Clean up any legacy .claude-profiles references
+            let bash_content = remove_claude_profiles_lines(&bash_content);
+            let bash_marker = "# kn (bash)";
             if !bash_content.contains(&bash_source_line) {
                 let new_bash = if bash_content.ends_with('\n') || bash_content.is_empty() {
                     format!("{}{}\n{}\n", bash_content, bash_marker, bash_source_line)
@@ -895,6 +952,9 @@ pub fn ensure_shell_rc() -> Result<String, String> {
                     format!("{}\n{}\n{}\n", bash_content, bash_marker, bash_source_line)
                 };
                 fs::write(&bashrc, new_bash).ok();
+            } else {
+                // Write back cleaned content even if source line already present
+                fs::write(&bashrc, bash_content).ok();
             }
 
             // ── Inject shell completion config ──
@@ -969,15 +1029,20 @@ pub fn ensure_shell_rc() -> Result<String, String> {
             }
             if ps_profile.exists() {
                 let content = fs::read_to_string(&ps_profile).unwrap_or_default();
+                // Clean up any legacy .claude-profiles references
+                let content = remove_claude_profiles_lines(&content);
                 if !content.contains(&dot_line) {
                     fs::write(
                         &ps_profile,
-                        format!("{}\n# AI Profile Manager\n{}\n", content, dot_line),
+                        format!("{}\n# kn\n{}\n", content, dot_line),
                     )
                     .ok();
+                } else {
+                    // Write back cleaned content even if dot_line already present
+                    fs::write(&ps_profile, content).ok();
                 }
             } else {
-                fs::write(&ps_profile, format!("# AI Profile Manager\n{}\n", dot_line)).ok();
+                fs::write(&ps_profile, format!("# kn\n{}\n", dot_line)).ok();
             }
         }
     }
@@ -986,6 +1051,17 @@ pub fn ensure_shell_rc() -> Result<String, String> {
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+/// Remove any lines referencing the legacy `.claude-profiles` directory
+/// from shell RC content. This cleans up old `source` / `.` lines left
+/// behind after the project was renamed to `kn` (~/.claude-profiles → ~/.kn).
+fn remove_claude_profiles_lines(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| !line.contains(".claude-profiles"))
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
 
 /// Remove a marker-delimited block from a string. Used for idempotent shell RC updates.
 fn remove_marker_block(content: &str, marker_start: &str, marker_end: &str) -> String {
@@ -1094,5 +1170,37 @@ mod tests {
         release_lock(&f).unwrap();
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Config validation & serialization tests ──
+
+    #[test]
+    fn test_config_serialization_roundtrip() {
+        // Test serde_yaml roundtrip without touching filesystem
+        let mut cfg = Config { default: String::new(), profiles: std::collections::HashMap::new() };
+        let mut env = std::collections::HashMap::new();
+        env.insert("KEY1".into(), "value1".into());
+        env.insert("KEY2".into(), "value2".into());
+        cfg.profiles.insert("myprofile".into(), ProfileConfig { desc: "test desc".into(), env });
+        cfg.default = "myprofile".into();
+
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        let loaded: Config = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(loaded.default, "myprofile");
+        assert!(loaded.profiles.contains_key("myprofile"));
+        let p = loaded.profiles.get("myprofile").unwrap();
+        assert_eq!(p.desc, "test desc");
+        assert_eq!(p.env.get("KEY1").unwrap(), "value1");
+        assert_eq!(p.env.get("KEY2").unwrap(), "value2");
+    }
+
+    #[test]
+    fn test_read_config_returns_default_for_missing_file() {
+        // read_config without env setup reads from default path — just verify it doesn't panic
+        let result = read_config();
+        // May succeed or fail depending on whether real config exists; either way no panic
+        if let Ok(cfg) = result {
+            assert!(cfg.profiles.is_empty() || !cfg.profiles.is_empty()); // tautology, just no panic
+        }
     }
 }

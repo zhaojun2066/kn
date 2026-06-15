@@ -3,34 +3,12 @@ import { CLIIcon } from "./common/CLIIcon";
 import { Circle, Loader, ChevronDown } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { CLI_TYPES, type CliKind, type SessionInfo } from "../lib/types";
+import { relativeTime } from "../lib/time-utils";
 
 interface SessionListProps {
   sessions: SessionInfo[];
   loading: boolean;
   onResume: (session: SessionInfo) => void;
-}
-
-function relativeTime(ts: number): string {
-  const now = Date.now();
-  const diff = now - ts;
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return "刚刚";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}分钟前`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    const date = new Date(ts);
-    const hh = date.getHours().toString().padStart(2, "0");
-    const mm = date.getMinutes().toString().padStart(2, "0");
-    return `今天 ${hh}:${mm}`;
-  }
-  const days = Math.floor(hours / 24);
-  if (days === 1) return "昨天";
-  if (days < 7) return `${days}天前`;
-  const date = new Date(ts);
-  const m = (date.getMonth() + 1).toString().padStart(2, "0");
-  const d = date.getDate().toString().padStart(2, "0");
-  return `${m}-${d}`;
 }
 
 export function SessionList({ sessions, loading, onResume }: SessionListProps) {
@@ -168,7 +146,7 @@ export function SessionList({ sessions, loading, onResume }: SessionListProps) {
                 onClick={(e) => { e.stopPropagation(); onResume(s); }}
                 className="shrink-0 px-2 py-0.5 text-3xs font-mono
                   text-[var(--app-accent)] border border-[var(--app-accent-dim)]
-                  hover:bg-[var(--app-accent)] hover:text-white
+                  hover:bg-[var(--app-accent)] hover:text-[var(--app-bg)]
                   opacity-0 group-hover:opacity-100 transition-all
                   cursor-pointer outline-none"
               >

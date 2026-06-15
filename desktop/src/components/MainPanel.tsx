@@ -1,20 +1,20 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { EnvVarTable } from "./EnvVarTable";
 import { Badge } from "./common/Badge";
-import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock, FolderOpen, Trash2, BookOpen, ChevronDown, ChevronRight, AlertTriangle, Download } from "lucide-react";
+import { Star, Copy, Check, Terminal, Play, Pencil, FlaskConical, Tag, X, Clock, FolderOpen, Trash2, BookOpen, ChevronDown, ChevronRight, AlertTriangle, Download, Folder, Plus } from "lucide-react";
 import type { ProfileDetail, EnvCheckResult } from "../lib/types";
+import { relativeTime } from "../lib/time-utils";
 import { recommendedInstallCommand } from "../lib/types";
 import { parseAiCmd } from "../hooks/useTerminal";
 import type { SessionRecord } from "../hooks/useTerminal";
 import { shortenPath } from "../lib/path-utils";
 import { formatShortcut } from "../utils/shortcut";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { OnboardingWizard } from "./OnboardingWizard";
+
 
 interface MainPanelProps {
   profile: ProfileDetail | null;
   hasProfiles: boolean;
-  showWelcome: boolean;
   allTags: string[];
   history: SessionRecord[];
   envCheck?: EnvCheckResult;
@@ -22,6 +22,8 @@ interface MainPanelProps {
   onDeleteEnv: (key: string) => Promise<void>;
   onPasteCommand: (command: string) => void;
   onSplitCommand?: (command: string) => void;
+  /** When provided, the run button triggers a project picker instead of pasting the command. */
+  onRunProfile?: (name: string, cliType: string) => void;
   onRenameProfile: (name: string) => void;
   onResumeSession: (record: SessionRecord) => void;
   onNewSessionFromHistory: (record: SessionRecord) => void;
@@ -33,17 +35,6 @@ interface MainPanelProps {
 }
 
 /* ── Helpers ─────────────────────────────────────────────── */
-function formatTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "刚刚";
-  if (mins < 60) return `${mins} 分钟前`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} 天前`;
-  return new Date(ts).toLocaleDateString("zh-CN");
-}
 
 /* ── Tool name mapping ──────────────────────────────────── */
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
@@ -109,7 +100,7 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
             <Terminal size={32} className="text-app-accent" />
           </div>
           <div>
-            <div className="text-lg text-app-text font-mono font-semibold mb-1">AI Profile Manager</div>
+            <div className="text-lg text-app-text font-mono font-semibold mb-1">kn</div>
             <div className="text-sm text-app-text-dim leading-relaxed">
               管理多个 AI CLI 工具的 API 配置，一键切换服务商
             </div>
@@ -166,7 +157,7 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
           <Terminal size={32} className="text-app-accent" />
         </div>
         <div>
-          <div className="text-lg text-app-text font-mono font-semibold mb-1">AI Profile Manager</div>
+          <div className="text-lg text-app-text font-mono font-semibold mb-1">kn</div>
           <div className="text-sm text-app-text-dim leading-relaxed">
             管理多个 AI CLI 工具的 API 配置，一键切换服务商
           </div>
@@ -260,6 +251,131 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
   );
 }
 
+/* ── ProjectGuide — empty state for project management ─ */
+export function ProjectGuide({
+  hasProjects,
+  onAddProject,
+}: {
+  hasProjects: boolean;
+  onAddProject: () => void;
+}) {
+  if (!hasProjects) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-app-bg">
+        <div className="flex flex-col items-center gap-5 text-center max-w-sm px-4">
+          <div className="w-16 h-16 rounded-full bg-[var(--app-selected)] flex items-center justify-center">
+            <Folder size={32} className="text-app-amber" />
+          </div>
+          <div>
+            <div className="text-lg text-app-text font-mono font-semibold mb-1">项目管理</div>
+            <div className="text-sm text-app-text-dim leading-relaxed">
+              注册项目目录，集中管理会话、资源与 Hooks
+            </div>
+          </div>
+          <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
+            <div className="text-app-text-muted">快速开始：</div>
+            <div>1. 点击下方「注册项目」选择项目目录</div>
+            <div>2. 为项目设置默认 Profile，一键启动 AI 工具</div>
+            <div>3. 在项目中集中管理 Skills、Hooks、会话记录</div>
+          </div>
+          {/* CTA */}
+          <button
+            onClick={onAddProject}
+            className="text-sm text-app-text font-mono font-semibold transition-colors border-2 border-app-amber
+              bg-[var(--app-selected)] px-4 py-2.5 hover:bg-[var(--app-active)]
+              w-full flex items-center justify-center gap-2"
+          >
+            <Plus size={14} className="text-app-amber" />
+            注册项目
+          </button>
+
+          {/* What is a project */}
+          <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
+            <div className="text-app-text-muted font-semibold">什么是项目？</div>
+            <div className="leading-relaxed">
+              项目是一个<b className="text-app-text">本地目录</b>，通常对应一个 Git 仓库或工作空间。
+              注册后，kn 会自动扫描项目中的{" "}
+              <b className="text-app-text">Skills、Agents、Hooks</b>{" "}
+              等 AI 工具配置，并提供统一的会话管理和资源浏览。
+            </div>
+          </div>
+
+          {/* Use cases */}
+          <div className="text-xs text-app-text-dim font-mono text-left space-y-2 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
+            <div className="text-app-text-muted font-semibold">项目支持的功能</div>
+            <div className="space-y-1.5">
+              {[
+                { icon: "📂", label: "文件浏览", desc: "浏览项目文件结构，预览代码内容" },
+                { icon: "💬", label: "会话管理", desc: "查看和恢复项目中的 AI 会话记录" },
+                { icon: "🧩", label: "资源管理", desc: "管理项目级 Skills、Agents、Commands" },
+                { icon: "🪝", label: "Hooks", desc: "配置项目级事件钩子，自动化工作流" },
+              ].map(({ icon, label, desc }) => (
+                <div key={label} className="flex gap-2">
+                  <span className="shrink-0 mt-px">{icon}</span>
+                  <div>
+                    <span className="text-app-text font-semibold">{label}</span>
+                    <span className="text-app-text-muted"> — {desc}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Shortcuts */}
+          <div className="text-left border border-app-border bg-[var(--app-cmd-bg)] w-full">
+            <div className="px-3 py-1 border-b border-app-border bg-[var(--app-cmd-header)]">
+              <span className="text-2xs text-app-text-muted uppercase tracking-wider">快捷键</span>
+            </div>
+            <div className="px-3 py-1.5 space-y-0.5 text-2xs font-mono">
+              {[
+                ["↑↓", "切换项目"],
+                ["Enter", "运行选中项目"],
+                ["Esc", "取消选中"],
+                [formatShortcut("mod+K"), "快捷键帮助"],
+              ].map(([key, desc]) => (
+                <div key={key} className="flex justify-between">
+                  <span className="text-app-text-muted">{desc}</span>
+                  <kbd className="text-app-text-dim">{key}</kbd>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Has projects but none selected
+  return (
+    <div className="flex-1 flex items-center justify-center bg-app-bg">
+      <div className="flex flex-col items-center gap-4 text-center max-w-xs px-4">
+        <div className="w-16 h-16 rounded-full bg-[var(--app-selected)] flex items-center justify-center">
+          <FolderOpen size={32} className="text-app-amber opacity-50" />
+        </div>
+        <div>
+          <div className="text-sm text-app-text font-mono font-semibold mb-1">选择项目</div>
+          <div className="text-xs text-app-text-dim leading-relaxed">
+            从左侧项目列表中选择一个项目，查看文件、会话、资源和 Hooks
+          </div>
+        </div>
+        <div className="text-2xs text-app-text-muted font-mono space-y-0.5">
+          <div>↑↓ 切换项目</div>
+          <div>Enter 运行默认 Profile</div>
+        </div>
+        <button
+          onClick={onAddProject}
+          className="flex items-center gap-1.5 text-xs font-mono text-app-text-dim
+            border border-app-border bg-[var(--app-input)] px-3 py-1.5
+            hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
+        >
+          <Plus size={12} />
+          注册新项目
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ── CommandBlock ────────────────────────────────────── */
 function CommandBlock({
   commands,
@@ -267,12 +383,14 @@ function CommandBlock({
   onPaste,
   onSplit,
   envCheck,
+  onRunProfile,
 }: {
   commands: { label: string; cmd: string }[];
   profileName: string;
   onPaste: (cmd: string) => void;
   onSplit?: (cmd: string) => void;
   envCheck?: EnvCheckResult;
+  onRunProfile?: (name: string, cliType: string) => void;
 }) {
   const { copied, copy } = useCopy();
 
@@ -300,7 +418,7 @@ function CommandBlock({
 
       {/* Tool not installed warning */}
       {toolMissing && (
-        <div className="px-3 py-2 border-b border-app-border bg-[var(--app-warn-bg)] flex items-start gap-2">
+        <div className="px-3 py-2 border-b border-app-border bg-[var(--app-amber)]/10 flex items-start gap-2">
           <AlertTriangle size={14} className="text-app-amber shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
             <span className="text-xs text-app-amber font-medium">{toolMissingHint}</span>
@@ -343,7 +461,15 @@ function CommandBlock({
               <div className="flex items-center gap-0.5 shrink-0 ml-2">
                 <div className="relative group/run">
                   <button
-                    onClick={(e) => { if (e.altKey && onSplit) onSplit(cmd); else onPaste(cmd); }}
+                    onClick={(e) => {
+                      if (onRunProfile) {
+                        const cliType = cmd.split(/\s+/)[1] || "claude";
+                        if (e.altKey && onSplit) onSplit(cmd);
+                        else onRunProfile(profileName, cliType);
+                      } else {
+                        if (e.altKey && onSplit) onSplit(cmd); else onPaste(cmd);
+                      }
+                    }}
                     className="flex items-center justify-center gap-1 w-[52px] py-0.5 text-2xs
                       text-app-text-dim hover:text-app-green
                       border border-transparent hover:border-app-border
@@ -352,15 +478,15 @@ function CommandBlock({
                     <Play size={11} />
                     <span>运行</span>
                   </button>
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1
+                  <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 px-2 py-1
                     bg-[var(--app-panel)] text-[var(--app-text)] text-2xs
                     border border-[var(--app-border)] shadow-dialog
                     whitespace-nowrap pointer-events-none
                     opacity-0 group-hover/run:opacity-100
                     transition-opacity duration-150 delay-700
                     group-hover/run:delay-700">
-                    <span>在终端中运行</span>
-                    <span className="text-[var(--app-text-muted)] ml-1">Alt+Click 分屏运行</span>
+                    <span>{onRunProfile ? "选择项目后运行" : "在终端中运行"}</span>
+                    {!onRunProfile && <span className="text-[var(--app-text-muted)] ml-1">{navigator.userAgent.includes("Mac") ? "⌥+Click" : "Alt+Click"} 分屏运行</span>}
                   </div>
                 </div>
                 <button
@@ -640,19 +766,7 @@ function TagsRow({ profile, allTags, onSetTags }: { profile: ProfileDetail; allT
 }
 
 /* ── MainPanel ──────────────────────────────────────────── */
-export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history, envCheck, onSetEnv, onDeleteEnv, onPasteCommand, onSplitCommand, onRenameProfile, onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearProfileHistory, onInit, onSetTags, onAdd }: MainPanelProps) {
-  if (showWelcome) return (
-    <OnboardingWizard
-      hasProfiles={hasProfiles}
-      onScan={onInit}
-      onCreate={onAdd}
-      onDismiss={() => {
-        // Toggle welcome off — the caller handles this via onToggleWelcome
-        // We dispatch a custom event since the dismiss callback comes from App
-        window.dispatchEvent(new CustomEvent("kn-dismiss-welcome"));
-      }}
-    />
-  );
+export function MainPanel({ profile, hasProfiles, allTags, history, envCheck, onSetEnv, onDeleteEnv, onPasteCommand, onSplitCommand, onRunProfile, onRenameProfile, onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearProfileHistory, onInit, onSetTags, onAdd }: MainPanelProps) {
   if (!profile) return <EmptyState hasProfiles={hasProfiles} onInit={onInit} />;
 
   const envCount = Object.keys(profile.env).length;
@@ -702,7 +816,8 @@ export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history,
       <UsageGuide />
 
       <CommandBlock commands={commands} profileName={profile.name}
-        onPaste={onPasteCommand} onSplit={onSplitCommand} envCheck={envCheck} />
+        onPaste={onPasteCommand} onSplit={onSplitCommand} envCheck={envCheck}
+        onRunProfile={onRunProfile} />
 
       {/* History + Env table — share remaining space */}
       <div className="flex-1 flex flex-col min-h-0 mt-3">
@@ -735,7 +850,7 @@ export function MainPanel({ profile, hasProfiles, showWelcome, allTags, history,
                       <code className="text-xs text-app-text font-mono block truncate">
                         <span className="text-app-accent opacity-70">$ </span>{r.command}
                       </code>
-                      <div className="text-2xs text-app-text-muted mt-0.5">{formatTime(r.timestamp)}</div>
+                      <div className="text-2xs text-app-text-muted mt-0.5">{relativeTime(r.timestamp)}</div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0 ml-3">
                       {r.resumeLastCommand && (

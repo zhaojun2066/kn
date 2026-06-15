@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { formatShortcut } from "../utils/shortcut";
-import { Terminal, Check, X as XIcon, AlertTriangle, ChevronRight, ChevronLeft, Search, Plus, Play } from "lucide-react";
+import { Terminal, Check, X as XIcon, AlertTriangle, ChevronRight, ChevronLeft, Search, Plus, Play, X } from "lucide-react";
 import { Button } from "./common/Button";
 import type { EnvCheckItem, EnvCheckResult } from "../lib/types";
 import { itemSeverity } from "../lib/types";
@@ -84,8 +84,17 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
   }, [runEnvCheck]);
 
   return (
-    <div className="flex-1 flex items-center justify-center bg-app-bg p-6">
-      <div className="flex flex-col items-center max-w-[520px] w-full">
+    <div className="p-6 relative">
+      {/* Close button */}
+      {onDismiss && (
+        <button
+          onClick={onDismiss}
+          className="absolute top-3 right-3 p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
+        >
+          <X size={14} />
+        </button>
+      )}
+      <div className="flex flex-col items-center w-full">
         {/* Hero */}
         <div className="flex flex-col items-center mb-2">
           <div className="w-14 h-14 rounded-full bg-[var(--app-selected)] flex items-center justify-center mb-4 border border-app-border">
@@ -93,7 +102,7 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
           </div>
           <h2 className="text-xl font-semibold text-app-text font-mono tracking-tight">
             <span className="text-app-accent opacity-60">$ </span>
-            AI Profile Manager
+            kn
           </h2>
           <p className="text-sm text-app-text-dim mt-1 leading-relaxed text-center">
             管理多个 AI CLI 工具的 API 配置，一键切换服务商

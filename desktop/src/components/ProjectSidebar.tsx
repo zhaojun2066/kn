@@ -1,3 +1,4 @@
+import { relativeTime, relativeTimeShort } from "../lib/time-utils";
 import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { SearchInput } from "./common/SearchInput";
@@ -19,38 +20,6 @@ interface ProjectSidebarProps {
   onOpenInEditor: (path: string, editor: string) => void;
   profiles: ProfileSummary[];
   statsMap: Record<string, ProjectStats>;
-}
-
-function relativeTime(ts: number): string {
-  if (!ts) return "";
-  const now = Date.now();
-  const diff = now - ts;
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return "刚刚";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}分钟前`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}小时前`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return "昨天";
-  if (days < 7) return `${days}天前`;
-  const date = new Date(ts);
-  const m = (date.getMonth() + 1).toString().padStart(2, "0");
-  const d = date.getDate().toString().padStart(2, "0");
-  return `${m}-${d}`;
-}
-
-function relativeTimeShort(ts: number): string {
-  if (!ts) return "";
-  const now = Date.now();
-  const diff = now - ts;
-  const m = Math.floor(diff / 60000);
-  if (m < 60) return `${m || 1}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d`;
-  return `${Math.floor(d / 30)}mo`;
 }
 
 export function ProjectSidebar({
@@ -144,9 +113,12 @@ export function ProjectSidebar({
   const openProfilePicker = useCallback((project: ProjectInfo) => {
     runTargetRef.current = project;
     onSelect(project);
-    setPickerFocusedIndex(0);
+    const defaultIdx = project.defaultProfile
+      ? profiles.findIndex((profile) => profile.name === project.defaultProfile)
+      : -1;
+    setPickerFocusedIndex(defaultIdx >= 0 ? defaultIdx : 0);
     setShowProfilePicker(true);
-  }, [onSelect]);
+  }, [onSelect, profiles]);
 
   const handleRunFromContext = useCallback(() => {
     if (!ctxMenu) return;
@@ -233,7 +205,7 @@ export function ProjectSidebar({
       {/* Project list */}
       <div
         ref={listRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden py-0.5 outline-none"
+        className="flex-1 overflow-y-auto overflow-x-hidden py-0.5 outline-none focus:outline-none focus-visible:outline-none focus:ring-0"
         tabIndex={0}
         onKeyDown={handleKeyDown}
       >
@@ -256,17 +228,16 @@ export function ProjectSidebar({
             <div
               key={p.name}
               data-project-name={p.name}
-              onClick={() => onSelect(isSelected ? null : p)}
+              onClick={() => onSelect(p)}
               onContextMenu={(e) => onContextMenu(e, p.name)}
               className={`group relative mx-1.5 my-0.5 px-3 py-2.5 cursor-pointer
-                transition-all duration-150
                 ${isSelected
-                  ? "bg-[var(--app-selected)] text-[var(--app-text)] border-l-[3px] border-l-[var(--app-amber)]"
+                  ? "bg-[var(--app-selected)] text-[var(--app-text)] border-l-[3px] border-l-[var(--app-amber)] transition-none"
                   : isFocused
-                    ? "bg-[var(--app-hover)] text-[var(--app-text)] border-l-[3px] border-l-[var(--app-text-muted)]"
+                    ? "bg-[var(--app-hover)] text-[var(--app-text)] border-l-[3px] border-l-[var(--app-text-muted)] transition-all duration-150"
                     : p.pinned
-                      ? "bg-[var(--app-amber)]/5 text-[var(--app-text)] border-l-[3px] border-l-[var(--app-amber)]/40"
-                      : "text-[var(--app-text)] border-l-[3px] border-l-transparent hover:bg-[var(--app-hover)]"
+                      ? "bg-[var(--app-amber)]/5 text-[var(--app-text)] border-l-[3px] border-l-[var(--app-amber)]/40 transition-all duration-150"
+                      : "text-[var(--app-text)] border-l-[3px] border-l-transparent hover:bg-[var(--app-hover)] transition-all duration-150"
                 }`}
             >
 
@@ -472,6 +443,7 @@ export function ProjectSidebar({
             ) : (
               profiles.map((p, idx) => {
                 const isFocused = idx === pickerFocusedIndex;
+                const isProjectDefault = p.name === runTargetRef.current?.defaultProfile;
                 return (
                   <button
                     key={p.name}
@@ -482,14 +454,19 @@ export function ProjectSidebar({
                         : "text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]"
                       }`}
                   >
-                    <span className={`truncate ${p.is_default ? "text-[var(--app-accent)] font-medium" : ""}`}>
+                    <span className={`truncate ${isProjectDefault || p.is_default ? "text-[var(--app-accent)] font-medium" : ""}`}>
                       {p.name}
                     </span>
                     <div className="flex items-center gap-1.5 ml-auto shrink-0">
-                      {p.is_default && (
+                      {isProjectDefault ? (
                         <>
                           <Star size={10} className="text-[var(--app-accent)]" />
-                          <span className="text-3xs text-[var(--app-text-muted)]">默认</span>
+                          <span className="text-3xs text-[var(--app-text-muted)]">项目默认</span>
+                        </>
+                      ) : p.is_default && (
+                        <>
+                          <Star size={10} className="text-[var(--app-text-muted)]" />
+                          <span className="text-3xs text-[var(--app-text-muted)]">全局默认</span>
                         </>
                       )}
                       {p.cli_type && (

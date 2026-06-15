@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
-  Sun, Moon, Monitor, HelpCircle, RotateCw, ChevronDown, Settings,
+  Sun, Moon, Monitor, HelpCircle, RotateCw, ChevronDown, Settings, Keyboard,
   PanelLeft, PanelBottom, PanelRight, Circle, Info, Palette, Check, Terminal, Search, History,
-  Copy,
+  Copy, Container, Puzzle,
 } from "lucide-react";
 import { formatShortcut } from "../utils/shortcut";
 import { Button } from "./common/Button";
@@ -12,7 +12,8 @@ import { itemSeverity } from "../lib/types";
 
 interface ToolbarProps {
   onToggleTerminal: () => void;
-  onToggleWelcome: () => void;
+  onShowHelp: () => void;
+  onShowShortcuts: () => void;
   onCheckUpdate: () => void;
   onAbout: () => void;
   onSettings: () => void;
@@ -78,7 +79,7 @@ function DropMenu({ items, children }: { items: { label: string; icon?: React.Re
 }
 
 export function Toolbar({
-  onToggleTerminal, onToggleWelcome,
+  onToggleTerminal, onShowHelp, onShowShortcuts,
   onCheckUpdate,
   onAbout, onSettings,
   sidebarVisible, onToggleSidebar,
@@ -99,20 +100,48 @@ export function Toolbar({
           {activeProject ? activeProject.name : "未选择项目"}
         </div>
         {onOpenProfiles && (
-          <button
-            onClick={onOpenProfiles}
-            className="px-2 py-1 text-xs font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
-          >
-            Profiles
-          </button>
+          <div className="relative group">
+            <button
+              onClick={onOpenProfiles}
+              className="px-2 py-1 text-xs font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors flex items-center gap-1"
+            >
+              <Container size={12} />
+              环境
+            </button>
+            <span
+              className="absolute left-1/2 -translate-x-1/2 -bottom-6 px-1.5 py-0.5
+                text-2xs font-mono whitespace-nowrap
+                bg-[var(--app-panel)] text-[var(--app-text)]
+                border border-[var(--app-border)] shadow-panel
+                opacity-0 group-hover:opacity-100
+                pointer-events-none z-50
+                transition-opacity duration-150 ease-out"
+            >
+              {formatShortcut("mod+⇧G")}
+            </span>
+          </div>
         )}
         {onOpenResources && (
-          <button
-            onClick={onOpenResources}
-            className="px-2 py-1 text-xs font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
-          >
-            Resources
-          </button>
+          <div className="relative group">
+            <button
+              onClick={onOpenResources}
+              className="px-2 py-1 text-xs font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors flex items-center gap-1"
+            >
+              <Puzzle size={12} />
+              扩展
+            </button>
+            <span
+              className="absolute left-1/2 -translate-x-1/2 -bottom-6 px-1.5 py-0.5
+                text-2xs font-mono whitespace-nowrap
+                bg-[var(--app-panel)] text-[var(--app-text)]
+                border border-[var(--app-border)] shadow-panel
+                opacity-0 group-hover:opacity-100
+                pointer-events-none z-50
+                transition-opacity duration-150 ease-out"
+            >
+              {formatShortcut("mod+⇧Y")}
+            </span>
+          </div>
         )}
       </div>
 
@@ -193,8 +222,9 @@ export function Toolbar({
 
       {/* Gear menu */}
       <DropMenu items={[
+        { label: "快捷键", icon: <Keyboard size={13} />, onClick: onShowShortcuts, hint: formatShortcut("mod+K") },
+        { label: "帮助", icon: <HelpCircle size={13} />, onClick: onShowHelp },
         { label: "检查更新", icon: <RotateCw size={13} />, onClick: onCheckUpdate },
-        { label: "快捷键", icon: <HelpCircle size={13} />, onClick: onToggleWelcome, hint: formatShortcut("mod+K") },
         { label: "设置", icon: <Settings size={13} />, onClick: onSettings },
         { label: "关于", icon: <Info size={13} />, onClick: onAbout },
       ]}>
@@ -386,8 +416,19 @@ function EnvPanel({ envCheck, onInstallTool, onOpen }: EnvPanelProps) {
                               {item.label}
                             </span>
 
-                            <span className="flex-1 text-right text-app-text-muted truncate min-w-0" title={item.detected_path || item.detail}>
-                              {item.detected_path || item.detail}
+                            <span
+                              className="flex-1 text-right truncate min-w-0"
+                              title={item.detected_path || item.detail}
+                            >
+                              {item.version ? (
+                                <span className="text-app-text-muted">
+                                  <span className="text-app-green">{item.version}</span>
+                                  {" · "}
+                                  <span className="text-app-text-dim">{item.detected_path}</span>
+                                </span>
+                              ) : (
+                                <span className="text-app-text-muted">{item.detected_path || item.detail}</span>
+                              )}
                             </span>
 
                             {hasInstallOptions && (

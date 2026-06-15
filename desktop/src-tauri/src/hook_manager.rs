@@ -6,6 +6,7 @@
 //! - **Codex**: `~/.codex/config.toml` → `[[hooks.<EventType>]]` arrays (TOML)
 
 use crate::atomic_rename;
+use crate::with_cross_process_lock;
 use crate::with_write_lock;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -63,6 +64,7 @@ fn home_dir() -> PathBuf {
 /// This prevents data corruption from crashes or concurrent writes mid-write.
 fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
     with_write_lock(|| {
+    with_cross_process_lock(|| {
     // Compute backup path up front — needed for recovery on Windows rename failure.
     let mut bak_name = path.to_string_lossy().to_string();
     bak_name.push_str(".bak");
@@ -105,6 +107,7 @@ fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
     // Clean up backup on success
     let _ = fs::remove_file(&bak_name);
     Ok(())
+    }) // with_cross_process_lock
     }) // with_write_lock
 }
 

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Bot, Lock, Circle, FolderOpen, Play, Ban, Trash2, Wrench, Sparkles, ArrowUpRight, File, Image } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentEntry } from "./SkillManager";
+import { Button } from "./common/Button";
+import type { AgentEntry } from "./ResourceList";
 import type { DependencyGraphData } from "./DependencyGraph";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { FileTree } from "./FileTree";
@@ -291,27 +292,29 @@ export function AgentDetail({ agent, graphData, onToggle, onDelete, onNodeClick 
 
         {/* Action buttons (hidden for builtin or read-only agents) */}
         {!isBuiltin && (onToggle || onDelete) && (
-          <div className="flex items-center gap-1">
-            <button
+          <div className="flex items-center gap-1 mt-3">
+            <Button
+              variant="icon"
+              size="sm"
               onClick={handleToggle}
-              className={`mt-3 p-1.5 border transition-all duration-fast
-                ${agent.enabled
-                  ? "text-[var(--app-text-muted)] border-[var(--app-border)] hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
-                  : "text-[var(--app-text-muted)] border-[var(--app-border)] hover:text-[var(--app-accent)] hover:border-[var(--app-accent)] hover:bg-[var(--app-green-bg)]"
-                }`}
+              className={`p-1.5 border-[var(--app-border)] ${
+                agent.enabled
+                  ? "hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
+                  : "hover:text-[var(--app-accent)] hover:border-[var(--app-accent)] hover:bg-[var(--app-green-bg)]"
+              }`}
               title={agent.enabled ? "禁用" : "启用"}
             >
               {agent.enabled ? <Ban size={14} /> : <Play size={14} />}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="icon"
+              size="sm"
               onClick={handleDelete}
-              className="mt-3 p-1.5 border border-[var(--app-border)] text-[var(--app-text-muted)]
-                hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]
-                transition-all duration-fast"
+              className="p-1.5 border-[var(--app-border)] hover:text-[var(--app-red)] hover:border-[var(--app-red)] hover:bg-[var(--app-red-bg)]"
               title="删除"
             >
               <Trash2 size={14} />
-            </button>
+            </Button>
           </div>
         )}
 
@@ -376,7 +379,7 @@ export function AgentDetail({ agent, graphData, onToggle, onDelete, onNodeClick 
                   <span
                     key={skill}
                     className="text-2xs px-1.5 py-0.5 border border-[var(--app-border-light)]
-                      bg-purple-500/10 text-purple-400 font-mono"
+                      bg-[var(--app-purple)]/10 text-[var(--app-purple)] font-mono"
                   >
                     {skill}
                   </span>

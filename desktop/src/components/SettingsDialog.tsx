@@ -23,7 +23,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
@@ -127,7 +127,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
             </div>
             {trackingEnabled && (
               <div className="text-2xs text-app-text-muted font-mono bg-[var(--app-subtle)] border border-app-border px-3 py-1.5">
-                数据保存在 ~/.claude-profiles/usage.jsonl，完全本地，不会上传。
+                数据保存在 ~/.kn/usage.jsonl，完全本地，不会上传。
               </div>
             )}
           </div>

@@ -294,20 +294,20 @@ function Legend() {
   return (
     <div className="flex items-center gap-3 text-2xs text-[var(--app-text-dim)] font-mono">
       <span className="flex items-center gap-1">
-        <span className="w-2 h-2 rounded-full bg-[#D97706]" /> Claude
+        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: CLI_HEX_COLORS.claude }} /> Claude
       </span>
       <span className="flex items-center gap-1">
-        <span className="w-2 h-2 rounded-full bg-[#7C3AED]" /> Codex
+        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: CLI_HEX_COLORS.codex }} /> Codex
       </span>
       <span className="flex items-center gap-1">
-        <span className="w-2 h-2 rounded-full bg-[#059669]" /> Qoder
+        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: CLI_HEX_COLORS.qoder }} /> Qoder
       </span>
       <span className="text-[var(--app-border)]">|</span>
       <span className="flex items-center gap-1">
-        <span className="w-3 border-t border-dashed border-[#8B5CF6]" /> refs
+        <span className="w-3 border-t border-dashed border-[var(--app-purple)]" /> refs
       </span>
       <span className="flex items-center gap-1">
-        <span className="w-3 border-t border-[#6B7280]" /> contains
+        <span className="w-3 border-t border-[var(--app-text-muted)]" /> contains
       </span>
     </div>
   );

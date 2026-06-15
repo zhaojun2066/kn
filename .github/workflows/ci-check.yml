@@ -22,6 +22,10 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo check
 
+      - name: cargo test
+        working-directory: desktop/src-tauri
+        run: cargo test
+
   type-check:
     runs-on: ubuntu-latest
     steps:
@@ -38,3 +42,30 @@ jobs:
       - name: TypeScript type check
         working-directory: desktop
         run: npx tsc --noEmit
+
+      - name: Frontend tests
+        working-directory: desktop
+        run: npx vitest run
+
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Python tests
+        run: PYTHONPATH=lib python3 -m pytest tests/ -v
+
+  shell-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax check
+        run: bash -n shell/ai-profile.sh
+
+      - name: Shell smoke test
+        run: bash tests/test_shell_smoke.sh

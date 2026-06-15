@@ -1,13 +1,21 @@
-# AI Profile Manager — Shell Wrapper (canonical source)
-# Installed by install.sh and desktop app to ~/.claude-profiles/shell-rc
+# kn — Shell Wrapper (canonical source)
+# Installed by install.sh and desktop app to ~/.kn/shell-rc
 # Usage: ai <tool> [profile] [args...]
 #        ai profile <command>
 
-CONFIG="$HOME/.claude-profiles/config.yaml"
+# Config directory: prefer ~/.kn (new), fall back to ~/.claude-profiles (legacy)
+if [ -d "$HOME/.kn" ]; then
+    KN_DIR="$HOME/.kn"
+elif [ -d "$HOME/.claude-profiles" ]; then
+    KN_DIR="$HOME/.claude-profiles"
+else
+    KN_DIR="$HOME/.kn"
+fi
+CONFIG="$KN_DIR/config.yaml"
 
 # ── Resolve profile CLI (preferred but optional) ──
-if [ -x "$HOME/.claude-profiles/bin/profile" ]; then
-    PROFILE_CMD="$HOME/.claude-profiles/bin/profile"
+if [ -x "$KN_DIR/bin/profile" ]; then
+    PROFILE_CMD="$KN_DIR/bin/profile"
 elif [ -x "$HOME/.local/bin/profile" ]; then
     PROFILE_CMD="$HOME/.local/bin/profile"
 elif command -v profile >/dev/null 2>&1; then
@@ -182,7 +190,15 @@ _ai_launch_with_profile() {
     python3 -c "
 import json, os
 d = os.path.realpath(os.environ['PWD'])
-f = os.path.expanduser('~/.claude-profiles/projects.json')
+# Prefer KN_HOME or ~/.kn, fall back to legacy ~/.claude-profiles
+kn_home = os.environ.get('KN_HOME')
+if kn_home:
+    proj_dir = kn_home
+elif os.path.isdir(os.path.expanduser('~/.kn')):
+    proj_dir = os.path.expanduser('~/.kn')
+else:
+    proj_dir = os.path.expanduser('~/.claude-profiles')
+f = os.path.join(proj_dir, 'projects.json')
 try:
     os.makedirs(os.path.dirname(f), exist_ok=True)
     try:

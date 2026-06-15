@@ -30,7 +30,7 @@ if [ -n "$context" ]; then
 fi
 
 # 重置上下文计数器
-COUNTER_FILE="${HOME}/.claude-profiles/hooks/.context-counter"
+COUNTER_FILE="${KN_HOME:-${HOME}/.kn}/hooks/.context-counter"
 echo "0" > "$COUNTER_FILE"
 
 exit 0

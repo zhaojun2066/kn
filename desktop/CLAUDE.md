@@ -26,7 +26,7 @@ cd /Users/zhaojun/workspace/me/shark/kn/desktop && npx tsc --noEmit && npx vite 
 ## Architecture
 
 ### App Overview
-AI Profile Manager — a Tauri v2 desktop app (React + Tailwind + TypeScript frontend, Rust backend). Manages environment variable profiles for Claude Code and Codex CLI tools. Each profile is a named set of `KEY=VALUE` pairs (API keys, base URLs, model names). Users create profiles, then launch `ai claude <profile>` or `ai codex <profile>` directly from the embedded xterm.js terminal.
+kn — a Tauri v2 desktop app (React + Tailwind + TypeScript frontend, Rust backend). Manages environment variable profiles for Claude Code and Codex CLI tools. Each profile is a named set of `KEY=VALUE` pairs (API keys, base URLs, model names). Users create profiles, then launch `ai claude <profile>` or `ai codex <profile>` directly from the embedded xterm.js terminal.
 
 ### Key Technology Stack
 - **Desktop shell**: Tauri v2 with `tauri-plugin-shell` (for `Command.create` from frontend), `tauri-plugin-dialog` (file open/save dialogs), `tauri-plugin-fs`, `tauri-plugin-updater`
@@ -35,7 +35,7 @@ AI Profile Manager — a Tauri v2 desktop app (React + Tailwind + TypeScript fro
   - **Bottom terminal** (`panelId="bottom"`): VS Code-style bottom panel, toggled via toolbar button or Ctrl+`. Height-based sizing.
   - Each has its own tabs, history, PTY sessions — fully independent.
 - **PTY data flow**: Rust spawns `zsh -i -l` (login + interactive) via `portable-pty`, uses Tauri `Channel<PtyEvent>` to stream stdout/stderr to the frontend, frontend `invoke("write_pty", {sessionId, data})` to send keystrokes
-- **Profile storage**: Single YAML config at `~/.claude-profiles/config.yaml`. The Tauri backend reads/writes it directly via `serde_yaml`. The shell wrapper (`~/.claude-profiles/shell-rc`) reads it with `sed` for zero-dependency profile injection in the terminal. **No separate dev/prod config — one file for all modes.**
+- **Profile storage**: Single YAML config at `~/.kn/config.yaml`. The Tauri backend reads/writes it directly via `serde_yaml`. The shell wrapper (`~/.kn/shell-rc`) reads it with `sed` for zero-dependency profile injection in the terminal. **No separate dev/prod config — one file for all modes.**
 
 ### Directory Structure
 ```
@@ -134,8 +134,8 @@ Font size changes force an XTerm remount (xterm.js doesn't support hot-reloading
 `FitAddon` handles automatic terminal resizing with RAF (requestAnimationFrame) coalescing — no artificial delay. PTY resize signal is sent immediately in the same frame.
 
 ### Profile Config & Shell Wrapper
-- Config file: `~/.claude-profiles/config.yaml`. Single source of truth — no separate dev/prod split.
-- Shell wrapper: `~/.claude-profiles/shell-rc`, sourced from `.zshrc`. Defines `ai()` function for `ai claude <profile>` / `ai codex <profile>`.
+- Config file: `~/.kn/config.yaml`. Single source of truth — no separate dev/prod split.
+- Shell wrapper: `~/.kn/shell-rc`, sourced from `.zshrc`. Defines `ai()` function for `ai claude <profile>` / `ai codex <profile>`.
 - `_profile_env()` in shell-rc reads config via `sed` (zero dependencies, works even with limited PATH).
 - `ensure_shell_rc` (Rust) writes the embedded shell-rc to disk on app startup, ensuring it's always up to date.
 
@@ -199,7 +199,7 @@ ui-monospace → SF Mono (macOS) → Cascadia Code (Windows) → Menlo → Monac
 - Windows: `MasterPty::resize()` from `portable-pty` crate handles ConPTY resize
 
 ### Profile CLI Paths
-The `profile` CLI is installed at `~/.claude-profiles/bin/profile`. Rust `find_profile_cli()` checks `PROFILE_CLI_PATH` env var first, then the default install location, then falls back to bare `profile` command on PATH.
+The `profile` CLI is installed at `~/.kn/bin/profile`. Rust `find_profile_cli()` checks `PROFILE_CLI_PATH` env var first, then the default install location, then falls back to bare `profile` command on PATH.
 
 ### Environment Detection (`App.tsx`)
 Startup checks use `bash -lc "command -v <name>"` to ensure the user's full shell PATH is available (Tauri GUI apps have a limited PATH by default). The `kn-env-checked` localStorage flag prevents repeated prompts after user dismissal.
@@ -278,14 +278,14 @@ cmd.env("COLORTERM", "truecolor");
 
 ### Profile 名泄漏到 Claude/Codex 交互输入 — dev/prod config 分离的陷阱（已修复并合并）
 
-**历史问题**：之前存在 `~/.claude-profiles/` 和 `~/.claude-profiles-dev/` 两套 config 目录。生产 App 写入 prod config，但 `_profile_env` 优先读 dev config。当 profile 只存在于 prod config 时找不到，profile 名泄漏为 claude CLI 参数。
+**历史问题**：之前存在 `~/.kn/` 和 `~/.kn-dev/` 两套 config 目录。生产 App 写入 prod config，但 `_profile_env` 优先读 dev config。当 profile 只存在于 prod config 时找不到，profile 名泄漏为 claude CLI 参数。
 
-**最终方案**：**合并为单一 config 目录** `~/.claude-profiles/config.yaml`。`config_dir()` 不再区分 debug/release，shell-rc 也只读这一个文件。从根本上消除了"该读哪个 config"的歧义。
+**最终方案**：**合并为单一 config 目录** `~/.kn/config.yaml`。`config_dir()` 不再区分 debug/release，shell-rc 也只读这一个文件。从根本上消除了"该读哪个 config"的歧义。
 
 ```rust
 // profile_cmd.rs — 统一路径，无分支
 fn config_dir() -> PathBuf {
-    let base = ".claude-profiles";  // 不再判断 cfg!(debug_assertions)
+    let base = ".kn";  // 不再判断 cfg!(debug_assertions)
     ...
 }
 ```

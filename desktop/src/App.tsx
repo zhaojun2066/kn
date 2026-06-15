@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { Toolbar } from "./components/Toolbar";
-import { Sidebar } from "./components/Sidebar";
-import { MainPanel } from "./components/MainPanel";
+import { MainPanel, ProjectGuide } from "./components/MainPanel";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { ProfileDialog } from "./components/ProfileDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -15,12 +14,13 @@ import { StatusBar } from "./components/StatusBar";
 import { ToastViewport } from "./components/ToastViewport";
 import { ProfileDrawer } from "./components/ProfileDrawer";
 import { ResourceDrawer } from "./components/ResourceDrawer";
+import { OnboardingWizard } from "./components/OnboardingWizard";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
 import type { LocalCliUsageRow } from "./components/LocalCliUsage";
-import { SkillManager, type SkillManagerData, type SelectedItem, type BatchToggleItem } from "./components/SkillManager";
-import type { PluginUpdateInfo } from "./components/SkillManager";
-import type { AgentManagerData } from "./components/SkillManager";
-import { SkillDetail } from "./components/SkillDetail";
+import { ResourceList, type ResourceScanData, type SelectedItem, type BatchToggleItem } from "./components/ResourceList";
+import type { PluginUpdateInfo } from "./components/ResourceList";
+import type { AgentManagerData } from "./components/ResourceList";
+import { ResourceDetail } from "./components/ResourceDetail";
 import { DependencyGraph, type DependencyGraphData } from "./components/DependencyGraph";
 import { HookList, type HookManagerData } from "./components/HookList";
 import { HookDetail, type HookEntry } from "./components/HookDetail";
@@ -44,8 +44,9 @@ import { useProjects } from "./hooks/useProjects";
 import { useProjectContext } from "./hooks/useProjectContext";
 import { useSessionScanner } from "./hooks/useSessionScanner";
 import { ProjectSidebar } from "./components/ProjectSidebar";
-import type { ProjectInfo, ScopeTab, SessionInfo } from "./lib/types";
+import type { ProfileDetail, ProjectInfo, ScopeTab, SessionInfo } from "./lib/types";
 import { basename } from "./lib/path-utils";
+import { showProfile, setEnvVar as setProfileEnvVar, unsetEnvVar as unsetProfileEnvVar } from "./lib/tauri-api";
 import { buildDestDir, getResourceData, getResourceType, getSubdir, type ResourceData } from "./lib/resource-transfer";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
@@ -65,8 +66,10 @@ export function App() {
   bottomRef.current = bottomTerminal;
   useTerminalCloseGuard(rightRef, bottomRef);
   useFontScale();                                 // 初始化全局 UI 字体缩放
+  const profilesCheckedRef = useRef(false);        // guard: 首次 loadProfiles 完成标志
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteProfileTarget, setDeleteProfileTarget] = useState<ProfileDetail | null>(null);
   const [showWelcome, setShowWelcome] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showQuickSwitcher, setShowQuickSwitcher] = useState(false);
@@ -88,8 +91,8 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
-  const [activeActivity, setActiveActivity] = useState<ActivityKey>("profile");
-  const [skillData, setSkillData] = useState<SkillManagerData | null>(null);
+  const [activeActivity, setActiveActivity] = useState<ActivityKey>("projects");
+  const [skillData, setSkillData] = useState<ResourceScanData | null>(null);
   const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
   // Baseline counts from a full scan (user + all projects), unaffected by activeProject filter
   const [baselineCounts, setBaselineCounts] = useState<{ user: number; project: number }>({ user: 0, project: 0 });
@@ -116,11 +119,14 @@ export function App() {
     statsMap,
     setDescription,
     togglePin,
+    setDefaultProfile,
   } = useProjects();
   const projectContext = useProjectContext(projects);
   const activeProject = projectContext.activeProject;
   const setActiveProject = projectContext.setActiveProject;
   const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
+  const [drawerSelectedName, setDrawerSelectedName] = useState<string | null>(null);
+  const [drawerSelectedProfile, setDrawerSelectedProfile] = useState<ProfileDetail | null>(null);
   const [resourceDrawerOpen, setResourceDrawerOpen] = useState(false);
   const sessionScanner = useSessionScanner();
 
@@ -192,15 +198,21 @@ export function App() {
   // Keep a ref so callbacks always read current value
   const scanProjectPathRef = useRef(scanProjectPath);
   scanProjectPathRef.current = scanProjectPath;
-  const scanProjectPathsRef = useRef(scanProjectPaths);
-  scanProjectPathsRef.current = scanProjectPaths;
+  const scanProjectPathsRef = useRef<(string | null)[]>([]);
+  // Sync ref to the effective scan paths: for projects Resource tab, include
+  // the active project; otherwise use scanProjectPaths (based on activeScope).
+  // This ensures re-scans after toggle/move/copy use the correct paths.
+  scanProjectPathsRef.current =
+    activeActivity === "projects" && activeProject
+      ? [activeProject.path]
+      : scanProjectPaths;
 
   // Refresh baseline counts from a full scan (user + all projects), insensitive to activeProject
   const refreshBaselineCounts = useCallback(async () => {
     try {
       const allPaths: (string | null)[] = [null, ...projects.map(p => p.path)];
       const results = await Promise.all(
-        allPaths.map(p => invoke<SkillManagerData>("scan_skills", { projectPath: p }))
+        allPaths.map(p => invoke<ResourceScanData>("scan_skills", { projectPath: p }))
       );
       // results[0] = user-level scan (null path); rest = per-project scans
       // Project scans also include user-level items, so only count user items from the null scan
@@ -235,10 +247,48 @@ export function App() {
   });
 
   // Load profiles + platform info on mount
-  useEffect(() => { ctx.loadProfiles(); }, []);
+  useEffect(() => {
+    ctx.loadProfiles().finally(() => {
+      profilesCheckedRef.current = true;
+    });
+  }, []);
+
+  // Auto-show onboarding wizard when no profiles exist after initial load
+  useEffect(() => {
+    if (profilesCheckedRef.current && !ctx.loading && ctx.profiles.length === 0) {
+      setShowWelcome(true);
+    }
+  }, [ctx.loading, ctx.profiles.length]);
+
   useEffect(() => {
     invoke<{ os: string; arch: string }>("get_platform_info").then((info) => { platformRef.current = info; }).catch(() => {});
   }, []);
+
+  const selectDrawerProfile = useCallback(async (name: string) => {
+    setDrawerSelectedName(name);
+    try {
+      const detail = await showProfile(name);
+      const tagsStr = detail.env?._KN_TAGS || "";
+      const tags = tagsStr ? tagsStr.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
+      setDrawerSelectedProfile({ ...detail, tags });
+    } catch (e) {
+      addToast("error", `加载 Profile 失败: ${String(e).slice(0, 120)}`);
+      setDrawerSelectedProfile(null);
+    }
+  }, [addToast]);
+
+  useEffect(() => {
+    if (!profileDrawerOpen) {
+      setDrawerSelectedName(null);
+      setDrawerSelectedProfile(null);
+      return;
+    }
+    if (drawerSelectedName) return;
+    const initialName = ctx.selectedName || ctx.profiles[0]?.name || null;
+    if (initialName) {
+      selectDrawerProfile(initialName);
+    }
+  }, [profileDrawerOpen, drawerSelectedName, ctx.selectedName, ctx.profiles, selectDrawerProfile]);
 
   // Keep terminals aware of valid profile names (for history restore validation)
   useEffect(() => {
@@ -290,13 +340,13 @@ export function App() {
   /** Scan skills + agents across multiple project paths, merge, and return. */
   const scanMultiProject = useCallback(async (paths: (string | null)[]) => {
     if (paths.length === 0) {
-      const empty: SkillManagerData = { plugins: [], standaloneSkills: [], systemSkills: [], commands: [] };
+      const empty: ResourceScanData = { plugins: [], standaloneSkills: [], systemSkills: [], commands: [] };
       return { skills: empty, agents: { agents: [] as AgentManagerData["agents"] } };
     }
     // Single path — simple case
     if (paths.length === 1) {
       const [skills, agents] = await Promise.all([
-        invoke<SkillManagerData>("scan_skills", { projectPath: paths[0] }),
+        invoke<ResourceScanData>("scan_skills", { projectPath: paths[0] }),
         invoke<AgentManagerData>("scan_agents", { projectPath: paths[0] }),
       ]);
       return { skills, agents };
@@ -310,15 +360,15 @@ export function App() {
     // Baseline: user-level scan (if included), or empty for project-only scans
     const [baseSkills, baseAgents] = hasUserLevel
       ? await Promise.all([
-          invoke<SkillManagerData>("scan_skills", { projectPath: null }),
+          invoke<ResourceScanData>("scan_skills", { projectPath: null }),
           invoke<AgentManagerData>("scan_agents", { projectPath: null }),
         ])
       : [
-          { plugins: [] as any[], standaloneSkills: [] as any[], systemSkills: [] as any[], commands: [] as any[] } as SkillManagerData,
+          { plugins: [] as any[], standaloneSkills: [] as any[], systemSkills: [] as any[], commands: [] as any[] } as ResourceScanData,
           { agents: [] as any[] } as AgentManagerData,
         ];
 
-    const mergedSkills: SkillManagerData = {
+    const mergedSkills: ResourceScanData = {
       plugins: [...baseSkills.plugins],
       standaloneSkills: [...baseSkills.standaloneSkills],
       systemSkills: [...baseSkills.systemSkills],
@@ -329,7 +379,7 @@ export function App() {
     // Scan each project and merge only project-scoped items
     const projResults = await Promise.all(projectPaths.map(pp =>
       Promise.all([
-        invoke<SkillManagerData>("scan_skills", { projectPath: pp }),
+        invoke<ResourceScanData>("scan_skills", { projectPath: pp }),
         invoke<AgentManagerData>("scan_agents", { projectPath: pp }),
       ])
     ));
@@ -343,12 +393,14 @@ export function App() {
 
   // Refresh project list when switching to hooks or skills (catches auto-registered projects from usage tracking)
   useEffect(() => {
-    if (activeActivity === "hooks" || activeActivity === "skills") {
+    if (activeActivity === "skills") {
       loadProjects();
     }
   }, [activeActivity, loadProjects]);
 
-  // Load skill/plugin data when switching to skills view
+  // Load skill/plugin data when switching to the Skills activity.
+  // Project-level resource data is loaded on-demand inside ProjectWorkspace
+  // (lazy per tab), so this effect only handles the standalone skills sidebar.
   useEffect(() => {
     if (activeActivity !== "skills") {
       setSelectedSkillItem(null);
@@ -427,23 +479,9 @@ export function App() {
       .catch(() => {});
   }, [scanMultiProjectHooks, hookScanPaths]);
 
-  useEffect(() => {
-    if (activeActivity !== "hooks") {
-      setSelectedHook(null);
-      return;
-    }
-    setHookDataLoading(true);
-    scanMultiProjectHooks(hookScanPaths)
-      .then((data) => {
-        setHookData(data);
-        setSelectedHook(null);
-      })
-      .catch((e) => {
-        console.error("Failed to scan hooks:", e);
-        setHookData(null);
-      })
-      .finally(() => setHookDataLoading(false));
-  }, [activeActivity, scanMultiProjectHooks, hookScanPaths]);
+  // Hook scanning was previously triggered here when activeActivity === "hooks".
+  // The hooks sidebar has been removed; hooks are now managed per-project
+  // inside ProjectWorkspace. State declarations kept for ResourceDrawer usage.
 
   // Batch hook operations
   const handleToggleHook = useCallback(async (hook: HookEntry, enabled: boolean) => {
@@ -522,10 +560,10 @@ export function App() {
   hookDataRef.current = hookData;
 
   const joinConfigPath = useCallback((base: string, ...segments: string[]) => {
-    const sep = base.includes("\\") ? "\\" : "/";
+    // Always use `/` — Rust normalizes separators on all platforms.
     const trimmedBase = base.replace(/[\\/]+$/, "");
     const trimmedSegments = segments.map((segment) => segment.replace(/^[\\/]+|[\\/]+$/g, ""));
-    return [trimmedBase, ...trimmedSegments].filter(Boolean).join(sep);
+    return [trimmedBase, ...trimmedSegments].filter(Boolean).join("/");
   }, []);
 
   const splitBeforeConfigDir = useCallback((path: string, configDir: string) => {
@@ -995,7 +1033,7 @@ export function App() {
   }, [activeProject, scanProjectPath, addToast, scanMultiProject]);
 
   // After re-scanning, sync selectedSkillItem to the matching item in fresh data
-  const syncSelection = useCallback((data: SkillManagerData, prev: SelectedItem | null) => {
+  const syncSelection = useCallback((data: ResourceScanData, prev: SelectedItem | null) => {
     if (!prev) return null;
     if (prev.type === "plugin") {
       const found = data.plugins.find((p) => p.id === (prev!.data as unknown as ResourceData).id);
@@ -1213,12 +1251,15 @@ export function App() {
     [addToast, scanMultiProject],
   );
 
-  // Track whether check was user-initiated (show toast) or auto (silent)
+  // Track whether check was initiated by THIS component — only then show toast.
+  // Prevents duplicate toasts when sibling components also listen to the same event.
+  const checkRequestRef = useRef(false);
   const checkSilentRef = useRef(false);
 
   // Plugin update check — fires background thread, result arrives via event
   const handleCheckUpdates = useCallback(async () => {
     if (checkingUpdates) return; // already running
+    checkRequestRef.current = true;
     checkSilentRef.current = false; // user-initiated → show toast
     setCheckingUpdates(true);
     setUpdateInfos([]);
@@ -1227,6 +1268,7 @@ export function App() {
     } catch (e) {
       addToast("error", `检查更新失败: ${e}`);
       setCheckingUpdates(false);
+      checkRequestRef.current = false;
     }
   }, [addToast, checkingUpdates]);
 
@@ -1235,12 +1277,13 @@ export function App() {
     const unlisten = listen<PluginUpdateInfo[]>("update-check-complete", (event) => {
       setUpdateInfos(event.payload);
       setCheckingUpdates(false);
-      // Only toast when user-initiated, not for auto re-checks
-      if (!checkSilentRef.current) {
+      // Only toast when THIS component initiated the check AND it was user-initiated
+      if (checkRequestRef.current && !checkSilentRef.current) {
         const count = event.payload.filter((u) => u.hasUpdate).length;
         if (count > 0) addToast("success", `发现 ${count} 个可用更新`);
         else addToast("success", "所有插件均为最新版本");
       }
+      checkRequestRef.current = false;
     });
     return () => { unlisten.then((fn) => fn()); };
   }, [addToast]);
@@ -1272,8 +1315,9 @@ export function App() {
         setAgentData(agents);
         setSelectedSkillItem((prev) => syncSelection(skills, prev));
         // Re-check silently (no toast) — result arrives via update-check-complete event
+        checkRequestRef.current = true;
         checkSilentRef.current = true;
-        invoke("check_updates").catch(() => {});
+        invoke("check_updates").catch(() => { checkRequestRef.current = false; });
       } else {
         addToast("error", message);
       }
@@ -1411,6 +1455,8 @@ export function App() {
     showDeleteConfirm,
     showNameDialog,
     showQuickSwitcher,
+    profileDrawerOpen,
+    resourceDrawerOpen,
     setShowAddDialog,
     setShowDeleteConfirm,
     setShowNameDialog,
@@ -1420,10 +1466,10 @@ export function App() {
     setSidebarVisible,
     setRightMaximized,
     setBottomMaximized,
+    setProfileDrawerOpen,
+    setResourceDrawerOpen,
     addToast,
   });
-
-  const isDefault = ctx.selectedProfile?.is_default ?? false;
 
   const handleInstallTool = useCallback(async (cmd: string) => {
     // Open bottom terminal and auto-execute the install command
@@ -1649,7 +1695,7 @@ export function App() {
         : "dmg";
       const ext = urlExt || defaultExt;
       const sep = platformRef.current.os === "windows" ? "\\" : "/";
-      const tmpPath = `${tmpDir}${sep}ai-profile-manager-update-${Date.now()}.${ext}`;
+      const tmpPath = `${tmpDir}${sep}kn-update-${Date.now()}.${ext}`;
       await invoke("download_file", { url, path: tmpPath });
 
       // Download complete — 100%
@@ -1717,6 +1763,22 @@ export function App() {
     setShowNameDialog(true);
   }, [ctx]);
 
+  const handleCopyProfileFromDetail = useCallback((src: ProfileDetail | null) => {
+    if (!src) return;
+    setNameDialogTitle("复制 Profile");
+    setNameDialogInitial(`${src.name}-copy`);
+    setNameDialogOnConfirm(() => async (newName: string) => {
+      await ctx.addProfile(newName, src.desc || `Copy of ${src.name}`);
+      for (const [k, v] of Object.entries(src.env)) {
+        await setProfileEnvVar(newName, k, v);
+      }
+      await ctx.loadProfiles();
+      await selectDrawerProfile(newName);
+      addToast("success", `Profile "${newName}" 已复制`);
+    });
+    setShowNameDialog(true);
+  }, [ctx, selectDrawerProfile, addToast]);
+
   // Rename profile — create new, copy env, delete old
   const handleRenameProfile = useCallback((oldName: string) => {
     if (!ctx.selectedProfile) return;
@@ -1747,6 +1809,35 @@ export function App() {
     });
     setShowNameDialog(true);
   }, [ctx]);
+
+  const handleRenameProfileFromDetail = useCallback((src: ProfileDetail | null) => {
+    if (!src) return;
+    const oldName = src.name;
+    setNameDialogTitle("重命名 Profile");
+    setNameDialogInitial(oldName);
+    setNameDialogOnConfirm(() => async (newName: string) => {
+      if (newName === oldName) return;
+      if (ctx.profiles.some((p) => p.name === newName)) {
+        addToast("error", `Profile "${newName}" 已存在`);
+        return;
+      }
+      const result = await ctx.addProfile(newName, src.desc || "");
+      if (!result.ok) {
+        addToast("error", result.error || "创建失败");
+        return;
+      }
+      for (const [k, v] of Object.entries(src.env)) {
+        if (v) await setProfileEnvVar(newName, k, v);
+      }
+      await ctx.removeProfile(oldName);
+      rightTerminal.clearProfileHistory(oldName);
+      bottomTerminal.clearProfileHistory(oldName);
+      await ctx.loadProfiles();
+      await selectDrawerProfile(newName);
+      addToast("success", `已重命名为 "${newName}"`);
+    });
+    setShowNameDialog(true);
+  }, [ctx, addToast, rightTerminal, bottomTerminal, selectDrawerProfile]);
 
   // ── Resize handlers ───────────────────────────────────────
 
@@ -1828,7 +1919,8 @@ export function App() {
       {/* Toolbar */}
       <Toolbar
         onToggleTerminal={bottomTerminal.toggle}
-        onToggleWelcome={() => { setShowWelcome(!showWelcome); if (ctx.selectedName) ctx.deselect(); }}
+        onShowHelp={() => setShowWelcome(true)}
+        onShowShortcuts={() => setShowShortcuts(true)}
         onCheckUpdate={handleCheckUpdate}
         onAbout={() => setShowAbout(true)}
         onSettings={() => setShowSettings(true)}
@@ -1853,56 +1945,16 @@ export function App() {
         onOpenResources={() => setResourceDrawerOpen(true)}
       />
 
-      {/* Main content — ActivityBar | Sidebar/SkillManager | (MainPanel + BottomTerminal) | RightTerminal */}
+      {/* Main content — ActivityBar | Sidebar/ResourceList | (MainPanel + BottomTerminal) | RightTerminal */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="flex-1 flex overflow-hidden min-h-0">
           {/* Activity Bar — VS Code-style left icon strip */}
           <ActivityBar active={activeActivity} onChange={setActiveActivity} />
 
-          {/* Sidebar (Profile) / SkillManager — switch based on active activity */}
-          {sidebarVisible && !rightMaximized && !bottomMaximized && activeActivity === "profile" && (
-            <Sidebar
-              profiles={ctx.filteredProfiles}
-              selectedName={ctx.selectedName}
-              searchQuery={ctx.searchQuery}
-              onSelect={(name) => ctx.selectProfile(name)}
-              onSearch={(query) => ctx.search(query)}
-              onCopy={(name) => { ctx.selectProfile(name); handleCopyProfile(); }}
-              onRename={(name) => { ctx.selectProfile(name); handleRenameProfile(name); }}
-              onDelete={(name) => { ctx.selectProfile(name); setShowDeleteConfirm(true); }}
-              onSetDefault={(name) => ctx.setDefault(name)}
-              usageCounts={usageCounts}
-              // ExpandableToolbar props
-              isDefault={isDefault}
-              hasSelection={!!ctx.selectedName}
-              backupExists={backupExists}
-              onAdd={() => setShowAddDialog(true)}
-              onCopyProfile={handleCopyProfile}
-              onInit={async () => {
-                try {
-                  const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
-                  if (result.profiles.length === 0) {
-                    addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
-                    return;
-                  }
-                  setScanData(result.profiles);
-                } catch (e) {
-                  addToast("error", `扫描失败: ${e}`);
-                }
-              }}
-              onImport={handleImport}
-              onExport={handleExport}
-              onBatchDelete={handleBatchDelete}
-              onBatchExport={handleBatchExport}
-              onRefresh={() => ctx.loadProfiles()}
-              onBackup={handleBackup}
-              onRestore={handleRestore}
-            />
-          )}
-
+          {/* Sidebar panels — switch based on active activity */}
           {sidebarVisible && !rightMaximized && !bottomMaximized && activeActivity === "skills" && (
             <div className="w-[300px] shrink-0 flex flex-col border-r border-[var(--app-border)]">
-              <SkillManager
+              <ResourceList
                 data={skillData}
                 agentData={agentData}
                 loading={skillDataLoading}
@@ -1943,32 +1995,6 @@ export function App() {
           )}
 
           {/* Hooks sidebar */}
-          {sidebarVisible && !rightMaximized && !bottomMaximized && activeActivity === "hooks" && (
-            <div className="w-[300px] shrink-0 flex flex-col border-r border-[var(--app-border)]">
-              <HookList
-                data={hookData}
-                loading={hookDataLoading}
-                selectedId={selectedHook?.id ?? null}
-                onSelect={setSelectedHook}
-                onAddHook={() => setHookWizardOpen(true)}
-                onOpenStore={() => setHookStoreOpen(true)}
-                onRefresh={refreshHooks}
-                onToggleHook={handleToggleHook}
-                onDeleteHook={handleDeleteHook}
-                onMoveHook={handleMoveHook}
-                onCopyHook={handleCopyHook}
-                onBatchMoveHooks={handleBatchMoveHooks}
-                onBatchCopyHooks={handleBatchCopyHooks}
-                activeScope={activeScope}
-                onScopeChange={setActiveScope}
-                projects={projects}
-                activeProject={activeProject}
-                onProjectChange={setActiveProject}
-                onAddProject={handleAddProject}
-              />
-            </div>
-          )}
-
           {/* Projects sidebar */}
           {sidebarVisible && !rightMaximized && !bottomMaximized && activeActivity === "projects" && (
             <ProjectSidebar
@@ -1989,7 +2015,7 @@ export function App() {
           {/* Middle column: MainPanel + Bottom terminal — hidden when right panel is maximized */}
           <div className="flex-1 flex flex-col overflow-hidden min-h-0"
             style={rightMaximized ? { flex: "0 0 0px", overflow: "hidden", minWidth: 0 } : undefined}>
-            {/* MainPanel / SkillDetail — hidden when either panel is maximized */}
+            {/* MainPanel / ResourceDetail — hidden when either panel is maximized */}
             {!rightMaximized && !bottomMaximized && activeActivity === "skills" && showGraph && graphData && (
               <div className="flex-1 flex flex-col bg-[var(--app-bg)]">
                 <div className="flex items-center px-3 py-1 border-b border-[var(--app-border)]">
@@ -2005,7 +2031,7 @@ export function App() {
             )}
             {!rightMaximized && !bottomMaximized && activeActivity === "skills" && !showGraph && (
               <div className="flex-1 overflow-y-auto bg-[var(--app-bg)] flex flex-col">
-                <SkillDetail
+                <ResourceDetail
                   item={selectedSkillItem}
                   data={skillData}
                   graphData={graphData}
@@ -2024,27 +2050,14 @@ export function App() {
                 />
               </div>
             )}
-            {!rightMaximized && !bottomMaximized && activeActivity === "hooks" && (
-              <div className="flex-1 overflow-y-auto bg-[var(--app-bg)]">
-                <HookDetail
-                  hook={selectedHook}
-                  onRefresh={refreshHooks}
-                />
-              </div>
-            )}
             {!rightMaximized && !bottomMaximized && activeActivity === "projects" && activeProject && (
               <ProjectWorkspace
                 project={activeProject}
                 sessions={sessionScanner.sessions}
+                sessionsLoading={sessionScanner.loading}
                 cliUsageRows={buildCliUsageRows(activeProject)}
-                onRunDefault={() => {
-                  const profileName = activeProject.defaultProfile || ctx.defaultProfile;
-                  if (!profileName) {
-                    addToast("error", "请先设置项目默认 Profile");
-                    return;
-                  }
-                  const profile = ctx.profiles.find((p) => p.name === profileName);
-                  const cliType = profile?.cli_type || "claude";
+                profiles={ctx.profiles}
+                onRunProfile={(profileName, cliType) => {
                   rightTerminal.runProjectCommand(
                     `ai ${cliType} ${profileName}`,
                     activeProject,
@@ -2052,56 +2065,35 @@ export function App() {
                     `${activeProject.name} · ${profileName}`,
                   );
                 }}
-                onChangeDefaultProfile={() => setProfileDrawerOpen(true)}
+                onSplitProfile={(profileName, cliType) => {
+                  rightTerminal.runInSplitPane(
+                    `ai ${cliType} ${profileName}`,
+                    activeProject.path,
+                    `${activeProject.name} · ${profileName}`,
+                  );
+                }}
+                onSetDefaultProfile={async (profileName) => {
+                  try {
+                    await setDefaultProfile(activeProject.name, profileName);
+                    addToast("success", `已将 "${activeProject.name}" 的默认 Profile 设为 "${profileName}"`);
+                  } catch (e) {
+                    addToast("error", `设置项目默认 Profile 失败: ${e}`);
+                  }
+                }}
+                onScanSessions={(path) => sessionScanner.scanSessions(path)}
+                onResumeSession={handleResumeSession}
+                addToast={addToast}
+                setToasts={setToasts}
+                toastIdRef={toastIdRef}
+                projects={projects}
+                onAddProject={handleAddProject}
+                onOpenMarketplace={() => setMarketplaceOpen(true)}
               />
             )}
             {!rightMaximized && !bottomMaximized && activeActivity === "projects" && !activeProject && (
-              <div className="flex-1 flex items-center justify-center bg-[var(--app-bg)]">
-                <div className="text-xs text-[var(--app-text-muted)] font-mono">
-                  选择一个项目
-                </div>
-              </div>
-            )}
-            {!rightMaximized && !bottomMaximized && activeActivity !== "skills" && activeActivity !== "hooks" && activeActivity !== "projects" && (
-              <MainPanel
-                profile={ctx.selectedProfile}
-                envCheck={envCheck}
-                hasProfiles={ctx.profiles.length > 0}
-                showWelcome={showWelcome}
-                allTags={Array.from(new Set(ctx.profiles.flatMap((p) => p.tags || []))).sort()}
-                history={rightTerminal.history}
-                onAdd={() => setShowAddDialog(true)}
-                onSetEnv={async (key, value) => {
-                  if (ctx.selectedName) await ctx.setEnvVar(ctx.selectedName, key, value);
-                }}
-                onDeleteEnv={async (key) => {
-                  if (ctx.selectedName) await ctx.unsetEnvVar(ctx.selectedName, key);
-                }}
-                onPasteCommand={handlePasteCommand}
-                onSplitCommand={handleSplitCommand}
-                onRenameProfile={handleRenameProfile}
-                onResumeSession={(r) => rightTerminal.resumeSession(r)}
-                onNewSessionFromHistory={(r) => rightTerminal.newSessionFromHistory(r)}
-                onDeleteHistory={(id) => rightTerminal.deleteHistory(id)}
-                onClearProfileHistory={(name) => rightTerminal.clearProfileHistory(name)}
-                onSetTags={async (name, tags) => {
-                  if (tags) await ctx.setEnvVar(name, "_KN_TAGS", tags);
-                  else await ctx.unsetEnvVar(name, "_KN_TAGS");
-                  await ctx.loadProfiles();
-                  ctx.selectProfile(name);
-                }}
-                onInit={async () => {
-                try {
-                  const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
-                  if (result.profiles.length === 0) {
-                    addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
-                    return;
-                  }
-                  setScanData(result.profiles);
-                } catch (e) {
-                  addToast("error", `扫描失败: ${e}`);
-                }
-              }}
+              <ProjectGuide
+                hasProjects={projects.length > 0}
+                onAddProject={handleAddProject}
               />
             )}
 
@@ -2169,32 +2161,91 @@ export function App() {
       {/* Dialogs */}
       <ProfileDrawer
         open={profileDrawerOpen}
-        profiles={ctx.profiles}
-        selectedProfile={ctx.selectedProfile}
-        selectedName={ctx.selectedName}
+        profiles={ctx.filteredProfiles}
+        selectedName={drawerSelectedName}
         searchQuery={ctx.searchQuery}
         onClose={() => setProfileDrawerOpen(false)}
-        onSelect={(name) => ctx.selectProfile(name)}
+        onSelect={selectDrawerProfile}
         onSearch={(query) => ctx.search(query)}
+        onCopy={async (name) => {
+          const detail = await showProfile(name);
+          handleCopyProfileFromDetail(detail);
+        }}
+        onRename={async (name) => {
+          const detail = await showProfile(name);
+          handleRenameProfileFromDetail(detail);
+        }}
+        onDelete={async (name) => {
+          const detail = await showProfile(name);
+          setDeleteProfileTarget(detail);
+          setShowDeleteConfirm(true);
+        }}
+        onSetDefault={(name) => ctx.setDefault(name)}
+        usageCounts={usageCounts}
+        isDefault={drawerSelectedProfile?.is_default ?? false}
+        hasSelection={!!drawerSelectedName}
+        backupExists={backupExists}
         onAdd={() => setShowAddDialog(true)}
-        onRunInCurrentProject={(profileName) => {
-          if (!activeProject) {
-            addToast("error", "请先选择项目");
-            return;
+        onCopyProfile={() => handleCopyProfileFromDetail(drawerSelectedProfile)}
+        onInit={async () => {
+          try {
+            const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
+            if (result.profiles.length === 0) {
+              addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
+              return;
+            }
+            setScanData(result.profiles);
+          } catch (e) {
+            addToast("error", `扫描失败: ${e}`);
           }
-          const profile = ctx.profiles.find((p) => p.name === profileName);
-          const cliType = profile?.cli_type || "claude";
-          rightTerminal.runProjectCommand(
-            `ai ${cliType} ${profileName}`,
-            activeProject,
-            profileName,
-            `${activeProject.name} · ${profileName}`,
-          );
+        }}
+        onImport={handleImport}
+        onExport={handleExport}
+        onBatchDelete={handleBatchDelete}
+        onBatchExport={handleBatchExport}
+        onRefresh={() => ctx.loadProfiles()}
+        onBackup={handleBackup}
+        onRestore={handleRestore}
+        // ── MainPanel (detail) props ──
+        selectedProfile={drawerSelectedProfile}
+        allTags={Array.from(new Set(ctx.profiles.flatMap((p) => p.tags || []))).sort()}
+        history={rightTerminal.history}
+        envCheck={envCheck}
+        onSetEnv={async (key, value) => {
+          if (!drawerSelectedName) return;
+          await setProfileEnvVar(drawerSelectedName, key, value);
+          await selectDrawerProfile(drawerSelectedName);
+          await ctx.loadProfiles();
+        }}
+        onDeleteEnv={async (key) => {
+          if (!drawerSelectedName) return;
+          await unsetProfileEnvVar(drawerSelectedName, key);
+          await selectDrawerProfile(drawerSelectedName);
+          await ctx.loadProfiles();
+        }}
+        onPasteCommand={handlePasteCommand}
+        onSplitCommand={handleSplitCommand}
+        onRenameProfile={() => handleRenameProfileFromDetail(drawerSelectedProfile)}
+        onResumeSession={(r) => rightTerminal.resumeSession(r)}
+        onNewSessionFromHistory={(r) => rightTerminal.newSessionFromHistory(r)}
+        onDeleteHistory={(id) => rightTerminal.deleteHistory(id)}
+        onClearProfileHistory={(name) => rightTerminal.clearProfileHistory(name)}
+        onSetTags={async (name, tags) => {
+          if (tags) await setProfileEnvVar(name, "_KN_TAGS", tags);
+          else await unsetProfileEnvVar(name, "_KN_TAGS");
+          await ctx.loadProfiles();
+          await selectDrawerProfile(name);
+        }}
+        projects={projects}
+        onRunProfileInProject={(profileName, cliType, projectPath, projectName) => {
+          const cmd = `ai ${cliType} ${profileName}`;
+          rightTerminal.runInNewTab(cmd, projectPath, `${projectName} · ${profileName}`);
         }}
       />
       <ResourceDrawer
         open={resourceDrawerOpen}
         onClose={() => setResourceDrawerOpen(false)}
+        onOpenMarketplace={() => setMarketplaceOpen(true)}
       />
 
       <ProfileDialog
@@ -2218,6 +2269,32 @@ export function App() {
       />
 
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
+
+      {showWelcome && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"          onClick={(e) => e.target === e.currentTarget && window.dispatchEvent(new CustomEvent("kn-dismiss-welcome"))}
+        >
+          <div className="bg-app-panel border border-app-border shadow-dialog w-[560px] max-h-[90vh] overflow-y-auto animate-[scaleIn_150ms_ease-out]">
+            <OnboardingWizard
+              hasProfiles={ctx.profiles.length > 0}
+              onScan={async () => {
+                try {
+                  const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
+                  if (result.profiles.length === 0) {
+                    addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
+                    return;
+                  }
+                  setScanData(result.profiles);
+                } catch (e) {
+                  addToast("error", `扫描失败: ${e}`);
+                }
+              }}
+              onCreate={() => setShowAddDialog(true)}
+              onDismiss={() => window.dispatchEvent(new CustomEvent("kn-dismiss-welcome"))}
+            />
+          </div>
+        </div>
+      )}
 
       <QuickSwitcher
         open={showQuickSwitcher}
@@ -2318,21 +2395,26 @@ export function App() {
         onCancel={() => setShowNameDialog(false)}
       />
 
-      {ctx.selectedName && (
+      {deleteProfileTarget && (
         <ConfirmDialog
           open={showDeleteConfirm}
           title="删除 Profile"
-          message={`确定要永久删除 "${ctx.selectedName}" 及其 ${Object.keys(ctx.selectedProfile?.env ?? {}).length} 个环境变量吗？`}
+          message={`确定要永久删除 "${deleteProfileTarget.name}" 及其 ${Object.keys(deleteProfileTarget.env ?? {}).length} 个环境变量吗？`}
           onConfirm={async () => {
-            const name = ctx.selectedName!;
+            const name = deleteProfileTarget.name;
             await ctx.removeProfile(name);
             // Clean up session history referencing this profile
             rightTerminal.clearProfileHistory(name);
             bottomTerminal.clearProfileHistory(name);
             setShowDeleteConfirm(false);
+            setDeleteProfileTarget(null);
+            if (drawerSelectedName === name) {
+              setDrawerSelectedName(null);
+              setDrawerSelectedProfile(null);
+            }
             addToast("success", `Profile "${name}" 已删除`);
           }}
-          onCancel={() => setShowDeleteConfirm(false)}
+          onCancel={() => { setShowDeleteConfirm(false); setDeleteProfileTarget(null); }}
         />
       )}
 

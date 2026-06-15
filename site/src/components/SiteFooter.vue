@@ -34,7 +34,7 @@ function scrollToDownload() {
       </div>
 
       <div class="footer-right">
-        <p class="footer-copy">&copy; {{ new Date().getFullYear() }} AI Profile Manager</p>
+        <p class="footer-copy">&copy; {{ new Date().getFullYear() }} KN</p>
       </div>
     </div>
   </footer>

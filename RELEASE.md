@@ -1,6 +1,6 @@
 # Release Guide
 
-AI Profile Manager 的发布流程完全自动化：推送 Git tag 即可触发 CI 构建所有平台、生成 release notes、创建 GitHub Release。
+kn 的发布流程完全自动化：推送 Git tag 即可触发 CI 构建所有平台、生成 release notes、创建 GitHub Release。
 
 ## 前置条件
 
@@ -14,6 +14,10 @@ AI Profile Manager 的发布流程完全自动化：推送 Git tag 即可触发 
 - [ ] 手动冒烟测试过你手头平台的功能（macOS 直接 `npm run tauri dev` 跑一下）
 - [ ] `CLAUDE.md` / `README.md` 如果有架构变化已同步更新
 - [ ] 确认本次要发布的所有 commit 已经 push 到 main
+
+> **关于更新签名**：当前 `tauri.conf.json` 中 `updater.pubkey` 为空，更新包不验签。
+> 如需启用签名验证，运行 `npx @tauri-apps/cli signer generate -w ~/.tauri/kn.key` 生成密钥对，
+> 将公钥填入 `pubkey`，并在 CI 构建步骤中设置 `TAURI_SIGNING_PRIVATE_KEY` 环境变量。
 
 ## 发布步骤
 
@@ -97,15 +101,15 @@ git push origin main
 git push origin v1.0.7
 ```
 
-推送 tag 即触发 CI。在 https://github.com/zhaojun2066/ai-profile-manager/actions 查看 `Build Desktop App` workflow 的实时进度。
+推送 tag 即触发 CI。在 https://github.com/zhaojun2066/kn/actions 查看 `Build Desktop App` workflow 的实时进度。
 
 #### 5. 验证发布
 
 CI 完成后（约 20-30 分钟），检查：
 
-- [ ] [GitHub Releases 页面](https://github.com/zhaojun2066/ai-profile-manager/releases) 出现新版本
+- [ ] [GitHub Releases 页面](https://github.com/zhaojun2066/kn/releases) 出现新版本
 - [ ] Release notes 正确显示了本版本的 commit 变更
-- [ ] `download.json` 可访问：`curl -sL https://github.com/zhaojun2066/ai-profile-manager/releases/latest/download/download.json`
+- [ ] `download.json` 可访问：`curl -sL https://github.com/zhaojun2066/kn/releases/latest/download/download.json`
 - [ ] 桌面 App 内「检查更新」能拉取到新版本
 
 ### 完整示例：一次真实的发布
@@ -136,7 +140,7 @@ git tag -a v1.0.7 -m "v1.0.7"
 git push origin main
 git push origin v1.0.7
 
-# 然后去 https://github.com/zhaojun2066/ai-profile-manager/actions 等结果
+# 然后去 https://github.com/zhaojun2066/kn/actions 等结果
 ```
 
 ## 自动化流程说明

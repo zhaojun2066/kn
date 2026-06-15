@@ -95,6 +95,10 @@ pub struct MarketplacePluginEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub installed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_installed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_installed: Option<bool>,
     /// Number of skills this plugin contains (0 if unknown)
     pub skill_count: usize,
 }

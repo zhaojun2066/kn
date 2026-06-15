@@ -155,14 +155,13 @@ pub fn start_pty(
         // PowerShell: dot-source shell-rc.ps1 explicitly on startup.
         // Don't depend on $PROFILE — the profile may not be set up yet,
         // or the user may be in a fresh environment.
-        let ps1_path = std::path::PathBuf::from(&home)
-            .join(".claude-profiles")
+        let ps1_path = crate::config_dir()
             .join("shell-rc.ps1")
             .display()
             .to_string();
         let ps1_path_escaped = ps1_path.replace('\'', "''");
         let startup_cmd = format!(
-            "$rc = '{}'; if (Test-Path $rc) {{ . $rc }} else {{ Write-Host '[AI Profile Manager] shell-rc.ps1 not found at:' $rc }}",
+            "$rc = '{}'; if (Test-Path $rc) {{ . $rc }} else {{ Write-Host '[kn] shell-rc.ps1 not found at:' $rc }}",
             ps1_path_escaped
         );
         cmd.args([
@@ -222,7 +221,7 @@ pub fn start_pty(
     // without these the shell may disable line editing or behave as "dumb" terminal.
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERM_PROGRAM", "ai-profile-manager");
+    cmd.env("TERM_PROGRAM", "kn");
 
     let child = pair
         .slave

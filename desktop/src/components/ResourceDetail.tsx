@@ -11,7 +11,8 @@ import { Button } from "./common/Button";
 import { AgentDetail } from "./AgentDetail";
 import { FileTree } from "./FileTree";
 import type { FileTreeNode } from "./FileTree";
-import type { SelectedItem, CliKind, PluginUpdateInfo, CommandEntry } from "./SkillManager";
+import type { SelectedItem, PluginUpdateInfo, CommandEntry } from "./ResourceList";
+import type { CliKind } from "../lib/types";
 import type { DependencyGraphData } from "./DependencyGraph";
 import { CLI_LABELS, CLI_CSS_COLORS } from "../lib/cli-constants";
 import { basename, dirname } from "../lib/path-utils";
@@ -26,7 +27,7 @@ interface ConfirmState {
 
 /* ──────────────────── Props ──────────────────── */
 
-interface SkillDetailProps {
+interface ResourceDetailProps {
   item: SelectedItem | null;
   data: {
     plugins: { id: string; name: string; marketplace: string; version?: string; source: string; skills: { name: string; path: string; description?: string }[] }[];
@@ -44,6 +45,8 @@ interface SkillDetailProps {
   onUninstallCommand?: (cli: CliKind, name: string, path?: string) => void;
   onNodeClick?: (nodeId: string) => void;
   onSelect?: (item: SelectedItem) => void;
+  /** Context where the component is rendered — tailors the empty-state text. */
+  scope?: "user" | "project";
 }
 
 /* ──────────────────── Helpers ──────────────────── */
@@ -87,7 +90,7 @@ function PluginDetail({
   onAgentClick,
   onCommandClick,
 }: {
-  plugin: NonNullable<SkillDetailProps["item"]>["data"];
+  plugin: NonNullable<ResourceDetailProps["item"]>["data"];
   onToggle: (enabled: boolean) => void;
   updateInfo?: PluginUpdateInfo;
   onUpdate: (cli: CliKind, pluginId: string) => void;
@@ -677,7 +680,7 @@ function StandaloneDetail({
   onUninstall,
   onNodeClick,
 }: {
-  skill: import("./SkillManager").StandaloneSkill;
+  skill: import("./ResourceList").StandaloneSkill;
   readonly: boolean;
   graphData?: DependencyGraphData | null;
   onToggle: (enabled: boolean) => void;
@@ -1110,7 +1113,10 @@ function CommandDetail({
 
 /* ──────────────────── Empty State ──────────────────── */
 
-function EmptyState() {
+function EmptyState({ scope }: { scope?: "user" | "project" }) {
+  const isUser = scope === "user";
+  const isProject = scope === "project";
+
   return (
     <div className="flex-1 flex items-center justify-center bg-[var(--app-bg)]">
       <div className="flex flex-col items-center gap-5 text-center max-w-md px-4">
@@ -1119,32 +1125,52 @@ function EmptyState() {
         </div>
         <div>
           <div className="text-base font-mono font-semibold text-[var(--app-text)] mb-1">
-            Skill &amp; Plugin Manager
+            Resources
           </div>
           <div className="text-xs text-[var(--app-text-dim)] leading-relaxed">
-            统一管理 Plugin、Skill、Agent 和 Command
+            {isUser
+              ? "管理用户级 Plugin、Skill、Agent 和 Command"
+              : isProject
+              ? "管理当前项目的 Plugin、Skill、Agent 和 Command"
+              : "统一管理 Plugin、Skill、Agent 和 Command"}
           </div>
         </div>
 
         {/* 使用说明 */}
         <div className="text-xs text-[var(--app-text-dim)] font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-[var(--app-border)] p-3 w-full">
-          <div className="text-[var(--app-text-muted)] font-semibold mb-2">📋 使用说明</div>
+          <div className="text-[var(--app-text)] font-semibold mb-2">📋 使用说明</div>
           <div className="space-y-1">
             <div className="flex items-start gap-1.5">
               <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
               <span>左侧面板浏览 Plugin / Skill / Agent / Command，点击展开分组</span>
             </div>
+            {!isUser && !isProject && (
+              <div className="flex items-start gap-1.5">
+                <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+                <span>使用 <b className="text-[var(--app-text)]">全部 / 用户级 / 项目级</b> 标签切换作用域</span>
+              </div>
+            )}
+            {!isUser && (
+              <div className="flex items-start gap-1.5">
+                <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+                <span>{isProject ? "当前项目的资源可直接管理" : "选择项目后查看该项目下的资源"}</span>
+              </div>
+            )}
+            {!isProject && (
+              <div className="flex items-start gap-1.5">
+                <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+                <span>可将用户级资源移动/复制到项目级，与团队共享</span>
+              </div>
+            )}
+            {isProject && (
+              <div className="flex items-start gap-1.5">
+                <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
+                <span>项目级资源存储在项目目录中，可通过 Git 与团队共享</span>
+              </div>
+            )}
             <div className="flex items-start gap-1.5">
               <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
-              <span>使用 <span className="text-[var(--app-text-muted)]">全部 / 用户级 / 项目级</span> 标签切换作用域</span>
-            </div>
-            <div className="flex items-start gap-1.5">
-              <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
-              <span>选择项目后查看该项目下的资源</span>
-            </div>
-            <div className="flex items-start gap-1.5">
-              <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
-              <span>点击工具栏 <span className="text-[var(--app-text-muted)]">⋮</span> 展开批量操作：全选、启用/禁用、移动/复制、删除</span>
+              <span>点击工具栏 <b className="text-[var(--app-text)]">⋮</b> 展开批量操作：全选、启用/禁用、移动/复制、删除</span>
             </div>
             <div className="flex items-start gap-1.5">
               <span className="text-[var(--app-accent)] shrink-0 mt-0.5">▸</span>
@@ -1165,7 +1191,7 @@ function EmptyState() {
               <div className="font-semibold mb-1">注意事项</div>
               <div className="space-y-0.5 text-[var(--app-text-dim)]">
                 <div>• Plugin 暂不支持复制和移动操作</div>
-                <div>• 仅 Skills、Agents、Commands 可在用户级和项目级之间移动/复制</div>
+                {!isUser && !isProject && <div>• 仅 Skills、Agents、Commands 可在用户级和项目级之间移动/复制</div>}
                 <div>• 系统内置 Agent 和 System Skill 为只读，不可修改</div>
               </div>
             </div>
@@ -1178,8 +1204,8 @@ function EmptyState() {
 
 /* ──────────────────── Main ──────────────────── */
 
-export function SkillDetail({ item, graphData, onTogglePlugin, onToggleStandaloneSkill, updateInfos, onUpdatePlugin, onUninstallPlugin, onUninstallStandaloneSkill, onToggleAgent, onDeleteAgent, onToggleCommand, onUninstallCommand, onNodeClick, onSelect }: SkillDetailProps) {
-  if (!item) return <EmptyState />;
+export function ResourceDetail({ item, graphData, onTogglePlugin, onToggleStandaloneSkill, updateInfos, onUpdatePlugin, onUninstallPlugin, onUninstallStandaloneSkill, onToggleAgent, onDeleteAgent, onToggleCommand, onUninstallCommand, onNodeClick, onSelect, scope }: ResourceDetailProps) {
+  if (!item) return <EmptyState scope={scope} />;
 
   if (item.type === "plugin") {
     const plugin = item.data;

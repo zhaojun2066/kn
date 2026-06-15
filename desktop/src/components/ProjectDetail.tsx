@@ -149,7 +149,7 @@ export function ProjectDetail({
           <button
             onClick={handleRunClick}
             className="flex items-center gap-1 px-2 py-1 text-2xs font-mono
-              bg-[var(--app-accent)] text-white hover:opacity-90
+              bg-[var(--app-accent)] text-[var(--app-bg)] hover:opacity-90
               border-none outline-none cursor-pointer
               transition-opacity duration-100"
           >
@@ -159,8 +159,8 @@ export function ProjectDetail({
           <button
             onClick={handleRunClick}
             className="flex items-center px-1 py-1 text-2xs font-mono
-              bg-[var(--app-accent)] text-white hover:opacity-90
-              border-l border-white/20 border-none outline-none cursor-pointer
+              bg-[var(--app-accent)] text-[var(--app-bg)] hover:opacity-90
+              border-l border-[var(--app-bg)]/20 border-none outline-none cursor-pointer
               transition-opacity duration-100"
           >
             <ChevronDown size={11} />

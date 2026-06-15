@@ -41,7 +41,10 @@ fn is_project_scope(path: &str) -> bool {
     // Project-level resources have ":project-" in their ID
     // But for paths, we check if the path contains "/.claude/" or "/.codex/" or
     // "/.qoder-cn/" (user) or "/.qoder/" (project, for agents/skills)
-    path.contains("/.claude/") || path.contains("/.codex/") || path.contains("/.qoder-cn/") || path.contains("/.qoder/")
+    path.contains("/.claude/")
+        || path.contains("/.codex/")
+        || path.contains("/.qoder-cn/")
+        || path.contains("/.qoder/")
 }
 
 /// Move a file-based resource (skill, agent, command) from source to destination directory.
@@ -55,6 +58,7 @@ pub(super) fn move_skill_file(
     resource_type: String,
     from_scope: String,
     to_scope: String,
+    overwrite: bool,
 ) -> Result<MoveUndoInfo, String> {
     let src = Path::new(&source_path);
     if !src.exists() {
@@ -63,11 +67,10 @@ pub(super) fn move_skill_file(
 
     let dest_dir_path = Path::new(&dest_dir);
     // Ensure destination directory exists
-    fs::create_dir_all(dest_dir_path)
-        .map_err(|e| format!("无法创建目标目录: {}", e))?;
+    fs::create_dir_all(dest_dir_path).map_err(|e| format!("无法创建目标目录: {}", e))?;
 
-    let file_name = file_name_from_path(src)
-        .ok_or_else(|| format!("无法解析文件名: {}", source_path))?;
+    let file_name =
+        file_name_from_path(src).ok_or_else(|| format!("无法解析文件名: {}", source_path))?;
 
     // Determine dest path based on resource type
     let dest_path = if src.is_dir() {
@@ -83,7 +86,18 @@ pub(super) fn move_skill_file(
 
     // Check for conflicts
     if dest_path.exists() {
-        return Err(format!("目标已存在同名资源: {}", file_name));
+        if overwrite {
+            // Remove existing destination before overwriting
+            if dest_path.is_dir() {
+                fs::remove_dir_all(&dest_path)
+                    .map_err(|e| format!("覆盖失败，无法删除目录: {}", e))?;
+            } else {
+                fs::remove_file(&dest_path)
+                    .map_err(|e| format!("覆盖失败，无法删除文件: {}", e))?;
+            }
+        } else {
+            return Err(format!("目标已存在同名资源: {}", file_name));
+        }
     }
 
     // Compute fingerprint BEFORE any mutation (for undo verification)
@@ -93,8 +107,7 @@ pub(super) fn move_skill_file(
     if src.is_dir() {
         copy_dir_recursive(src, &dest_path)?;
     } else {
-        fs::copy(src, &dest_path)
-            .map_err(|e| format!("复制文件失败: {}", e))?;
+        fs::copy(src, &dest_path).map_err(|e| format!("复制文件失败: {}", e))?;
     }
 
     // Build timestamped backup path to avoid overwriting previous .bak files
@@ -111,10 +124,12 @@ pub(super) fn move_skill_file(
         bak_name.push_str(&format!(".bak.{}", ts));
         src.parent().unwrap_or(Path::new(".")).join(&bak_name)
     } else {
-        let stem = src.file_stem()
+        let stem = src
+            .file_stem()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
-        let ext = src.extension()
+        let ext = src
+            .extension()
             .and_then(|n| n.to_str())
             .map(|e| format!(".{}", e))
             .unwrap_or_default();
@@ -150,6 +165,7 @@ pub(super) fn copy_skill_file(
     source_path: String,
     dest_dir: String,
     resource_name: String,
+    overwrite: bool,
 ) -> Result<(), String> {
     let src = Path::new(&source_path);
     if !src.exists() {
@@ -157,11 +173,10 @@ pub(super) fn copy_skill_file(
     }
 
     let dest_dir_path = Path::new(&dest_dir);
-    fs::create_dir_all(dest_dir_path)
-        .map_err(|e| format!("无法创建目标目录: {}", e))?;
+    fs::create_dir_all(dest_dir_path).map_err(|e| format!("无法创建目标目录: {}", e))?;
 
-    let file_name = file_name_from_path(src)
-        .ok_or_else(|| format!("无法解析文件名: {}", source_path))?;
+    let file_name =
+        file_name_from_path(src).ok_or_else(|| format!("无法解析文件名: {}", source_path))?;
 
     let dest_path = if src.is_dir() {
         dest_dir_path.join(&file_name)
@@ -172,14 +187,23 @@ pub(super) fn copy_skill_file(
     };
 
     if dest_path.exists() {
-        return Err(format!("目标已存在同名资源: {}", resource_name));
+        if overwrite {
+            if dest_path.is_dir() {
+                fs::remove_dir_all(&dest_path)
+                    .map_err(|e| format!("覆盖失败，无法删除目录: {}", e))?;
+            } else {
+                fs::remove_file(&dest_path)
+                    .map_err(|e| format!("覆盖失败，无法删除文件: {}", e))?;
+            }
+        } else {
+            return Err(format!("目标已存在同名资源: {}", resource_name));
+        }
     }
 
     if src.is_dir() {
         copy_dir_recursive(src, &dest_path)?;
     } else {
-        fs::copy(src, &dest_path)
-            .map_err(|e| format!("复制文件失败: {}", e))?;
+        fs::copy(src, &dest_path).map_err(|e| format!("复制文件失败: {}", e))?;
     }
 
     Ok(())
@@ -189,7 +213,12 @@ pub(super) fn copy_skill_file(
 ///
 /// Verifies the destination content hasn't been modified since the move (using a lightweight
 /// fingerprint) before deleting, to avoid destroying user changes.
-pub(super) fn undo_move_skill(backup_path: String, original_path: String, dest_path: String, content_fingerprint: String) -> Result<(), String> {
+pub(super) fn undo_move_skill(
+    backup_path: String,
+    original_path: String,
+    dest_path: String,
+    content_fingerprint: String,
+) -> Result<(), String> {
     let bak = Path::new(&backup_path);
     let orig = Path::new(&original_path);
     let dest = Path::new(&dest_path);

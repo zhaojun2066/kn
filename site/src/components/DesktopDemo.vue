@@ -171,7 +171,7 @@ onUnmounted(() => {
           <span class="dot yellow"></span>
           <span class="dot green"></span>
         </div>
-        <span class="win-title">AI Profile Manager</span>
+        <span class="win-title">KN</span>
         <div class="win-progress">
           <div class="progress-track">
             <div class="progress-fill" :style="{ width: progress + '%' }"></div>

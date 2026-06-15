@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AI Profile Manager — a monorepo with three components sharing one data file (`~/.claude-profiles/config.yaml`):
+kn — a monorepo with three components sharing one data file (`~/.kn/config.yaml`):
 
 | Component | Dir | Language | Role |
 |-----------|-----|----------|------|
@@ -12,7 +12,7 @@ AI Profile Manager — a monorepo with three components sharing one data file (`
 | Desktop App | `desktop/` | TypeScript + Rust (Tauri v2) | GUI with embedded PTY terminal |
 | Product Site | `site/` | Vue 3 + TypeScript + Vite | Landing page + docs, deployed to GitHub Pages |
 
-All three read/write the same `~/.claude-profiles/config.yaml`. The Python lib uses `fcntl.flock` (Unix) / `msvcrt.locking` (Windows) for concurrent-write safety. The Rust backend reads/writes directly via `serde_yaml`.
+All three read/write the same `~/.kn/config.yaml`. The Python lib uses `fcntl.flock` (Unix) / `msvcrt.locking` (Windows) for concurrent-write safety. The Rust backend reads/writes directly via `serde_yaml`.
 
 ## Build & Test Commands
 
@@ -40,7 +40,7 @@ npm run build                                     # production build
 
 ### Data Flow
 ```
-                    ~/.claude-profiles/config.yaml  (single source of truth)
+                    ~/.kn/config.yaml  (single source of truth)
                          ↑ read/write ↑
         ┌────────────────┼────────────┼────────────────┐
         ▼                ▼            ▼                ▼
@@ -55,10 +55,10 @@ npm run build                                     # production build
 - `tests/test_json_output.py` — integration tests for `--json` CLI flag
 
 ### Shell Wrapper
-- `shell/ai-profile.sh` — installed to `~/.claude-profiles/shell-rc`, sourced from `.zshrc`/`.bashrc`
+- `shell/ai-profile.sh` — installed to `~/.kn/shell-rc`, sourced from `.zshrc`/`.bashrc`
 - Defines `ai()` function: `ai claude <profile>` / `ai codex <profile>`
 - Reads config via `sed` (zero-dependency), injects env vars into subshell
-- `install.sh` copies it to `~/.claude-profiles/shell-rc`
+- `install.sh` copies it to `~/.kn/shell-rc`
 
 ### Desktop App
 See `desktop/CLAUDE.md` for full desktop architecture, PTY data flow, terminal panel system, and known pitfalls. Key pointers:
@@ -101,7 +101,7 @@ git tag -a v1.0.7 -m "v1.0.7"
 git push origin main
 git push origin v1.0.7
 
-# 4. 在 https://github.com/zhaojun2066/ai-profile-manager/actions 查看构建进度
+# 4. 在 https://github.com/zhaojun2066/kn/actions 查看构建进度
 ```
 
 Release notes 由 [git-cliff](https://git-cliff.org) 根据 conventional commits 自动生成，按 Features / Bug Fixes / Refactoring / Miscellaneous 分组，每条带 commit 链接。
@@ -129,7 +129,7 @@ Key implementation details:
 
 - **Profile names**: `[a-z0-9]([a-z0-9-]*[a-z0-9])?` — enforced by `add_profile_cmd` to prevent shell injection in `sed`/regex parsing
 - **Config atomic write**: tmp file → `fsync` → `rename`, with 3-generation rotating backup (`.bak` → `.bak.1` → `.bak.2` → `.bak.3`) before overwrite
-- **No dev/prod config split**: single `~/.claude-profiles/config.yaml` for all modes
+- **No dev/prod config split**: single `~/.kn/config.yaml` for all modes
 - **Shell wrapper `sed -i`**: tries macOS `sed -i ''` first, falls back to Linux `sed -i`
 
 ## Hard-Won Lessons
@@ -145,7 +145,7 @@ Rules discovered through bug fixes and code review. Violating any of these will 
 | `with_write_lock(|| ...)` | Intra-process (Rust↔Rust Tauri commands) | `lib.rs:23-33` |
 | `fs2::lock_exclusive()` on `.config.lock` | Cross-process (Rust↔Python CLI) | `profile_cmd.rs` |
 
-- Python side acquires `fcntl.flock(LOCK_EX)` on `~/.claude-profiles/.config.lock` before every write (`lib/config.py:45-76`). 5-second busy-wait timeout.
+- Python side acquires `fcntl.flock(LOCK_EX)` on `~/.kn/.config.lock` before every write (`lib/config.py:45-76`). 5-second busy-wait timeout.
 - Rust side MUST use `fs2::FileExt::try_lock_exclusive()` on the same `.config.lock` file, wrapped inside `crate::with_write_lock()`. See `profile_cmd.rs::write_config()`.
 - **Windows caveat**: `fs2` uses `LockFileEx` (Win32) while Python uses `msvcrt.locking` (C runtime). These are NOT interoperable on Windows. The intra-process `with_write_lock` Mutex still protects Rust↔Rust. This limitation is acceptable because desktop app is primary on Windows.
 
@@ -154,7 +154,7 @@ Rules discovered through bug fixes and code review. Violating any of these will 
 - **Canonical sources**: `shell/ai-profile.sh` (bash) and `shell/ai-profile.ps1` (PowerShell).
 - **Rust embeds at compile time**: `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/ai-profile.sh"))` — NOT a duplicate embedded string constant.
 - **NEVER** maintain a separate `const SHELL_RC: &str = r#"..."#;` in Rust. Always use `include_str!`.
-- **Checksum gating**: `ensure_shell_rc()` must compare content before overwriting `~/.claude-profiles/shell-rc`. Only write if content differs. Protects user customizations.
+- **Checksum gating**: `ensure_shell_rc()` must compare content before overwriting `~/.kn/shell-rc`. Only write if content differs. Protects user customizations.
 - Both scripts have been merged to include all features: fzf picker, default fallback, `ai profile` subcommands, Codex auth.json handling, zero-dependency sed/awk fallback.
 
 ### 3. Delete Profile — Default Promotion

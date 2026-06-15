@@ -21,9 +21,9 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="bg-app-panel border border-app-border shadow-dialog w-[340px] select-none"
+        className="bg-app-panel border border-app-border shadow-dialog w-[340px] select-none animate-[scaleIn_150ms_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -39,11 +39,11 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
 
         {/* Content */}
         <div className="px-4 py-6 flex flex-col items-center gap-4">
-          <div className="w-16 h-16 rounded-2xl bg-app-accent flex items-center justify-center shadow-[0_0_20px_var(--app-glow)]">
+          <div className="w-16 h-16 rounded-none bg-app-accent flex items-center justify-center shadow-[0_0_20px_var(--app-glow)]">
             <span className="text-2xl font-bold text-[var(--app-bg)] font-mono">AI</span>
           </div>
           <div className="text-center space-y-1">
-            <h2 className="text-base font-semibold text-app-text">AI Profile Manager</h2>
+            <h2 className="text-sm font-semibold text-app-text">kn</h2>
             <p className="text-xs text-app-text-dim font-mono">v{version || "..."}</p>
           </div>
 

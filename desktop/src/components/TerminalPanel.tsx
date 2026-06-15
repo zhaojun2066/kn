@@ -1,3 +1,4 @@
+import { relativeTime } from "../lib/time-utils";
 import React, { useRef, useEffect, useCallback, useState } from "react";
 import { X, Plus, FolderOpen, Clock, Trash2, Play, Minus, Maximize2, Minimize2, Search, ChevronUp, ChevronDown, Copy, CopyCheck, Palette, SplitSquareVertical, SplitSquareHorizontal } from "lucide-react";
 
@@ -60,17 +61,6 @@ interface TerminalPanelProps {
 }
 
 /* ── Format relative time ───────────────────────────────── */
-function formatTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "刚刚";
-  if (mins < 60) return `${mins} 分钟前`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} 天前`;
-  return new Date(ts).toLocaleDateString("zh-CN");
-}
 
 /* ── TerminalPanel ──────────────────────────────────────── */
 export function TerminalPanel({
@@ -487,7 +477,7 @@ export function TerminalPanel({
                         <code className="text-xs text-app-text font-mono block truncate">
                           <span className="text-app-accent opacity-70">$ </span>{r.command}
                         </code>
-                        <div className="text-2xs text-app-text-muted mt-0.5">{formatTime(r.timestamp)}</div>
+                        <div className="text-2xs text-app-text-muted mt-0.5">{relativeTime(r.timestamp)}</div>
                       </div>
 
                       {/* Actions */}

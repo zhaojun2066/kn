@@ -106,7 +106,7 @@ export function ScanPreview({ open, profiles, onImport, onCancel }: Props) {
                     <span className={`text-2xs px-1 py-px font-mono shrink-0 ${
                       p.cli_type === "claude" ? "text-app-accent bg-app-green-bg" :
                       p.cli_type === "codex" ? "text-app-blue bg-[var(--app-selected)]" :
-                      p.cli_type === "qoderclicn" ? "text-[#FF6A00] bg-[#fff3e6] bg-opacity-20" :
+                      p.cli_type === "qoderclicn" ? "text-[var(--app-purple)] bg-[var(--app-purple)]/10" :
                       "text-app-text-dim bg-[var(--app-input)]"
                     }`}>
                       {p.cli_type === "claude" ? "Claude Code" :

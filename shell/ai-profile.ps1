@@ -1,8 +1,18 @@
-# AI Profile Manager — PowerShell Wrapper
+# kn — PowerShell Wrapper
 # Usage: ai <tool> <profile>
 # Sourced by PTY on startup and/or via PowerShell profile.
 
-$script:_kn_config_dir = if ($env:HOME) { "$env:HOME\.claude-profiles" } else { "$env:USERPROFILE\.claude-profiles" }
+$script:_home = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+# Prefer ~/.kn (new), fall back to ~/.claude-profiles (legacy)
+if ($env:KN_HOME) {
+    $script:_kn_config_dir = $env:KN_HOME
+} elseif (Test-Path (Join-Path $script:_home ".kn")) {
+    $script:_kn_config_dir = Join-Path $script:_home ".kn"
+} elseif (Test-Path (Join-Path $script:_home ".claude-profiles")) {
+    $script:_kn_config_dir = Join-Path $script:_home ".claude-profiles"
+} else {
+    $script:_kn_config_dir = Join-Path $script:_home ".kn"
+}
 
 function _profile_env {
     param([string]$name)
@@ -81,7 +91,15 @@ function _Find-ProjectProfile {
     while ($dir.Path -ne $dir.Root) {
         $aiProfileFile = Join-Path $dir ".ai-profile"
         if (Test-Path $aiProfileFile) {
-            $projName = (Get-Content $aiProfileFile -First 1).Trim()
+            $line = Get-Content $aiProfileFile | Where-Object {
+                $trimmed = $_.Trim()
+                $trimmed -and -not $trimmed.StartsWith("#")
+            } | Select-Object -First 1
+            $projName = ""
+            if ($line) {
+                $projName = $line.Trim() -replace '^default_profile:\s*', ''
+                $projName = $projName.Trim().Trim('"').Trim("'")
+            }
             if ($projName) {
                 $envs = _profile_env $projName
                 if ($envs -and $envs.Count -gt 0) {
@@ -119,7 +137,7 @@ function _Launch-WithProfile {
 
     # Auto-register current directory as a project (before the tool starts)
     $projDir = (Get-Location).Path
-    $projFile = "$env:USERPROFILE\.claude-profiles\projects.json"
+    $projFile = Join-Path $script:_kn_config_dir "projects.json"
     try {
         $projs = @()
         if (Test-Path $projFile) {
@@ -216,11 +234,81 @@ function _Try-Launch-Fallback {
     return $false
 }
 
+# ── Tips (model selection recommendations + personalized stats) ──
+function _ai_tips {
+    Write-Host "AI Model Tips:"
+    Write-Host "  编程开发   → claude-sonnet-4-6 / deepseek-v3"
+    Write-Host "  复杂推理   → claude-opus-4-8 / deepseek-reasoner"
+    Write-Host "  快速修改   → claude-haiku-4-5"
+    Write-Host "  中文场景   → deepseek-chat / deepseek-v4-pro"
+    Write-Host ""
+
+    # Try to compute personalized top 3 from PowerShell history
+    $histfile = (Get-PSReadLineOption).HistorySavePath
+    if (-not $histfile) {
+        $histfile = Join-Path (Split-Path $profile) "ConsoleHost_history.txt"
+    }
+    if ($histfile -and (Test-Path $histfile)) {
+        try {
+            $counts = @{}
+            Get-Content $histfile -Tail 5000 | ForEach-Object {
+                $line = $_.Trim()
+                if ($line -match '^ai\s+(claude|codex|qoderclicn)\s+(\S+)') {
+                    $pn = $Matches[2]
+                    if (-not $counts[$pn]) { $counts[$pn] = 0 }
+                    $counts[$pn]++
+                }
+            }
+            $top = $counts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 3
+            if ($top) {
+                Write-Host "  你最常用:"
+                foreach ($p in $top) {
+                    Write-Host "    $($p.Name) ($($p.Value) 次)"
+                }
+            } else {
+                Write-Host "  你最常用:   尚未使用 profile，试试 ai claude <profile> 吧"
+            }
+        } catch {
+            Write-Host "  你最常用:   无法读取历史文件"
+        }
+    } else {
+        Write-Host "  你最常用:   无法读取历史文件，试试 ai claude <profile> 吧"
+    }
+}
+
+# ── Profile switch (set default) ──
+function _profile_switch {
+    param([string]$name)
+    if (-not $name) {
+        Write-Host "Usage: ai profile switch <name>"
+        return
+    }
+    $cfg = Join-Path $script:_kn_config_dir "config.yaml"
+    if (-not (Test-Path $cfg)) {
+        Write-Host "Config not found: $cfg"
+        return
+    }
+    # Check profile exists
+    $found = $false
+    Get-Content $cfg | ForEach-Object {
+        if ($_ -match "^  ${name}:") { $found = $true }
+    }
+    if (-not $found) {
+        Write-Host "Profile not found: $name"
+        return
+    }
+    # Update default line
+    $content = Get-Content $cfg -Raw
+    $newContent = $content -replace '(?m)^default:.*$', "default: $name"
+    Set-Content $cfg $newContent -NoNewline
+    Write-Host "Default profile set to: $name"
+}
+
 function ai {
     $cmd = $args[0]
 
     if (-not $cmd) {
-        Write-Host "Usage: ai <tool> [args...]"
+        Write-Host "kn — AI CLI Workspace Manager"
         Write-Host ""
         Write-Host "  Run with profile:"
         Write-Host "    ai claude <profile>       Run Claude Code with profile env"
@@ -230,6 +318,8 @@ function ai {
         Write-Host "  Manage profiles:"
         Write-Host "    ai profile list           List all profiles"
         Write-Host "    ai profile env <name>     Show env vars for a profile"
+        Write-Host "    ai profile switch <name>  Set default profile"
+        Write-Host "    ai tips                   Show model recommendations"
         return
     }
 
@@ -255,27 +345,33 @@ function ai {
             if (_Try-Launch-Fallback $tool $rest) { return }
             & $tool @rest
         }
+        'tips' {
+            _ai_tips
+        }
         'profile' {
             $subcmd = $args[1]
             switch ($subcmd) {
                 'list' { _profile_list }
                 'env' { _profile_show $args[2] }
+                'switch' { _profile_switch $args[2] }
                 default {
-                    Write-Host "Usage: ai profile {list|env <name>}"
+                    Write-Host "Usage: ai profile {list|env <name>|switch <name>}"
                 }
             }
         }
         { $_ -in @('-h','--help','help') } {
-            Write-Host "AI Profile Manager"
+            Write-Host "kn — AI CLI Workspace Manager"
             Write-Host "  ai claude <profile>       Run Claude Code with profile"
             Write-Host "  ai codex <profile>        Run Codex CLI with profile"
             Write-Host "  ai qoderclicn <profile>   Run Qoder with profile"
             Write-Host "  ai profile list           List all profiles"
             Write-Host "  ai profile env <name>     Show env vars for profile"
+            Write-Host "  ai profile switch <name>  Set default profile"
+            Write-Host "  ai tips                   Show model recommendations"
         }
         default {
             Write-Host "Unknown command: $cmd"
-            Write-Host "Supported: claude, codex, qoderclicn, profile"
+            Write-Host "Supported: claude, codex, qoderclicn, profile, tips"
         }
     }
 }

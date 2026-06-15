@@ -9,6 +9,10 @@ const alt = altKey();
 
 const appShortcuts: ShortcutItem[] = [
   { keys: [mod, "N"], desc: "新建 Profile" },
+  { keys: [mod, "P"], desc: "快速切换 Profile" },
+  { keys: [mod, "⇧", "P"], desc: "会话历史" },
+  { keys: [mod, "⇧", "G"], desc: "Profile 管理面板" },
+  { keys: [mod, "⇧", "Y"], desc: "资源管理面板" },
   { keys: [mod, "B"], desc: "切换侧边栏" },
   { keys: ["Ctrl", "`"], desc: "切换底部终端" },
   { keys: [mod, "J"], desc: "切换底部终端（备选）" },
@@ -75,7 +79,7 @@ export function ShortcutsPanel({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
           <div className="flex items-center gap-2">
             <Keyboard size={15} className="text-app-accent" />
-            <h3 className="font-semibold text-sm font-mono">快捷键</h3>
+            <h3 className="font-semibold text-sm font-mono">KN 快捷键</h3>
             <span className="text-2xs text-app-text-muted font-mono">— {isMac() ? "macOS" : "Windows/Linux"}</span>
           </div>
           <button onClick={onClose} className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors">

@@ -524,7 +524,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
                       {onRunCommand && (
                         <button onClick={(e) => { if (e.altKey && onSplitCommand) { onSplitCommand(cmd); } else { onRunCommand(cmd); } onClose(); }}
                           className="flex items-center gap-1 px-2 py-0.5 text-2xs text-app-text-dim hover:text-app-green border border-transparent hover:border-app-border bg-transparent hover:bg-[var(--app-hover)]"
-                          title="运行 (Alt+Click 分屏到当前终端)">
+                          title={`运行 (${navigator.userAgent.includes("Mac") ? "⌥+Click" : "Alt+Click"} 分屏到当前终端)`}>
                           <Play size={10} />运行
                         </button>
                       )}

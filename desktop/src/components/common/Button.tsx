@@ -54,13 +54,19 @@ export function Button({
   className = "",
   prompt,
   children,
+  title,
+  "aria-label": ariaLabel,
   ...props
 }: ButtonProps) {
   const p = prompt ?? promptChar[variant];
+  // Auto-provide aria-label for icon-only buttons from title or variant
+  const effectiveAriaLabel = ariaLabel ?? (variant === "icon" ? title : undefined);
 
   return (
     <button
       className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
+      aria-label={effectiveAriaLabel}
+      title={title}
       {...props}
     >
       {p && (

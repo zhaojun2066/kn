@@ -46,6 +46,9 @@ interface HookListProps {
   activeProject: ProjectInfo | null;
   onProjectChange: (project: ProjectInfo | null) => void;
   onAddProject: () => void;
+  // When true, hide scope tabs & project selector — used when HookList is
+  // embedded in a drawer that only deals with user-level hooks.
+  hideScopeTabs?: boolean;
 }
 
 /* ──────────────────── Constants ──────────────────── */
@@ -72,6 +75,12 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "全部状态" },
   { value: "enabled", label: "已启用" },
   { value: "disabled", label: "已禁用" },
+];
+
+const PROJECT_HOOK_SOURCE_OPTIONS: { value: string; label: string }[] = [
+  { value: "all", label: "全部来源" },
+  { value: "project", label: "本项目" },
+  { value: "inherited", label: "继承" },
 ];
 
 const EVENT_LABELS: Record<string, string> = {
@@ -223,12 +232,20 @@ function ListRow({
 
       {/* Badges */}
       <div className="flex items-center gap-1 shrink-0">
-        {hook.projectName && (
+        {(hook.projectName || hook.source === "project") && (
           <span
-            className="text-2xs text-amber-400 bg-amber-500/10 px-1 py-px rounded font-mono max-w-[72px] truncate shrink-0"
-            title={hook.projectName}
+            className="text-2xs text-[var(--app-amber)] bg-[var(--app-amber)]/10 px-1 py-px rounded font-mono shrink-0"
+            title="项目级"
           >
-            {hook.projectName}
+            项目
+          </span>
+        )}
+        {hook.inherited && (
+          <span
+            className="text-2xs text-[var(--app-accent)] bg-[var(--app-accent)]/10 px-1 py-px rounded font-mono shrink-0"
+            title="继承自用户级"
+          >
+            继承
           </span>
         )}
         <CliBadge cli={hook.cli} />
@@ -259,27 +276,30 @@ export function HookList({
   activeProject,
   onProjectChange,
   onAddProject,
+  hideScopeTabs,
 }: HookListProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   // Per-tab filter state — each scope tab remembers its own filters independently,
-  // matching the SkillManager pattern so switching scopes doesn't leak search state.
-  type HookFilters = { search: string; cliFilter: string; statusFilter: string };
+  // matching the ResourceList pattern so switching scopes doesn't leak search state.
+  type HookFilters = { search: string; cliFilter: string; statusFilter: string; sourceFilter: string };
   const [tabFilters, setTabFilters] = useState<Record<string, HookFilters>>({
-    all: { search: "", cliFilter: "all", statusFilter: "all" },
-    user: { search: "", cliFilter: "all", statusFilter: "all" },
-    project: { search: "", cliFilter: "all", statusFilter: "all" },
+    all: { search: "", cliFilter: "all", statusFilter: "all", sourceFilter: "all" },
+    user: { search: "", cliFilter: "all", statusFilter: "all", sourceFilter: "all" },
+    project: { search: "", cliFilter: "all", statusFilter: "all", sourceFilter: "all" },
   });
   const filters = tabFilters[activeScope] ?? tabFilters.all;
   const setSearch = (v: string) => setTabFilters((prev) => ({ ...prev, [activeScope]: { ...prev[activeScope], search: v } }));
   const setCliFilter = (v: string) => setTabFilters((prev) => ({ ...prev, [activeScope]: { ...prev[activeScope], cliFilter: v } }));
   const setStatusFilter = (v: string) => setTabFilters((prev) => ({ ...prev, [activeScope]: { ...prev[activeScope], statusFilter: v } }));
+  const setSourceFilter = (v: string) => setTabFilters((prev) => ({ ...prev, [activeScope]: { ...prev[activeScope], sourceFilter: v } }));
   const search = filters.search;
   const cliFilter = filters.cliFilter;
   const statusFilter = filters.statusFilter;
+  const sourceFilter = filters.sourceFilter;
 
   // Per-tab project selection — each tab remembers its own project independently.
-  // This mirrors SkillManager's tabProjects pattern so switching scope tabs
+  // This mirrors ResourceList's tabProjects pattern so switching scope tabs
   // doesn't leak project selection from one tab to another.
   const [tabProjects, setTabProjects] = useState<Record<string, ProjectInfo | null>>({
     all: null,
@@ -299,6 +319,7 @@ export function HookList({
   const [toolbarExpanded, setToolbarExpanded] = useState(false);
   const [selectedSet, setSelectedSet] = useState<Set<string>>(new Set());
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState<HookEntry[] | null>(null);
+  const [singleDeleteConfirm, setSingleDeleteConfirm] = useState<HookEntry | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [moveConfirm, setMoveConfirm] = useState<{
     hook: HookEntry;
@@ -369,22 +390,32 @@ export function HookList({
     } else if (statusFilter === "disabled") {
       hooks = hooks.filter((h) => !h.enabled);
     }
-    // Scope filter — explicit whitelist (never use negation), matching SkillManager pattern
-    if (activeScope === "user") {
+    // Scope filter — explicit whitelist (never use negation), matching ResourceList pattern
+    if (hideScopeTabs && activeProject) {
+      hooks = hooks.filter((h) => h.source !== "system");
+      if (sourceFilter === "project") {
+        hooks = hooks.filter((h) => h.source === "project" || h.projectName);
+      } else if (sourceFilter === "inherited") {
+        hooks = hooks.filter((h) => h.inherited || (h.source !== "project" && !h.projectName));
+      }
+    } else if (activeScope === "user") {
       hooks = hooks.filter((h) => h.source === "user" || h.source === "system");
     } else if (activeScope === "project") {
       hooks = hooks.filter((h) => h.source === "project");
     }
     // Project filter — when a specific project is selected, only show hooks from that project.
-    // Explicitly skip on "user" scope tab (matches SkillManager's filterByProject guard).
+    // Explicitly skip on "user" scope tab (matches ResourceList's filterByProject guard).
     if (effectiveActiveProject && activeScope !== "user") {
       const pp = effectiveActiveProject.path.endsWith("/")
         ? effectiveActiveProject.path
         : effectiveActiveProject.path + "/";
-      hooks = hooks.filter((h) => h.path.startsWith(pp));
+      hooks = hooks.filter((h) => {
+        if (h.source !== "project" && !h.projectName) return true;
+        return h.path.startsWith(pp);
+      });
     }
     return hooks;
-  }, [data, search, cliFilter, statusFilter, activeScope, effectiveActiveProject]);
+  }, [data, search, cliFilter, statusFilter, sourceFilter, activeScope, effectiveActiveProject, hideScopeTabs, activeProject]);
 
   // Group hooks by event type; catch unknowns in "Other"
   const grouped = useMemo(() => {
@@ -571,14 +602,17 @@ export function HookList({
     <div className="flex flex-col h-full bg-[var(--app-sidebar)] select-none">
       {/* Header */}
       <div className="px-2.5 pt-2.5 pb-2">
+        {!hideScopeTabs && (
         <div className="flex items-center gap-1.5 mb-2.5">
           <Terminal size={13} className="text-[var(--app-accent)] shrink-0" />
           <span className="text-2xs text-[var(--app-text)] font-mono tracking-[0.15em] uppercase flex-1">
             Hooks
           </span>
         </div>
+        )}
 
         {/* Scope tabs */}
+        {!hideScopeTabs && (
         <div className="mb-2">
           <ScopeTabs
             active={activeScope}
@@ -587,9 +621,10 @@ export function HookList({
             projectCount={data?.hooks?.filter((h) => h.source === "project").length ?? 0}
           />
         </div>
+        )}
 
-        {/* Project selector — only on all/project tabs */}
-        {activeScope !== "user" && (
+        {/* Project selector — only on all/project tabs (hidden when scope tabs are hidden) */}
+        {!hideScopeTabs && activeScope !== "user" && (
           <div className="mb-2">
             <ProjectSelector
               projects={projects}
@@ -624,6 +659,16 @@ export function HookList({
               />
             </div>
           </div>
+          {hideScopeTabs && activeProject && (
+            <div className="flex">
+              <FilterDropdown
+                value={sourceFilter}
+                options={PROJECT_HOOK_SOURCE_OPTIONS}
+                onChange={setSourceFilter}
+                bordered
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -640,8 +685,8 @@ export function HookList({
           <span>新建</span>
         </button>
 
-        {/* Hook Store — only on user-level tab (project-level hooks come from project configs) */}
-        {activeScope === "user" && (
+        {/* Hook Store — only on user-level tab (project-level hooks come from project configs). Always shown when scope tabs are hidden (user-only mode). */}
+        {(hideScopeTabs || activeScope === "user") && (
         <button
           onClick={onOpenStore}
           className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-accent)] hover:bg-[var(--app-hover)] transition-colors shrink-0"
@@ -850,11 +895,15 @@ export function HookList({
                           icon: hook.enabled ? <Ban size={13} /> : <Play size={13} />,
                           onClick: () => onToggleHook?.(hook, !hook.enabled),
                         },
-                        { separator: true },
+                        // Copy/move between scopes.
+                        // When hideScopeTabs is set, we may still have project-level hooks
+                        // (e.g. ProjectWorkspace shows only its own project hooks).
+                        // Always allow project↔user direction regardless of hideScopeTabs.
+                        { separator: true as const },
                         {
                           label: isTowardProject ? "复制到项目级" : "复制到用户级",
                           icon: <span>{arrow}</span>,
-                          disabled: noProject,
+                          disabled: noProject || (hideScopeTabs && !isTowardProject && !isProject),
                           onClick: () => {
                             if (isTowardProject) {
                               if (singleProject) {
@@ -863,6 +912,7 @@ export function HookList({
                                 setProjectPicker({ hook, action: "copy" });
                               }
                             } else {
+                              // project→user (when hideScopeTabs, isProject must be true to reach here)
                               onCopyHook?.(hook, "user");
                             }
                           },
@@ -870,7 +920,7 @@ export function HookList({
                         {
                           label: isTowardProject ? "移动到项目级" : "移动到用户级",
                           icon: <span>{arrow}</span>,
-                          disabled: noProject,
+                          disabled: noProject || (hideScopeTabs && !isTowardProject && !isProject),
                           onClick: () => {
                             if (isTowardProject) {
                               if (singleProject) {
@@ -885,6 +935,7 @@ export function HookList({
                                 setProjectPicker({ hook, action: "move" });
                               }
                             } else {
+                              // project→user (when hideScopeTabs, isProject must be true to reach here)
                               setMoveConfirm({
                                 hook,
                                 targetScope: "user",
@@ -894,31 +945,31 @@ export function HookList({
                             }
                           },
                         },
-                        // Cross-project copy/move (only for project-level hooks)
+                        // Cross-project copy/move (for project-level hooks, even when scope tabs hidden)
                         ...(isProject ? [
-                          {
-                            label: "复制到其他项目…",
-                            icon: <Folder size={13} />,
-                            disabled: projects.length <= 1,
-                            onClick: () => {
-                              setProjectPicker({ hook, action: "copy", excludePath: getHookProjectRoot(hook.path) });
+                            {
+                              label: "复制到其他项目…",
+                              icon: <Folder size={13} />,
+                              disabled: projects.length <= 1,
+                              onClick: () => {
+                                setProjectPicker({ hook, action: "copy", excludePath: getHookProjectRoot(hook.path) });
+                              },
                             },
-                          },
-                          {
-                            label: "移动到其他项目…",
-                            icon: <Folder size={13} />,
-                            disabled: projects.length <= 1,
-                            onClick: () => {
-                              setProjectPicker({ hook, action: "move", excludePath: getHookProjectRoot(hook.path) });
+                            {
+                              label: "移动到其他项目…",
+                              icon: <Folder size={13} />,
+                              disabled: projects.length <= 1,
+                              onClick: () => {
+                                setProjectPicker({ hook, action: "move", excludePath: getHookProjectRoot(hook.path) });
+                              },
                             },
-                          },
-                        ] : []),
+                          ] : []),
                         { separator: true },
                         {
                           label: "删除",
                           icon: <Trash2 size={13} />,
                           danger: true,
-                          onClick: () => onDeleteHook?.(hook),
+                          onClick: () => setSingleDeleteConfirm(hook),
                         },
                       ];
                       setContextMenu({ x: e.clientX, y: e.clientY, items: menuItems });
@@ -972,6 +1023,21 @@ export function HookList({
           }
         }}
         onCancel={() => setBatchDeleteConfirm(null)}
+      />
+
+      {/* Single delete confirmation (context menu) */}
+      <ConfirmDialog
+        open={singleDeleteConfirm !== null}
+        title="删除 Hook"
+        message={`确定要删除 "${singleDeleteConfirm?.name || singleDeleteConfirm?.eventType || ""}" 吗？此操作不可撤销。`}
+        confirmLabel="删除"
+        onConfirm={() => {
+          if (singleDeleteConfirm && onDeleteHook) {
+            onDeleteHook(singleDeleteConfirm);
+            setSingleDeleteConfirm(null);
+          }
+        }}
+        onCancel={() => setSingleDeleteConfirm(null)}
       />
 
       {/* Project picker dialog — shown when multiple projects exist */}

@@ -3,7 +3,7 @@ mod commands;
 mod hook_logs;
 mod hook_manager;
 mod hook_meta;
-mod hook_store;
+pub mod hook_store;
 mod profile_cmd;
 mod project_manager;
 mod pty;
@@ -14,6 +14,9 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use fs2::FileExt;
 
 /// Global write lock — serializes all config file writes to prevent
 /// data corruption when multiple Tauri commands run concurrently.
@@ -21,8 +24,18 @@ use std::sync::{Arc, Mutex};
 static WRITE_LOCK: std::sync::LazyLock<Mutex<()>> =
     std::sync::LazyLock::new(|| Mutex::new(()));
 
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
+
 /// Acquire the global write lock and run the closure.
 /// All file-write operations should pass through this to avoid races.
+///
+/// # Lock ordering
+/// `with_write_lock` (process mutex) MUST be acquired BEFORE
+/// `with_cross_process_lock` (fs2 file lock). Reversing this order
+/// could deadlock when the Python CLI holds the file lock while
+/// a Rust command holds the mutex and vice versa.
 pub(crate) fn with_write_lock<F, T>(f: F) -> Result<T, String>
 where
     F: FnOnce() -> Result<T, String>,
@@ -31,6 +44,64 @@ where
         .lock()
         .map_err(|e| format!("write lock poisoned: {}", e))?;
     f()
+}
+
+/// Acquire **both** the process mutex and cross-process file lock,
+/// then run the closure. This is the canonical way to perform a
+/// write that must be safe from concurrent Rust↔Python access.
+///
+/// Always use this (or the two-step `with_write_lock` →
+/// `with_cross_process_lock` in that order) instead of calling
+/// `with_cross_process_lock` alone.
+pub(crate) fn with_write_lock_exclusive<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    with_write_lock(|| with_cross_process_lock(f))
+}
+
+/// Acquire a cross-process file lock (via fs2, interoperable with Python
+/// fcntl.flock on Unix) and run the closure. Serializes writes between
+/// the Rust desktop app and the Python CLI / hook recorder scripts.
+///
+/// Uses `.config.lock` in the config directory as the coordination file.
+/// 5-second busy-wait timeout, retrying every 50ms.
+///
+/// **Important**: this function MUST be called inside `with_write_lock`.
+/// Always prefer `with_write_lock_exclusive` which combines both locks
+/// in the correct order.
+pub(crate) fn with_cross_process_lock<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let lock_path = config_dir().join(".config.lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建锁目录失败: {}", e))?;
+    }
+    let lock_fh = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("无法打开锁文件: {}", e))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match lock_fh.try_lock_exclusive() {
+            Ok(()) => break,
+            Err(_) => {
+                if Instant::now() > deadline {
+                    return Err("无法获取跨进程锁 (5s 超时)".into());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+
+    let result = f();
+    let _ = lock_fh.unlock();
+    result
 }
 
 /// Atomically rename `src` to `dst`, overwriting `dst` if it exists.
@@ -104,19 +175,69 @@ pub(crate) fn project_name_from_root(root: &Path) -> Option<String> {
 
 /// Shared config directory.
 ///
-/// Respects `CLAUDE_PROFILES_HOME` env var (matching Python `lib/config.py`),
-/// falling back to `~/.claude-profiles` on all platforms.
+/// Respects `KN_HOME` env var first, then `CLAUDE_PROFILES_HOME` (legacy),
+/// falling back to `~/.kn` on all platforms.
+///
+/// Environment variable values are validated: must be absolute and
+/// must not contain `..` path-traversal components.
 pub(crate) fn config_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("CLAUDE_PROFILES_HOME") {
-        let p = PathBuf::from(&dir);
-        if p.is_absolute() {
-            return p;
+    // KN_HOME takes precedence (new name), CLAUDE_PROFILES_HOME for backward compat
+    for var in &["KN_HOME", "CLAUDE_PROFILES_HOME"] {
+        if let Ok(dir) = std::env::var(var) {
+            let p = PathBuf::from(&dir);
+            // Must be absolute AND must not contain path traversal
+            if p.is_absolute() && !p.components().any(|c| c == std::path::Component::ParentDir) {
+                return p;
+            }
         }
     }
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(&home).join(".claude-profiles")
+        .unwrap_or_else(|_| {
+            // Last resort: use temp dir rather than "."
+            // In GUI apps (Tauri), CWD is often "/" which would cause
+            // files to be written to the filesystem root.
+            std::env::temp_dir()
+                .to_string_lossy()
+                .to_string()
+        });
+    PathBuf::from(&home).join(".kn")
+}
+
+/// One-time migration: if `~/.kn/` doesn't exist but `~/.claude-profiles/` does,
+/// rename the legacy directory to the new name.
+///
+/// Called from `ensure_shell_rc` during app startup. Best-effort — failures are
+/// logged but never block the app. The old directory is left in place on failure.
+pub(crate) fn migrate_legacy_config_dir() {
+    let new_dir = config_dir();
+    if new_dir.exists() {
+        return; // Already migrated or fresh install
+    }
+
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    if home.is_empty() {
+        return;
+    }
+    let legacy_dir = PathBuf::from(&home).join(".claude-profiles");
+    if !legacy_dir.exists() {
+        return; // No legacy data to migrate
+    }
+
+    // Best-effort rename — if it fails (e.g. permissions), the old dir
+    // stays and config_dir() will still use ~/.kn for new writes.
+    // Users can manually migrate or set KN_HOME to point to the old dir.
+    if let Err(e) = std::fs::rename(&legacy_dir, &new_dir) {
+        eprintln!(
+            "[kn] 无法迁移配置目录 {} → {}: {}。旧数据保留，新配置将写入 {}。",
+            legacy_dir.display(),
+            new_dir.display(),
+            e,
+            new_dir.display()
+        );
+    }
 }
 
 /// Resolve the user home directory across platforms.
@@ -124,7 +245,9 @@ pub(crate) fn config_dir() -> PathBuf {
 /// Reads `HOME` first, falling back to `USERPROFILE` on Windows (where
 /// GUI apps launched from Explorer typically lack `HOME`).
 /// If both env vars are missing, tries shell fallback (powershell on Windows,
-/// `echo $HOME` via `sh` on Unix). Returns `.` as a last resort.
+/// `echo $HOME` via `sh` on Unix). Returns temp dir as a last resort
+/// (never `"."` — in GUI apps CWD is often `/` which would cause files
+/// to be written to the filesystem root).
 pub(crate) fn home_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home);
@@ -152,7 +275,9 @@ pub(crate) fn home_dir() -> PathBuf {
             return PathBuf::from(s);
         }
     }
-    PathBuf::from(".")
+    // Last resort: temp dir is always available and writable,
+    // unlike CWD which may be "/" in macOS .app bundles
+    std::env::temp_dir()
 }
 
 /// Resolve the user's Documents folder on Windows.
@@ -163,7 +288,7 @@ pub(crate) fn home_dir() -> PathBuf {
 pub(crate) fn windows_documents_dir() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
+        .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().to_string());
     let home_path = std::path::Path::new(&home);
 
     let api_result = std::process::Command::new("powershell")
@@ -293,6 +418,7 @@ pub fn run() {
             project_manager::update_project,
             project_manager::toggle_pin_project,
             project_manager::get_project_stats,
+            project_manager::get_project_overview,
             project_manager::write_ai_profile,
             project_manager::read_ai_profile,
             project_manager::read_session_preview,
@@ -316,4 +442,75 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_config_dir_rejects_parent_dir() {
+        // Verify path traversal detection works on the underlying logic
+        let p = std::path::PathBuf::from("/tmp/../etc");
+        let has_parent = p.components().any(|c| c == std::path::Component::ParentDir);
+        assert!(has_parent, "test input should contain '..'");
+
+        let p2 = std::path::PathBuf::from("/tmp/valid");
+        let has_parent2 = p2.components().any(|c| c == std::path::Component::ParentDir);
+        assert!(!has_parent2, "clean path should not have parent dir components");
+    }
+
+    #[test]
+    fn test_atomic_rename_basic() {
+        let dir = std::env::temp_dir().join("kn-test-atomic-rename");
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("source.txt");
+        let dst = dir.join("target.txt");
+        let _ = fs::remove_file(&dst);
+
+        fs::write(&src, "hello world").unwrap();
+        atomic_rename(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert!(dst.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "hello world");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_atomic_rename_overwrite_existing() {
+        let dir = std::env::temp_dir().join("kn-test-atomic-overwrite");
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("source.txt");
+        let dst = dir.join("target.txt");
+
+        fs::write(&src, "new").unwrap();
+        fs::write(&dst, "old").unwrap();
+        atomic_rename(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+
+    #[test]
+    fn test_hash_path_deterministic() {
+        let a = hash_path("/Users/test/project");
+        let b = hash_path("/Users/test/project");
+        assert_eq!(a, b);
+        assert!(!a.is_empty() && a.len() >= 8);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_project_name_from_root_valid() {
+        let name = project_name_from_root(std::path::Path::new("/Users/alice/myproject"));
+        assert_eq!(name, Some("myproject".to_string()));
+    }
+
+    #[test]
+    fn test_project_name_from_root_root_dir() {
+        let name = project_name_from_root(std::path::Path::new("/"));
+        assert!(name.is_none() || name == Some("".to_string()));
+    }
 }

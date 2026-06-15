@@ -43,7 +43,7 @@ pub struct HookStoreData {
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn hooks_dir() -> PathBuf {
-    crate::home_dir().join(".claude-profiles").join("hooks")
+    crate::config_dir().join("hooks")
 }
 
 /// Locate bash.exe on Windows, searching Git for Windows install paths
@@ -493,6 +493,57 @@ fn get_script(hook_id: &str) -> Option<&'static str> {
     }
 }
 
+/// Repair missing hook scripts referenced by installed hooks.
+///
+/// Scans all installed hooks (user + every project), extracts script filenames
+/// from hook commands, and writes any missing scripts from the embedded copies.
+pub fn repair_missing_hook_scripts() {
+    let hooks_dir = hooks_dir();
+    let data = hook_manager::scan_hooks(None);
+
+    for hook in &data.hooks {
+        // Extract the script filename from the hook command
+        // e.g. "/Users/xxx/.kn/hooks/context-monitor.sh" → "context-monitor"
+        let cmd = hook.command.trim();
+        let script_name = std::path::Path::new(cmd)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+
+        if script_name.is_empty() {
+            continue;
+        }
+
+        let ext = std::path::Path::new(cmd)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("sh");
+
+        let script_path = hooks_dir.join(format!("{}.{}", script_name, ext));
+
+        if script_path.exists() {
+            continue;
+        }
+
+        // Try to restore from embedded copy
+        if let Some(content) = get_script(script_name) {
+            let _ = std::fs::create_dir_all(&hooks_dir);
+            if std::fs::write(&script_path, content).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(&script_path) {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(0o755);
+                        let _ = std::fs::set_permissions(&script_path, perms);
+                    }
+                }
+                eprintln!("[kn] Repaired missing hook script: {}", script_path.display());
+            }
+        }
+    }
+}
+
 // ── List command ────────────────────────────────────────────────
 
 #[tauri::command]
@@ -508,7 +559,7 @@ pub fn list_store_hooks() -> HookStoreData {
                 h.cli == *cli
                     && h.event_type == hook.event_type
                     && h.command
-                        .contains(&format!(".claude-profiles/hooks/{}", hook.id))
+                        .contains(&format!(".kn/hooks/{}", hook.id))
             });
             if has {
                 installed.push(cli.clone());
@@ -551,7 +602,7 @@ pub fn install_store_hook(hook_id: String, cli: String) -> Result<(), String> {
     let dir = hooks_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
-    // Write script to ~/.claude-profiles/hooks/<hook_id>.<ext>
+    // Write script to ~/.kn/hooks/<hook_id>.<ext>
     let script_path = dir.join(format!("{}.{}", hook_id, hook.script_ext));
     fs::write(&script_path, script).map_err(|e| format!("写入脚本失败: {}", e))?;
 
@@ -589,7 +640,7 @@ pub fn install_store_hook(hook_id: String, cli: String) -> Result<(), String> {
     // Check if already installed — prevent duplicate hook entries.
     // Scan existing hooks and look for a match on event_type + matcher + same script path.
     let existing = hook_manager::scan_hooks(None);
-    let cmd_pattern = format!(".claude-profiles/hooks/{}", hook_id);
+    let cmd_pattern = format!(".kn/hooks/{}", hook_id);
     let already_installed = existing.hooks.iter().any(|h| {
         h.cli == cli
             && h.event_type == hook.event_type
@@ -667,7 +718,7 @@ pub fn uninstall_store_hook(hook_id: String, cli: String) -> Result<(), String> 
 
     // Find and delete the hook entry from the CLI config
     let scan_data = hook_manager::scan_hooks(None);
-    let cmd_pattern = format!(".claude-profiles/hooks/{}", hook_id);
+    let cmd_pattern = format!(".kn/hooks/{}", hook_id);
 
     let matching: Vec<_> = scan_data
         .hooks

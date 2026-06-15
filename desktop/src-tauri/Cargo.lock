@@ -18,32 +18,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-profile-manager"
-version = "1.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "fs2",
- "libc",
- "portable-pty",
- "regex-lite",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-shell",
- "tauri-plugin-updater",
- "tempfile",
- "toml 0.8.2",
- "toml_edit 0.22.27",
-]
-
-[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1853,6 +1827,32 @@ dependencies = [
  "bitflags 2.11.1",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "kn"
+version = "1.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "fs2",
+ "libc",
+ "portable-pty",
+ "regex-lite",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-shell",
+ "tauri-plugin-updater",
+ "tempfile",
+ "toml 0.8.2",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]

@@ -1,3 +1,4 @@
+use crate::with_cross_process_lock;
 use crate::with_write_lock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -195,12 +196,12 @@ pub fn load_pricing() -> HashMap<String, ModelPricing> {
 }
 
 pub fn save_pricing(pricing: &HashMap<String, ModelPricing>) -> Result<(), String> {
-    with_write_lock(|| {
+    crate::with_write_lock_exclusive(|| {
     let dir = crate::config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create dir: {}", e))?;
     let json = serde_json::to_string_pretty(pricing).map_err(|e| format!("serialize: {}", e))?;
     fs::write(pricing_file(), json).map_err(|e| format!("write: {}", e))
-    }) // with_write_lock
+    })
 }
 
 // ── Tauri commands ───────────────────────────────────────────
@@ -484,6 +485,8 @@ pub fn get_usage_tracking_enabled() -> Result<bool, String> {
 
 #[tauri::command]
 pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
+    with_write_lock(|| {
+    with_cross_process_lock(|| {
     let home = crate::home_dir().to_string_lossy().to_string();
     let hooks_dir = crate::config_dir().join("hooks");
     fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
@@ -509,14 +512,18 @@ pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
     }
 
     Ok("ok".into())
+    }) // with_cross_process_lock
+    }) // with_write_lock
 }
 
 #[tauri::command]
 pub fn ensure_usage_hooks() -> Result<(), String> {
-    if !get_usage_tracking_enabled()? {
-        return Ok(());
-    }
-    set_usage_tracking_enabled(true)?;
+    // Always remove and re-inject to guarantee the hook command uses the
+    // correct current path (~/.kn/hooks/record-usage.py).  This handles
+    // both first-time setup (no hooks → remove is a no-op) and migration
+    // from the old ~/.claude-profiles/hooks/ path.
+    set_usage_tracking_enabled(false)?; // clean up any old-path hooks
+    set_usage_tracking_enabled(true)?;  // inject with correct current path
     Ok(())
 }
 
@@ -550,6 +557,14 @@ fn inject_json_hook(path: &Path, event_name: &str, hook_cmd: &str) -> Result<(),
         .or_insert(serde_json::json!([]));
 
     if let Some(arr) = event_hooks.as_array_mut() {
+        // Clean up any old-path hooks left over from previous installs
+        arr.retain(|h| {
+            !h["hooks"][0]["command"]
+                .as_str()
+                .unwrap_or("")
+                .contains(".claude-profiles/record-usage.py")
+        });
+
         let cmd_str = hook_cmd.to_string();
         if !arr
             .iter()

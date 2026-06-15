@@ -10,9 +10,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 mod content;
@@ -318,6 +320,7 @@ fn scan_claude_standalone_skills(
 #[derive(Debug, Deserialize, Default)]
 struct CodexConfig {
     plugins: Option<HashMap<String, CodexPluginConfig>>,
+    marketplaces: Option<HashMap<String, CodexMarketplaceConfig>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -325,7 +328,15 @@ struct CodexPluginConfig {
     enabled: Option<bool>,
 }
 
-/// Parse Codex config.toml to get plugin enabled states.
+#[derive(Debug, Deserialize, Default)]
+#[allow(dead_code)]
+struct CodexMarketplaceConfig {
+    #[serde(default)]
+    source: Option<String>,
+}
+
+/// Parse Codex config.toml to get plugin enabled states, including
+/// marketplaces registered via `codex plugin marketplace add`.
 fn read_codex_plugin_states() -> HashMap<String, bool> {
     let mut states = HashMap::new();
     let path = match codex_config_toml() {
@@ -348,7 +359,127 @@ fn read_codex_plugin_states() -> HashMap<String, bool> {
             states.insert(full_name, cfg.enabled.unwrap_or(false));
         }
     }
+    // Also read [marketplaces] section — user-added marketplaces are registered here
+    // and the marketplace name serves as the plugin id (installed = true).
+    if let Some(marketplaces) = config.marketplaces {
+        for (mkt_name, _cfg) in marketplaces {
+            states.insert(format!("{}@{}", mkt_name, mkt_name), true);
+        }
+    }
     states
+}
+
+/// Write a plugin entry into a project's `.codex/config.toml` `[plugins]` section.
+/// Creates the directory and file if they don't exist.
+fn write_codex_project_plugin_enabled(
+    project_path: &str,
+    plugin_name: &str,
+    marketplace: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let project_dir = validate_project_dir(project_path)?;
+    let config_path = project_dir.join(".codex").join("config.toml");
+
+    // Ensure .codex/ directory exists
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建项目 .codex 目录失败: {}", e))?;
+    }
+
+    // Read existing config or start fresh
+    let mut config: toml::Value = if config_path.exists() {
+        let text = fs::read_to_string(&config_path)
+            .map_err(|e| format!("读取项目 config.toml 失败: {}", e))?;
+        toml::from_str(&text).unwrap_or(toml::Value::Table(toml::map::Map::new()))
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    // Set [plugins."name@marketplace"].enabled
+    let key = format!("{}@{}", plugin_name, marketplace);
+    let root = config
+        .as_table_mut()
+        .ok_or("项目 config.toml 根节点必须是 table".to_string())?;
+    let plugins = root
+        .entry("plugins".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or("项目 config.toml 的 [plugins] 必须是 table".to_string())?;
+    let plugin_cfg = plugins
+        .entry(key)
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or("项目 plugin 配置必须是 table".to_string())?;
+    plugin_cfg.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+
+    let content = toml::to_string_pretty(&config)
+        .map_err(|e| format!("序列化项目 config.toml 失败: {}", e))?;
+    fs::write(&config_path, content).map_err(|e| format!("写入项目 config.toml 失败: {}", e))?;
+    Ok(())
+}
+
+/// Remove a plugin entry from a project's `.codex/config.toml` `[plugins]` section.
+fn remove_codex_project_plugin(project_path: &str, plugin_full_id: &str) -> Result<(), String> {
+    let project_dir = validate_project_dir(project_path)?;
+    let config_path = project_dir.join(".codex").join("config.toml");
+    if !config_path.exists() {
+        return Ok(()); // Nothing to remove
+    }
+    let text = fs::read_to_string(&config_path)
+        .map_err(|e| format!("读取项目 config.toml 失败: {}", e))?;
+    let mut config: toml::Value =
+        toml::from_str(&text).map_err(|_| "解析项目 config.toml 失败".to_string())?;
+
+    if let Some(plugins) = config.get_mut("plugins") {
+        if let Some(table) = plugins.as_table_mut() {
+            table.remove(plugin_full_id);
+            // Write back
+            let content = toml::to_string_pretty(&config)
+                .map_err(|e| format!("序列化项目 config.toml 失败: {}", e))?;
+            fs::write(&config_path, content)
+                .map_err(|e| format!("写入项目 config.toml 失败: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_project_dir(project_path: &str) -> Result<PathBuf, String> {
+    let project_dir = PathBuf::from(project_path);
+    if !project_dir.exists() {
+        return Err(format!("项目目录不存在: {}", project_path));
+    }
+    if !project_dir.is_dir() {
+        return Err(format!("项目路径不是目录: {}", project_path));
+    }
+    Ok(project_dir)
+}
+
+/// Remove a plugin entry from the user-level `~/.codex/config.toml` `[plugins]` section.
+/// Used after `codex plugin add` when installing at project scope — we want the plugin
+/// files in cache but NOT registered at user level.
+fn remove_codex_user_plugin_config(plugin_name: &str, marketplace: &str) -> Result<(), String> {
+    let config_path = match codex_config_toml() {
+        Some(p) => p,
+        None => return Ok(()), // No config — nothing to remove
+    };
+    if !config_path.exists() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(&config_path)
+        .map_err(|e| format!("读取 Codex config.toml 失败: {}", e))?;
+    let mut config: toml::Value =
+        toml::from_str(&text).map_err(|_| "解析 Codex config.toml 失败".to_string())?;
+
+    let key = format!("{}@{}", plugin_name, marketplace);
+    if let Some(plugins) = config.get_mut("plugins") {
+        if let Some(table) = plugins.as_table_mut() {
+            table.remove(&key);
+            let content = toml::to_string_pretty(&config)
+                .map_err(|e| format!("序列化 Codex config.toml 失败: {}", e))?;
+            fs::write(&config_path, content)
+                .map_err(|e| format!("写入 Codex config.toml 失败: {}", e))?;
+        }
+    }
+    Ok(())
 }
 
 fn scan_codex_plugins() -> Vec<PluginEntry> {
@@ -370,14 +501,17 @@ fn scan_codex_plugins() -> Vec<PluginEntry> {
         }
     }
 
-    // Source 2: Marketplace plugins (bundled + runtime)
+    // Source 2: Marketplace plugins (bundled + runtime + user-added)
     if let Some(home) = home_dir() {
+        let tmp = home.join(".codex").join(".tmp");
+
         // Bundled marketplace
-        let bundled = home
-            .join(".codex")
-            .join(".tmp")
-            .join("bundled-marketplaces");
+        let bundled = tmp.join("bundled-marketplaces");
         scan_codex_marketplace_dir(&bundled, &plugin_states, "bundled", &mut plugins);
+
+        // User-added marketplaces (codex plugin marketplace add ...)
+        let user_markets = tmp.join("marketplaces");
+        scan_codex_marketplace_dir(&user_markets, &plugin_states, "user", &mut plugins);
 
         // Runtime marketplace
         let runtime = home
@@ -400,7 +534,8 @@ fn scan_codex_marketplace_dir(
     if !root.exists() {
         return;
     }
-    // Walk marketplace dirs: root/marketplace-name/plugins/plugin-name/
+    // Walk marketplace dirs: root/marketplace-name/plugins/plugin-name/  (nested)
+    // Fallback: root/marketplace-name/                                 (flat — marketplace is the plugin)
     let dir = match fs::read_dir(root) {
         Ok(d) => d,
         Err(_) => return,
@@ -414,26 +549,52 @@ fn scan_codex_marketplace_dir(
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
-        let plugins_dir = mkt_path.join("plugins");
-        if !plugins_dir.exists() {
+        if mkt_name.starts_with('.') {
             continue;
         }
-        if let Ok(plugin_entries) = fs::read_dir(&plugins_dir) {
-            for p in plugin_entries.flatten() {
-                let plugin_path = p.path();
-                if !plugin_path.is_dir() {
-                    continue;
-                }
-                let source = format!("{}@{}", default_source, mkt_name);
-                if let Some(plugin) = read_codex_plugin_manifest(&plugin_path, states, &source) {
-                    // Avoid duplicates
-                    if !plugins.iter().any(|existing| existing.id == plugin.id) {
-                        plugins.push(plugin);
+
+        let source = format!("{}@{}", default_source, mkt_name);
+
+        // Try nested structure first: mkt-path/plugins/plugin-name/
+        let plugins_dir = mkt_path.join("plugins");
+        if plugins_dir.exists() {
+            if let Ok(plugin_entries) = fs::read_dir(&plugins_dir) {
+                for p in plugin_entries.flatten() {
+                    let plugin_path = p.path();
+                    if !plugin_path.is_dir() {
+                        continue;
                     }
+                    if let Some(plugin) = read_codex_plugin_manifest(&plugin_path, states, &source)
+                    {
+                        if !plugins.iter().any(|existing| existing.id == plugin.id) {
+                            plugins.push(plugin);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Flat fallback: mkt-path itself is the plugin directory
+            if let Some(plugin) = read_codex_plugin_manifest(&mkt_path, states, &source) {
+                if !plugins.iter().any(|existing| existing.id == plugin.id) {
+                    plugins.push(plugin);
                 }
             }
         }
     }
+}
+
+/// Try to read a plugin manifest from the given directory.
+/// Checks `.codex-plugin/plugin.json` first, then falls back to `.claude-plugin/plugin.json`.
+fn read_plugin_manifest_json(path: &Path) -> Option<(serde_json::Value, String)> {
+    for dir_name in &[".codex-plugin", ".claude-plugin"] {
+        let manifest_path = path.join(dir_name).join("plugin.json");
+        if let Ok(text) = fs::read_to_string(&manifest_path) {
+            if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) {
+                return Some((manifest, text));
+            }
+        }
+    }
+    None
 }
 
 fn read_codex_plugin_manifest(
@@ -441,9 +602,7 @@ fn read_codex_plugin_manifest(
     states: &HashMap<String, bool>,
     source: &str,
 ) -> Option<PluginEntry> {
-    let manifest_path = path.join(".codex-plugin").join("plugin.json");
-    let text = fs::read_to_string(&manifest_path).ok()?;
-    let manifest: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let (manifest, _) = read_plugin_manifest_json(path)?;
 
     let name = manifest
         .get("name")
@@ -698,7 +857,13 @@ fn scan_claude_project_skills(
 ) -> Vec<StandaloneSkill> {
     let skills_dir = project_root.join(".claude").join("skills");
     let pn = crate::project_name_from_root(project_root);
-    scan_standalone_skills_in_dir("claude", &skills_dir, plugin_skill_names, pn, Some(project_root))
+    scan_standalone_skills_in_dir(
+        "claude",
+        &skills_dir,
+        plugin_skill_names,
+        pn,
+        Some(project_root),
+    )
 }
 
 /// Scan Codex project-level standalone skills from `<project>/.codex/skills/`.
@@ -721,6 +886,82 @@ fn scan_claude_project_commands(project_root: &Path) -> Vec<CommandEntry> {
     let commands_dir = project_root.join(".claude").join("commands");
     let pn = crate::project_name_from_root(project_root);
     enumerate_commands_in_dir("claude", &commands_dir, pn, Some(project_root))
+}
+
+/// Scan Claude project-level plugins from `<project>/.claude/settings.json` `enabledPlugins`.
+/// These are plugins that were installed with `--scope project`.
+fn scan_claude_project_plugins(project_root: &Path) -> Vec<PluginEntry> {
+    let mut plugins = Vec::new();
+    let settings_path = project_root.join(".claude").join("settings.json");
+    let text = match fs::read_to_string(&settings_path) {
+        Ok(t) => t,
+        Err(_) => return plugins,
+    };
+    let root_val: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return plugins,
+    };
+    let enabled_plugins = root_val.get("enabledPlugins").and_then(|v| v.as_object());
+
+    if let Some(ep) = enabled_plugins {
+        for (full_name, enabled_val) in ep {
+            let (name, marketplace) = parse_plugin_id(full_name);
+            let enabled = enabled_val.as_bool().unwrap_or(false);
+            plugins.push(PluginEntry {
+                id: format!(
+                    "claude:project-plugin:{}:{}",
+                    crate::hash_path(&project_root.to_string_lossy()),
+                    full_name
+                ),
+                cli: "claude".into(),
+                name: name.to_string(),
+                marketplace: marketplace.to_string(),
+                enabled,
+                version: None,
+                source: "project".to_string(),
+                skills: vec![],
+                agents: vec![],
+                commands: vec![],
+            });
+        }
+    }
+    plugins
+}
+
+/// Scan Codex project-level plugins from `<project>/.codex/config.toml` `[plugins]`.
+fn scan_codex_project_plugins(project_root: &Path) -> Vec<PluginEntry> {
+    let mut plugins = Vec::new();
+    let config_path = project_root.join(".codex").join("config.toml");
+    let text = match fs::read_to_string(&config_path) {
+        Ok(t) => t,
+        Err(_) => return plugins,
+    };
+    let config: CodexConfig = match toml::from_str(&text) {
+        Ok(c) => c,
+        Err(_) => return plugins,
+    };
+    if let Some(plugins_map) = config.plugins {
+        for (full_name, cfg) in plugins_map {
+            let (name, marketplace) = parse_plugin_id(&full_name);
+            plugins.push(PluginEntry {
+                id: format!(
+                    "codex:project-plugin:{}:{}",
+                    crate::hash_path(&project_root.to_string_lossy()),
+                    full_name
+                ),
+                cli: "codex".into(),
+                name: name.to_string(),
+                marketplace: marketplace.to_string(),
+                enabled: cfg.enabled.unwrap_or(false),
+                version: None,
+                source: "project".to_string(),
+                skills: vec![],
+                agents: vec![],
+                commands: vec![],
+            });
+        }
+    }
+    plugins
 }
 
 /// Generic standalone skill scanner for a given directory (Claude .md format).
@@ -771,7 +1012,12 @@ fn scan_standalone_skills_in_dir(
             !file_name.ends_with(".disabled")
         };
         let id = if let Some(root) = project_root {
-            format!("{}:project-skill:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), name)
+            format!(
+                "{}:project-skill:{}:{}",
+                cli,
+                crate::hash_path(&root.to_string_lossy()),
+                name
+            )
         } else {
             format!("{}:project-skill:{}", cli, name)
         };
@@ -816,7 +1062,12 @@ fn scan_codex_style_skills_in_dir(
         }
         let enabled = has_skill_md;
         let id = if let Some(root) = project_root {
-            format!("{}:project-skill:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), file_name)
+            format!(
+                "{}:project-skill:{}:{}",
+                cli,
+                crate::hash_path(&root.to_string_lossy()),
+                file_name
+            )
         } else {
             format!("{}:project-skill:{}", cli, file_name)
         };
@@ -834,7 +1085,12 @@ fn scan_codex_style_skills_in_dir(
 }
 
 /// Generic commands enumerator for a given directory.
-fn enumerate_commands_in_dir(cli: &str, commands_dir: &Path, project_name: Option<String>, project_root: Option<&Path>) -> Vec<CommandEntry> {
+fn enumerate_commands_in_dir(
+    cli: &str,
+    commands_dir: &Path,
+    project_name: Option<String>,
+    project_root: Option<&Path>,
+) -> Vec<CommandEntry> {
     let mut commands = Vec::new();
     let dir = match fs::read_dir(commands_dir) {
         Ok(d) => d,
@@ -855,7 +1111,12 @@ fn enumerate_commands_in_dir(cli: &str, commands_dir: &Path, project_name: Optio
         };
         let desc = extract_description(&path);
         let id = if let Some(root) = project_root {
-            format!("{}:project-command:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), name)
+            format!(
+                "{}:project-command:{}:{}",
+                cli,
+                crate::hash_path(&root.to_string_lossy()),
+                name
+            )
         } else {
             format!("{}:project-command:{}", cli, name)
         };
@@ -909,9 +1170,12 @@ pub fn scan_all(project_root: Option<&Path>) -> SkillManagerData {
 
     // ── Project-level scanning ──
     if let Some(root) = project_root {
+        // Snapshot user-level plugins before project merge, so we can
+        // cross-reference and populate skills/agents/commands for project-level entries.
+        let user_plugins_snapshot = plugins.clone();
+
         // Project skills
-        let project_claude_skills =
-            scan_claude_project_skills(root, &claude_plugin_skill_names);
+        let project_claude_skills = scan_claude_project_skills(root, &claude_plugin_skill_names);
         standalone.extend(project_claude_skills);
 
         let project_codex_skills = scan_codex_project_skills(root);
@@ -923,6 +1187,36 @@ pub fn scan_all(project_root: Option<&Path>) -> SkillManagerData {
         // Project commands
         let project_claude_commands = scan_claude_project_commands(root);
         claude_commands.extend(project_claude_commands);
+
+        // Project plugins
+        let project_claude_plugins = scan_claude_project_plugins(root);
+        plugins.extend(project_claude_plugins);
+
+        let project_codex_plugins = scan_codex_project_plugins(root);
+        plugins.extend(project_codex_plugins);
+
+        // Cross-reference: populate project-level plugins with skills/agents/commands
+        // from their user-level counterparts (the plugin files live in user cache).
+        for plugin in &mut plugins {
+            if plugin.source == "project"
+                && plugin.skills.is_empty()
+                && plugin.agents.is_empty()
+                && plugin.commands.is_empty()
+            {
+                if let Some(ref_plugin) = user_plugins_snapshot.iter().find(|up| {
+                    up.name == plugin.name
+                        && up.marketplace == plugin.marketplace
+                        && up.cli == plugin.cli
+                }) {
+                    plugin.skills = ref_plugin.skills.clone();
+                    plugin.agents = ref_plugin.agents.clone();
+                    plugin.commands = ref_plugin.commands.clone();
+                    if plugin.version.is_none() {
+                        plugin.version = ref_plugin.version.clone();
+                    }
+                }
+            }
+        }
     }
 
     SkillManagerData {
@@ -944,6 +1238,28 @@ pub fn scan_all(project_root: Option<&Path>) -> SkillManagerData {
 /// - `"claude:plugin:name@marketplace"` (legacy, seen with git-installed plugins like ecc)
 pub fn toggle_claude_plugin(plugin_id: &str, enabled: bool) -> Result<(), String> {
     let path = claude_settings_json().ok_or("无法找到 Claude settings.json")?;
+    toggle_claude_plugin_at(&path, plugin_id, enabled, false)
+}
+
+fn toggle_claude_project_plugin(
+    plugin_id: &str,
+    enabled: bool,
+    project_path: &str,
+) -> Result<(), String> {
+    let project_dir = validate_project_dir(project_path)?;
+    let settings_path = project_dir.join(".claude").join("settings.json");
+    toggle_claude_plugin_at(&settings_path, plugin_id, enabled, true)
+}
+
+fn toggle_claude_plugin_at(
+    path: &Path,
+    plugin_id: &str,
+    enabled: bool,
+    keep_disabled_entry: bool,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建 Claude 配置目录失败: {}", e))?;
+    }
     let text = fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))?;
     let mut root: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
@@ -965,6 +1281,9 @@ pub fn toggle_claude_plugin(plugin_id: &str, enabled: bool) -> Result<(), String
             obj.remove(&prefixed);
         }
         obj.insert(plugin_id.to_string(), serde_json::Value::Bool(true));
+    } else if keep_disabled_entry {
+        obj.remove(&prefixed);
+        obj.insert(plugin_id.to_string(), serde_json::Value::Bool(false));
     } else {
         // Remove both possible key formats
         obj.remove(plugin_id);
@@ -980,6 +1299,23 @@ pub fn toggle_claude_plugin(plugin_id: &str, enabled: bool) -> Result<(), String
 /// Toggle a Codex plugin: set `enabled = true/false` in config.toml.
 pub fn toggle_codex_plugin(plugin_id: &str, enabled: bool) -> Result<(), String> {
     let path = codex_config_toml().ok_or("无法找到 Codex config.toml")?;
+    toggle_codex_plugin_at(&path, plugin_id, enabled)
+}
+
+fn toggle_codex_project_plugin(
+    plugin_id: &str,
+    enabled: bool,
+    project_path: &str,
+) -> Result<(), String> {
+    let project_dir = validate_project_dir(project_path)?;
+    let path = project_dir.join(".codex").join("config.toml");
+    toggle_codex_plugin_at(&path, plugin_id, enabled)
+}
+
+fn toggle_codex_plugin_at(path: &Path, plugin_id: &str, enabled: bool) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建 Codex 配置目录失败: {}", e))?;
+    }
     let text = fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))?;
 
     // Backup
@@ -1324,10 +1660,7 @@ fn scan_claude_marketplace() -> MarketplaceData {
             // Falls back to <mkt_dir>/skills/ if source is missing (legacy),
             // but correctly detects single-skill plugins (root SKILL.md) vs
             // multi-skill containers (skills/ subdirectory).
-            let source = p
-                .get("source")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let source = p.get("source").and_then(|v| v.as_str()).unwrap_or("");
             let plugin_dir = if source.starts_with("./") {
                 Path::new(mkt_dir).join(source.trim_start_matches("./"))
             } else {
@@ -1348,12 +1681,10 @@ fn scan_claude_marketplace() -> MarketplaceData {
                         d.flatten()
                             .filter(|e| {
                                 let path = e.path();
-                                let n =
-                                    path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                let n = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                                 !n.starts_with('.')
                                     && (n.ends_with(".md")
-                                        || (path.is_dir()
-                                            && path.join("SKILL.md").exists()))
+                                        || (path.is_dir() && path.join("SKILL.md").exists()))
                             })
                             .count()
                     })
@@ -1372,6 +1703,8 @@ fn scan_claude_marketplace() -> MarketplaceData {
                 version,
                 description,
                 installed,
+                user_installed: Some(installed),
+                project_installed: None,
                 skill_count,
             });
         }
@@ -1389,12 +1722,17 @@ fn scan_codex_marketplace() -> Vec<MarketplacePluginEntry> {
     let installed_states = read_codex_plugin_states();
 
     if let Some(home) = home_dir() {
-        let search_dirs = vec![
+        // Three search roots, each with a different directory structure:
+        // 1. bundled-marketplaces → root/mkt-name/plugins/plugin-name/.codex-plugin/
+        // 2. runtime cache         → same structure as bundled-marketplaces
+        // 3. marketplaces          → root/mkt-name/.claude-plugin/  (flat: mkt IS the plugin)
+        let search_dirs: Vec<(PathBuf, &str, bool)> = vec![
             (
                 home.join(".codex")
                     .join(".tmp")
                     .join("bundled-marketplaces"),
                 "bundled",
+                false, // has plugins/ subdirectory
             ),
             (
                 home.join(".cache")
@@ -1402,10 +1740,16 @@ fn scan_codex_marketplace() -> Vec<MarketplacePluginEntry> {
                     .join("codex-primary-runtime")
                     .join("plugins"),
                 "bundled",
+                false, // has plugins/ subdirectory
+            ),
+            (
+                home.join(".codex").join(".tmp").join("marketplaces"),
+                "user",
+                true, // flat: marketplace dir IS the plugin dir
             ),
         ];
 
-        for (root, _source) in &search_dirs {
+        for (root, source_label, is_flat) in &search_dirs {
             if !root.exists() {
                 continue;
             }
@@ -1418,85 +1762,60 @@ fn scan_codex_marketplace() -> Vec<MarketplacePluginEntry> {
                 if !mkt_path.is_dir() {
                     continue;
                 }
+                // Skip staging directories and hidden dirs
                 let mkt_name = mkt_path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown");
-                let plugins_dir = mkt_path.join("plugins");
-                if !plugins_dir.exists() {
+                if mkt_name.starts_with('.') {
                     continue;
                 }
-                if let Ok(plugin_entries) = fs::read_dir(&plugins_dir) {
-                    for p in plugin_entries.flatten() {
-                        let plugin_path = p.path();
-                        if !plugin_path.is_dir() {
-                            continue;
+
+                if *is_flat {
+                    // Flat structure: mkt_path itself is the plugin directory
+                    scan_single_codex_plugin(
+                        &mkt_path,
+                        mkt_name,
+                        mkt_name,
+                        source_label,
+                        &installed_states,
+                        &mut plugins,
+                    );
+                } else {
+                    // Nested structure: mkt_path/plugins/plugin-name/
+                    let plugins_dir = mkt_path.join("plugins");
+                    if !plugins_dir.exists() {
+                        // Also try flat fallback for directories that have manifest at top level
+                        if read_plugin_manifest_json(&mkt_path).is_some() {
+                            scan_single_codex_plugin(
+                                &mkt_path,
+                                mkt_name,
+                                mkt_name,
+                                source_label,
+                                &installed_states,
+                                &mut plugins,
+                            );
                         }
-                        let manifest_path = plugin_path.join(".codex-plugin").join("plugin.json");
-                        let text = match fs::read_to_string(&manifest_path) {
-                            Ok(t) => t,
-                            Err(_) => continue,
-                        };
-                        let manifest: serde_json::Value = match serde_json::from_str(&text) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-
-                        let name = manifest
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let version = manifest
-                            .get("version")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let description = manifest
-                            .get("description")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-
-                        // Count skills
-                        let skills_dir = manifest
-                            .get("skills")
-                            .and_then(|v| v.as_str())
-                            .map(|rel| plugin_path.join(rel))
-                            .unwrap_or_else(|| plugin_path.join("skills"));
-                        let skill_count = if skills_dir.exists() {
-                            fs::read_dir(&skills_dir)
-                                .map(|d| {
-                                    d.flatten()
-                                        .filter(|e| {
-                                            e.path().is_dir()
-                                                && !e
-                                                    .file_name()
-                                                    .to_str()
-                                                    .is_none_or(|n| n.starts_with('.'))
-                                                && e.path().join("SKILL.md").exists()
-                                        })
-                                        .count()
-                                })
-                                .unwrap_or(0)
-                        } else {
-                            0
-                        };
-
-                        let full_id = format!("{}@{}", name, mkt_name);
-                        let installed = installed_states.get(&full_id).copied().unwrap_or(false);
-
-                        // Avoid duplicates
-                        if !plugins.iter().any(|existing: &MarketplacePluginEntry| {
-                            existing.name == name && existing.marketplace == mkt_name
-                        }) {
-                            plugins.push(MarketplacePluginEntry {
-                                name,
-                                marketplace: mkt_name.to_string(),
-                                cli: "codex".into(),
-                                version,
-                                description,
-                                installed,
-                                skill_count,
-                            });
+                        continue;
+                    }
+                    if let Ok(plugin_entries) = fs::read_dir(&plugins_dir) {
+                        for p in plugin_entries.flatten() {
+                            let plugin_path = p.path();
+                            if !plugin_path.is_dir() {
+                                continue;
+                            }
+                            let plugin_name = plugin_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("unknown");
+                            scan_single_codex_plugin(
+                                &plugin_path,
+                                plugin_name,
+                                mkt_name,
+                                source_label,
+                                &installed_states,
+                                &mut plugins,
+                            );
                         }
                     }
                 }
@@ -1507,8 +1826,79 @@ fn scan_codex_marketplace() -> Vec<MarketplacePluginEntry> {
     plugins
 }
 
+/// Read a single plugin from the given directory and add it to the list if valid.
+fn scan_single_codex_plugin(
+    plugin_path: &Path,
+    plugin_name: &str,
+    marketplace_name: &str,
+    _source_label: &str,
+    installed_states: &HashMap<String, bool>,
+    plugins: &mut Vec<MarketplacePluginEntry>,
+) {
+    let (manifest, _text) = match read_plugin_manifest_json(plugin_path) {
+        Some(m) => m,
+        None => return,
+    };
+
+    let name = manifest
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(plugin_name)
+        .to_string();
+    let version = manifest
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let description = manifest
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Count skills
+    let skills_dir = manifest
+        .get("skills")
+        .and_then(|v| v.as_str())
+        .map(|rel| plugin_path.join(rel))
+        .unwrap_or_else(|| plugin_path.join("skills"));
+    let skill_count = if skills_dir.exists() {
+        fs::read_dir(&skills_dir)
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| {
+                        e.path().is_dir()
+                            && !e.file_name().to_str().is_none_or(|n| n.starts_with('.'))
+                            && e.path().join("SKILL.md").exists()
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let full_id = format!("{}@{}", name, marketplace_name);
+    let installed = installed_states.get(&full_id).copied().unwrap_or(false);
+
+    // Avoid duplicates
+    if !plugins.iter().any(|existing: &MarketplacePluginEntry| {
+        existing.name == name && existing.marketplace == marketplace_name
+    }) {
+        plugins.push(MarketplacePluginEntry {
+            name,
+            marketplace: marketplace_name.to_string(),
+            cli: "codex".into(),
+            version,
+            description,
+            installed,
+            user_installed: Some(installed),
+            project_installed: None,
+            skill_count,
+        });
+    }
+}
+
 #[tauri::command]
-pub fn list_marketplace_plugins(cli: String) -> MarketplaceData {
+pub fn list_marketplace_plugins(cli: String, project_path: Option<String>) -> MarketplaceData {
     let mut plugins = Vec::new();
     let mut marketplaces: Vec<String> = Vec::new();
 
@@ -1539,10 +1929,46 @@ pub fn list_marketplace_plugins(cli: String) -> MarketplaceData {
     marketplaces.sort();
     marketplaces.dedup();
 
+    if let Some(ref project_path) = project_path {
+        annotate_project_marketplace_installs(&mut plugins, project_path);
+    }
+
     MarketplaceData {
         plugins,
         marketplaces,
     }
+}
+
+fn annotate_project_marketplace_installs(
+    plugins: &mut [MarketplacePluginEntry],
+    project_path: &str,
+) {
+    let project_dir = match validate_project_dir(project_path) {
+        Ok(dir) => dir,
+        Err(_) => return,
+    };
+    let project_plugins = scan_project_plugin_keys(&project_dir);
+
+    for plugin in plugins {
+        let key = format!("{}:{}@{}", plugin.cli, plugin.name, plugin.marketplace);
+        let project_installed = project_plugins.contains(&key);
+        plugin.user_installed = Some(plugin.installed);
+        plugin.project_installed = Some(project_installed);
+        plugin.installed = project_installed;
+    }
+}
+
+fn scan_project_plugin_keys(project_root: &Path) -> std::collections::HashSet<String> {
+    let mut keys = std::collections::HashSet::new();
+
+    for plugin in scan_claude_project_plugins(project_root) {
+        keys.insert(format!("{}:{}@{}", plugin.cli, plugin.name, plugin.marketplace));
+    }
+    for plugin in scan_codex_project_plugins(project_root) {
+        keys.insert(format!("{}:{}@{}", plugin.cli, plugin.name, plugin.marketplace));
+    }
+
+    keys
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1781,6 +2207,7 @@ pub async fn install_plugin(
     cli: String,
     name: String,
     marketplace: String,
+    project_path: Option<String>,
 ) -> Result<String, String> {
     let cli_clone = cli.clone();
     let n = name.clone();
@@ -1789,10 +2216,20 @@ pub async fn install_plugin(
         "claude" => {
             let full = format!("{}@{}", name, marketplace);
             let n = name;
+            let project_dir = match project_path.as_deref() {
+                Some(path) => Some(validate_project_dir(path)?),
+                None => None,
+            };
+            let scope = if project_dir.is_some() {
+                "project"
+            } else {
+                "user"
+            };
             tauri::async_runtime::spawn_blocking(move || {
                 run_cli_plugin_action(
                     "claude",
-                    &["plugin", "install", &full, "--scope", "user"],
+                    &["plugin", "install", &full, "--scope", scope],
+                    project_dir.as_deref(),
                     &format!("{} 安装成功", n),
                     "安装失败",
                 )
@@ -1802,17 +2239,45 @@ pub async fn install_plugin(
         }
         "codex" => {
             let full = format!("{}@{}", name, marketplace);
-            let n = name;
-            tauri::async_runtime::spawn_blocking(move || {
+            let n = name.clone();
+            // Step 1: always download plugin files to user cache.
+            // `codex plugin add` does two things: (a) downloads files, (b) registers in user config.
+            let cache_result = tauri::async_runtime::spawn_blocking(move || {
                 run_cli_plugin_action(
                     "codex",
                     &["plugin", "add", &full],
-                    &format!("{} 安装成功", n),
+                    None,
+                    &format!("{} 已下载到缓存", n),
                     "安装失败",
                 )
             })
             .await
-            .map_err(|e| format!("执行失败: {}", e))?
+            .map_err(|e| format!("执行失败: {}", e))?;
+
+            if let Some(ref proj) = project_path {
+                // Project-scoped install: the plugin files are now in user cache
+                // (~/.codex/plugins/). We need to:
+                //   (1b) Remove the user-level config registration that `codex plugin add`
+                //        created — the plugin should NOT be enabled at user scope.
+                //   (2)  Write project-level config so the plugin is enabled for this project.
+                if cache_result.is_ok() {
+                    // Only clean up user config if download succeeded.
+                    let _ = remove_codex_user_plugin_config(&name, &marketplace);
+                    match write_codex_project_plugin_enabled(proj, &name, &marketplace, true) {
+                        Ok(()) => Ok(format!("{} 已安装到项目", name)),
+                        Err(e) => Err(format!(
+                            "插件已下载到缓存，但项目级配置写入失败: {}\n请手动检查: {}/.codex/config.toml",
+                            e, proj
+                        )),
+                    }
+                } else {
+                    // Download failed — propagate the error, don't touch project config.
+                    cache_result
+                }
+            } else {
+                // User-scoped install: keep the default behavior (cache + user config).
+                cache_result
+            }
         }
         _ => return Err(format!("不支持的 CLI: {}", cli)),
     };
@@ -1820,7 +2285,9 @@ pub async fn install_plugin(
     let _ = app_handle.emit(
         "plugin-install-complete",
         serde_json::json!({
-            "name": n,
+        "name": n,
+            "marketplace": marketplace,
+            "installKey": format!("{}:{}:{}", cli_clone, marketplace, n),
             "cli": cli_clone,
             "success": result.is_ok(),
             "message": result.clone().unwrap_or_else(|e| e),
@@ -1835,6 +2302,7 @@ pub async fn uninstall_plugin(
     app_handle: tauri::AppHandle,
     cli: String,
     plugin_id: String,
+    project_path: Option<String>,
 ) -> Result<String, String> {
     let cli_clone = cli.clone();
     let name = strip_id_prefix(&plugin_id).to_string();
@@ -1842,29 +2310,55 @@ pub async fn uninstall_plugin(
     let result: Result<String, String> = match cli.as_str() {
         "claude" => {
             let n = name.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                run_cli_plugin_action(
-                    "claude",
-                    &["plugin", "uninstall", &n, "-y"],
-                    &format!("{} 删除成功", n),
-                    "删除失败",
-                )
-            })
-            .await
-            .map_err(|e| format!("执行失败: {}", e))?
+            if let Some(ref proj) = project_path {
+                let project_dir = validate_project_dir(proj)?;
+                // Project-level uninstall: use --scope project
+                tauri::async_runtime::spawn_blocking(move || {
+                    run_cli_plugin_action(
+                        "claude",
+                        &["plugin", "uninstall", &n, "--scope", "project", "-y"],
+                        Some(&project_dir),
+                        &format!("{} 已从项目中移除", n),
+                        "删除失败",
+                    )
+                })
+                .await
+                .map_err(|e| format!("执行失败: {}", e))?
+            } else {
+                tauri::async_runtime::spawn_blocking(move || {
+                    run_cli_plugin_action(
+                        "claude",
+                        &["plugin", "uninstall", &n, "-y"],
+                        None,
+                        &format!("{} 删除成功", n),
+                        "删除失败",
+                    )
+                })
+                .await
+                .map_err(|e| format!("执行失败: {}", e))?
+            }
         }
         "codex" => {
             let n = name.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                run_cli_plugin_action(
-                    "codex",
-                    &["plugin", "remove", &n],
-                    &format!("{} 删除成功", n),
-                    "删除失败",
-                )
-            })
-            .await
-            .map_err(|e| format!("执行失败: {}", e))?
+            if let Some(ref proj) = project_path {
+                // Project-level: only remove from project config.toml, keep cache
+                match remove_codex_project_plugin(proj, &n) {
+                    Ok(()) => Ok(format!("{} 已从项目中移除", n)),
+                    Err(e) => Err(e),
+                }
+            } else {
+                tauri::async_runtime::spawn_blocking(move || {
+                    run_cli_plugin_action(
+                        "codex",
+                        &["plugin", "remove", &n],
+                        None,
+                        &format!("{} 删除成功", n),
+                        "删除失败",
+                    )
+                })
+                .await
+                .map_err(|e| format!("执行失败: {}", e))?
+            }
         }
         _ => return Err(format!("不支持的 CLI: {}", cli)),
     };
@@ -1886,14 +2380,18 @@ pub async fn uninstall_plugin(
 fn run_cli_plugin_action(
     cli_name: &str,
     args: &[&str],
+    current_dir: Option<&Path>,
     success_msg: &str,
     error_prefix: &str,
 ) -> Result<String, String> {
     let binary = cli_binary(cli_name);
-    let output = std::process::Command::new(&binary)
-        .args(args)
-        .output()
-        .map_err(|e| format!("无法执行 {} ({}): {}", cli_name, binary, e))?;
+    let output = run_command_with_timeout(
+        cli_name,
+        &binary,
+        args,
+        current_dir,
+        Duration::from_secs(60),
+    )?;
 
     if output.status.success() {
         Ok(success_msg.to_string())
@@ -1902,6 +2400,51 @@ fn run_cli_plugin_action(
         let out = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let msg = if err.is_empty() { out } else { err };
         Err(format!("{}: {}", error_prefix, msg))
+    }
+}
+
+fn run_command_with_timeout(
+    cli_name: &str,
+    binary: &str,
+    args: &[&str],
+    current_dir: Option<&Path>,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let mut command = std::process::Command::new(binary);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(dir) = current_dir {
+        command.current_dir(dir);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("无法执行 {} ({}): {}", cli_name, binary, e))?;
+    let start = Instant::now();
+
+    loop {
+        match child
+            .try_wait()
+            .map_err(|e| format!("等待 {} 执行失败: {}", cli_name, e))?
+        {
+            Some(_) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|e| format!("读取 {} 输出失败: {}", cli_name, e));
+            }
+            None if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{} 执行超时（{} 秒）。请检查网络、Marketplace 状态或 CLI 是否在等待交互。",
+                    cli_name,
+                    timeout.as_secs()
+                ));
+            }
+            None => std::thread::sleep(Duration::from_millis(100)),
+        }
     }
 }
 
@@ -1943,9 +2486,11 @@ fn validate_skill_name(name: &str) -> Result<(), String> {
 
 /// Install a Claude standalone skill from a local directory (containing SKILL.md)
 /// or a single .md file (backward compatible).
-fn install_claude_standalone_skill(source: &Path) -> Result<String, String> {
-    let skills_dir = claude_skills_dir().ok_or("无法找到 Claude skills 目录")?;
-
+fn install_claude_standalone_skill_to(
+    source: &Path,
+    skills_dir: &Path,
+    overwrite: bool,
+) -> Result<String, String> {
     if source.is_dir() {
         // Directory mode: validate SKILL.md, then copy entire directory
         require_skill_md(source)?;
@@ -1959,15 +2504,18 @@ fn install_claude_standalone_skill(source: &Path) -> Result<String, String> {
 
         let dest_dir = skills_dir.join(&name);
         if dest_dir.exists() {
-            return Err(format!(
-                "Skill '{}' 已存在于 {}",
-                name,
-                skills_dir.display()
-            ));
+            if overwrite {
+                fs::remove_dir_all(&dest_dir).map_err(|e| format!("无法移除旧版本: {}", e))?;
+            } else {
+                return Err(format!(
+                    "Skill '{}' 已存在于 {}",
+                    name,
+                    skills_dir.display()
+                ));
+            }
         }
 
-        fs::create_dir_all(&dest_dir)
-            .map_err(|e| format!("创建目录失败: {}", e))?;
+        fs::create_dir_all(&dest_dir).map_err(|e| format!("创建目录失败: {}", e))?;
         copy_dir_contents(source, &dest_dir)?;
 
         Ok(format!("Skill '{}' 安装成功", name))
@@ -1981,11 +2529,15 @@ fn install_claude_standalone_skill(source: &Path) -> Result<String, String> {
         let dest = skills_dir.join(format!("{}.md", name));
 
         if dest.exists() {
-            return Err(format!(
-                "Skill '{}' 已存在于 {}",
-                name,
-                skills_dir.display()
-            ));
+            if overwrite {
+                fs::remove_file(&dest).map_err(|e| format!("无法移除旧版本: {}", e))?;
+            } else {
+                return Err(format!(
+                    "Skill '{}' 已存在于 {}",
+                    name,
+                    skills_dir.display()
+                ));
+            }
         }
 
         // Copy the file to skills directory
@@ -1999,6 +2551,7 @@ fn install_claude_standalone_skill(source: &Path) -> Result<String, String> {
 fn install_codex_style_standalone_skill(
     source: &Path,
     skills_dir: &Path,
+    overwrite: bool,
 ) -> Result<String, String> {
     let name = if source.is_dir() {
         source
@@ -2022,7 +2575,11 @@ fn install_codex_style_standalone_skill(
     let dest_dir = skills_dir.join(&name);
 
     if dest_dir.exists() {
-        return Err(format!("Skill '{}' 已存在", name));
+        if overwrite {
+            fs::remove_dir_all(&dest_dir).map_err(|e| format!("无法移除旧版本: {}", e))?;
+        } else {
+            return Err(format!("Skill '{}' 已存在", name));
+        }
     }
 
     fs::create_dir_all(&dest_dir).map_err(|e| format!("创建目录失败: {}", e))?;
@@ -2045,10 +2602,7 @@ fn install_codex_style_standalone_skill(
 fn require_skill_md(dir: &Path) -> Result<(), String> {
     let skill_md = dir.join("SKILL.md");
     if !skill_md.exists() {
-        return Err(format!(
-            "目录 '{}' 不包含 SKILL.md 文件",
-            dir.display()
-        ));
+        return Err(format!("目录 '{}' 不包含 SKILL.md 文件", dir.display()));
     }
     if !skill_md.is_file() {
         return Err("SKILL.md 不是一个有效的文件".into());
@@ -2081,28 +2635,55 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn install_standalone_skill(cli: String, source_path: String) -> Result<String, String> {
+pub fn install_standalone_skill(
+    cli: String,
+    source_path: String,
+    overwrite: Option<bool>,
+    project_path: Option<String>,
+) -> Result<String, String> {
     let src = Path::new(&source_path);
     if !src.exists() {
         return Err(format!("文件不存在: {}", source_path));
     }
+    let overwrite = overwrite.unwrap_or(false);
 
     match cli.as_str() {
-        "claude" => install_claude_standalone_skill(src),
+        "claude" => {
+            let skills_dir = if let Some(ref proj) = project_path {
+                PathBuf::from(proj).join(".claude").join("skills")
+            } else {
+                claude_skills_dir().ok_or("无法找到 Claude skills 目录")?
+            };
+            install_claude_standalone_skill_to(src, &skills_dir, overwrite)
+        }
         "codex" => {
-            let skills_dir = codex_skills_dir().ok_or("无法找到 Codex skills 目录")?;
-            install_codex_style_standalone_skill(src, &skills_dir)
+            let skills_dir = if let Some(ref proj) = project_path {
+                PathBuf::from(proj).join(".codex").join("skills")
+            } else {
+                codex_skills_dir().ok_or("无法找到 Codex skills 目录")?
+            };
+            install_codex_style_standalone_skill(src, &skills_dir, overwrite)
         }
         "qoder" => {
-            let skills_dir = qoder_skills_dir().ok_or("无法找到 Qoder skills 目录")?;
-            install_codex_style_standalone_skill(src, &skills_dir)
+            // Qoder: project-level uses .qoder (NOT .qoder-cn)
+            let skills_dir = if let Some(ref proj) = project_path {
+                PathBuf::from(proj).join(".qoder").join("skills")
+            } else {
+                qoder_skills_dir().ok_or("无法找到 Qoder skills 目录")?
+            };
+            install_codex_style_standalone_skill(src, &skills_dir, overwrite)
         }
         _ => Err(format!("不支持的 CLI: {}", cli)),
     }
 }
 
 #[tauri::command]
-pub fn uninstall_standalone_skill(cli: String, skill_id: String, skill_path: Option<String>, skill_name: Option<String>) -> Result<String, String> {
+pub fn uninstall_standalone_skill(
+    cli: String,
+    skill_id: String,
+    skill_path: Option<String>,
+    skill_name: Option<String>,
+) -> Result<String, String> {
     // If path is provided, delete directly (handles both user and project level)
     if let Some(ref p) = skill_path {
         let file_path = std::path::Path::new(p);
@@ -2111,7 +2692,10 @@ pub fn uninstall_standalone_skill(cli: String, skill_id: String, skill_path: Opt
             return Err(format!("Skill '{}' 不存在", fallback_name));
         }
         let name = skill_name.as_deref().unwrap_or(
-            file_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown")
+            file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown"),
         );
         if file_path.is_symlink() || file_path.is_file() {
             fs::remove_file(file_path).map_err(|e| format!("删除失败: {}", e))?;
@@ -2137,8 +2721,7 @@ pub fn uninstall_standalone_skill(cli: String, skill_id: String, skill_path: Opt
                 fs::remove_file(&disabled).map_err(|e| format!("删除失败: {}", e))?;
                 Ok(format!("Skill '{}'（已禁用）已删除", name))
             } else if skill_md_dir.exists() && skill_md_dir.is_dir() {
-                fs::remove_dir_all(&skill_md_dir)
-                    .map_err(|e| format!("删除失败: {}", e))?;
+                fs::remove_dir_all(&skill_md_dir).map_err(|e| format!("删除失败: {}", e))?;
                 Ok(format!("Skill '{}'（目录）已删除", name))
             } else {
                 Err(format!("Skill '{}' 不存在", name))
@@ -2182,7 +2765,11 @@ pub fn uninstall_standalone_skill(cli: String, skill_id: String, skill_path: Opt
 pub fn scan_skills(project_path: Option<String>) -> SkillManagerData {
     let project_root = project_path.as_ref().and_then(|p| {
         let path = Path::new(p);
-        if path.exists() && path.is_dir() { Some(path) } else { None }
+        if path.exists() && path.is_dir() {
+            Some(path)
+        } else {
+            None
+        }
     });
     scan_all(project_root)
 }
@@ -2198,17 +2785,39 @@ fn strip_id_prefix(id: &str) -> &str {
 }
 
 #[tauri::command]
-pub fn toggle_plugin(cli: String, plugin_id: String, enabled: bool) -> Result<(), String> {
+pub fn toggle_plugin(
+    cli: String,
+    plugin_id: String,
+    enabled: bool,
+    project_path: Option<String>,
+) -> Result<(), String> {
     let name = strip_id_prefix(&plugin_id);
     match cli.as_str() {
-        "claude" => toggle_claude_plugin(name, enabled),
-        "codex" => toggle_codex_plugin(name, enabled),
+        "claude" => {
+            if let Some(ref project_path) = project_path {
+                toggle_claude_project_plugin(name, enabled, project_path)
+            } else {
+                toggle_claude_plugin(name, enabled)
+            }
+        }
+        "codex" => {
+            if let Some(ref project_path) = project_path {
+                toggle_codex_project_plugin(name, enabled, project_path)
+            } else {
+                toggle_codex_plugin(name, enabled)
+            }
+        }
         _ => Err(format!("不支持的 CLI: {}", cli)),
     }
 }
 
 #[tauri::command]
-pub fn toggle_standalone_skill(cli: String, skill_id: String, enabled: bool, path: Option<String>) -> Result<(), String> {
+pub fn toggle_standalone_skill(
+    cli: String,
+    skill_id: String,
+    enabled: bool,
+    path: Option<String>,
+) -> Result<(), String> {
     // If path is provided, use path-based toggle (works for both user and project level)
     if let Some(ref p) = path {
         return toggle_resource_by_path(p, enabled);
@@ -2283,7 +2892,12 @@ pub(crate) fn toggle_resource_by_path(path: &str, enabled: bool) -> Result<(), S
 
 /// Toggle a Claude command: rename `xxx.md` ↔ `xxx.md.disabled`.
 #[tauri::command]
-pub fn toggle_command(cli: String, name: String, enabled: bool, path: Option<String>) -> Result<(), String> {
+pub fn toggle_command(
+    cli: String,
+    name: String,
+    enabled: bool,
+    path: Option<String>,
+) -> Result<(), String> {
     // If path is provided, use path-based toggle (works for both user and project level)
     if let Some(ref p) = path {
         return toggle_resource_by_path(p, enabled);
@@ -2300,15 +2914,13 @@ pub fn toggle_command(cli: String, name: String, enabled: bool, path: Option<Str
 
     if enabled {
         if disabled_path.exists() {
-            fs::rename(&disabled_path, &active_path)
-                .map_err(|e| format!("重命名失败: {}", e))?;
+            fs::rename(&disabled_path, &active_path).map_err(|e| format!("重命名失败: {}", e))?;
         } else if !active_path.exists() {
             return Err(format!("Command '{}' 不存在", name));
         }
     } else {
         if active_path.exists() {
-            fs::rename(&active_path, &disabled_path)
-                .map_err(|e| format!("重命名失败: {}", e))?;
+            fs::rename(&active_path, &disabled_path).map_err(|e| format!("重命名失败: {}", e))?;
         } else if !disabled_path.exists() {
             return Err(format!("Command '{}' 不存在", name));
         }
@@ -2320,7 +2932,11 @@ pub fn toggle_command(cli: String, name: String, enabled: bool, path: Option<Str
 /// Uninstall a command: delete the file or directory directly.
 /// When `path` is provided, deletes the file at that path directly (works for both user and project level).
 #[tauri::command]
-pub fn uninstall_command(cli: String, name: String, path: Option<String>) -> Result<String, String> {
+pub fn uninstall_command(
+    cli: String,
+    name: String,
+    path: Option<String>,
+) -> Result<String, String> {
     // If path is provided, delete directly (handles both user and project level)
     if let Some(ref p) = path {
         let file_path = std::path::Path::new(p);
@@ -2412,6 +3028,7 @@ pub fn move_skill_file(
     resource_type: String,
     from_scope: String,
     to_scope: String,
+    overwrite: Option<bool>,
 ) -> Result<MoveUndoInfo, String> {
     transfer::move_skill_file(
         source_path,
@@ -2420,6 +3037,7 @@ pub fn move_skill_file(
         resource_type,
         from_scope,
         to_scope,
+        overwrite.unwrap_or(false),
     )
 }
 
@@ -2428,8 +3046,14 @@ pub fn copy_skill_file(
     source_path: String,
     dest_dir: String,
     resource_name: String,
+    overwrite: Option<bool>,
 ) -> Result<(), String> {
-    transfer::copy_skill_file(source_path, dest_dir, resource_name)
+    transfer::copy_skill_file(
+        source_path,
+        dest_dir,
+        resource_name,
+        overwrite.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -2440,4 +3064,129 @@ pub fn undo_move_skill(
     content_fingerprint: String,
 ) -> Result<(), String> {
     transfer::undo_move_skill(backup_path, original_path, dest_path, content_fingerprint)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_project_plugin_config_write_and_remove_use_full_plugin_id() {
+        let temp = tempfile::tempdir().expect("create temp project");
+        let project = temp.path().to_string_lossy().to_string();
+
+        write_codex_project_plugin_enabled(&project, "browser", "openai-bundled", true)
+            .expect("write project plugin");
+
+        let config_path = temp.path().join(".codex").join("config.toml");
+        let written = std::fs::read_to_string(&config_path).expect("read config");
+        assert!(written.contains("[plugins.\"browser@openai-bundled\"]"));
+        assert!(written.contains("enabled = true"));
+
+        remove_codex_project_plugin(&project, "browser@openai-bundled")
+            .expect("remove project plugin");
+
+        let removed = std::fs::read_to_string(&config_path).expect("read config after remove");
+        assert!(!removed.contains("browser@openai-bundled"));
+    }
+
+    #[test]
+    fn codex_project_plugin_config_rejects_missing_project_dir() {
+        let temp = tempfile::tempdir().expect("create temp parent");
+        let missing = temp.path().join("missing").to_string_lossy().to_string();
+
+        let err = write_codex_project_plugin_enabled(&missing, "browser", "openai-bundled", true)
+            .expect_err("missing project should fail");
+
+        assert!(err.contains("项目目录不存在"));
+    }
+
+    #[test]
+    fn command_runner_times_out_and_returns_error() {
+        let err = run_command_with_timeout(
+            "sh",
+            "/bin/sh",
+            &["-c", "sleep 2"],
+            None,
+            Duration::from_millis(50),
+        )
+        .expect_err("sleep should time out");
+
+        assert!(err.contains("执行超时"));
+    }
+
+    #[test]
+    fn project_codex_plugin_toggle_updates_project_config() {
+        let temp = tempfile::tempdir().expect("create temp project");
+        let project = temp.path().to_string_lossy().to_string();
+        write_codex_project_plugin_enabled(&project, "browser", "openai-bundled", true)
+            .expect("write project plugin");
+
+        toggle_codex_project_plugin("browser@openai-bundled", false, &project)
+            .expect("disable project plugin");
+
+        let config_path = temp.path().join(".codex").join("config.toml");
+        let text = std::fs::read_to_string(&config_path).expect("read config");
+        let config: toml::Value = toml::from_str(&text).expect("parse config");
+        let enabled = config
+            .get("plugins")
+            .and_then(|v| v.get("browser@openai-bundled"))
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool());
+        assert_eq!(enabled, Some(false));
+    }
+
+    #[test]
+    fn project_claude_plugin_toggle_keeps_disabled_entry_visible() {
+        let temp = tempfile::tempdir().expect("create temp project");
+        let project = temp.path().to_string_lossy().to_string();
+        let claude_dir = temp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).expect("create claude dir");
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"enabledPlugins":{"superpowers@openai-curated":true}}"#,
+        )
+        .expect("write settings");
+
+        toggle_claude_project_plugin("superpowers@openai-curated", false, &project)
+            .expect("disable project plugin");
+
+        let text = std::fs::read_to_string(claude_dir.join("settings.json")).expect("read settings");
+        let root: serde_json::Value = serde_json::from_str(&text).expect("parse settings");
+        let enabled = root
+            .get("enabledPlugins")
+            .and_then(|v| v.get("superpowers@openai-curated"))
+            .and_then(|v| v.as_bool());
+        assert_eq!(enabled, Some(false));
+    }
+
+    #[test]
+    fn marketplace_project_annotation_distinguishes_user_and_project_installs() {
+        let temp = tempfile::tempdir().expect("create temp project");
+        let project = temp.path().to_string_lossy().to_string();
+        let mut plugins = vec![MarketplacePluginEntry {
+            name: "browser".to_string(),
+            marketplace: "openai-bundled".to_string(),
+            cli: "codex".to_string(),
+            version: None,
+            description: None,
+            installed: true,
+            user_installed: Some(true),
+            project_installed: None,
+            skill_count: 0,
+        }];
+
+        annotate_project_marketplace_installs(&mut plugins, &project);
+
+        assert_eq!(plugins[0].user_installed, Some(true));
+        assert_eq!(plugins[0].project_installed, Some(false));
+        assert!(!plugins[0].installed);
+
+        write_codex_project_plugin_enabled(&project, "browser", "openai-bundled", true)
+            .expect("write project plugin");
+        annotate_project_marketplace_installs(&mut plugins, &project);
+
+        assert_eq!(plugins[0].project_installed, Some(true));
+        assert!(plugins[0].installed);
+    }
 }

@@ -34,7 +34,7 @@ const comparisons = [
           </div>
           <div class="comp-divider-v"></div>
           <div class="comp-th good-th">
-            <span class="th-badge good">✨ AI Profile Manager</span>
+            <span class="th-badge good">✨ KN</span>
           </div>
         </div>
 
