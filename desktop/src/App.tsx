@@ -54,6 +54,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { EnvCheckResult } from "./lib/types";
 
+/** Compare two semver strings. Returns <0 if a<b, 0 if equal, >0 if a>b. */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (isNaN(na) || isNaN(nb)) return a.localeCompare(b);
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
 export function App() {
   const ctx = useProfiles();
   const rightTerminal = useTerminal("right");     // profile「运行」→ 右侧面板
@@ -1648,7 +1662,7 @@ export function App() {
         return;
       }
 
-      if (manifest.version <= currentVersion) {
+      if (compareVersions(manifest.version, currentVersion) <= 0) {
         if (!opts?.silent) addToast("success", `已是最新版本 (${currentVersion})`);
         return;
       }

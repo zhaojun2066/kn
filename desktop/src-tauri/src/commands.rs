@@ -153,12 +153,22 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
 
 fn is_safe_path(path: &std::path::Path) -> bool {
     // Resolve .. and symlinks before checking prefix.
-    // If canonicalize fails (path doesn't exist or can't be resolved),
-    // reject the operation — don't fall back to un-resolved path which
-    // could bypass the safety check (TOCTOU race).
+    // If the path doesn't exist (e.g., a new file to be created),
+    // canonicalize its parent directory and join with the file name.
     let resolved = match path.canonicalize() {
         Ok(r) => r,
-        Err(_) => return false,
+        Err(_) => {
+            match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                Some(parent) => match parent.canonicalize() {
+                    Ok(parent_resolved) => {
+                        let name = path.file_name().unwrap_or(std::ffi::OsStr::new("unnamed"));
+                        parent_resolved.join(name)
+                    }
+                    Err(_) => return false,
+                },
+                None => return false,
+            }
+        }
     };
     let home = home_dir();
     let tmp = std::env::temp_dir();
@@ -1917,10 +1927,29 @@ mod tests {
     }
 
     #[test]
-    fn test_is_safe_path_rejects_non_existent_path() {
-        // canonicalize fails → reject (don't fall back to un-resolved path)
+    fn test_is_safe_path_rejects_non_existent_path_outside_safe_dirs() {
+        // Non-existent file whose parent is NOT under home/temp should still be rejected.
         let bad = std::path::Path::new("/nonexistent-xyz-kn-test-file");
-        assert!(!is_safe_path(bad), "non-existent path should be rejected");
+        assert!(!is_safe_path(bad), "non-existent path outside safe dirs should be rejected");
+    }
+
+    #[test]
+    fn test_is_safe_path_allows_non_existent_path_in_temp() {
+        // Non-existent file whose parent IS under temp should be allowed
+        // (needed for download_file to create new files).
+        let tmp = std::env::temp_dir().join("kn-test-temp-nonexistent-file.dmg");
+        // Make sure the file doesn't exist
+        let _ = std::fs::remove_file(&tmp);
+        assert!(is_safe_path(&tmp), "non-existent file under temp dir should be allowed");
+    }
+
+    #[test]
+    fn test_is_safe_path_allows_non_existent_path_in_home() {
+        // Non-existent file whose parent IS under home should be allowed.
+        let home = home_dir();
+        let safe = home.join(".kn-test-home-nonexistent-file.tmp");
+        let _ = std::fs::remove_file(&safe);
+        assert!(is_safe_path(&safe), "non-existent file under home dir should be allowed");
     }
 
     #[test]
