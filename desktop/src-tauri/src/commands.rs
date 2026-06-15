@@ -958,7 +958,7 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
                     std::process::Command::new("open")
                         .args(["-a", "Visual Studio Code", &path])
                         .spawn()
-                        .map_err(|e| format!("启动 VS Code 失败: {}", e))?;
+                        .map_err(|_| "未找到 VS Code。请确认已安装，或执行 Cmd+Shift+P → 'Install code command in PATH'".to_string())?;
                 }
             }
             #[cfg(not(target_os = "macos"))]
@@ -977,7 +977,7 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
                     std::process::Command::new("open")
                         .args(["-a", "Cursor", &path])
                         .spawn()
-                        .map_err(|e| format!("启动 Cursor 失败: {}", e))?;
+                        .map_err(|_| "未找到 Cursor。请确认已安装，或执行 Cmd+Shift+P → 'Install cursor command in PATH'".to_string())?;
                 }
             }
             #[cfg(not(target_os = "macos"))]
@@ -1018,7 +1018,21 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
 #[cfg(not(target_os = "macos"))]
 fn open_with_editor(path: &str, name: &str, binaries: &[&str]) -> Result<(), String> {
     let binary = crate::commands::find_binary(binaries)
-        .ok_or_else(|| format!("未找到 {}，请先安装", name))?;
+        .ok_or_else(|| {
+            let hint = match binaries[0] {
+                "code" | "code.cmd" =>
+                    "请安装 VS Code 并确保 code 命令在 PATH 中。\n\
+                     macOS: Cmd+Shift+P → 'Install code command in PATH'\n\
+                     Windows: 安装时勾选 'Add to PATH'，或从安装目录运行",
+                "cursor" | "cursor.cmd" =>
+                    "请安装 Cursor 并确保 cursor 命令在 PATH 中。\n\
+                     macOS: Cmd+Shift+P → 'Install cursor command in PATH'",
+                "idea" | "idea64" =>
+                    "请安装 IntelliJ IDEA 并确保 idea 命令在 PATH 中。",
+                _ => "请先安装该编辑器。",
+            };
+            format!("未找到 {}。{}", name, hint)
+        })?;
     std::process::Command::new(&binary)
         .arg(path)
         .spawn()
