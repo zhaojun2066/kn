@@ -217,6 +217,7 @@ export function ProjectWorkspace({
   const [overviewData, setOverviewData] = useState<ProjectOverviewData | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
 
+
   // ── Sync selectedResource after data changes (toggle/delete) ──
   const syncSelection = useCallback((data: ResourceScanData, prev: SelectedItem | null) => {
     if (!prev) return null;
@@ -262,6 +263,8 @@ export function ProjectWorkspace({
   // ── Resource data loading ──
   const loadResourceData = useCallback(async () => {
     if (!project?.path) return;
+    setResourceData(null);          // clear stale data immediately
+    setAgentData(null);
     setResourceLoading(true);
     try {
       const { skills, agents } = await scanProjectResources(project.path);
@@ -293,6 +296,10 @@ export function ProjectWorkspace({
     settledPathRef.current = project.path;
 
     if (pathChanged) {
+      // Immediately clear stale data from previous project
+      setResourceData(null);
+      setAgentData(null);
+      setResourceLoading(true);
       if (dataDebounceRef.current) clearTimeout(dataDebounceRef.current);
       dataDebounceRef.current = setTimeout(loadResourceData, 300);
     } else {
@@ -306,6 +313,7 @@ export function ProjectWorkspace({
   // ── Hooks data loading ──
   const loadHookData = useCallback(async () => {
     if (!project?.path) return;
+    setHookData(null);              // clear stale data immediately
     setHookLoading(true);
     try {
       const result = await invoke<HookManagerData>("scan_hooks", { projectPath: project.path });
@@ -320,6 +328,7 @@ export function ProjectWorkspace({
   // ── Overview data loading ──
   const loadOverviewData = useCallback(async () => {
     if (!project?.path) return;
+    setOverviewData(null);          // clear stale data immediately
     setOverviewLoading(true);
     try {
       const data = await invoke<ProjectOverviewData>("get_project_overview", {
@@ -348,6 +357,8 @@ export function ProjectWorkspace({
   // Load hooks when switching to hooks tab (immediate) or when the project
   // changes while already on the tab (debounced 300ms).
   // Load hooks: immediate on tab switch, debounced 300ms on project change.
+  // When project changes, immediately clear stale data so the user sees a loading
+  // skeleton instead of the previous project's hooks during the debounce window.
   useEffect(() => {
     if (activeTab !== "hooks") {
       setSelectedHook(null);
@@ -357,6 +368,8 @@ export function ProjectWorkspace({
     settledPathRef.current = project.path;
 
     if (pathChanged) {
+      setHookData(null);
+      setHookLoading(true);
       if (dataDebounceRef.current) clearTimeout(dataDebounceRef.current);
       dataDebounceRef.current = setTimeout(loadHookData, 300);
     } else {
@@ -986,12 +999,16 @@ export function ProjectWorkspace({
   })();
 
   // Load overview data: immediate on tab switch, debounced 300ms on project change.
+  // When project changes, immediately clear stale data so the user sees a loading
+  // skeleton instead of the previous project's overview during the debounce window.
   useEffect(() => {
     if (activeTab !== "overview") return;
     const pathChanged = settledPathRef.current !== project.path;
     settledPathRef.current = project.path;
 
     if (pathChanged) {
+      setOverviewData(null);
+      setOverviewLoading(true);
       if (dataDebounceRef.current) clearTimeout(dataDebounceRef.current);
       dataDebounceRef.current = setTimeout(loadOverviewData, 300);
     } else {
@@ -1002,7 +1019,9 @@ export function ProjectWorkspace({
     };
   }, [activeTab, project.path, loadOverviewData]);
 
-  // Load sessions: immediate on tab switch, debounced 300ms on project change.
+  // Load sessions: debounced 300ms on project change to avoid race conditions
+  // during rapid arrow-key navigation. scanSessions is async (Tauri IPC) and
+  // internally clears stale data when project path changes + has 30s cache.
   useEffect(() => {
     if (activeTab !== "sessions") return;
     const pathChanged = settledPathRef.current !== project.path;

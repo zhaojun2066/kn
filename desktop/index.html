@@ -5,8 +5,21 @@
     <link rel="icon" type="image/png" href="/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>kn</title>
+    <!-- Blocking script: apply theme before first paint to prevent flash -->
+    <script>
+      (function() {
+        var m = localStorage.getItem("kn-theme");
+        if (m !== "light" && m !== "dark" && m !== "system") m = "system";
+        var resolved = m === "system"
+          ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+          : m;
+        if (resolved === "dark") document.documentElement.classList.add("dark");
+        var s = localStorage.getItem("kn-color-scheme");
+        if (s) document.documentElement.setAttribute("data-theme", s);
+      })();
+    </script>
   </head>
-  <body class="bg-darcula-bg-primary text-darcula-text-primary font-sans text-base overflow-hidden m-0 p-0">
+  <body class="overflow-hidden m-0 p-0">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

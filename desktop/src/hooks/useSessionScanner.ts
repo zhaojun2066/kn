@@ -29,6 +29,10 @@ export function useSessionScanner(): UseSessionScannerReturn {
       return;
     }
 
+    // Clear stale sessions from previous project immediately
+    if (cache && cache.projectPath !== projectPath) {
+      setSessions([]);
+    }
     setLoading(true);
     try {
       const results = await invoke<SessionInfo[]>("scan_project_sessions", {

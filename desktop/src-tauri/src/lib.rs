@@ -13,6 +13,7 @@ mod usage;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -328,6 +329,11 @@ pub fn run() {
             hook_store::uninstall_store_hook,
             hook_logs::get_hook_execution_logs,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                window.app_handle().exit(0);
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

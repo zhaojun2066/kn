@@ -253,124 +253,90 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
 
 /* ── ProjectGuide — empty state for project management ─ */
 export function ProjectGuide({
-  hasProjects,
   onAddProject,
 }: {
-  hasProjects: boolean;
   onAddProject: () => void;
 }) {
-  if (!hasProjects) {
-    return (
-      <div className="flex-1 flex items-center justify-center bg-app-bg">
-        <div className="flex flex-col items-center gap-5 text-center max-w-sm px-4">
-          <div className="w-16 h-16 rounded-full bg-[var(--app-selected)] flex items-center justify-center">
-            <Folder size={32} className="text-app-amber" />
-          </div>
-          <div>
-            <div className="text-lg text-app-text font-mono font-semibold mb-1">项目管理</div>
-            <div className="text-sm text-app-text-dim leading-relaxed">
-              注册项目目录，集中管理会话、资源与 Hooks
-            </div>
-          </div>
-          <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
-            <div className="text-app-text-muted">快速开始：</div>
-            <div>1. 点击下方「注册项目」选择项目目录</div>
-            <div>2. 为项目设置默认 Profile，一键启动 AI 工具</div>
-            <div>3. 在项目中集中管理 Skills、Hooks、会话记录</div>
-          </div>
-          {/* CTA */}
-          <button
-            onClick={onAddProject}
-            className="text-sm text-app-text font-mono font-semibold transition-colors border-2 border-app-amber
-              bg-[var(--app-selected)] px-4 py-2.5 hover:bg-[var(--app-active)]
-              w-full flex items-center justify-center gap-2"
-          >
-            <Plus size={14} className="text-app-amber" />
-            注册项目
-          </button>
-
-          {/* What is a project */}
-          <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
-            <div className="text-app-text-muted font-semibold">什么是项目？</div>
-            <div className="leading-relaxed">
-              项目是一个<b className="text-app-text">本地目录</b>，通常对应一个 Git 仓库或工作空间。
-              注册后，kn 会自动扫描项目中的{" "}
-              <b className="text-app-text">Skills、Agents、Hooks</b>{" "}
-              等 AI 工具配置，并提供统一的会话管理和资源浏览。
-            </div>
-          </div>
-
-          {/* Use cases */}
-          <div className="text-xs text-app-text-dim font-mono text-left space-y-2 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
-            <div className="text-app-text-muted font-semibold">项目支持的功能</div>
-            <div className="space-y-1.5">
-              {[
-                { icon: "📂", label: "文件浏览", desc: "浏览项目文件结构，预览代码内容" },
-                { icon: "💬", label: "会话管理", desc: "查看和恢复项目中的 AI 会话记录" },
-                { icon: "🧩", label: "资源管理", desc: "管理项目级 Skills、Agents、Commands" },
-                { icon: "🪝", label: "Hooks", desc: "配置项目级事件钩子，自动化工作流" },
-              ].map(({ icon, label, desc }) => (
-                <div key={label} className="flex gap-2">
-                  <span className="shrink-0 mt-px">{icon}</span>
-                  <div>
-                    <span className="text-app-text font-semibold">{label}</span>
-                    <span className="text-app-text-muted"> — {desc}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Shortcuts */}
-          <div className="text-left border border-app-border bg-[var(--app-cmd-bg)] w-full">
-            <div className="px-3 py-1 border-b border-app-border bg-[var(--app-cmd-header)]">
-              <span className="text-2xs text-app-text-muted uppercase tracking-wider">快捷键</span>
-            </div>
-            <div className="px-3 py-1.5 space-y-0.5 text-2xs font-mono">
-              {[
-                ["↑↓", "切换项目"],
-                ["Enter", "运行选中项目"],
-                ["Esc", "取消选中"],
-                [formatShortcut("mod+K"), "快捷键帮助"],
-              ].map(([key, desc]) => (
-                <div key={key} className="flex justify-between">
-                  <span className="text-app-text-muted">{desc}</span>
-                  <kbd className="text-app-text-dim">{key}</kbd>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Has projects but none selected
   return (
     <div className="flex-1 flex items-center justify-center bg-app-bg">
-      <div className="flex flex-col items-center gap-4 text-center max-w-xs px-4">
+      <div className="flex flex-col items-center gap-5 text-center max-w-sm px-4">
         <div className="w-16 h-16 rounded-full bg-[var(--app-selected)] flex items-center justify-center">
-          <FolderOpen size={32} className="text-app-amber opacity-50" />
+          <Folder size={32} className="text-app-amber" />
         </div>
         <div>
-          <div className="text-sm text-app-text font-mono font-semibold mb-1">选择项目</div>
-          <div className="text-xs text-app-text-dim leading-relaxed">
-            从左侧项目列表中选择一个项目，查看文件、会话、资源和 Hooks
+          <div className="text-lg text-app-text font-mono font-semibold mb-1">项目管理</div>
+          <div className="text-sm text-app-text-dim leading-relaxed">
+            注册项目目录，集中管理会话、资源与 Hooks
           </div>
         </div>
-        <div className="text-2xs text-app-text-muted font-mono space-y-0.5">
-          <div>↑↓ 切换项目</div>
-          <div>Enter 运行默认 Profile</div>
+        <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
+          <div className="text-app-text-muted">快速开始：</div>
+          <div>1. 点击下方「注册项目」选择项目目录</div>
+          <div>2. 为项目设置默认 Profile，一键启动 AI 工具</div>
+          <div>3. 在项目中集中管理 Skills、Hooks、会话记录</div>
         </div>
+        {/* CTA */}
         <button
           onClick={onAddProject}
-          className="flex items-center gap-1.5 text-xs font-mono text-app-text-dim
-            border border-app-border bg-[var(--app-input)] px-3 py-1.5
-            hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
+          className="text-sm text-app-text font-mono font-semibold transition-colors border-2 border-app-amber
+            bg-[var(--app-selected)] px-4 py-2.5 hover:bg-[var(--app-active)]
+            w-full flex items-center justify-center gap-2"
         >
-          <Plus size={12} />
-          注册新项目
+          <Plus size={14} className="text-app-amber" />
+          注册项目
         </button>
+
+        {/* What is a project */}
+        <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
+          <div className="text-app-text-muted font-semibold">什么是项目？</div>
+          <div className="leading-relaxed">
+            项目是一个<b className="text-app-text">本地目录</b>，通常对应一个 Git 仓库或工作空间。
+            注册后，kn 会自动扫描项目中的{" "}
+            <b className="text-app-text">Skills、Agents、Hooks</b>{" "}
+            等 AI 工具配置，并提供统一的会话管理和资源浏览。
+          </div>
+        </div>
+
+        {/* Use cases */}
+        <div className="text-xs text-app-text-dim font-mono text-left space-y-2 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
+          <div className="text-app-text-muted font-semibold">项目支持的功能</div>
+          <div className="space-y-1.5">
+            {[
+              { icon: "📂", label: "文件浏览", desc: "浏览项目文件结构，预览代码内容" },
+              { icon: "💬", label: "会话管理", desc: "查看和恢复项目中的 AI 会话记录" },
+              { icon: "🧩", label: "资源管理", desc: "管理项目级 Skills、Agents、Commands" },
+              { icon: "🪝", label: "Hooks", desc: "配置项目级事件钩子，自动化工作流" },
+            ].map(({ icon, label, desc }) => (
+              <div key={label} className="flex gap-2">
+                <span className="shrink-0 mt-px">{icon}</span>
+                <div>
+                  <span className="text-app-text font-semibold">{label}</span>
+                  <span className="text-app-text-muted"> — {desc}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Shortcuts */}
+        <div className="text-left border border-app-border bg-[var(--app-cmd-bg)] w-full">
+          <div className="px-3 py-1 border-b border-app-border bg-[var(--app-cmd-header)]">
+            <span className="text-2xs text-app-text-muted uppercase tracking-wider">快捷键</span>
+          </div>
+          <div className="px-3 py-1.5 space-y-0.5 text-2xs font-mono">
+            {[
+              ["↑↓", "切换项目"],
+              ["Enter", "运行选中项目"],
+              ["Esc", "取消选中"],
+              [formatShortcut("mod+K"), "快捷键帮助"],
+            ].map(([key, desc]) => (
+              <div key={key} className="flex justify-between">
+                <span className="text-app-text-muted">{desc}</span>
+                <kbd className="text-app-text-dim">{key}</kbd>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );

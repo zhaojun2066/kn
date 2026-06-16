@@ -37,7 +37,6 @@ import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useFontScale } from "./hooks/useFontScale";
 import { useProfiles } from "./hooks/useProfiles";
 import { useTerminal } from "./hooks/useTerminal";
-import { useTerminalCloseGuard } from "./hooks/useTerminalCloseGuard";
 import { useToasts } from "./hooks/useToasts";
 import { useUsage } from "./hooks/useUsage";
 import { useTheme } from "./hooks/useTheme";
@@ -74,12 +73,6 @@ export function App() {
   const rightTerminal = useTerminal("right");     // profile「运行」→ 右侧面板
   const bottomTerminal = useTerminal("bottom");   // 工具栏按钮 → 底部面板 (VS Code 风格)
 
-  // Keep refs to terminal instances for use in Tauri close-requested handler
-  const rightRef = useRef(rightTerminal);
-  rightRef.current = rightTerminal;
-  const bottomRef = useRef(bottomTerminal);
-  bottomRef.current = bottomTerminal;
-  useTerminalCloseGuard(rightRef, bottomRef);
   useFontScale();                                 // 初始化全局 UI 字体缩放
   const profilesCheckedRef = useRef(false);        // guard: 首次 loadProfiles 完成标志
   const [showAddDialog, setShowAddDialog] = useState(false);
@@ -2081,10 +2074,7 @@ export function App() {
               />
             )}
             {!rightMaximized && !bottomMaximized && activeActivity === "projects" && !activeProject && (
-              <ProjectGuide
-                hasProjects={projects.length > 0}
-                onAddProject={handleAddProject}
-              />
+              <ProjectGuide onAddProject={handleAddProject} />
             )}
 
             {/* Bottom terminal (VS Code-style panel) — resize handle */}

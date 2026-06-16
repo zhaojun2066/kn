@@ -60,6 +60,15 @@ fn scan_claude_plugins() -> Vec<PluginEntry> {
 
             if let Some(arr) = installs.as_array() {
                 for inst in arr {
+                    let scope = inst.get("scope").and_then(|v| v.as_str()).unwrap_or("user");
+                    // Only include user-scoped plugins here. Project-scoped
+                    // plugins are handled by scan_claude_project_plugins(root)
+                    // which filters by installPath to avoid leaking plugins
+                    // from other projects.
+                    if scope != "user" {
+                        continue;
+                    }
+
                     let install_path = inst
                         .get("installPath")
                         .and_then(|v| v.as_str())
@@ -68,12 +77,7 @@ fn scan_claude_plugins() -> Vec<PluginEntry> {
                         .get("version")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
-                    let scope = inst.get("scope").and_then(|v| v.as_str()).unwrap_or("user");
-                    let source = if scope == "user" {
-                        "marketplace"
-                    } else {
-                        scope
-                    };
+                    let source = "marketplace";
 
                     let enabled = enabled_plugins
                         .get(full_name)
@@ -1049,43 +1053,97 @@ fn scan_claude_project_commands(project_root: &Path) -> Vec<CommandEntry> {
     enumerate_commands_in_dir("claude", &commands_dir, pn, Some(project_root))
 }
 
-/// Scan Claude project-level plugins from `<project>/.claude/settings.json` `enabledPlugins`.
-/// These are plugins that were installed with `--scope project`.
+/// Scan Claude project-level plugins from two sources:
+/// 1. `installed_plugins.json` — entries with `scope=project` whose
+///    `installPath` is within `project_root`.
+/// 2. `<project>/.claude/settings.json` → `enabledPlugins`.
 fn scan_claude_project_plugins(project_root: &Path) -> Vec<PluginEntry> {
     let mut plugins = Vec::new();
-    let settings_path = project_root.join(".claude").join("settings.json");
-    let text = match fs::read_to_string(&settings_path) {
-        Ok(t) => t,
-        Err(_) => return plugins,
-    };
-    let root_val: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(_) => return plugins,
-    };
-    let enabled_plugins = root_val.get("enabledPlugins").and_then(|v| v.as_object());
 
-    if let Some(ep) = enabled_plugins {
-        for (full_name, enabled_val) in ep {
-            let (name, marketplace) = parse_plugin_id(full_name);
-            let enabled = enabled_val.as_bool().unwrap_or(false);
-            plugins.push(PluginEntry {
-                id: format!(
-                    "claude:project-plugin:{}:{}",
-                    crate::hash_path(&project_root.to_string_lossy()),
-                    full_name
-                ),
-                cli: "claude".into(),
-                name: name.to_string(),
-                marketplace: marketplace.to_string(),
-                enabled,
-                version: None,
-                source: "project".to_string(),
-                skills: vec![],
-                agents: vec![],
-                commands: vec![],
-            });
+    // Source 1: installed_plugins.json — project-scoped plugins that
+    // belong to THIS project (filtered by installPath).
+    if let Some(json_path) = claude_plugins_json() {
+        if let Ok(text) = fs::read_to_string(&json_path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(plugins_obj) = val.get("plugins").and_then(|v| v.as_object()) {
+                    for (full_name, installs) in plugins_obj {
+                        let (name, marketplace) = parse_plugin_id(full_name);
+                        if let Some(arr) = installs.as_array() {
+                            for inst in arr {
+                                let scope = inst.get("scope").and_then(|v| v.as_str()).unwrap_or("user");
+                                if scope != "project" {
+                                    continue;
+                                }
+                                let install_path = inst
+                                    .get("installPath")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                // Only include if installed within this project
+                                if !Path::new(install_path).starts_with(project_root) {
+                                    continue;
+                                }
+                                let version = inst
+                                    .get("version")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                plugins.push(PluginEntry {
+                                    id: format!(
+                                        "claude:project-plugin:{}:{}",
+                                        crate::hash_path(&project_root.to_string_lossy()),
+                                        full_name
+                                    ),
+                                    cli: "claude".into(),
+                                    name: name.to_string(),
+                                    marketplace: marketplace.to_string(),
+                                    enabled: true, // installed = active by default
+                                    version,
+                                    source: "project".to_string(),
+                                    skills: vec![],
+                                    agents: vec![],
+                                    commands: vec![],
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
+
+    // Source 2: project-level settings.json → enabledPlugins
+    let settings_path = project_root.join(".claude").join("settings.json");
+    if let Ok(text) = fs::read_to_string(&settings_path) {
+        if let Ok(root_val) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(ep) = root_val.get("enabledPlugins").and_then(|v| v.as_object()) {
+                for (full_name, enabled_val) in ep {
+                    let (name, marketplace) = parse_plugin_id(full_name);
+                    // Skip if already added from installed_plugins.json
+                    let already_added = plugins.iter().any(|p| p.name == name);
+                    if already_added {
+                        continue;
+                    }
+                    let enabled = enabled_val.as_bool().unwrap_or(false);
+                    plugins.push(PluginEntry {
+                        id: format!(
+                            "claude:project-plugin:{}:{}",
+                            crate::hash_path(&project_root.to_string_lossy()),
+                            full_name
+                        ),
+                        cli: "claude".into(),
+                        name: name.to_string(),
+                        marketplace: marketplace.to_string(),
+                        enabled,
+                        version: None,
+                        source: "project".to_string(),
+                        skills: vec![],
+                        agents: vec![],
+                        commands: vec![],
+                    });
+                }
+            }
+        }
+    }
+
     plugins
 }
 

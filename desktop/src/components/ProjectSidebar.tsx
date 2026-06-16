@@ -99,7 +99,17 @@ export function ProjectSidebar({
     }
   }, [sorted, focusedIndex, onSelect]);
 
-  useEffect(() => { setFocusedIndex(-1); }, [sorted.length]);
+  // Keep focusedIndex in sync with selectedProject, so keyboard navigation
+  // always starts from the currently selected item regardless of how it was
+  // selected (mouse click, keyboard, or external programmatic selection).
+  useEffect(() => {
+    if (!selectedProject) {
+      setFocusedIndex(-1);
+      return;
+    }
+    const idx = sorted.findIndex((p) => p.name === selectedProject.name);
+    setFocusedIndex(idx);
+  }, [selectedProject, sorted]);
 
   // ── Context menu ──
   const onContextMenu = useCallback((e: React.MouseEvent, name: string) => {

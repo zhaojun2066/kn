@@ -608,12 +608,16 @@ fn load_codex_index_titles(home: &Path) -> std::collections::HashMap<String, Str
 }
 
 /// Recursively walk the `~/.codex/sessions/YYYY/MM/DD/` tree.
+/// Caps total files scanned at 300 to prevent unbounded I/O when the user
+/// has hundreds of sessions across many projects.
 fn walk_codex_sessions_dir(
     root: &Path,
     project_path: &str,
     index_titles: &std::collections::HashMap<String, String>,
     out: &mut Vec<SessionInfo>,
 ) {
+    const MAX_FILES_SCANNED: usize = 300;
+    let mut files_scanned: usize = 0;
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if let Ok(entries) = fs::read_dir(&dir) {
@@ -622,6 +626,10 @@ fn walk_codex_sessions_dir(
                 if path.is_dir() {
                     stack.push(path);
                 } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                    if files_scanned >= MAX_FILES_SCANNED {
+                        return;
+                    }
+                    files_scanned += 1;
                     if let Some(session) = read_codex_session_meta(&path, project_path, index_titles) {
                         out.push(session);
                     }
@@ -1063,24 +1071,28 @@ fn find_session_file(home: &Path, cli: &str, project_path: &str, session_id: &st
 }
 
 #[tauri::command]
-pub fn scan_project_sessions(project_path: String, cli: Option<String>) -> Vec<SessionInfo> {
-    const MAX_SESSIONS: usize = 50;
-    let cli_filter = cli.unwrap_or_default();
-    let mut all: Vec<SessionInfo> = Vec::new();
+pub async fn scan_project_sessions(project_path: String, cli: Option<String>) -> Vec<SessionInfo> {
+    tauri::async_runtime::spawn_blocking(move || {
+        const MAX_SESSIONS: usize = 50;
+        let cli_filter = cli.unwrap_or_default();
+        let mut all: Vec<SessionInfo> = Vec::new();
 
-    if cli_filter.is_empty() || cli_filter == "claude" {
-        all.extend(scan_claude_sessions(&project_path, MAX_SESSIONS));
-    }
-    if cli_filter.is_empty() || cli_filter == "codex" {
-        all.extend(scan_codex_sessions(&project_path, MAX_SESSIONS));
-    }
-    if cli_filter.is_empty() || cli_filter == "qoder" {
-        all.extend(scan_qoder_sessions(&project_path));
-    }
+        if cli_filter.is_empty() || cli_filter == "claude" {
+            all.extend(scan_claude_sessions(&project_path, MAX_SESSIONS));
+        }
+        if cli_filter.is_empty() || cli_filter == "codex" {
+            all.extend(scan_codex_sessions(&project_path, MAX_SESSIONS));
+        }
+        if cli_filter.is_empty() || cli_filter == "qoder" {
+            all.extend(scan_qoder_sessions(&project_path));
+        }
 
-    all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    all.truncate(MAX_SESSIONS);
-    all
+        all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        all.truncate(MAX_SESSIONS);
+        all
+    })
+    .await
+    .unwrap_or_default()
 }
 
 // ── Project Overview ──────────────────────────────────────────
@@ -1222,9 +1234,10 @@ fn count_plugins(root: &Path) -> CliCounts {
 fn count_claude_plugins(root: &Path) -> u32 {
     let mut total = 0u32;
 
-    // Source 1: installed_plugins.json — entries with scope=project.
-    // Resource tab's scan_all merges these into the project plugin list
-    // with source="project", so the overview must match.
+    // Source 1: installed_plugins.json — entries with scope=project AND
+    // installPath within the current project root. Must filter by project,
+    // otherwise project-scoped plugins from OTHER projects are counted for
+    // every project.
     let home = crate::home_dir();
     let installed_json = home.join(".claude").join("plugins").join("installed_plugins.json");
     if let Ok(text) = fs::read_to_string(&installed_json) {
@@ -1235,7 +1248,15 @@ fn count_claude_plugins(root: &Path) -> u32 {
                         for inst in arr {
                             let scope = inst.get("scope").and_then(|v| v.as_str()).unwrap_or("user");
                             if scope == "project" {
-                                total += 1;
+                                // Only count if the plugin is installed within THIS project
+                                let belongs = inst
+                                    .get("installPath")
+                                    .and_then(|v| v.as_str())
+                                    .map(|install_path| Path::new(install_path).starts_with(root))
+                                    .unwrap_or(false);
+                                if belongs {
+                                    total += 1;
+                                }
                             }
                         }
                     }
@@ -1498,7 +1519,8 @@ fn scan_recent_sessions(project_path: &str, max: usize) -> Vec<SessionInfo> {
 
 /// Aggregate all overview data in a single lightweight call.
 #[tauri::command]
-pub fn get_project_overview(project_path: String) -> Result<ProjectOverviewData, String> {
+pub async fn get_project_overview(project_path: String) -> Result<ProjectOverviewData, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     let root = Path::new(&project_path);
     if !root.is_dir() {
         return Err("项目路径不存在或不是目录".into());
@@ -1538,6 +1560,9 @@ pub fn get_project_overview(project_path: String) -> Result<ProjectOverviewData,
         config_matrix,
         recent_sessions,
     })
+    })
+    .await
+    .map_err(|e| format!("后台任务失败: {}", e))?
 }
 
 #[cfg(test)]
