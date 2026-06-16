@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useResizeHandle } from "../hooks/useResizeHandle";
 import { Puzzle, Terminal, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -75,45 +76,14 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
   const [hookStoreOpen, setHookStoreOpen] = useState(false);
 
   /* ── Resizable width ── */
-  const minWidth = 480;
   const maxWidth = useMemo(() => Math.round(window.innerWidth * 0.92), []);
-  const [drawerWidth, setDrawerWidth] = useState(() => {
-    try {
-      const saved = localStorage.getItem("kn-resource-drawer-width");
-      if (saved) return Math.max(minWidth, Math.min(maxWidth, parseInt(saved, 10)));
-    } catch {}
-    return Math.max(minWidth, Math.min(maxWidth, 1080));
+  const { size: drawerWidth, handleProps } = useResizeHandle({
+    direction: "horizontal",
+    minSize: 480,
+    maxSize: maxWidth,
+    defaultSize: 1080,
+    storageKey: "kn-resource-drawer-width",
   });
-  const drawerWidthRef = useRef(drawerWidth);
-  drawerWidthRef.current = drawerWidth;
-
-  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = drawerWidthRef.current;
-
-    const onMouseMove = (ev: MouseEvent) => {
-      const delta = startX - ev.clientX;
-      const newWidth = Math.max(minWidth, Math.min(maxWidth, startWidth + delta));
-      setDrawerWidth(newWidth);
-    };
-
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      try { localStorage.setItem("kn-resource-drawer-width", String(drawerWidthRef.current)); } catch {}
-    };
-
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [minWidth, maxWidth]);
-
-  // Persist width when drawer closes (captures final width)
-  useEffect(() => {
-    if (!open) {
-      try { localStorage.setItem("kn-resource-drawer-width", String(drawerWidth)); } catch {}
-    }
-  }, [open]);
 
   // Track whether update check was initiated by THIS component — only then show toast.
   const checkRequestRef = useRef(false);
@@ -772,14 +742,14 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
       />
       {/* Resize handle — outside section so internal content can't block it */}
       <div
-        className="absolute top-0 bottom-0 w-2 cursor-col-resize z-30 hover:bg-app-accent/15 transition-colors"
+        {...handleProps}
+        className={`absolute top-0 bottom-0 w-2 z-30 hover:bg-app-accent/15 transition-colors ${handleProps.className}`}
         style={{ right: `${drawerWidth}px` }}
-        onMouseDown={handleResizeMouseDown}
       >
         <div className="absolute right-0 top-0 bottom-0 w-px bg-app-border" />
       </div>
       <section
-        className="relative z-10 h-full bg-app-bg border-l border-app-border shadow-dialog flex flex-col"
+        className="relative z-10 h-full bg-app-bg border-l border-app-border shadow-dialog flex flex-col shrink-0"
         style={{ width: `${drawerWidth}px` }}
       >
         {/* Header */}

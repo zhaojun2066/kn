@@ -12,7 +12,7 @@ kn — a monorepo with three components sharing one data file (`~/.kn/config.yam
 | Desktop App | `desktop/` | TypeScript + Rust (Tauri v2) | GUI with embedded PTY terminal |
 | Product Site | `site/` | Vue 3 + TypeScript + Vite | Landing page + docs, deployed to GitHub Pages |
 
-All three read/write the same `~/.kn/config.yaml`. The Python lib uses `fcntl.flock` (Unix) / `msvcrt.locking` (Windows) for concurrent-write safety. The Rust backend reads/writes directly via `serde_yaml`.
+All three read/write the same `~/.kn/config.yaml`. The Python lib uses `fcntl.flock` for concurrent-write safety. The Rust backend reads/writes directly via `serde_yaml`.
 
 ## Build & Test Commands
 
@@ -50,7 +50,7 @@ npm run build                                     # production build
 
 ### CLI (Python)
 - `bin/profile` — thin CLI wrapper, delegates to `lib/config.py`
-- `lib/config.py` — hand-rolled YAML parser/formatter (no PyYAML dependency), file locking via `fcntl` (Unix) or `msvcrt` (Windows), atomic write with tmp-file + fsync + rename
+- `lib/config.py` — hand-rolled YAML parser/formatter (no PyYAML dependency), file locking via `fcntl`, atomic write with tmp-file + fsync + rename
 - `tests/test_config.py` — unit tests for YAML parsing, serialization, public API
 - `tests/test_json_output.py` — integration tests for `--json` CLI flag
 
@@ -76,7 +76,7 @@ See `desktop/CLAUDE.md` for full desktop architecture, PTY data flow, terminal p
 
 ## CI/CD
 
-- `.github/workflows/build-desktop.yml` — **tag-push trigger** (`v1.0.7` → auto build + release) with `workflow_dispatch` fallback; validates version, builds macOS (ARM + Intel) + Windows, auto-generates release notes via git-cliff
+- `.github/workflows/build-desktop.yml` — **tag-push trigger** (`v1.0.7` → auto build + release) with `workflow_dispatch` fallback; validates version, builds macOS (ARM + Intel), auto-generates release notes via git-cliff
 - `.github/workflows/deploy-site.yml` — auto-deploys `site/` to GitHub Pages on push to main
 
 ## Release Process
@@ -108,29 +108,28 @@ Release notes 由 [git-cliff](https://git-cliff.org) 根据 conventional commits
 本地预览 release notes: `git cliff --unreleased`
 完整发布指南（含功能分支开发 → merge → 发布全流程）见 `RELEASE.md`。
 
-## Cross-Platform Design
+## Platform
 
-| Operation | macOS | Linux | Windows |
-|-----------|-------|-------|---------|
-| HTTP fetch | `reqwest::blocking` (pure Rust) | same | same |
-| SHA256 | `sha2` crate (pure Rust) | same | same |
-| Open file | `/usr/bin/open` | `xdg-open` | `cmd /c start` |
-| PTY shell | `/bin/zsh -i -l` | `/bin/bash -i -l` | Git Bash if present, else `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` |
-| File lock | `fcntl.flock` (Python) + `fs2::lock_exclusive` (Rust) | same | `msvcrt.locking` (Python) + `fs2` (Rust; not interoperable with msvcrt on Windows — `with_write_lock` Mutex protects intra-Rust) |
-| Shell RC | `.zshrc` + `.bashrc` | `.zshrc` + `.bashrc` | PowerShell profile + `.bashrc` |
+kn targets macOS exclusively. Key platform assumptions:
+
+- **PTY shell**: `/bin/zsh -i -l` (login + interactive). `pty.rs` ensures macOS GUI app PATH limitations are handled via login shell init.
+- **Open file**: `/usr/bin/open`
+- **File lock**: `fcntl.flock` (Python) + `fs2::lock_exclusive` (Rust)
+- **Shell RC**: `.zshrc` + `.bashrc`
+- **Config path**: `~/.kn/` (resolved via `HOME`)
 
 Key implementation details:
-- `commands.rs::find_binary()` — searches hardcoded platform paths → shell PATH fallback (`shell -lc "command -v"`) → bare command name. Windows extra paths: `System32`, Scoop shims (`~/scoop/shims`), npm global (`~/AppData/Roaming/npm`), `Program Files`.
-- `commands.rs::home_dir()` — checks `HOME` (Unix) then `USERPROFILE` (Windows). **Always use this function — never inline `std::env::var("HOME").or_else(...)`.** `pty.rs` previously had the priority reversed (USERPROFILE before HOME) which was a bug on Cygwin/Git Bash.
+- `commands.rs::find_binary()` — searches hardcoded macOS paths `/usr/bin`, `/opt/homebrew/bin`, `/usr/local/bin` → shell PATH fallback (`shell -lc "command -v"`) → bare command name
+- `commands.rs::home_dir()` — checks `HOME`. **Always use this function — never inline `std::env::var("HOME")...`**
 - `install.sh` + `ensure_shell_rc()` — configures both `.zshrc` and `.bashrc` idempotently
-- `pty.rs` — Unix/Git Bash spawns with `-i -l` (login + interactive); Windows PowerShell fallback uses an absolute executable path and dot-sources `~/.kn/shell-rc.ps1`; always ensures `TERM=xterm-256color`
+- `pty.rs` — spawns with `-i -l` (login + interactive); always ensures `TERM=xterm-256color`
 
 ## Key Conventions
 
 - **Profile names**: `[a-z0-9]([a-z0-9-]*[a-z0-9])?` — enforced by `add_profile_cmd` to prevent shell injection in `sed`/regex parsing
 - **Config atomic write**: tmp file → `fsync` → `rename`, with 3-generation rotating backup (`.bak` → `.bak.1` → `.bak.2` → `.bak.3`) before overwrite
 - **No dev/prod config split**: single `~/.kn/config.yaml` for all modes
-- **Shell wrapper `sed -i`**: tries macOS `sed -i ''` first, falls back to Linux `sed -i`
+- **Shell wrapper `sed -i`**: uses macOS `sed -i ''` syntax
 
 ## Hard-Won Lessons
 
@@ -147,15 +146,14 @@ Rules discovered through bug fixes and code review. Violating any of these will 
 
 - Python side acquires `fcntl.flock(LOCK_EX)` on `~/.kn/.config.lock` before every write (`lib/config.py:45-76`). 5-second busy-wait timeout.
 - Rust side MUST use `fs2::FileExt::try_lock_exclusive()` on the same `.config.lock` file, wrapped inside `crate::with_write_lock()`. See `profile_cmd.rs::write_config()`.
-- **Windows caveat**: `fs2` uses `LockFileEx` (Win32) while Python uses `msvcrt.locking` (C runtime). These are NOT interoperable on Windows. The intra-process `with_write_lock` Mutex still protects Rust↔Rust. This limitation is acceptable because desktop app is primary on Windows.
 
 ### 2. Shell Wrapper — Single Source of Truth
 
-- **Canonical sources**: `shell/ai-profile.sh` (bash) and `shell/ai-profile.ps1` (PowerShell).
+- **Canonical source**: `shell/ai-profile.sh` (bash).
 - **Rust embeds at compile time**: `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/ai-profile.sh"))` — NOT a duplicate embedded string constant.
 - **NEVER** maintain a separate `const SHELL_RC: &str = r#"..."#;` in Rust. Always use `include_str!`.
 - **Checksum gating**: `ensure_shell_rc()` must compare content before overwriting `~/.kn/shell-rc`. Only write if content differs. Protects user customizations.
-- Both scripts have been merged to include all features: fzf picker, default fallback, `ai profile` subcommands, Codex auth.json handling, zero-dependency sed/awk fallback.
+- The script includes all features: fzf picker, default fallback, `ai profile` subcommands, Codex auth.json handling, zero-dependency sed/awk fallback.
 
 ### 3. Delete Profile — Default Promotion
 
@@ -178,11 +176,11 @@ Never skip tier 2. Tauri GUI processes have a minimal PATH (`/usr/bin:/bin`). Th
 | Don't | Do |
 |-------|-----|
 | `std::process::Command::new("curl")` | `reqwest::blocking::Client::new().get(url)` |
-| `powershell Get-FileHash` / `shasum` / `sha256sum` | `sha2::Sha256::new()` + `std::io::copy` |
+| `shasum` / `sha256sum` | `sha2::Sha256::new()` + `std::io::copy` |
 
 `reqwest` and `sha2` are already dependencies. Using them eliminates:
 - PATH dependency (no need to find `curl`/`shasum` on disk)
-- Process spawn overhead (200-500ms for PowerShell cold start)
+- Process spawn overhead
 - Platform-specific argument differences
 
 ### 6. Config Backup — Rotate, Never Overwrite
@@ -203,22 +201,7 @@ config.yaml       → config.yaml.bak (new backup)
 - **Block scalars**: `_parse_yaml` supports `|` and `>` indicators. `_format_yaml` emits `|` style when values contain `\n`.
 - **Number detection**: Use `try: float(val)` NOT regex replace-chains. `val.replace(".", "", 1).replace("-", "", 1).isdigit()` misses `+5`, `1e5`, `-1e5`, `.inf`, `.nan`.
 
-### 8. PowerShell YAML Parsing — Avoid Fragile Regex
-
-**Don't** use regex back-references to strip quotes:
-```powershell
-# Fragile: back-reference \2 can mismatch
-if ($_ -match '^      ([A-Za-z_][A-Za-z0-9_]*):\s*(""|''|)(.+?)\2\s*$')
-```
-**Do** use string indexing:
-```powershell
-if ($rawVal[0] -eq '"' -and $rawVal[-1] -eq '"') {
-    $env_vars[$key] = $rawVal.Substring(1, $rawVal.Length - 2)
-}
-```
-Also: truncate YAML inline comments (`#`) for unquoted values, and handle empty/`""`/`''` values explicitly.
-
-### 9. React State — Never Read Ref After setState
+### 8. React State — Never Read Ref After setState
 
 `useRef` synced to `useState` (like `sessionsRef.current = tabs`) introduces a race:
 1. `setTabs(...)` is called → React batches the update
@@ -234,28 +217,12 @@ setTabs((prev) => {
 });
 ```
 
-### 10. TypeScript — Narrow Types, Use `unknown` for Catches
+### 9. TypeScript — Narrow Types, Use `unknown` for Catches
 
 - **Discriminated unions narrow automatically**: after `if (item.type === "plugin")`, `item.data` IS `PluginEntry`. No `as any` needed. Extract to local variable for cleaner code.
 - **Never `catch (e: any)`**: use `catch (e: unknown)`. `String(e)` works on `unknown` too — no behavioral change, just type safety.
 - **Add missing fields to interfaces**: `PluginEntry` has `agents: AgentEntry[]` and `commands: CommandEntry[]` — if they exist at runtime, add them to the type.
 
-### 11. Cross-Platform — Use `home_dir()` Consistently
+### 10. Use `home_dir()` Consistently
 
-`crate::home_dir()` exists at `lib.rs:119-147` with proper fallback chain: `$HOME` → `$USERPROFILE` → shell query. **Always use it.** Never inline:
-```rust
-// ❌ Duplicated 7 times across the codebase, priority sometimes reversed
-let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
-
-// ✅ Correct
-let home = crate::home_dir().to_string_lossy().to_string();
-```
-`pty.rs` had USERPROFILE before HOME (reversed) — this was a bug on Cygwin/Git Bash where both are set.
-
-### 12. Linux CI — Must Stay Enabled
-
-`.github/workflows/build-desktop.yml` builds on `ubuntu-latest`. Required apt packages:
-```
-libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libgtk-3-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
-```
-Note: `libayatana-appindicator3-dev` NOT `libappindicator3-dev` (renamed in Ubuntu 22.04+). If Linux build fails, check Tauri v2 system dependencies first — don't comment out the matrix entry.
+`crate::home_dir()` exists at `lib.rs` with proper fallback chain. **Always use it.** Never inline `std::env::var("HOME")...` — the function handles edge cases correctly.

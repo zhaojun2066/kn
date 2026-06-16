@@ -422,12 +422,8 @@ pub fn read_app_config() -> Result<AppConfig, String> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| cwd.clone());
     let paths = vec![
-        // Bundled resource (production):
-        //   macOS .app:  Contents/Resources/ (relative to exe: ../Resources/)
-        //   Windows/MSI: next to .exe
-        //   Linux:        next to binary
-        exe_dir.join("../Resources/update.json"), // macOS
-        exe_dir.join("update.json"),              // Windows / Linux
+        // Bundled resource (production): macOS .app Contents/Resources/
+        exe_dir.join("../Resources/update.json"),
         // Development fallback
         cwd.join("update.json"),
         // Global fallback
@@ -611,7 +607,7 @@ pub fn temp_dir() -> String {
 
 #[derive(Debug, serde::Serialize)]
 pub struct PlatformInfo {
-    pub os: String,   // "macos", "windows", "linux"
+    pub os: String,   // always "macos"
     pub arch: String, // "aarch64", "x86_64"
 }
 

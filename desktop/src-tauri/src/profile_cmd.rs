@@ -531,9 +531,9 @@ def _resolve_project():
 def _ensure_project_registered(path, name):
     """Add project to projects.json if not already present.
 
-    Uses fcntl.flock on Unix for cross-process safety (same pattern as
-    the Rust backend's config lock). On Windows, falls back to simple
-    read-merge-write.
+    Uses fcntl.flock for cross-process safety (same pattern as
+    the Rust backend's config lock), with a simple read-merge-write
+    fallback if fcntl is unavailable.
     """
     try:
         import fcntl
@@ -568,10 +568,10 @@ def _ensure_project_registered(path, name):
         os.close(fd)
         return
     except ImportError:
-        # Windows fallback: no fcntl available
+        # fcntl not available; fall back to simple read-merge-write
         pass
 
-    # Windows path (or any platform where fcntl import failed)
+    # Fallback path (fcntl import failed)
     try:
         os.makedirs(os.path.dirname(PROJECTS_FILE), exist_ok=True)
         try:
@@ -920,7 +920,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
             fs::write(&zshrc, content).map_err(|e| format!("写入 .zshrc 失败: {}", e))?;
         }
 
-        // ── Unix: also add to ~/.bashrc (Linux default, also harmless on macOS) ──
+        // ── Also add to ~/.bashrc (harmless on macOS) ──
         {
             let bashrc = PathBuf::from(&home).join(".bashrc");
             let bash_source_line = format!("source \"{}/shell-rc\"", dir.display());

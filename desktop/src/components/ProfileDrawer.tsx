@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { X } from "lucide-react";
 import type { ProfileDetail, ProfileSummary, ProjectInfo, EnvCheckResult } from "../lib/types";
 import type { SessionRecord } from "../hooks/useTerminal";
+import { useResizeHandle } from "../hooks/useResizeHandle";
 import { Sidebar } from "./Sidebar";
 import { MainPanel } from "./MainPanel";
 import { Dialog } from "./common/Dialog";
@@ -100,45 +101,14 @@ export function ProfileDrawer({
   onRunProfileInProject,
 }: ProfileDrawerProps) {
   /* ── Resizable width ── */
-  const minWidth = 400;
   const maxWidth = useMemo(() => Math.round(window.innerWidth * 0.92), []);
-  const [drawerWidth, setDrawerWidth] = useState(() => {
-    try {
-      const saved = localStorage.getItem("kn-profile-drawer-width");
-      if (saved) return Math.max(minWidth, Math.min(maxWidth, parseInt(saved, 10)));
-    } catch {}
-    return Math.max(minWidth, Math.min(maxWidth, 960));
+  const { size: drawerWidth, handleProps } = useResizeHandle({
+    direction: "horizontal",
+    minSize: 400,
+    maxSize: maxWidth,
+    defaultSize: 960,
+    storageKey: "kn-profile-drawer-width",
   });
-  const drawerWidthRef = useRef(drawerWidth);
-  drawerWidthRef.current = drawerWidth;
-
-  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = drawerWidthRef.current;
-
-    const onMouseMove = (ev: MouseEvent) => {
-      const delta = startX - ev.clientX;
-      const newWidth = Math.max(minWidth, Math.min(maxWidth, startWidth + delta));
-      setDrawerWidth(newWidth);
-    };
-
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      try { localStorage.setItem("kn-profile-drawer-width", String(drawerWidthRef.current)); } catch {}
-    };
-
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [minWidth, maxWidth]);
-
-  // Persist width when drawer closes
-  useEffect(() => {
-    if (!open) {
-      try { localStorage.setItem("kn-profile-drawer-width", String(drawerWidth)); } catch {}
-    }
-  }, [open]);
 
   // ── Project picker state ──
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -238,15 +208,15 @@ export function ProfileDrawer({
       />
       {/* Resize handle — outside section so internal content can't block it */}
       <div
-        className="absolute top-0 bottom-0 w-2 cursor-col-resize z-30 hover:bg-app-accent/15 transition-colors"
+        {...handleProps}
+        className={`absolute top-0 bottom-0 w-2 z-30 hover:bg-app-accent/15 transition-colors ${handleProps.className}`}
         style={{ right: `${drawerWidth}px` }}
-        onMouseDown={handleResizeMouseDown}
       >
         <div className="absolute right-0 top-0 bottom-0 w-px bg-app-border" />
       </div>
       <section
         data-testid="profile-drawer-panel"
-        className="relative z-10 h-full bg-app-bg border-l border-app-border shadow-dialog flex flex-col"
+        className="relative z-10 h-full bg-app-bg border-l border-app-border shadow-dialog flex flex-col shrink-0"
         style={{ width: `${drawerWidth}px` }}
       >
         {/* ── Header ── */}

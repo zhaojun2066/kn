@@ -149,9 +149,9 @@ git push origin v1.0.7
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌──────────────────────┐
-│  validate   │ ──▶ │  build (4 jobs)   │ ──▶ │       release         │
+│  validate   │ ──▶ │  build (2 jobs)   │ ──▶ │       release         │
 │  版本校验    │     │  macOS ARM/Intel  │     │  生成 release notes   │
-│  tag == json │     │  Windows x64/ARM64│     │  生成 download.json   │
+│  tag == json │     │  (并行构建 ~15min) │     │  生成 download.json   │
 │  新 > 旧     │     │  (并行构建 ~15min) │     │  创建 GitHub Release  │
 └─────────────┘     └──────────────────┘     └──────────────────────┘
 ```
@@ -195,9 +195,7 @@ git push origin v1.0.7
       "url": "https://github.com/.../releases/download/v1.0.7/AI.Profile.Manager_1.0.7_aarch64.dmg",
       "sha256": "abc123..."
     },
-    "darwin-x86_64": { "url": "...", "sha256": "..." },
-    "windows-x86_64": { "url": "...", "sha256": "..." },
-    "windows-arm64": { "url": "...", "sha256": "..." }
+    "darwin-x86_64": { "url": "...", "sha256": "..." }
   }
 }
 ```
@@ -263,10 +261,7 @@ MAJOR.MINOR.PATCH
 
 去 Actions 日志里看具体是哪个平台失败了。常见原因：
 - **依赖更新导致编译失败**：Cargo.lock 变化、Tauri 版本升级
-- **Windows 特定问题**：路径分隔符、PowerShell 语法
 - **macOS Intel 交叉编译**：aarch64 机器上 cross-compile 到 x86_64
-
-如果只有某个平台失败且紧急需要发布，可以临时注释掉 `build-desktop.yml` matrix 中的那个平台。
 
 ### 重新发布同一个版本
 

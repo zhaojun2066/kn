@@ -24,7 +24,7 @@ pub struct StoreHook {
     pub hook_type: String,
     pub script_ext: String,
     pub compatible_clis: Vec<String>,
-    /// Platforms this hook can run on: "unix" (macOS/Linux), "windows"
+    /// Platforms this hook can run on; always "unix" (macOS only)
     pub platforms: Vec<String>,
     /// Tags for filtering (e.g. "java", "python", "frontend")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -255,7 +255,7 @@ fn all_hooks() -> Vec<StoreHook> {
         StoreHook {
             id: "notify-on-stop".into(),
             name: "任务完成桌面通知".into(),
-            description: "回合结束时发送桌面通知。适合长任务—AI 在工作，你去喝咖啡，完成时通知你回来。macOS/Linux 自适应。".into(),
+            description: "回合结束时发送桌面通知。适合长任务—AI 在工作，你去喝咖啡，完成时通知你回来。".into(),
             category: "notification".into(),
             event_type: "Stop".into(),
             matcher: "".into(),

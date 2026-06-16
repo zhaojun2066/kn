@@ -127,7 +127,7 @@ Container resize → ResizeObserver → RAF coalescing → fit()
 ### Font Rendering & Resize
 Uses **canvas renderer** (default) for maximum stability — WebGL was disabled because it caused rendering glitches with CJK fonts, box-drawing characters (`╭─│├`), and Braille spinners (`⠋⠙⠹`) heavily used by Claude Code's TUI. The canvas renderer supports the same Unicode characters.
 
-Font stack: `ui-monospace, SF Mono, Cascadia Code, Menlo, Monaco, JetBrains Mono, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Consolas, Courier New, monospace`.
+Font stack: `ui-monospace, SF Mono, Cascadia Code, Menlo, Monaco, JetBrains Mono, PingFang SC, Noto Sans CJK SC, Consolas, Courier New, monospace`.
 
 Font size changes force an XTerm remount (xterm.js doesn't support hot-reloading `fontSize`). The PTY session stays alive; `resize_pty` (via fit → onResize) sends SIGWINCH to the child, triggering TUI redraw. **No ANSI text replay** — raw escape sequences replayed into a fresh terminal would corrupt the display.
 
@@ -166,37 +166,28 @@ Each supported CLI tool uses different config directory names for user-level vs 
 
 ## Cross-Platform Compatibility
 
-The app targets **macOS Intel**, **macOS Apple Silicon**, **Windows**, and **Linux**. Platform differences are handled in these key areas:
+The app targets **macOS Apple Silicon** and **macOS Intel**.
 
 ### System Binary Resolution (`commands.rs`)
-The `find_binary()` function tries multiple paths per OS before falling back to the bare command name:
-- macOS: `/usr/bin/<name>` → `/opt/homebrew/bin/<name>` → `/usr/local/bin/<name>`
-- Linux: `/usr/bin/<name>` → `/bin/<name>`
-- Windows: bare command name only
+The `find_binary()` function tries macOS paths before falling back to the bare command name:
+- `/usr/bin/<name>` → `/opt/homebrew/bin/<name>` → `/usr/local/bin/<name>`
 
-### Platform-Specific Commands
-| Operation | macOS | Linux | Windows |
-|-----------|-------|-------|---------|
-| HTTP fetch | `curl -sL` | `curl -sL` | `curl -sL` |
-| SHA256 verify | `/usr/bin/shasum -a 256` | `sha256sum` or `shasum` | `certutil -hashfile SHA256` |
-| Open file/folder | `/usr/bin/open` | `xdg-open` | `cmd /c start` |
-| PTY default shell | `/bin/zsh` | `/bin/bash` | `powershell.exe` |
+### Platform Commands
+| Operation | macOS |
+|-----------|-------|
+| HTTP fetch | `curl -sL` |
+| SHA256 verify | `/usr/bin/shasum -a 256` |
+| Open file/folder | `/usr/bin/open` |
+| PTY default shell | `/bin/zsh` |
 
 ### Shell Scope (`capabilities/default.json`)
-Shell plugin commands need entries in both `shell:allow-execute` and `shell:allow-spawn` permission objects. Each entry specifies `cmd` (full path) and `args: true`. Platform-specific entries coexist — the first matching one on the current OS is used. Key entries include: `curl`, `shasum`, `sha256sum` (Linux), `certutil` (Windows), `open` (macOS), `xdg-open` (Linux), `brew` (macOS, both Apple Silicon `/opt/homebrew/bin/brew` and Intel `/usr/local/bin/brew`), `apt-get` (Linux), `winget` (Windows).
-
-### Font Stack (`XTerm.tsx`)
-Starts with system UI monospace, then falls through platform-specific fonts:
-```
-ui-monospace → SF Mono (macOS) → Cascadia Code (Windows) → Menlo → Monaco → JetBrains Mono → Fira Code → Consolas → Courier New → monospace
-```
+Shell plugin commands need entries in both `shell:allow-execute` and `shell:allow-spawn` permission objects. Each entry specifies `cmd` (full path) and `args: true`. Key entries include: `curl`, `shasum`, `open`, `brew` (both Apple Silicon `/opt/homebrew/bin/brew` and Intel `/usr/local/bin/brew`).
 
 ### Home Directory (`commands.rs`)
-`home_dir()` checks `HOME` env var first (Unix), then `USERPROFILE` (Windows), falls back to `"~"`. Used for scanning `~/.claude/settings.json` and `~/.codex/` config files.
+`home_dir()` checks `HOME` env var. Used for scanning `~/.claude/settings.json` and `~/.codex/` config files.
 
 ### PTY Resize (`pty.rs`)
-- Unix (macOS/Linux): `ioctl(TIOCSWINSZ)` on the PTY master fd, kernel automatically sends SIGWINCH to child process
-- Windows: `MasterPty::resize()` from `portable-pty` crate handles ConPTY resize
+Uses `ioctl(TIOCSWINSZ)` on the PTY master fd, kernel automatically sends SIGWINCH to child process.
 
 ### Profile CLI Paths
 The `profile` CLI is installed at `~/.kn/bin/profile`. Rust `find_profile_cli()` checks `PROFILE_CLI_PATH` env var first, then the default install location, then falls back to bare `profile` command on PATH.
@@ -208,14 +199,14 @@ Startup checks use `bash -lc "command -v <name>"` to ensure the user's full shel
 
 ### PTY Shell PATH 陷阱 — 生产环境 `command not found`
 
-**现象**：dev 模式下终端里 `ai claude <profile>` 正常工作，但生产包（macOS `.app` / Linux `.AppImage`）里同样的命令报 `command not found: claude`。
+**现象**：dev 模式下终端里 `ai claude <profile>` 正常工作，但生产包（macOS `.app`）里同样的命令报 `command not found: claude`。
 
 **根因**：
 
 1. **Tauri GUI 进程**（`.app` 启动）的 PATH 极简：macOS 为 `/usr/bin:/bin:/usr/sbin:/sbin`，不含 Homebrew 等用户安装的工具路径
 2. `pty.rs` 中 `for (k, v) in std::env::vars()` 会把这份受限 PATH 复制给 PTY shell
 3. **dev 模式为什么没问题**：`npm run tauri dev` 从终端启动，进程继承了完整的用户 PATH，PTY 自然也拿到完整 PATH
-4. 用户的 PATH 扩展（如 Homebrew `brew shellenv`）通常写在 `~/.zprofile`（macOS）或 `~/.profile`（Linux）中，这些文件**只有 login shell 才会 source**
+4. 用户的 PATH 扩展（如 Homebrew `brew shellenv`）通常写在 `~/.zprofile` 中，这些文件**只有 login shell 才会 source**
 
 **修复**：PTY 启动 shell 时必须同时传 `-i`（interactive）和 `-l`（login）两个标志：
 
@@ -226,12 +217,12 @@ cmd.args(["-i", "-l"]);  // login + interactive
 // cmd.args(["-i"]);     // ❌ 不加载 .zprofile / .profile，生产环境 PATH 缺失
 ```
 
-各平台 shell 初始化文件加载顺序：
+Shell 初始化文件加载顺序：
 
-| Shell 类型 | macOS (zsh) | Linux (bash) |
-|-----------|-------------|-------------|
-| `-i` only（interactive） | `.zshenv` → `.zshrc` | `.bashrc` |
-| `-i -l`（login+interactive） | `.zshenv` → `.zprofile` → `.zshrc` → `.zlogin` | `.profile` → `.bashrc` |
+| Shell 类型 | macOS (zsh) |
+|-----------|-------------|
+| `-i` only（interactive） | `.zshenv` → `.zshrc` |
+| `-i -l`（login+interactive） | `.zshenv` → `.zprofile` → `.zshrc` → `.zlogin` |
 
 **教训**：
 - 不要假设 Tauri 进程的 `std::env::vars()` 包含完整用户环境——GUI 应用的 PATH 是不可靠的
@@ -274,7 +265,7 @@ cmd.env("COLORTERM", "truecolor");
 - **永远不要假设 `std::env::vars()` 包含完整的终端环境**
 - `TERM` 是终端模拟器的"身份证"，必须在 PTY 中显式设置
 - 这个 **TERM 值必须与实际终端匹配**：xterm.js 兼容 xterm-256color，不要设为 `xterm-kitty` 或 `alacritty` 等不兼容的值
-- 同样的问题也存在于 Linux（AppImage/flatpak）和 Windows（MSIX/nsis）
+- 这是 GUI 应用的通用问题，所有平台都存在
 
 ### Profile 名泄漏到 Claude/Codex 交互输入 — dev/prod config 分离的陷阱（已修复并合并）
 

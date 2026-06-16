@@ -14,8 +14,6 @@ AI CLI 工具的多 profile 管理器。在不同终端会话中为 `claude` / `
 |------|------|
 | macOS Apple Silicon | `.dmg` (aarch64) |
 | macOS Intel | `.dmg` (x86_64) |
-| Windows | `.msi` |
-| Linux | `.AppImage` |
 
 首次启动自动完成环境检测和 Shell Wrapper 安装。
 

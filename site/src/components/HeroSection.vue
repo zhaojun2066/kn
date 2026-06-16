@@ -41,7 +41,7 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
             </a>
             <a href="#/docs" class="btn btn-outline">查看文档</a>
           </div>
-          <p class="hero-meta">v{{ APP_VERSION }} · macOS 12+ / Windows / Linux · 开源免费</p>
+          <p class="hero-meta">v{{ APP_VERSION }} · macOS 12+ · 开源免费</p>
         </div>
 
         <!-- Right: Desktop GUI Demo -->

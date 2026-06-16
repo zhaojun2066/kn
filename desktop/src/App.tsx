@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { useResizeHandle } from "./hooks/useResizeHandle";
 import { Toolbar } from "./components/Toolbar";
 import { MainPanel, ProjectGuide } from "./components/MainPanel";
 import { TerminalPanel } from "./components/TerminalPanel";
@@ -1848,47 +1849,27 @@ export function App() {
     setShowNameDialog(true);
   }, [ctx, addToast, rightTerminal, bottomTerminal, selectDrawerProfile]);
 
-  // ── Resize handlers ───────────────────────────────────────
+  // ── Resize handlers (stable — never recreate during drag) ──
 
-  // Right terminal — horizontal drag (adjusts width)
-  const handleRightResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startSize = rightTerminal.size;
+  const { handleProps: rightResizeProps } = useResizeHandle({
+    direction: "horizontal",
+    minSize: 480,
+    maxSize: Math.floor(window.innerWidth * 0.65),
+    defaultSize: rightTerminal.size,
+    storageKey: "kn-terminal-right-size",
+    externalSize: rightTerminal.size,
+    onExternalSizeChange: rightTerminal.setSize,
+  });
 
-    const onMouseMove = (ev: MouseEvent) => {
-      const delta = startX - ev.clientX;
-      rightTerminal.setSize(startSize + delta);
-    };
-
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
-
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [rightTerminal.size, rightTerminal.setSize]);
-
-  // Bottom terminal — vertical drag (adjusts height)
-  const handleBottomResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startSize = bottomTerminal.size;
-
-    const onMouseMove = (ev: MouseEvent) => {
-      const delta = startY - ev.clientY;
-      bottomTerminal.setSize(startSize + delta);
-    };
-
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
-
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [bottomTerminal.size, bottomTerminal.setSize]);
+  const { handleProps: bottomResizeProps } = useResizeHandle({
+    direction: "vertical",
+    minSize: 120,
+    maxSize: Math.floor(window.innerHeight * 0.6),
+    defaultSize: bottomTerminal.size,
+    storageKey: "kn-terminal-bottom-size",
+    externalSize: bottomTerminal.size,
+    onExternalSizeChange: bottomTerminal.setSize,
+  });
 
   // ── Helper: build TerminalPanel props ──────────────────────
   const buildTerminalProps = (tm: ReturnType<typeof useTerminal>) => ({
@@ -2108,10 +2089,9 @@ export function App() {
 
             {/* Bottom terminal (VS Code-style panel) — resize handle */}
             <div
-              className="h-[6px] shrink-0 cursor-row-resize hover:bg-app-accent/20
-                transition-colors duration-fast group/resize flex items-center justify-center"
+              {...bottomResizeProps}
+              className={`h-[6px] shrink-0 hover:bg-app-accent/20 transition-colors duration-fast group/resize flex items-center justify-center ${bottomResizeProps.className}`}
               style={{ display: (bottomTerminal.isOpen && !bottomMaximized) ? undefined : "none" }}
-              onMouseDown={handleBottomResize}
             >
               <div className="h-px w-full bg-app-border group-hover/resize:bg-app-accent/50" />
             </div>
@@ -2127,10 +2107,9 @@ export function App() {
 
           {/* Right terminal (profile「运行」) — resize handle */}
           <div
-            className="w-[6px] shrink-0 cursor-col-resize hover:bg-app-accent/20
-              transition-colors duration-fast group/resize flex items-center justify-center"
+            {...rightResizeProps}
+            className={`w-[6px] shrink-0 hover:bg-app-accent/20 transition-colors duration-fast group/resize flex items-center justify-center ${rightResizeProps.className}`}
             style={{ display: (rightTerminal.isOpen && !rightMaximized && !bottomMaximized) ? undefined : "none" }}
-            onMouseDown={handleRightResize}
           >
             <div className="w-px h-full bg-app-border group-hover/resize:bg-app-accent/50" />
           </div>
