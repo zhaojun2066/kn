@@ -1,4 +1,5 @@
 use crate::profile_cmd;
+use crate::CommandNoWindowExt;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tauri::command;
@@ -742,6 +743,7 @@ fn resolve_from_shell_path(name: &str) -> Option<String> {
                     name
                 ),
             ])
+            .no_window()
             .output()
             .ok()?
     } else {
@@ -919,6 +921,7 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
     {
         std::process::Command::new("cmd")
             .args(["/c", "start", "cmd", "/k", &format!("cd /d \"{}\"", path)])
+            .no_window()
             .spawn()
             .map_err(|e| format!("打开终端失败: {}", e))?;
     }
@@ -945,6 +948,7 @@ pub fn open_file(path: String) -> Result<(), String> {
     {
         std::process::Command::new("cmd")
             .args(["/c", "start", "", &path])
+            .no_window()
             .spawn()
             .map_err(|e| format!("{}", e))?;
     }
@@ -1055,6 +1059,7 @@ fn open_with_editor(path: &str, name: &str, binaries: &[&str]) -> Result<(), Str
         })?;
     std::process::Command::new(&binary)
         .arg(path)
+        .no_window()
         .spawn()
         .map_err(|e| format!("启动 {} 失败: {}", name, e))?;
     Ok(())
@@ -1171,7 +1176,7 @@ fn check_binary_on_path(name: &str) -> Option<String> {
             ),
         ]
     };
-    if let Ok(output) = std::process::Command::new(&shell).args(shell_args).output() {
+    if let Ok(output) = std::process::Command::new(&shell).args(shell_args).no_window().output() {
         let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
         // Filter out shell error messages that leak to stdout (e.g. zsh `type` output)
         if !s.is_empty() && !s.contains("not found") {
@@ -1218,6 +1223,7 @@ fn get_cli_version(binary_path: &str) -> Option<String> {
         .arg("--version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .no_window()
         .output()
     {
         if output.status.success() {

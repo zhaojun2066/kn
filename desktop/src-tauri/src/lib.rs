@@ -18,6 +18,30 @@ use std::time::{Duration, Instant};
 
 use fs2::FileExt;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt as _;
+
+/// Extension trait to prevent console window popups on Windows.
+///
+/// On Windows, spawning a console-subsystem binary (powershell.exe,
+/// cmd.exe, node.exe, etc.) via `std::process::Command` creates a
+/// visible console window by default, even when only stdout/stderr
+/// are captured. This trait adds `.no_window()` which sets the
+/// `CREATE_NO_WINDOW` (0x08000000) creation flag to suppress that.
+pub(crate) trait CommandNoWindowExt {
+    fn no_window(&mut self) -> &mut Self;
+}
+
+impl CommandNoWindowExt for std::process::Command {
+    fn no_window(&mut self) -> &mut Self {
+        #[cfg(target_os = "windows")]
+        {
+            self.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        self
+    }
+}
+
 /// Global write lock — serializes all config file writes to prevent
 /// data corruption when multiple Tauri commands run concurrently.
 /// (The Python CLI already uses fcntl.flock for its own writes.)
@@ -259,6 +283,7 @@ pub(crate) fn home_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
         if let Ok(output) = std::process::Command::new(crate::commands::powershell_exe_path())
             .args(["-NoProfile", "-Command", "Write-Output $env:USERPROFILE"])
+            .no_window()
             .output()
         {
             let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -297,6 +322,7 @@ pub(crate) fn windows_documents_dir() -> PathBuf {
             "-Command",
             "[Environment]::GetFolderPath('MyDocuments')",
         ])
+        .no_window()
         .output()
         .ok()
         .and_then(|o| {

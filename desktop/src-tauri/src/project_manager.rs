@@ -6,6 +6,7 @@
 use crate::atomic_rename;
 use crate::with_cross_process_lock;
 use crate::with_write_lock;
+use crate::CommandNoWindowExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -793,6 +794,7 @@ fn scan_qoder_cli(project_path: &str) -> Option<Vec<SessionInfo>> {
         .current_dir(project_path)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .no_window()
         .spawn()
         .ok()?;
 

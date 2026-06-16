@@ -6,6 +6,7 @@
 //! - **Standalone Skill**: individually toggleable skill not owned by any plugin.
 //! - **System Skill**: built-in, read-only (Codex `.system/` directory).
 
+use crate::CommandNoWindowExt;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -1850,6 +1851,7 @@ pub fn exec_claude_plugin_update(plugin_id: &str) -> Result<String, String> {
     // Step 1: sync marketplace
     let sync = std::process::Command::new(cli_binary("claude"))
         .args(["plugin", "marketplace", "update", marketplace])
+        .no_window()
         .output()
         .map_err(|e| format!("同步 marketplace 失败: {}", e))?;
     if !sync.status.success() {
@@ -1860,6 +1862,7 @@ pub fn exec_claude_plugin_update(plugin_id: &str) -> Result<String, String> {
     // Step 2: update the plugin
     let update = std::process::Command::new(cli_binary("claude"))
         .args(["plugin", "update", full_name])
+        .no_window()
         .output()
         .map_err(|e| format!("更新插件失败: {}", e))?;
     if !update.status.success() {
@@ -2280,6 +2283,7 @@ fn run_cli_marketplace_add(cli_name: &str, source: &str) -> Result<String, Strin
     let do_add = || -> Result<String, String> {
         let output = std::process::Command::new(&binary)
             .args(["plugin", "marketplace", "add", source])
+            .no_window()
             .output()
             .map_err(|e| format!("无法执行 {} ({}): {}", cli_name, binary, e))?;
 
@@ -2444,6 +2448,7 @@ fn run_cli_marketplace_remove(cli_name: &str, name: &str) -> Result<String, Stri
     let binary = cli_binary(cli_name);
     let output = std::process::Command::new(&binary)
         .args(["plugin", "marketplace", "remove", name])
+        .no_window()
         .output()
         .map_err(|e| format!("无法执行 {} ({}): {}", cli_name, binary, e))?;
 
@@ -2674,7 +2679,8 @@ fn run_command_with_timeout(
     command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .no_window();
     if let Some(dir) = current_dir {
         command.current_dir(dir);
     }
