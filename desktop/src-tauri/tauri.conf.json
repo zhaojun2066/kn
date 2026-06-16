@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicepage/nicepage/refs/heads/main/schemas/tauri-conf.schema.json",
   "productName": "kn",
   "identifier": "com.kn.app",
-  "version": "1.1.1",
+  "version": "0.0.0",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
