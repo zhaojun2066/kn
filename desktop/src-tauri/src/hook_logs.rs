@@ -38,7 +38,7 @@ shift
 LOGS_DIR="${KN_HOME:-${HOME}/.kn}/hook-logs"
 mkdir -p "${LOGS_DIR}"
 
-# Find working python (python3 on Unix, python on Windows)
+# Find working python
 PYTHON=""
 for py in python3 python; do
     if command -v "$py" >/dev/null 2>&1; then
@@ -47,7 +47,7 @@ for py in python3 python; do
     fi
 done
 
-# Cross-platform temp dir
+# Temp dir
 TMPDIR="${TMPDIR:-${TEMP:-${TMP:-/tmp}}}"
 
 # ISO 8601 UTC timestamp via python (avoids BSD vs GNU date differences)

@@ -1668,7 +1668,7 @@ export function App() {
       }
 
       const platformInfo: { os: string; arch: string } = await invoke("get_platform_info");
-      const platform = `${platformInfo.os === "macos" ? "darwin" : platformInfo.os}-${platformInfo.arch}`;
+      const platform = `darwin-${platformInfo.arch}`;
       const plat = manifest.platforms[platform] || Object.values(manifest.platforms)[0];
       if (!plat?.url) { addToast("error", `无此平台的更新包 (${platform})`); return; }
 
@@ -1703,13 +1703,8 @@ export function App() {
       const tmpDir: string = await invoke("temp_dir");
       const pathPart = url.split('?')[0];
       const urlExt = pathPart.split('.').pop() || "";
-      // Platform-aware: .dmg on macOS, .exe on Windows, .deb on Linux
-      const defaultExt = platformRef.current.os === "windows" ? "exe"
-        : platformRef.current.os === "linux" ? "deb"
-        : "dmg";
-      const ext = urlExt || defaultExt;
-      const sep = platformRef.current.os === "windows" ? "\\" : "/";
-      const tmpPath = `${tmpDir}${sep}kn-update-${Date.now()}.${ext}`;
+      const ext = urlExt || "dmg";
+      const tmpPath = `${tmpDir}/kn-update-${Date.now()}.${ext}`;
       await invoke("download_file", { url, path: tmpPath });
 
       // Download complete — 100%

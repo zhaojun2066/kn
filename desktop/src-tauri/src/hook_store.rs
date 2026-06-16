@@ -46,31 +46,6 @@ fn hooks_dir() -> PathBuf {
     crate::config_dir().join("hooks")
 }
 
-/// Locate bash.exe on Windows using the shared Git Bash candidate list.
-#[cfg(windows)]
-fn find_bash_on_windows() -> Option<String> {
-    use std::path::Path;
-    let home = crate::home_dir().to_string_lossy().to_string();
-    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    for p in crate::commands::git_bash_candidates(&home, &local) {
-        if Path::new(&p).exists() {
-            return Some(p);
-        }
-    }
-    crate::commands::find_binary(&["bash.exe"])
-        .filter(|p| Path::new(p).exists())
-}
-#[cfg(not(windows))]
-fn find_bash_on_windows() -> Option<String> {
-    Some("bash".into())
-}
-
-fn shell_script_command(script_path: &std::path::Path, bash: Option<String>) -> Result<String, String> {
-    let bash = bash.ok_or_else(|| {
-        "当前 Windows 环境未找到 bash.exe。请先安装 Git for Windows 后再安装 .sh hook。".to_string()
-    })?;
-    Ok(format!("\"{}\" \"{}\"", bash, script_path.display()))
-}
 
 // ── Hook Definitions ─────────────────────────────────────────────
 
@@ -115,7 +90,7 @@ fn all_hooks() -> Vec<StoreHook> {
             hook_type: "command".into(),
             script_ext: "py".into(),
             compatible_clis: vec!["claude".into(), "qoder".into(), "codex".into()],
-            platforms: vec!["unix".into(), "windows".into()],
+            platforms: vec!["unix".into()],
             tags: None,
             installed: None,
         },
@@ -186,7 +161,7 @@ fn all_hooks() -> Vec<StoreHook> {
             hook_type: "command".into(),
             script_ext: "py".into(),
             compatible_clis: vec!["claude".into(), "qoder".into(), "codex".into()],
-            platforms: vec!["unix".into(), "windows".into()],
+            platforms: vec!["unix".into()],
             tags: None,
             installed: None,
         },
@@ -582,7 +557,7 @@ pub fn install_store_hook(hook_id: String, cli: String) -> Result<(), String> {
         return Err(format!("Hook '{}' 不兼容 CLI '{}'", hook_id, cli));
     }
 
-    let current_os = if cfg!(windows) { "windows" } else { "unix" };
+    let current_os = "unix";
     if !hook.platforms.iter().any(|p| p == current_os) {
         return Err(format!(
             "Hook '{}' 不支持当前平台（仅支持 {}）",
@@ -613,23 +588,7 @@ pub fn install_store_hook(hook_id: String, cli: String) -> Result<(), String> {
     }
 
     // Build the command string that the hook config will reference.
-    // On Windows, wrap scripts with the appropriate interpreter — neither .sh
-    // nor .py can be executed directly.
-    let cmd = if cfg!(windows) {
-        match hook.script_ext.as_str() {
-            "sh" => {
-                shell_script_command(&script_path, find_bash_on_windows())?
-            }
-            "py" => {
-                let python = crate::commands::find_binary(&["python3.exe", "python.exe"])
-                    .unwrap_or_else(|| "python".into());
-                format!("\"{}\" \"{}\"", python, script_path.display())
-            }
-            _ => script_path.to_string_lossy().to_string(),
-        }
-    } else {
-        script_path.to_string_lossy().to_string()
-    };
+    let cmd = script_path.to_string_lossy().to_string();
 
     // Check if already installed — prevent duplicate hook entries.
     // Scan existing hooks and look for a match on event_type + matcher + same script path.
@@ -751,27 +710,3 @@ pub fn uninstall_store_hook(hook_id: String, cli: String) -> Result<(), String> 
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shell_script_command_errors_when_bash_missing() {
-        let err = shell_script_command(std::path::Path::new(r"C:\Users\Alice\.kn\hooks\a.sh"), None)
-            .unwrap_err();
-        assert!(err.contains("未找到 bash.exe"));
-    }
-
-    #[test]
-    fn shell_script_command_quotes_bash_and_script_path() {
-        let cmd = shell_script_command(
-            std::path::Path::new(r"C:\Users\Alice\.kn\hooks\a.sh"),
-            Some(r"C:\Program Files\Git\bin\bash.exe".into()),
-        )
-        .unwrap();
-        assert_eq!(
-            cmd,
-            r#""C:\Program Files\Git\bin\bash.exe" "C:\Users\Alice\.kn\hooks\a.sh""#
-        );
-    }
-}

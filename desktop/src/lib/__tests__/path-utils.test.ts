@@ -3,11 +3,8 @@ import { describe, it, expect } from "vitest";
 import { shortenPath, basename, dirname } from "../path-utils";
 
 describe("shortenPath", () => {
-  it("shortens macOS home path", () => {
+  it("shortens home path", () => {
     expect(shortenPath("/Users/john/project/file.ts")).toBe("~/project/file.ts");
-  });
-  it("shortens Linux home path", () => {
-    expect(shortenPath("/home/john/project/file.ts")).toBe("~/project/file.ts");
   });
   it("does not affect non-home paths", () => {
     expect(shortenPath("/opt/homebrew/bin/node")).toBe("/opt/homebrew/bin/node");

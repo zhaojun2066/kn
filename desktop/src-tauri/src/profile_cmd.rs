@@ -482,7 +482,6 @@ pub fn init_profiles_cmd() -> Result<MutationResult, String> {
 // Embedded at build time from canonical sources in shell/ directory.
 const SHELL_RC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/ai-profile.sh"));
 
-const SHELL_RC_PS1: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/ai-profile.ps1"));
 
 const COMPLETION_ZSH: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/completions/_ai"));
 
@@ -866,32 +865,6 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     if needs_write {
         fs::write(&shell_rc_path, SHELL_RC).map_err(|e| format!("写入 shell-rc 失败: {}", e))?;
     }
-    if cfg!(target_os = "windows") {
-        let ps1_path = dir.join("shell-rc.ps1");
-        // PowerShell 5.1 reads files without BOM as the system's ANSI
-        // codepage (GBK on Chinese Windows).  This corrupts non-ASCII
-        // characters in string literals and can break the parser when
-        // bytes inside strings happen to look like operators or quotes.
-        const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
-        let needs_ps1_write = match fs::read(&ps1_path) {
-            Ok(existing) => {
-                let existing_content = if existing.starts_with(UTF8_BOM) {
-                    &existing[3..]
-                } else {
-                    &existing
-                };
-                existing_content != SHELL_RC_PS1.as_bytes()
-            }
-            Err(_) => true,
-        };
-        if needs_ps1_write {
-            let mut content = Vec::with_capacity(UTF8_BOM.len() + SHELL_RC_PS1.len());
-            content.extend_from_slice(UTF8_BOM);
-            content.extend_from_slice(SHELL_RC_PS1.as_bytes());
-            fs::write(&ps1_path, content).ok();
-        }
-    }
-
     // Write shell completions to config dir
     let completions_dir = dir.join("completions");
     fs::create_dir_all(&completions_dir).ok();
@@ -923,8 +896,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     // Repair any missing hook store scripts (e.g. after config dir migration)
     crate::hook_store::repair_missing_hook_scripts();
 
-    // ── Unix: add source line to ~/.zshrc (idempotent) ──
-    if !cfg!(target_os = "windows") {
+    // ── add source line to ~/.zshrc (idempotent) ──
         let zshrc = PathBuf::from(&home).join(".zshrc");
         let source_line = format!("source \"{}/shell-rc\"", dir.display());
         let content = if zshrc.exists() {
@@ -1021,46 +993,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
                 fs::write(&bashrc, new_bash).ok();
             }
         }
-    } // !windows: end Unix shell RC setup
 
-    // ── Windows only: PowerShell profile (PS5 + PS7) ──
-    if cfg!(target_os = "windows") {
-        let dir_str = dir.display().to_string().replace('\\', "/");
-        let dot_line = format!(". \"{}/shell-rc.ps1\"", dir_str);
-
-        let docs_dir = crate::windows_documents_dir();
-        // PowerShell 7 profile
-        let ps7_profile = docs_dir
-            .join("PowerShell")
-            .join("Microsoft.PowerShell_profile.ps1");
-        // PowerShell 5.1 profile
-        let ps5_profile = docs_dir
-            .join("WindowsPowerShell")
-            .join("Microsoft.PowerShell_profile.ps1");
-
-        for ps_profile in &[ps7_profile, ps5_profile] {
-            if let Some(parent) = ps_profile.parent() {
-                fs::create_dir_all(parent).ok();
-            }
-            if ps_profile.exists() {
-                let content = fs::read_to_string(&ps_profile).unwrap_or_default();
-                // Clean up any legacy .claude-profiles references
-                let content = remove_claude_profiles_lines(&content);
-                if !content.contains(&dot_line) {
-                    fs::write(
-                        &ps_profile,
-                        format!("{}\n# kn\n{}\n", content, dot_line),
-                    )
-                    .ok();
-                } else {
-                    // Write back cleaned content even if dot_line already present
-                    fs::write(&ps_profile, content).ok();
-                }
-            } else {
-                fs::write(&ps_profile, format!("# kn\n{}\n", dot_line)).ok();
-            }
-        }
-    }
 
     Ok(dir.display().to_string())
 }

@@ -6,7 +6,6 @@
 use crate::atomic_rename;
 use crate::with_cross_process_lock;
 use crate::with_write_lock;
-use crate::CommandNoWindowExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -657,8 +656,8 @@ fn read_codex_session_meta(
     // Project path matching: session cwd must be the project dir or a subdirectory.
     // Do NOT match sessions from parent directories of the project.
     //
-    // Normalize path separators (handle Windows backslash) and use
-    // Path::strip_prefix for reliable directory-boundary matching.
+    // Normalize path separators and use Path::strip_prefix for
+    // reliable directory-boundary matching.
     // The trailing separator ensures `/home/user/proj` does NOT match
     // `/home/user/proj-2/sub`.
     let cwd_normalized = cwd.replace('\\', "/");
@@ -794,7 +793,7 @@ fn scan_qoder_cli(project_path: &str) -> Option<Vec<SessionInfo>> {
         .current_dir(project_path)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .no_window()
+        
         .spawn()
         .ok()?;
 

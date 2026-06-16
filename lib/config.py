@@ -8,13 +8,7 @@ Uses fcntl.flock for concurrent write safety.
 import os
 import time
 
-# Cross-platform file locking: fcntl on Unix, msvcrt on Windows
-try:
-    import fcntl
-    _HAS_FCNTL = True
-except ImportError:
-    _HAS_FCNTL = False
-    import msvcrt
+import fcntl
 
 _default_config_dir = os.path.join(os.path.expanduser("~"), ".kn")
 CONFIG_DIR = os.environ.get("KN_HOME", _default_config_dir)
@@ -70,19 +64,7 @@ def write_config(config):
                 f.write(text)
                 f.flush()
                 os.fsync(f.fileno())
-            if os.name == 'nt':
-                # Windows: os.replace() fails with PermissionError if the
-                # target file is temporarily locked by antivirus/backup.
-                for attempt in range(5):
-                    try:
-                        os.replace(tmp_file, CONFIG_FILE)
-                        break
-                    except PermissionError:
-                        if attempt == 4:
-                            raise
-                        time.sleep(0.1 * (attempt + 1))
-            else:
-                os.replace(tmp_file, CONFIG_FILE)
+            os.replace(tmp_file, CONFIG_FILE)
         finally:
             _release_lock(lf)
 
@@ -120,35 +102,20 @@ def get_default(config):
 
 def _acquire_lock(lock_file):
     """Block until exclusive lock is acquired (5s timeout)."""
-    if _HAS_FCNTL:
-        deadline = time.time() + 5
-        while True:
-            try:
-                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return
-            except BlockingIOError:
-                if time.time() > deadline:
-                    raise TimeoutError("Could not acquire config lock after 5s")
-                time.sleep(0.05)
-    else:
-        # Windows: use msvcrt.locking (C runtime byte-range lock)
-        deadline = time.time() + 5
-        while True:
-            try:
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 0x7fffffff)
-                return
-            except (IOError, OSError):
-                if time.time() > deadline:
-                    raise TimeoutError("Could not acquire config lock after 5s")
-                time.sleep(0.05)
+    deadline = time.time() + 5
+    while True:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.time() > deadline:
+                raise TimeoutError("Could not acquire config lock after 5s")
+            time.sleep(0.05)
 
 
 def _release_lock(lock_file):
     """Release the file lock."""
-    if _HAS_FCNTL:
-        fcntl.flock(lock_file, fcntl.LOCK_UN)
-    else:
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 0x7fffffff)
+    fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 # ── YAML Parser (hand-rolled, zero-dependency) ─────────────────

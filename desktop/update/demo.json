@@ -1,21 +1,13 @@
 {
   "version": "1.0.4",
-  "notes": "新增功能:\n1. Windows Git Bash 终端支持, 解决 SAC 拦截和无 ai 命令问题\n2. 引导页扫描按钮增加视觉提示\n\n修复:\n- Windows PTY 编译错误 (Box::new 重复包装)\n- 终端 resize 自适应\n- 环境变量全显/全隐",
+  "notes": "演示版本说明",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/zhaojun2066/kn/releases/download/v1.0.4/KN_1.0.4_aarch64.dmg",
+      "url": "https://github.com/zhaojun2066/kn/releases/download/v1.0.0/KN_aarch64.dmg",
       "sha256": ""
     },
     "darwin-x86_64": {
-      "url": "https://github.com/zhaojun2066/kn/releases/download/v1.0.4/KN_1.0.4_x64.dmg",
-      "sha256": ""
-    },
-    "windows-x86_64": {
-      "url": "https://github.com/zhaojun2066/kn/releases/download/v1.0.4/KN_1.0.4_x64_en-US.msi",
-      "sha256": ""
-    },
-    "linux-x86_64": {
-      "url": "https://github.com/zhaojun2066/kn/releases/download/v1.0.4/KN_1.0.4_amd64.AppImage",
+      "url": "https://github.com/zhaojun2066/kn/releases/download/v1.0.0/KN_x64.dmg",
       "sha256": ""
     }
   }

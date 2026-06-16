@@ -19,7 +19,7 @@ pub enum PtyEvent {
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// Shared child process handle so `kill_pty` can terminate the process
-/// even if the reader thread is blocked on I/O (Windows ConPTY quirk).
+/// even if the reader thread is blocked on I/O.
 pub type SharedChild = Arc<Mutex<Option<Box<dyn portable_pty::Child + Send>>>>;
 
 pub struct PtyHandle {
@@ -102,70 +102,11 @@ pub fn start_pty(
         .openpty(size)
         .map_err(|e| format!("openpty: {}", e))?;
 
-    // Resolve shell binary.
-    // On Windows, prefer Git Bash (provides Unix environment where shell-rc works).
-    // Fall back to PowerShell with execution policy relaxed if Git Bash is absent.
-    let home = crate::home_dir().to_string_lossy().to_string();
-    let shell_from_env = std::env::var("SHELL").ok();
-    let shell = if cfg!(target_os = "windows") {
-        let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
-        let mut candidates = crate::commands::git_bash_candidates(&home, &local_appdata);
-        // PowerShell full path — avoid bare-name resolution on fresh
-        // Windows where GUI process PATH may lack the subdirectory.
-        candidates.push(crate::commands::powershell_exe_path());
-        if let Some(env_shell) = shell_from_env {
-            if std::path::Path::new(&env_shell).exists() {
-                candidates.insert(0, env_shell);
-            }
-        }
-        candidates
-            .iter()
-            .find(|p| std::path::Path::new(p).exists())
-            .cloned()
-            .unwrap_or_else(|| "powershell.exe".into())
-    } else {
-        shell_from_env.unwrap_or_else(|| {
-            if cfg!(target_os = "macos") {
-                "/bin/zsh".into()
-            } else {
-                "/bin/bash".into()
-            }
-        })
-    };
-
-    let shell_lower = shell.to_ascii_lowercase();
-    let is_git_bash = cfg!(target_os = "windows") && shell_lower.ends_with("bash.exe");
-    let is_powershell = cfg!(target_os = "windows")
-        && (shell_lower.ends_with("powershell.exe") || shell_lower.ends_with("pwsh.exe"));
+    // Resolve shell binary — use $SHELL or default to /bin/zsh
+    let shell = std::env::var("SHELL").ok().unwrap_or_else(|| "/bin/zsh".into());
 
     let mut cmd = CommandBuilder::new(&shell);
-    if is_git_bash {
-        // Git Bash: login + interactive so .bashrc / shell-rc is sourced
-        cmd.args(["-i", "-l"]);
-    } else if is_powershell {
-        // PowerShell: dot-source shell-rc.ps1 explicitly on startup.
-        // Don't depend on $PROFILE — the profile may not be set up yet,
-        // or the user may be in a fresh environment.
-        let ps1_path = crate::config_dir()
-            .join("shell-rc.ps1")
-            .display()
-            .to_string();
-        let ps1_path_escaped = ps1_path.replace('\'', "''");
-        let startup_cmd = format!(
-            "$rc = '{}'; if (Test-Path $rc) {{ . $rc }} else {{ Write-Host '[kn] shell-rc.ps1 not found at:' $rc }}",
-            ps1_path_escaped
-        );
-        cmd.args([
-            "-NoExit",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-NoLogo",
-            "-Command",
-            &startup_cmd,
-        ]);
-    } else {
-        cmd.args(["-i", "-l"]);
-    }
+    cmd.args(["-i", "-l"]);
 
     if let Some(ref dir) = work_dir {
         if !dir.is_empty() {
@@ -208,8 +149,8 @@ pub fn start_pty(
     }
 
     // Ensure terminal-essential env vars are set.
-    // GUI apps (macOS .app, Windows, etc.) lack TERM and friends;
-    // without these the shell may disable line editing or behave as "dumb" terminal.
+    // macOS .app bundles lack TERM and friends; without these
+    // the shell may disable line editing or behave as "dumb" terminal.
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM_PROGRAM", "kn");
@@ -318,8 +259,8 @@ pub fn write_pty(
 ) -> Result<(), String> {
     // Clone the Arc<Mutex<Writer>> while holding the global lock,
     // then drop the lock before performing the actual I/O.
-    // This prevents a blocked write (full ConPTY buffer on Windows)
-    // from starving resize/kill operations on the same or other sessions.
+    // This prevents a blocked write from starving resize/kill
+    // operations on the same or other sessions.
     let writer: SharedWriter = {
         let handles = state.lock().map_err(|e| format!("lock: {}", e))?;
         handles
@@ -378,8 +319,7 @@ pub fn kill_pty(
     };
 
     if let Some(child) = child {
-        // Kill the child process first — this unblocks the reader thread
-        // on Windows where ConPTY reads may otherwise hang after the master is dropped.
+        // Kill the child process first to unblock the reader thread.
         if let Ok(mut guard) = child.lock() {
             if let Some(ref mut c) = *guard {
                 let _ = c.kill();
@@ -389,8 +329,7 @@ pub fn kill_pty(
 
     let mut handles = state.lock().map_err(|e| format!("lock: {}", e))?;
     // Removing the handle drops the writer and master.
-    // On Unix: closing master fd → kernel sends SIGHUP → child terminates.
-    // On Windows: dropping master closes ConPTY → reader receives error.
+    // Closing master fd → kernel sends SIGHUP → child terminates.
     handles.handles.remove(&session_id);
     Ok(())
 }

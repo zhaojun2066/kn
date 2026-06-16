@@ -1,5 +1,4 @@
 use crate::profile_cmd;
-use crate::CommandNoWindowExt;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tauri::command;
@@ -624,13 +623,7 @@ pub fn is_debug_build() -> bool {
 #[tauri::command]
 pub fn get_platform_info() -> PlatformInfo {
     PlatformInfo {
-        os: if cfg!(target_os = "macos") {
-            "macos".into()
-        } else if cfg!(target_os = "windows") {
-            "windows".into()
-        } else {
-            "linux".into()
-        },
+        os: "macos".into(),
         arch: if cfg!(target_arch = "aarch64") {
             "aarch64".into()
         } else {
@@ -647,35 +640,22 @@ pub fn get_app_version(app: tauri::AppHandle) -> String {
         .unwrap_or_else(|| "0.0.0".into())
 }
 
-/// Find a system binary across common platform paths
+/// Find a system binary across common macOS paths
 pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
     for name in names {
         // Try full paths first
-        let paths: Vec<String> = if cfg!(target_os = "macos") {
-            vec![
-                format!("/usr/bin/{}", name),
-                format!("/opt/homebrew/bin/{}", name),
-                format!("/usr/local/bin/{}", name),
-            ]
-        } else if cfg!(target_os = "linux") {
-            vec![
-                format!("/usr/bin/{}", name),
-                format!("/bin/{}", name),
-                format!("/usr/local/bin/{}", name),
-            ]
-        } else {
-            let home = crate::home_dir();
-            let local_appdata = std::env::var("LOCALAPPDATA")
-                .unwrap_or_else(|_| home.join("AppData").join("Local").to_string_lossy().to_string());
-            windows_binary_candidates(&local_appdata, name)
-        };
+        let paths: Vec<String> = vec![
+            format!("/usr/bin/{}", name),
+            format!("/opt/homebrew/bin/{}", name),
+            format!("/usr/local/bin/{}", name),
+        ];
         for p in &paths {
             if std::path::Path::new(p).exists() {
                 return Some(p.clone());
             }
         }
     }
-    // Fallback 2: check login-shell PATH (catches ~/.local/bin, Homebrew, etc.)
+    // Fallback: check login-shell PATH (catches ~/.local/bin, Homebrew, etc.)
     for name in names {
         if let Some(path) = resolve_from_shell_path(name) {
             return Some(path);
@@ -685,82 +665,19 @@ pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
     names.first().map(|n| n.to_string())
 }
 
-fn windows_binary_candidates(local_appdata: &str, name: &str) -> Vec<String> {
-    let system32 = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    let home = crate::home_dir();
-    let home_str = home.to_string_lossy();
-    let bases = [
-        format!(r"{}\System32", system32),
-        format!(r"{}\scoop\shims", home_str),
-        format!(r"{}\AppData\Roaming\npm", home_str),
-        format!(r"{}\Programs", local_appdata),
-        r"C:\Program Files\PowerShell\7".to_string(),
-        r"C:\ProgramData\chocolatey\bin".to_string(),
-        r"C:\msys64\usr\bin".to_string(),
-        r"C:\cygwin64\bin".to_string(),
-        r"C:\Program Files".to_string(),
-        r"C:\Program Files (x86)".to_string(),
-    ];
-    let exts: &[&str] = if name.ends_with(".exe")
-        || name.ends_with(".cmd")
-        || name.ends_with(".bat")
-    {
-        &[""]
-    } else {
-        &[".exe", ".cmd", ""]
-    };
-    let mut paths = Vec::new();
-    for base in &bases {
-        for ext in exts {
-            paths.push(if ext.is_empty() {
-                format!(r"{}\{}", base, name)
-            } else {
-                format!(r"{}\{}{}", base, name, ext)
-            });
-        }
-    }
-    paths
-}
-
-fn login_shell_for_path_lookup() -> String {
-    if cfg!(target_os = "windows") {
-        powershell_exe_path()
-    } else {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-    }
-}
-
 /// Resolve a binary name via login-shell PATH lookup.
 /// Tauri GUI apps have a minimal PATH; the login shell has the user's full PATH.
 fn resolve_from_shell_path(name: &str) -> Option<String> {
-    let output = if cfg!(target_os = "windows") {
-        std::process::Command::new(login_shell_for_path_lookup())
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "Get-Command {} -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object Source",
-                    name
-                ),
-            ])
-            .no_window()
-            .output()
-            .ok()?
-    } else {
-        let shell = login_shell_for_path_lookup();
-        // Use `command -v` first (POSIX standard, clean output).
-        // Fall back to `type` (bash/zsh builtin) but filter error messages.
-        let cmd = format!(
-            "command -v {} 2>/dev/null || (type {} 2>/dev/null | grep -v 'not found')",
-            name, name
-        );
-        std::process::Command::new(&shell)
-            .args(["-lc", &cmd])
-            .output()
-            .ok()?
-    };
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let cmd = format!(
+        "command -v {} 2>/dev/null || (type {} 2>/dev/null | grep -v 'not found')",
+        name, name
+    );
+    let output = std::process::Command::new(&shell)
+        .args(["-lc", &cmd])
+        .output()
+        .ok()?;
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    // Filter out shell error messages that leak to stdout (e.g. zsh `type` output)
     if path.is_empty() || path.contains("not found") {
         None
     } else {
@@ -861,97 +778,30 @@ pub fn verify_sha256(path: String, expected: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn open_in_terminal(path: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        // Try common macOS terminals: iTerm2, Warp, then default Terminal.app
-        let mut spawned = false;
-        for app in &["iTerm", "Warp", "Terminal"] {
-            if std::process::Command::new("open")
-                .args(["-a", app, &path])
-                .spawn()
-                .is_ok()
-            {
-                spawned = true;
-                break;
-            }
-        }
-        if !spawned {
-            return Err("未找到可用的终端应用 (iTerm/Warp/Terminal)".into());
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // Common modern terminals ordered by popularity,
-        // each with appropriate working-directory flag
-        let terminals: &[(&str, &[&str])] = &[
-            ("gnome-terminal", &["--working-directory"]),
-            ("konsole", &["--workdir"]),
-            ("alacritty", &["--working-directory"]),
-            ("kitty", &["--directory"]),
-            ("wezterm", &["start", "--cwd"]),
-            ("foot", &["--working-directory"]),
-            ("tilix", &["--working-directory"]),
-            ("xfce4-terminal", &["--working-directory"]),
-            ("lxterminal", &["--working-directory"]),
-            ("terminator", &["--working-directory"]),
-            ("xterm", &["-e"]), // xterm uses -e + cd combo
-        ];
-        let mut spawned = false;
-        for (term, workdir_flag) in terminals {
-            let mut cmd = std::process::Command::new(term);
-            for flag in *workdir_flag {
-                cmd.arg(flag);
-            }
-            // xterm needs `cd <path> ; exec $SHELL` via -e
-            if *term == "xterm" {
-                cmd.arg(format!("cd '{}' ; exec $SHELL", path));
-            } else {
-                cmd.arg(&path);
-            }
-            if cmd.spawn().is_ok() {
-                spawned = true;
-                break;
-            }
-        }
-        if !spawned {
-            return Err("未找到可用的终端模拟器".into());
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "cmd", "/k", &format!("cd /d \"{}\"", path)])
-            .no_window()
+    // Try common macOS terminals: iTerm2, Warp, then default Terminal.app
+    let mut spawned = false;
+    for app in &["iTerm", "Warp", "Terminal"] {
+        if std::process::Command::new("open")
+            .args(["-a", app, &path])
             .spawn()
-            .map_err(|e| format!("打开终端失败: {}", e))?;
+            .is_ok()
+        {
+            spawned = true;
+            break;
+        }
+    }
+    if !spawned {
+        return Err("未找到可用的终端应用 (iTerm/Warp/Terminal)".into());
     }
     Ok(())
 }
 
 #[tauri::command]
 pub fn open_file(path: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("/usr/bin/open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("{}", e))?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("{}", e))?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", &path])
-            .no_window()
-            .spawn()
-            .map_err(|e| format!("{}", e))?;
-    }
+    std::process::Command::new("/usr/bin/open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("{}", e))?;
     Ok(())
 }
 
@@ -963,60 +813,39 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
         "code" => {
             // Try `code` CLI first, fall back to opening VS Code.app directly.
             // macOS users may not have installed the "code" shell command.
-            #[cfg(target_os = "macos")]
-            {
-                if let Some(bin) = crate::commands::find_binary(&["code"]) {
-                    std::process::Command::new(&bin).arg(&path).spawn()
-                        .map_err(|_| "启动 VS Code 失败，请确认已安装或重试".to_string())?;
-                } else {
-                    std::process::Command::new("open")
-                        .args(["-a", "Visual Studio Code", &path])
-                        .spawn()
-                        .map_err(|_| "未找到 VS Code。请确认已安装，或在 VS Code 中执行 Cmd+Shift+P → 'Install code command in PATH'".to_string())?;
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                open_with_editor(&path, "code", &["code", "code.cmd"])?;
+            if let Some(bin) = crate::commands::find_binary(&["code"]) {
+                std::process::Command::new(&bin).arg(&path).spawn()
+                    .map_err(|_| "启动 VS Code 失败，请确认已安装或重试".to_string())?;
+            } else {
+                std::process::Command::new("open")
+                    .args(["-a", "Visual Studio Code", &path])
+                    .spawn()
+                    .map_err(|_| "未找到 VS Code。请确认已安装，或在 VS Code 中执行 Cmd+Shift+P → 'Install code command in PATH'".to_string())?;
             }
             Ok(())
         }
         "cursor" => {
-            #[cfg(target_os = "macos")]
-            {
-                if let Some(bin) = crate::commands::find_binary(&["cursor"]) {
-                    std::process::Command::new(&bin).arg(&path).spawn()
-                        .map_err(|_| "启动 Cursor 失败，请确认已安装或重试".to_string())?;
-                } else {
-                    std::process::Command::new("open")
-                        .args(["-a", "Cursor", &path])
-                        .spawn()
-                        .map_err(|_| "未找到 Cursor。请确认已安装，或在 Cursor 中执行 Cmd+Shift+P → 'Install cursor command in PATH'".to_string())?;
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                open_with_editor(&path, "cursor", &["cursor", "cursor.cmd"])?;
+            if let Some(bin) = crate::commands::find_binary(&["cursor"]) {
+                std::process::Command::new(&bin).arg(&path).spawn()
+                    .map_err(|_| "启动 Cursor 失败，请确认已安装或重试".to_string())?;
+            } else {
+                std::process::Command::new("open")
+                    .args(["-a", "Cursor", &path])
+                    .spawn()
+                    .map_err(|_| "未找到 Cursor。请确认已安装，或在 Cursor 中执行 Cmd+Shift+P → 'Install cursor command in PATH'".to_string())?;
             }
             Ok(())
         }
         "idea" => {
-            #[cfg(target_os = "macos")]
-            {
-                // Try `idea` CLI first, fall back to `open -a`
-                if let Some(bin) = crate::commands::find_binary(&["idea"]) {
-                    std::process::Command::new(&bin).arg(&path).spawn()
-                        .map_err(|_| "启动 IntelliJ IDEA 失败，请确认已安装或重试".to_string())?;
-                } else {
-                    std::process::Command::new("open")
-                        .args(["-a", "IntelliJ IDEA", &path])
-                        .spawn()
-                        .map_err(|_| "未找到 IntelliJ IDEA。请确认已安装，下载: https://jetbrains.com/idea".to_string())?;
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                open_with_editor(&path, "IntelliJ IDEA", &["idea", "idea64"])?;
+            // Try `idea` CLI first, fall back to `open -a`
+            if let Some(bin) = crate::commands::find_binary(&["idea"]) {
+                std::process::Command::new(&bin).arg(&path).spawn()
+                    .map_err(|_| "启动 IntelliJ IDEA 失败，请确认已安装或重试".to_string())?;
+            } else {
+                std::process::Command::new("open")
+                    .args(["-a", "IntelliJ IDEA", &path])
+                    .spawn()
+                    .map_err(|_| "未找到 IntelliJ IDEA。请确认已安装，下载: https://jetbrains.com/idea".to_string())?;
             }
             Ok(())
         }
@@ -1024,93 +853,6 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
         "finder" => crate::commands::open_file(path),
         _ => Err(format!("不支持的编辑器: {}", editor)),
     }
-}
-
-/// Try to open a path with a given editor binary.
-/// On macOS, each editor uses `open -a` as fallback; this helper is only
-/// needed on Linux / Windows where no such universal launcher exists.
-#[cfg(not(target_os = "macos"))]
-fn open_with_editor(path: &str, name: &str, binaries: &[&str]) -> Result<(), String> {
-    let binary = crate::commands::find_binary(binaries)
-        .ok_or_else(|| {
-            let hint = if cfg!(target_os = "linux") {
-                match binaries[0] {
-                    "code" | "code.cmd" =>
-                        "请安装 VS Code。\n  snap: snap install code --classic\n  apt: sudo apt install code",
-                    "cursor" | "cursor.cmd" =>
-                        "请安装 Cursor。下载: https://cursor.com",
-                    "idea" | "idea64" =>
-                        "请安装 IntelliJ IDEA。\n  snap: snap install intellij-idea-community --classic",
-                    _ => "请先安装该编辑器。",
-                }
-            } else {
-                // Windows
-                match binaries[0] {
-                    "code" | "code.cmd" =>
-                        "请安装 VS Code。安装时勾选「Add to PATH」，\n  或从安装目录运行: %LocalAppData%\\Programs\\Microsoft VS Code\\bin\\code.cmd",
-                    "cursor" | "cursor.cmd" =>
-                        "请安装 Cursor。下载: https://cursor.com",
-                    "idea" | "idea64" =>
-                        "请安装 IntelliJ IDEA。下载: https://jetbrains.com/idea",
-                    _ => "请先安装该编辑器。",
-                }
-            };
-            format!("未找到 {}。{}", name, hint)
-        })?;
-    std::process::Command::new(&binary)
-        .arg(path)
-        .no_window()
-        .spawn()
-        .map_err(|e| format!("启动 {} 失败: {}", name, e))?;
-    Ok(())
-}
-
-/// Shared list of Git Bash installation paths used by both PTY shell
-/// resolution and environment check (Claude Code runtime dependency).
-pub(crate) fn git_bash_candidates(home: &str, local_appdata: &str) -> Vec<String> {
-    let mut candidates = vec![
-        r"C:\Program Files\Git\bin\bash.exe".into(),
-        r"C:\Program Files (x86)\Git\bin\bash.exe".into(),
-        format!(r"{}\AppData\Local\Programs\Git\bin\bash.exe", home),
-        r"C:\scoop\apps\git\current\bin\bash.exe".into(),
-        r"C:\ProgramData\Git\bin\bash.exe".into(),
-    ];
-    if !local_appdata.is_empty() {
-        candidates.push(format!(
-            r"{}\Microsoft\WinGet\Links\bash.exe",
-            local_appdata
-        ));
-    }
-    candidates
-}
-
-/// Check whether a bash.exe or pwsh.exe (PowerShell 7) binary can be found.
-/// Returns the found path if any. Used to verify Claude Code runtime
-/// dependencies on Windows.
-pub(crate) fn find_bash_or_pwsh() -> Option<String> {
-    let home = crate::home_dir().to_string_lossy().to_string();
-    let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    // Check Git Bash candidates first, then pwsh
-    for p in git_bash_candidates(&home, &local_appdata) {
-        if std::path::Path::new(&p).exists() {
-            return Some(p);
-        }
-    }
-    // Try pwsh (PowerShell 7) via find_binary
-    find_binary(&["pwsh", "pwsh.exe"])
-}
-
-/// Full path to the system PowerShell binary (Windows PowerShell 5.1).
-/// Uses `SystemRoot` so it works even when Windows is not on C:.
-///
-/// Always prefer this over a bare `"powershell.exe"` name — Tauri GUI apps
-/// may have a limited PATH that excludes the PowerShell subdirectory.
-pub(crate) fn powershell_exe_path() -> String {
-    let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    format!(
-        r"{}\System32\WindowsPowerShell\v1.0\powershell.exe",
-        sysroot
-    )
 }
 
 // ── Environment check (for onboarding) ───────────────────────
@@ -1164,19 +906,15 @@ fn check_binary_on_path(name: &str) -> Option<String> {
         }
     }
     // Use login shell to resolve user PATH (brew, npx, etc.)
-    let shell = login_shell_for_path_lookup();
-    let shell_args: &[&str] = if cfg!(target_os = "windows") {
-        &["-Command", &format!("Get-Command {} -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object Source", name)]
-    } else {
-        &[
-            "-lc",
-            &format!(
-                "command -v {} 2>/dev/null || (type {} 2>/dev/null | grep -v 'not found')",
-                name, name
-            ),
-        ]
-    };
-    if let Ok(output) = std::process::Command::new(&shell).args(shell_args).no_window().output() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let shell_args: &[&str] = &[
+        "-lc",
+        &format!(
+            "command -v {} 2>/dev/null || (type {} 2>/dev/null | grep -v 'not found')",
+            name, name
+        ),
+    ];
+    if let Ok(output) = std::process::Command::new(&shell).args(shell_args).output() {
         let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
         // Filter out shell error messages that leak to stdout (e.g. zsh `type` output)
         if !s.is_empty() && !s.contains("not found") {
@@ -1223,7 +961,7 @@ fn get_cli_version(binary_path: &str) -> Option<String> {
         .arg("--version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .no_window()
+        
         .output()
     {
         if output.status.success() {
@@ -1263,16 +1001,6 @@ fn extract_version_from_json(json: &str) -> Option<String> {
     None
 }
 
-fn current_platform_id() -> String {
-    if cfg!(target_os = "macos") {
-        "macos".into()
-    } else if cfg!(target_os = "windows") {
-        "windows".into()
-    } else {
-        "linux".into()
-    }
-}
-
 fn install_option(
     id: &str,
     label: &str,
@@ -1292,89 +1020,54 @@ fn install_option(
 }
 
 fn cli_install_options(name: &str) -> Vec<InstallOption> {
-    let platform = current_platform_id();
     match name {
         "claude" => {
-            let script_supported = platform != "windows";
             vec![
                 install_option(
-                    if script_supported {
-                        "official-script"
-                    } else {
-                        "npm"
-                    },
-                    if script_supported {
-                        "官方脚本"
-                    } else {
-                        "npm 全局安装"
-                    },
-                    Some(if script_supported {
-                        "curl -fsSL https://claude.ai/install.sh | bash"
-                    } else {
-                        "npm i -g @anthropic-ai/claude-code"
-                    }),
-                    if script_supported {
-                        "推荐用于 macOS/Linux，不假设 npm 全局目录。"
-                    } else {
-                        "推荐用于 Windows。"
-                    },
+                    "official-script",
+                    "官方脚本",
+                    Some("curl -fsSL https://claude.ai/install.sh | bash"),
+                    "推荐安装方式，不假设 npm 全局目录。",
                     true,
-                    &[&platform],
+                    &["macos"],
                 ),
                 install_option(
-                    if script_supported {
-                        "npm"
-                    } else {
-                        "official-docs"
-                    },
-                    if script_supported {
-                        "npm 全局安装"
-                    } else {
-                        "官方安装说明"
-                    },
-                    if script_supported {
-                        Some("npm i -g @anthropic-ai/claude-code")
-                    } else {
-                        None
-                    },
-                    if script_supported {
-                        "适合已经使用 Node/npm 管理 CLI 的用户。"
-                    } else {
-                        "如不使用 npm，请按 Claude Code 官方文档安装。"
-                    },
+                    "npm",
+                    "npm 全局安装",
+                    Some("npm i -g @anthropic-ai/claude-code"),
+                    "适合已经使用 Node/npm 管理 CLI 的用户。",
                     false,
-                    &[&platform],
+                    &["macos"],
                 ),
             ]
         }
         "codex" => {
-            let mut options = vec![install_option(
-                "npm",
-                "npm 全局安装",
-                Some("npm i -g @openai/codex"),
-                "适合已有 Node/npm 环境的用户。",
-                true,
-                &[&platform],
-            )];
-            if platform != "windows" {
-                options.push(install_option(
+            vec![
+                install_option(
+                    "npm",
+                    "npm 全局安装",
+                    Some("npm i -g @openai/codex"),
+                    "适合已有 Node/npm 环境的用户。",
+                    true,
+                    &["macos"],
+                ),
+                install_option(
                     "homebrew",
                     "Homebrew 安装",
                     Some("brew install codex"),
-                    "适合通过 Homebrew 管理 CLI 的 macOS/Linux 用户。",
+                    "适合通过 Homebrew 管理 CLI 的用户。",
                     false,
-                    &[&platform],
-                ));
-            }
-            options.push(install_option(
-                "manual",
-                "手动安装",
-                None,
-                "如使用 pnpm、公司镜像或其他包管理器，请按你的环境安装并确保 codex 在 PATH 中。",
-                false,
-                &[&platform],
-            ));
-            options
+                    &["macos"],
+                ),
+                install_option(
+                    "manual",
+                    "手动安装",
+                    None,
+                    "如使用 pnpm、公司镜像或其他包管理器，请按你的环境安装并确保 codex 在 PATH 中。",
+                    false,
+                    &["macos"],
+                ),
+            ]
         }
         "qoderclicn" => vec![
             install_option(
@@ -1383,7 +1076,7 @@ fn cli_install_options(name: &str) -> Vec<InstallOption> {
                 Some("npm i -g @qodercn-ai/qoderclicn"),
                 "沿用当前应用支持的 qoderclicn 命令名。",
                 true,
-                &[&platform],
+                &["macos"],
             ),
             install_option(
                 "manual",
@@ -1391,7 +1084,7 @@ fn cli_install_options(name: &str) -> Vec<InstallOption> {
                 None,
                 "如你通过 Qoder 官方安装器或其他渠道安装，请确保 qoderclicn 在 PATH 中。",
                 false,
-                &[&platform],
+                &["macos"],
             ),
         ],
         _ => Vec::new(),
@@ -1448,63 +1141,11 @@ fn cli_missing_item(name: &str, label: &str) -> EnvCheckItem {
     }
 }
 
-/// Build a warn item when a CLI binary is found but its Windows runtime
-/// dependency (bash.exe / pwsh.exe) is missing.
-fn cli_no_runtime_item(
-    name: &str,
-    label: &str,
-    path: String,
-    version: Option<String>,
-) -> EnvCheckItem {
-    let detail = format!(
-        "已安装但缺少运行时依赖。{} 在 Windows 上需要 Git Bash 或 PowerShell 7。\n\
-         安装后请重启 KN。\n\
-         Git for Windows: https://git-scm.com/downloads/win\n\
-         PowerShell 7: https://aka.ms/powershell",
-        label
-    );
-    EnvCheckItem {
-        name: name.into(),
-        label: label.into(),
-        status: "warn".into(),
-        severity: "warn".into(),
-        category: "cli".into(),
-        detail,
-        detected_path: Some(path),
-        version,
-        install_options: Some(vec![
-            install_option(
-                "git-bash",
-                "安装 Git for Windows",
-                None,
-                "提供 bash.exe，同时解决 KN 终端和 CLI 运行时依赖。",
-                true,
-                &["windows"],
-            ),
-            install_option(
-                "powershell-7",
-                "安装 PowerShell 7",
-                None,
-                "提供 pwsh.exe，Node.js CLI 原生支持。",
-                false,
-                &["windows"],
-            ),
-        ]),
-        install_cmd: None,
-    }
-}
-
-/// Check if a CLI binary is installed, and on Windows verify runtime
-/// dependencies (bash.exe / pwsh.exe) are also present.
 fn push_cli_item(items: &mut Vec<EnvCheckItem>, binary: &str, label: &str) {
     match check_binary_on_path(binary) {
         Some(path) => {
             let version = get_cli_version(&path);
-            if cfg!(target_os = "windows") && find_bash_or_pwsh().is_none() {
-                items.push(cli_no_runtime_item(binary, label, path, version));
-            } else {
-                items.push(cli_ok_item(binary, label, path, version));
-            }
+            items.push(cli_ok_item(binary, label, path, version));
         }
         None => items.push(cli_missing_item(binary, label)),
     }
@@ -1527,38 +1168,13 @@ pub fn check_environment() -> EnvCheckResult {
     // 6. Shell wrapper
     let kn_dir = home.join(".kn");
     let shell_rc = kn_dir.join("shell-rc");
-    let shell_rc_ps1 = kn_dir.join("shell-rc.ps1");
-    if shell_rc.exists() || shell_rc_ps1.exists() {
+    if shell_rc.exists() {
         let in_rc = if let Ok(zshrc) = std::fs::read_to_string(home.join(".zshrc")) {
             zshrc.contains(".kn/shell-rc") || zshrc.contains(".claude-profiles")
         } else {
             false
         };
-        // On non-macOS also check .bashrc (Linux + Windows Git Bash)
-        let in_bashrc = !cfg!(target_os = "macos") && {
-            if let Ok(bashrc) = std::fs::read_to_string(home.join(".bashrc")) {
-                bashrc.contains(".kn/shell-rc") || bashrc.contains(".claude-profiles")
-            } else {
-                false
-            }
-        };
-        // On Windows also check PowerShell profile for shell-rc.ps1
-        let in_ps_profile = cfg!(target_os = "windows") && {
-            let docs = home.join("Documents");
-            let ps7 = docs
-                .join("PowerShell")
-                .join("Microsoft.PowerShell_profile.ps1");
-            let ps5 = docs
-                .join("WindowsPowerShell")
-                .join("Microsoft.PowerShell_profile.ps1");
-            let check = |p: &std::path::Path| -> bool {
-                std::fs::read_to_string(p)
-                    .map(|c| c.contains(".kn/shell-rc") || c.contains(".claude-profiles"))
-                    .unwrap_or(false)
-            };
-            check(&ps7) || check(&ps5)
-        };
-        let activated = in_rc || in_bashrc || in_ps_profile;
+        let activated = in_rc;
         items.push(EnvCheckItem {
             name: "shell-wrapper".into(),
             label: "Shell 集成".into(),
@@ -1578,11 +1194,7 @@ pub fn check_environment() -> EnvCheckResult {
             } else {
                 "已安装但未激活".into()
             },
-            detected_path: Some(if shell_rc.exists() {
-                shell_rc.display().to_string()
-            } else {
-                shell_rc_ps1.display().to_string()
-            }),
+            detected_path: Some(shell_rc.display().to_string()),
             version: None,
             install_options: None,
             install_cmd: None,
@@ -1591,21 +1203,13 @@ pub fn check_environment() -> EnvCheckResult {
         // Fallback: also check legacy ~/.claude-profiles/ for users who haven't migrated
         let legacy_dir = home.join(".claude-profiles");
         let legacy_rc = legacy_dir.join("shell-rc");
-        let legacy_rc_ps1 = legacy_dir.join("shell-rc.ps1");
-        if legacy_rc.exists() || legacy_rc_ps1.exists() {
+        if legacy_rc.exists() {
             let in_rc = if let Ok(zshrc) = std::fs::read_to_string(home.join(".zshrc")) {
                 zshrc.contains("shell-rc")
             } else {
                 false
             };
-            let in_bashrc = !cfg!(target_os = "macos") && {
-                if let Ok(bashrc) = std::fs::read_to_string(home.join(".bashrc")) {
-                    bashrc.contains("shell-rc")
-                } else {
-                    false
-                }
-            };
-            let activated = in_rc || in_bashrc;
+            let activated = in_rc;
             items.push(EnvCheckItem {
                 name: "shell-wrapper".into(),
                 label: "Shell 集成".into(),
@@ -1617,11 +1221,7 @@ pub fn check_environment() -> EnvCheckResult {
                 } else {
                     "已安装但未激活（旧目录 ~/.claude-profiles/）".into()
                 },
-                detected_path: Some(if legacy_rc.exists() {
-                    legacy_rc.display().to_string()
-                } else {
-                    legacy_rc_ps1.display().to_string()
-                }),
+                detected_path: Some(legacy_rc.display().to_string()),
                 version: None,
                 install_options: None,
                 install_cmd: None,
@@ -1633,11 +1233,7 @@ pub fn check_environment() -> EnvCheckResult {
                 status: "missing".into(),
                 severity: "warn".into(),
                 category: "shell".into(),
-                detail: if cfg!(target_os = "windows") {
-                    "未安装，应用启动时会尝试自动写入 PowerShell 集成".into()
-                } else {
-                    "未安装，应用启动时会尝试自动写入 shell 集成".into()
-                },
+                detail: "未安装，应用启动时会尝试自动写入 shell 集成".into(),
                 detected_path: None,
                 version: None,
                 install_options: None,
@@ -1784,56 +1380,6 @@ mod tests {
             item.install_cmd.as_deref(),
             Some("npm i -g @qodercn-ai/qoderclicn")
         );
-    }
-
-    #[test]
-    fn test_login_shell_for_path_lookup_prefers_sh_on_unix() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
-        let old_shell = std::env::var_os("SHELL");
-        std::env::remove_var("SHELL");
-        assert_eq!(login_shell_for_path_lookup(), "/bin/sh");
-        if let Some(value) = old_shell {
-            std::env::set_var("SHELL", value);
-        } else {
-            std::env::remove_var("SHELL");
-        }
-    }
-
-    #[test]
-    fn test_windows_binary_candidates_include_powershell_7_path() {
-        let home = r"C:\Users\Alice";
-        let candidates = super::windows_binary_candidates(
-            &format!(r"{}\AppData\Local", home),
-            "pwsh.exe",
-        );
-        assert!(candidates.iter().any(|p| p == r"C:\Program Files\PowerShell\7\pwsh.exe"));
-    }
-
-    #[test]
-    fn test_git_bash_candidates_include_user_localappdata_install() {
-        let candidates = git_bash_candidates(
-            r"C:\Users\Alice",
-            r"C:\Users\Alice\AppData\Local",
-        );
-        assert!(candidates.iter().any(|p| {
-            p == r"C:\Users\Alice\AppData\Local\Programs\Git\bin\bash.exe"
-        }));
-    }
-
-    #[test]
-    fn test_powershell_exe_path_uses_systemroot() {
-        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
-        let old = std::env::var_os("SystemRoot");
-        std::env::set_var("SystemRoot", r"D:\Windows");
-        assert_eq!(
-            powershell_exe_path(),
-            r"D:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        );
-        if let Some(value) = old {
-            std::env::set_var("SystemRoot", value);
-        } else {
-            std::env::remove_var("SystemRoot");
-        }
     }
 
     // ── verify_sha256 ──────────────────────────────────────

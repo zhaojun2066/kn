@@ -18,29 +18,6 @@ use std::time::{Duration, Instant};
 
 use fs2::FileExt;
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt as _;
-
-/// Extension trait to prevent console window popups on Windows.
-///
-/// On Windows, spawning a console-subsystem binary (powershell.exe,
-/// cmd.exe, node.exe, etc.) via `std::process::Command` creates a
-/// visible console window by default, even when only stdout/stderr
-/// are captured. This trait adds `.no_window()` which sets the
-/// `CREATE_NO_WINDOW` (0x08000000) creation flag to suppress that.
-pub(crate) trait CommandNoWindowExt {
-    fn no_window(&mut self) -> &mut Self;
-}
-
-impl CommandNoWindowExt for std::process::Command {
-    fn no_window(&mut self) -> &mut Self {
-        #[cfg(target_os = "windows")]
-        {
-            self.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
-        self
-    }
-}
 
 /// Global write lock — serializes all config file writes to prevent
 /// data corruption when multiple Tauri commands run concurrently.
@@ -129,55 +106,8 @@ where
 }
 
 /// Atomically rename `src` to `dst`, overwriting `dst` if it exists.
-///
-/// On Unix this is `std::fs::rename` (atomic + overwrites). On Windows,
-/// `std::fs::rename` fails if the destination exists, so we use
-/// `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` which performs the
-/// replace atomically — avoiding the TOCTOU race of remove-then-rename.
 pub(crate) fn atomic_rename(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use std::ffi::OsStr;
-
-        fn to_wide(s: &OsStr) -> Vec<u16> {
-            s.encode_wide().chain(Some(0)).collect()
-        }
-
-        extern "system" {
-            fn MoveFileExW(
-                lpExistingFileName: *const u16,
-                lpNewFileName: *const u16,
-                dwFlags: u32,
-            ) -> i32;
-        }
-
-        const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
-        const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-
-        let src_wide = to_wide(src.as_os_str());
-        let dst_wide = to_wide(dst.as_os_str());
-        let ret = unsafe {
-            MoveFileExW(
-                src_wide.as_ptr(),
-                dst_wide.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if ret == 0 {
-            return Err(format!(
-                "MoveFileEx 失败: {} -> {}: {}",
-                src.display(),
-                dst.display(),
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::rename(src, dst).map_err(|e| format!("rename 失败: {} -> {}: {}", src.display(), dst.display(), e))
-    }
+    std::fs::rename(src, dst).map_err(|e| format!("rename 失败: {} -> {}: {}", src.display(), dst.display(), e))
 }
 
 /// Generate a short (8-char hex) hash of a path string.
@@ -215,16 +145,11 @@ pub(crate) fn config_dir() -> PathBuf {
             }
         }
     }
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| {
-            // Last resort: use temp dir rather than "."
-            // In GUI apps (Tauri), CWD is often "/" which would cause
-            // files to be written to the filesystem root.
-            std::env::temp_dir()
-                .to_string_lossy()
-                .to_string()
-        });
+    let home = std::env::var("HOME").unwrap_or_else(|_| {
+        std::env::temp_dir()
+            .to_string_lossy()
+            .to_string()
+    });
     PathBuf::from(&home).join(".kn")
 }
 
@@ -239,9 +164,7 @@ pub(crate) fn migrate_legacy_config_dir() {
         return; // Already migrated or fresh install
     }
 
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
     if home.is_empty() {
         return;
     }
@@ -264,34 +187,16 @@ pub(crate) fn migrate_legacy_config_dir() {
     }
 }
 
-/// Resolve the user home directory across platforms.
+/// Resolve the user home directory.
 ///
-/// Reads `HOME` first, falling back to `USERPROFILE` on Windows (where
-/// GUI apps launched from Explorer typically lack `HOME`).
-/// If both env vars are missing, tries shell fallback (powershell on Windows,
-/// `echo $HOME` via `sh` on Unix). Returns temp dir as a last resort
-/// (never `"."` — in GUI apps CWD is often `/` which would cause files
-/// to be written to the filesystem root).
+/// Reads `HOME` first, falling back to `echo $HOME` via `sh`,
+/// and finally to temp dir as a last resort.
 pub(crate) fn home_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home);
     }
-    if let Ok(home) = std::env::var("USERPROFILE") {
-        return PathBuf::from(home);
-    }
     // Fallback: try shell to resolve home directory
-    if cfg!(target_os = "windows") {
-        if let Ok(output) = std::process::Command::new(crate::commands::powershell_exe_path())
-            .args(["-NoProfile", "-Command", "Write-Output $env:USERPROFILE"])
-            .no_window()
-            .output()
-        {
-            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !s.is_empty() {
-                return PathBuf::from(s);
-            }
-        }
-    } else if let Ok(output) = std::process::Command::new("sh")
+    if let Ok(output) = std::process::Command::new("sh")
         .args(["-c", "echo $HOME"])
         .output()
     {
@@ -303,49 +208,6 @@ pub(crate) fn home_dir() -> PathBuf {
     // Last resort: temp dir is always available and writable,
     // unlike CWD which may be "/" in macOS .app bundles
     std::env::temp_dir()
-}
-
-/// Resolve the user's Documents folder on Windows.
-///
-/// Uses `[Environment]::GetFolderPath('MyDocuments')` to handle folder
-/// redirection (OneDrive, Group Policy, custom locations). Falls back to
-/// `$HOME/Documents`, then `$HOME/OneDrive/Documents`.
-pub(crate) fn windows_documents_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().to_string());
-    let home_path = std::path::Path::new(&home);
-
-    let api_result = std::process::Command::new(crate::commands::powershell_exe_path())
-        .args([
-            "-NoProfile",
-            "-Command",
-            "[Environment]::GetFolderPath('MyDocuments')",
-        ])
-        .no_window()
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(s))
-            }
-        });
-    api_result.unwrap_or_else(|| {
-        let default_docs = home_path.join("Documents");
-        if default_docs.exists() {
-            default_docs
-        } else {
-            let onedrive_docs = home_path.join("OneDrive").join("Documents");
-            if onedrive_docs.exists() {
-                onedrive_docs
-            } else {
-                default_docs
-            }
-        }
-    })
 }
 
 pub fn run() {

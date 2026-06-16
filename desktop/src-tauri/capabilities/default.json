@@ -15,15 +15,9 @@
         { "name": "zsh", "cmd": "/bin/zsh", "args": true },
         { "name": "brew", "cmd": "/opt/homebrew/bin/brew", "args": true },
         { "name": "brew-intel", "cmd": "/usr/local/bin/brew", "args": true },
-        { "name": "apt-get", "cmd": "/usr/bin/apt-get", "args": true },
-        { "name": "winget", "cmd": "winget", "args": true },
         { "name": "curl", "cmd": "/usr/bin/curl", "args": true },
         { "name": "shasum", "cmd": "/usr/bin/shasum", "args": true },
-        { "name": "cmd", "cmd": "cmd", "args": true },
-        { "name": "sha256sum", "cmd": "/usr/bin/sha256sum", "args": true },
-        { "name": "certutil", "cmd": "certutil", "args": true },
-        { "name": "open", "cmd": "/usr/bin/open", "args": true },
-        { "name": "xdg-open", "cmd": "/usr/bin/xdg-open", "args": true }
+        { "name": "open", "cmd": "/usr/bin/open", "args": true }
       ]
     },
     {
@@ -37,15 +31,9 @@
         { "name": "zsh", "cmd": "/bin/zsh", "args": true },
         { "name": "brew", "cmd": "/opt/homebrew/bin/brew", "args": true },
         { "name": "brew-intel", "cmd": "/usr/local/bin/brew", "args": true },
-        { "name": "apt-get", "cmd": "/usr/bin/apt-get", "args": true },
-        { "name": "winget", "cmd": "winget", "args": true },
         { "name": "curl", "cmd": "/usr/bin/curl", "args": true },
         { "name": "shasum", "cmd": "/usr/bin/shasum", "args": true },
-        { "name": "cmd", "cmd": "cmd", "args": true },
-        { "name": "sha256sum", "cmd": "/usr/bin/sha256sum", "args": true },
-        { "name": "certutil", "cmd": "certutil", "args": true },
-        { "name": "open", "cmd": "/usr/bin/open", "args": true },
-        { "name": "xdg-open", "cmd": "/usr/bin/xdg-open", "args": true }
+        { "name": "open", "cmd": "/usr/bin/open", "args": true }
       ]
     },
     "shell:allow-open",

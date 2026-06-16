@@ -101,11 +101,7 @@ configure_rc() {
 
     # Remove old marker block if exists
     if grep -Fq "$MARKER_START" "$rc_path" 2>/dev/null; then
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "/$MARKER_START/,/$MARKER_END/d" "$rc_path"
-        else
-            sed -i "/$MARKER_START/,/$MARKER_END/d" "$rc_path"
-        fi
+        sed -i '' "/$MARKER_START/,/$MARKER_END/d" "$rc_path"
     fi
 
     # Always write both — idempotent, no harm
@@ -134,11 +130,7 @@ configure_completions() {
 
     # Remove old marker block if exists
     if grep -Fq "$COMPLETIONS_MARKER_START" "$rc_path" 2>/dev/null; then
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "/$COMPLETIONS_MARKER_START/,/$COMPLETIONS_MARKER_END/d" "$rc_path"
-        else
-            sed -i "/$COMPLETIONS_MARKER_START/,/$COMPLETIONS_MARKER_END/d" "$rc_path"
-        fi
+        sed -i '' "/$COMPLETIONS_MARKER_START/,/$COMPLETIONS_MARKER_END/d" "$rc_path"
     fi
 
     if [ "$rc_name" = ".zshrc" ]; then

@@ -82,8 +82,7 @@ _profile_switch() {
         return 1
     fi
     if grep -q "^  ${name}:" "$CONFIG" 2>/dev/null; then
-        sed -i '' "s/^default:.*/default: \"$name\"/" "$CONFIG" 2>/dev/null || \
-        sed -i "s/^default:.*/default: \"$name\"/" "$CONFIG"
+        sed -i '' "s/^default:.*/default: \"$name\"/" "$CONFIG"
         echo "Default profile set to '$name'"
     else
         echo "Profile '$name' not found" >&2

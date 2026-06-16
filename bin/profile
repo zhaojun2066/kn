@@ -130,14 +130,10 @@ def _mask_secret(key, val):
     return val
 
 
-def cmd_env(config, name, shell="bash"):
-    """Output env vars as shell eval-safe statements.
-
-    shell: "bash" (default) → export KEY='VALUE'  (also works for zsh)
-           "powershell"     → $env:KEY = 'VALUE'
-    """
+def cmd_env(config, name):
+    """Output env vars as shell eval-safe statements (bash/zsh compatible)."""
     if not name:
-        print("Usage: profile env <name> [--shell bash|powershell]", file=sys.stderr)
+        print("Usage: profile env <name>", file=sys.stderr)
         sys.exit(1)
     if name not in config.get("profiles", {}):
         print(f"Profile '{name}' not found.", file=sys.stderr)
@@ -148,18 +144,11 @@ def cmd_env(config, name, shell="bash"):
     for k in env:
         if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
             print(f"Invalid env var key in profile '{name}': '{k}'. Skipping.", file=sys.stderr)
-    if shell == "powershell":
-        for k, v in sorted(env.items()):
-            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
-                continue
-            safe = v.replace("'", "''")
-            print(f"$env:{k} = '{safe}'")
-    else:
-        for k, v in sorted(env.items()):
-            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
-                continue
-            safe = v.replace("'", "'\\''")
-            print(f"export {k}='{safe}'")
+    for k, v in sorted(env.items()):
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
+            continue
+        safe = v.replace("'", "'\\''")
+        print(f"export {k}='{safe}'")
 
 
 def cmd_names(config):
@@ -544,10 +533,9 @@ def _json_err(msg):
 
 
 def main():
-    # Extract --json, --stdin, --shell global flags before command dispatch
+    # Extract --json, --stdin global flags before command dispatch
     json_mode = False
     use_stdin = False
-    shell_type = "bash"
     args = sys.argv[1:]
     filtered = []
     i = 0
@@ -557,13 +545,6 @@ def main():
             json_mode = True
         elif a in ("--stdin",):
             use_stdin = True
-        elif a == "--shell":
-            if i + 1 < len(args):
-                shell_type = args[i + 1]
-                i += 1  # skip next arg
-            # else: no value provided, keep default
-        elif a.startswith("--shell="):
-            shell_type = a.split("=", 1)[1]
         else:
             filtered.append(a)
         i += 1
@@ -593,7 +574,7 @@ def main():
         if json_mode:
             _cmd_env_json(config, name)
         else:
-            cmd_env(config, name, shell=shell_type)
+            cmd_env(config, name)
     elif cmd == "names":
         cmd_names(config)
     elif cmd == "init":

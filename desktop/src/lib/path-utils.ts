@@ -6,12 +6,9 @@ function detectSep(path: string): "/" | "\\" {
   return path.includes("\\") ? "\\" : "/";
 }
 
-/** Shorten home directory paths for display across platforms */
+/** Shorten home directory paths for display */
 export function shortenPath(path: string): string {
-  return path
-    .replace(/^\/Users\/[^/]+/, "~")     // macOS
-    .replace(/^\/home\/[^/]+/, "~")       // Linux
-    .replace(/^[A-Z]:\\Users\\[^\\]+/i, "~"); // Windows
+  return path.replace(/^\/Users\/[^/]+/, "~");
 }
 
 /**

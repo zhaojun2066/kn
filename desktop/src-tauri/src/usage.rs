@@ -491,11 +491,7 @@ pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
     let hooks_dir = crate::config_dir().join("hooks");
     fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
 
-    let python = if cfg!(target_os = "windows") {
-        "python"
-    } else {
-        "python3"
-    };
+    let python = "python3";
     let hooks_dir_str = hooks_dir.to_string_lossy().replace('\\', "/");
     let hook_cmd = format!("{} {}/record-usage.py", python, hooks_dir_str);
 
