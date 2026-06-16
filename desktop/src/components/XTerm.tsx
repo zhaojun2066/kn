@@ -77,7 +77,7 @@ export const XTerm = forwardRef<XTermHandle, XTermProps>(function XTerm({ onTerm
       cursorStyle: "bar",
       fontSize,
       fontWeight: "500",
-      fontFamily: 'ui-monospace, "SF Mono", "Cascadia Code", Menlo, Monaco, "JetBrains Mono", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Consolas, "Courier New", monospace',
+      fontFamily: 'ui-monospace, "Cascadia Code", "Sarasa Mono SC", "Noto Sans Mono CJK SC", "SF Mono", Menlo, Monaco, "JetBrains Mono", "PingFang SC", "Microsoft YaHei", Consolas, "Courier New", monospace',
       letterSpacing: 0,
       lineHeight: 1.2,
       allowTransparency: true,

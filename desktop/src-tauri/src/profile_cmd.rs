@@ -868,12 +868,27 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     }
     if cfg!(target_os = "windows") {
         let ps1_path = dir.join("shell-rc.ps1");
-        let needs_ps1_write = match fs::read_to_string(&ps1_path) {
-            Ok(existing) => existing != SHELL_RC_PS1,
+        // PowerShell 5.1 reads files without BOM as the system's ANSI
+        // codepage (GBK on Chinese Windows).  This corrupts non-ASCII
+        // characters in string literals and can break the parser when
+        // bytes inside strings happen to look like operators or quotes.
+        const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+        let needs_ps1_write = match fs::read(&ps1_path) {
+            Ok(existing) => {
+                let existing_content = if existing.starts_with(UTF8_BOM) {
+                    &existing[3..]
+                } else {
+                    &existing
+                };
+                existing_content != SHELL_RC_PS1.as_bytes()
+            }
             Err(_) => true,
         };
         if needs_ps1_write {
-            fs::write(&ps1_path, SHELL_RC_PS1).ok();
+            let mut content = Vec::with_capacity(UTF8_BOM.len() + SHELL_RC_PS1.len());
+            content.extend_from_slice(UTF8_BOM);
+            content.extend_from_slice(SHELL_RC_PS1.as_bytes());
+            fs::write(&ps1_path, content).ok();
         }
     }
 
