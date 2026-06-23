@@ -8,6 +8,8 @@ use clap::Parser;
 use kn_agent::{
     bind, config, device, ipc, proto, session, state, ws_client,
 };
+use kn_common::project::ProjectInfo;
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -24,6 +26,97 @@ struct Cli {
 enum Command {
     /// 绑定设备到 kn iOS App
     Bind,
+}
+
+// ── Project loading & watching ─────────────────────────────────
+
+/// 读取 ~/.kn/projects.json，返回项目列表。
+/// 文件不存在或解析失败时返回空列表（静默降级）。
+fn load_projects() -> Vec<ProjectInfo> {
+    let path = kn_common::path::config_dir().join("projects.json");
+
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            serde_json::from_str::<Vec<ProjectInfo>>(&content)
+                .unwrap_or_else(|e| {
+                    tracing::warn!("解析 projects.json 失败: {}", e);
+                    vec![]
+                })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!("projects.json 不存在，跳过项目上报");
+            vec![]
+        }
+        Err(e) => {
+            tracing::warn!("读取 projects.json 失败: {}", e);
+            vec![]
+        }
+    }
+}
+
+/// 发送 project_list 到云端。
+async fn send_project_list(
+    outgoing: &std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
+) {
+    let projects = load_projects();
+    let info: Vec<proto::ProjectInfoOut> = projects.iter().map(|p| p.into()).collect();
+    let msg = proto::WsMessageBuilder::project_list(&info);
+    if let Some(tx) = outgoing.lock().await.as_ref() {
+        let _ = tx.send(msg);
+    }
+    tracing::info!(count = info.len(), "已上报项目列表");
+}
+
+/// 启动 projects.json 文件监听，变化时自动重新上报。
+/// 返回 watcher handle，需要保持存活（drop 时停止监听）。
+fn start_project_watcher(
+    outgoing: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
+) -> Option<notify::RecommendedWatcher> {
+    let path = kn_common::path::config_dir().join("projects.json");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let mut watcher = match notify::recommended_watcher(
+        move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                    let _ = tx.send(());
+                }
+            }
+        },
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("创建文件监听器失败: {}", e);
+            return None;
+        }
+    };
+
+    // Watch the parent directory (kn config dir) since projects.json
+    // might be atomically replaced (write to temp → rename)
+    let watch_dir = path.parent().unwrap_or(&path);
+    if let Err(e) = watcher.watch(watch_dir, RecursiveMode::NonRecursive) {
+        tracing::warn!("注册文件监听失败: {}", e);
+        return None;
+    }
+
+    // Spawn a task to handle events with debounce
+    tokio::spawn(async move {
+        loop {
+            match rx.recv() {
+                Ok(()) => {
+                    // 简单防抖：收到事件后等 2 秒，期间的新事件被丢弃
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    // 排空积压事件
+                    while rx.try_recv().is_ok() {}
+                    send_project_list(&outgoing).await;
+                }
+                Err(std::sync::mpsc::RecvError) => break,
+            }
+        }
+    });
+
+    Some(watcher)
 }
 
 #[tokio::main]
@@ -93,31 +186,51 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let token = device::load_device_token();
     let has_token = token.as_ref().map_or(false, |t| !t.is_empty());
 
-    // Track whether we need to fall back to IPC mode after WSS ends
-    let mut fallback_to_ipc = !has_token;
+    // ── 9. 创建共享的会话管理器和输入合并器 ──
+    // IPC 和 WSS 共用同一套 sessions/input_merger，确保无论云端连接状态如何，
+    // 桌面应用都能通过 IPC 与 Agent 通信。
+    let store = Box::new(session::MemorySessionStore::new());
+    let sessions = Arc::new(session::SessionManager::new(store));
+    let input_merger = Arc::new(session::InputMerger::new());
 
+    // ── 10. 始终启动 IPC 服务器 ──
+    // IPC 服务器独立于 WSS 连接运行。即使云端不可达（如 dev 模式下
+    // kn-cloud 未启动），桌面应用仍能通过 Unix socket 查询 Agent 状态。
+    {
+        let ipc = ipc::IpcServer::new(
+            cfg.ipc_socket_path.clone(),
+            state_machine.clone(),
+            sessions.clone(),
+            cfg.cloud_http_url.clone(),
+            cfg.machine_id.clone(),
+            cfg.hostname.clone(),
+            cfg.purchase_url.clone(),
+            input_merger.clone(),
+        );
+        let ipc_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ipc.run(ipc_shutdown).await {
+                tracing::error!("IPC 服务器错误: {}", e);
+            }
+        });
+    }
+
+    // ── 11. 有 token 时，并行运行 WSS 连接 ──
     if has_token {
         let t = token.unwrap();
         state_machine
             .transition(state::StateEvent::WsConnected { has_token: true })
             .await?;
 
-        tracing::info!("已找到 device_token，连接云端...");
+        tracing::info!("已找到 device_token，并行运行 WSS 连接 + IPC 服务...");
 
         // 消息通道
         let (incoming_tx, mut incoming_rx) =
             mpsc::unbounded_channel::<proto::AgentIncoming>();
-        // 出站消息共享 sender（ws_client 在每次连接时更新）
         let outgoing_tx_ref = Arc::new(tokio::sync::Mutex::new(
             None::<mpsc::UnboundedSender<String>>,
         ));
 
-        // 创建会话管理器 + 输入合并器（WSS 路径，对齐 Java handleStartSession/handleInput 行为）
-        let store = Box::new(session::MemorySessionStore::new());
-        let sessions = Arc::new(session::SessionManager::new(store));
-        let input_merger = Arc::new(session::InputMerger::new());
-
-        // 启动 WSS 连接循环
         let ws_state = state_machine.clone();
         let ws_shutdown = shutdown.clone();
         let ws_token = t.clone();
@@ -127,123 +240,98 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let ws_os = cfg.os_version.clone();
         let ws_host = cfg.hostname.clone();
         let ws_outgoing = outgoing_tx_ref.clone();
+        let ws_sessions = sessions.clone();
+        let ws_input_merger = input_merger.clone();
 
-        let mut ws_handle = tokio::spawn(async move {
-            ws_client::run_ws_loop(
-                &ws_token,
-                &ws_url,
-                &ws_machine,
-                &ws_version,
-                &ws_os,
-                &ws_host,
-                ws_state,
-                ws_outgoing,
-                incoming_tx,
-                ws_shutdown,
-            )
-            .await
+        // WSS 任务：在后台运行连接循环 + 消息处理
+        // IPC 服务器已在上一步启动，二者并行运行
+        //
+        // 注意：必须在 spawn 前 clone 所需的值，因为外层 loop 和内层
+        // ws_client::run_ws_loop 都需要使用它们。
+        let ws_state_inner = ws_state.clone();
+        let ws_outgoing_inner = ws_outgoing.clone();
+        let ws_shutdown_inner = ws_shutdown.clone();
+
+        tokio::spawn(async move {
+            let mut ws_handle = tokio::spawn(async move {
+                ws_client::run_ws_loop(
+                    &ws_token,
+                    &ws_url,
+                    &ws_machine,
+                    &ws_version,
+                    &ws_os,
+                    &ws_host,
+                    ws_state_inner,
+                    ws_outgoing_inner,
+                    incoming_tx,
+                    ws_shutdown_inner,
+                )
+                .await
+            });
+
+            loop {
+                tokio::select! {
+                    result = &mut ws_handle => {
+                        match result {
+                            Ok(Err(ref e)) if e.to_string().contains("AUTH_REJECTED") => {
+                                tracing::warn!("device_token 已失效，切换至未绑定状态（IPC 仍运行），保留旧 token 文件");
+                                // 不删除 token 文件：保留旧 token 以便重新绑定时覆盖，
+                                // 同时支持后端 URL 切换（切回原后端时 token 仍有效）
+                                let _ = ws_state
+                                    .transition(state::StateEvent::WsConnected { has_token: false })
+                                    .await;
+                            }
+                            Ok(Ok(())) => tracing::info!("WSS 循环正常退出"),
+                            Ok(Err(e)) => tracing::error!("WSS 循环错误: {}", e),
+                            Err(e) => tracing::error!("WSS 任务 panic: {}", e),
+                        }
+                        break;
+                    }
+                    _ = ws_shutdown.cancelled() => {
+                        tracing::info!("WSS 任务收到关闭信号");
+                        break;
+                    }
+                    msg = incoming_rx.recv() => {
+                        match msg {
+                            Some(m) => {
+                                handle_incoming(
+                                    m,
+                                    ws_state.clone(),
+                                    ws_outgoing.clone(),
+                                    ws_sessions.clone(),
+                                    ws_input_merger.clone(),
+                                ).await;
+                            }
+                            None => {
+                                tracing::info!("WSS 入站消息通道已关闭");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         });
-
-        // ── 主消息循环 ──
-        let main_shutdown = shutdown.clone();
-        let main_state = state_machine.clone();
-        let main_outgoing = outgoing_tx_ref.clone();
-
-        loop {
-            tokio::select! {
-                result = &mut ws_handle => {
-                    match result {
-                        Ok(Err(ref e)) if e.to_string().contains("AUTH_REJECTED") => {
-                            tracing::warn!("device_token 已失效，删除并切换至 IPC 模式");
-                            device::delete_device_token();
-                            // 转换至 Unbound（状态转换已在 ws_client 中尝试，这里确保成功）
-                            let _ = main_state
-                                .transition(state::StateEvent::WsConnected { has_token: false })
-                                .await;
-                            fallback_to_ipc = true;
-                        }
-                        Ok(Ok(())) => tracing::info!("WSS 循环正常退出"),
-                        Ok(Err(e)) => tracing::error!("WSS 循环错误: {}", e),
-                        Err(e) => tracing::error!("WSS 任务 panic: {}", e),
-                    }
-                    break;
-                }
-                _ = main_shutdown.cancelled() => {
-                    tracing::info!("主循环收到关闭信号");
-                    break;
-                }
-                msg = incoming_rx.recv() => {
-                    match msg {
-                        Some(m) => {
-                            handle_incoming(
-                                m,
-                                main_state.clone(),
-                                main_outgoing.clone(),
-                                sessions.clone(),
-                                input_merger.clone(),
-                            ).await;
-                        }
-                        None => {
-                            tracing::info!("入站消息通道已关闭");
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+    } else {
+        // 无 token：直接进入 Unbound 状态，等待桌面应用通过 IPC 发起绑定
+        state_machine
+            .transition(state::StateEvent::WsConnected { has_token: false })
+            .await?;
     }
 
-    if fallback_to_ipc {
-        // Only transition if not already Unbound (ws_client may have set it on AUTH_REJECTED)
-        if state_machine.current().await != state::AgentState::Unbound {
-            state_machine
-                .transition(state::StateEvent::WsConnected { has_token: false })
-                .await?;
-        }
+    // ── 12. 等待关闭信号 ──
+    tracing::info!(
+        "Agent 就绪: IPC={}, WSS={}",
+        cfg.ipc_socket_path.display(),
+        if has_token { "enabled" } else { "disabled (no token)" }
+    );
+    tracing::info!("使用以下方式绑定:");
+    tracing::info!("  1. 运行 'kn-agent bind' 开始绑定流程");
+    tracing::info!("  2. 在 iOS App 中扫描二维码");
+    tracing::info!("  3. 通过 IPC 发送 bind 请求");
 
-        tracing::info!("IPC 服务器已启动: {}", cfg.ipc_socket_path.display());
-        tracing::info!("使用以下方式绑定:");
-        tracing::info!("  1. 运行 'kn-agent bind' 开始绑定流程");
-        tracing::info!("  2. 在 iOS App 中扫描显示的二维码");
-        tracing::info!("  3. 通过 IPC 发送 bind 请求: echo '{{\"id\":\"1\",\"method\":\"bind\",\"params\":{{}}}}' | nc -U {}", cfg.ipc_socket_path.display());
+    shutdown.cancelled().await;
 
-        // Create session manager for IPC
-        let store = Box::new(session::MemorySessionStore::new());
-        let sessions = Arc::new(session::SessionManager::new(store));
-        let input_merger = Arc::new(session::InputMerger::new());
-
-        // Start IPC server
-        let ipc = ipc::IpcServer::new(
-            cfg.ipc_socket_path.clone(),
-            state_machine.clone(),
-            sessions,
-            cfg.cloud_http_url.clone(),
-            cfg.machine_id.clone(),
-            cfg.hostname.clone(),
-            cfg.purchase_url.clone(),
-            input_merger,
-        );
-        let ipc_shutdown = shutdown.clone();
-        let ipc_run_shutdown = shutdown.clone();
-
-        tokio::select! {
-            _ = ipc_shutdown.cancelled() => {
-                tracing::info!("IPC 服务器收到关闭信号");
-            }
-            result = tokio::spawn(async move {
-                if let Err(e) = ipc.run(ipc_run_shutdown).await {
-                    tracing::error!("IPC 服务器错误: {}", e);
-                }
-            }) => {
-                match result {
-                    Ok(()) => tracing::info!("IPC 服务器正常退出"),
-                    Err(e) => tracing::error!("IPC 任务 panic: {}", e),
-                }
-            }
-        }
-    }
-
-    // ── 9. 优雅关闭 ──
+    // ── 13. 优雅关闭 ──
     state_machine
         .transition(state::StateEvent::Stop)
         .await?;
