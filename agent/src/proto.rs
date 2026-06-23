@@ -7,8 +7,8 @@
 //! 信封: {"type": "...", "ts": <epoch_ms>, "sessionId"?: "s_nanoid", "data": {...}}
 //! ```
 //!
-//! ## Agent 出站 (agent → cloud) — 6 种，对齐 Java ALLOWED_MESSAGES:
-//! - ping, session_created, session_ended, output, profile_list, session_interrupted
+//! ## Agent 出站 (agent → cloud) — 7 种，对齐 Java ALLOWED_MESSAGES:
+//! - ping, session_created, session_ended, output, profile_list, project_list, session_interrupted
 //!
 //! ## Agent 入站 (cloud → agent):
 //! - 心跳: pong
@@ -245,6 +245,17 @@ impl WsMessageBuilder {
         .to_string()
     }
 
+    /// 上报项目列表。
+    pub fn project_list(projects: &[ProjectInfoOut]) -> String {
+        serde_json::json!({
+            "type": "project_list",
+            "data": {
+                "projects": projects
+            }
+        })
+        .to_string()
+    }
+
     /// 上报崩溃恢复——中断的会话列表。
     pub fn sessions_interrupted(sessions: &[InterruptedSession]) -> String {
         serde_json::json!({
@@ -286,6 +297,29 @@ impl From<&kn_common::profile::ProfileSummary> for ProfileInfo {
             name: p.name.clone(),
             tool: p.cli_type.clone(),
             description: p.desc.clone(),
+        }
+    }
+}
+
+/// 项目信息（上报给云端）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInfoOut {
+    pub name: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl From<&kn_common::project::ProjectInfo> for ProjectInfoOut {
+    fn from(p: &kn_common::project::ProjectInfo) -> Self {
+        Self {
+            name: p.name.clone(),
+            path: p.path.clone(),
+            default_profile: p.default_profile.clone(),
+            description: p.description.clone(),
         }
     }
 }

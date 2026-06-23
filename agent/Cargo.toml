@@ -35,6 +35,7 @@ libc.workspace = true
 url = "2"
 rand.workspace = true
 portable-pty.workspace = true
+notify = "6"
 
 [profile.release]
 strip = true

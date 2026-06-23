@@ -5,4 +5,5 @@ pub mod error;
 pub mod fingerprint;
 pub mod path;
 pub mod profile;
+pub mod project;
 pub mod pty_trait;
