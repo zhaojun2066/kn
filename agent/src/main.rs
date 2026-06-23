@@ -216,6 +216,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     // ── 11. 有 token 时，并行运行 WSS 连接 ──
+    let _project_watcher;
     if has_token {
         let t = token.unwrap();
         state_machine
@@ -311,11 +312,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
             }
         });
+
+        // 启动 projects.json 文件监听，变化时自动重新上报
+        _project_watcher = start_project_watcher(outgoing_tx_ref.clone());
     } else {
         // 无 token：直接进入 Unbound 状态，等待桌面应用通过 IPC 发起绑定
         state_machine
             .transition(state::StateEvent::WsConnected { has_token: false })
             .await?;
+        _project_watcher = None;
     }
 
     // ── 12. 等待关闭信号 ──
@@ -370,6 +375,9 @@ async fn handle_incoming(
                     let _ = tx.send(msg);
                 }
             }
+
+            // 上报 project 列表
+            send_project_list(&outgoing).await;
 
             // 崩溃恢复：加载 checkpoint → 上报中断会话 → 清理
             let interrupted = session::load_checkpoints();
