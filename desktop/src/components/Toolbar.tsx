@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   Sun, Moon, Monitor, HelpCircle, RotateCw, ChevronDown, Settings, Keyboard,
   PanelLeft, PanelBottom, PanelRight, Circle, Info, Palette, Check, Terminal, Search, History,
-  Copy, Container, Puzzle,
+  Copy, Container, Puzzle, Radio,
 } from "lucide-react";
 import { formatShortcut } from "../utils/shortcut";
 import { Button } from "./common/Button";
@@ -30,6 +30,10 @@ interface ToolbarProps {
   activeProject?: ProjectInfo | null;
   onOpenProfiles?: () => void;
   onOpenResources?: () => void;
+  /** Agent remote control */
+  onToggleAgent?: () => void;
+  agentPanelOpen?: boolean;
+  agentStatusIcon?: string;
 }
 
 const themeIcons: Record<ThemeMode, React.ReactNode> = {
@@ -89,6 +93,9 @@ export function Toolbar({
   activeProject,
   onOpenProfiles,
   onOpenResources,
+  onToggleAgent,
+  agentPanelOpen,
+  agentStatusIcon,
 }: ToolbarProps) {
   const { mode, colorScheme, setColorScheme, setTheme } = useTheme();
   const cycleTheme = () => setTheme(themeNext[mode]);
@@ -193,6 +200,22 @@ export function Toolbar({
           <PanelRight size={14} aria-hidden="true" />
         </button>
       </div>
+
+      {/* Agent status — remote control indicator */}
+      {onToggleAgent && (
+        <div className="relative group">
+          <button
+            onClick={onToggleAgent}
+            aria-label="Agent 状态"
+            className={`p-1 transition-colors duration-fast rounded ${
+              agentPanelOpen ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"
+            }`}
+            title={`Agent 状态${agentStatusIcon ? ` (${agentStatusIcon})` : ""}`}
+          >
+            <Radio size={14} aria-hidden="true" />
+          </button>
+        </div>
+      )}
 
       {/* ══ Env Health Indicator — click-to-toggle diagnostic panel ══ */}
       {envCheck && (

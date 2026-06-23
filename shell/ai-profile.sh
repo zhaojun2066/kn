@@ -330,7 +330,54 @@ _ai_help() {
 }
 
 # ── Main ai() function ──
-ai() {
+# ── Agent IPC routing ──
+# Try to create session via kn-agent IPC. Returns 0 if agent accepted the request.
+_ai_agent_launch() {
+    local tool="$1"
+    local profile="$2"
+    local cwd="${3:-$(pwd)}"
+    local ipc_sock="$KN_DIR/agent/ipc.sock"
+
+    [ -S "$ipc_sock" ] || return 1
+
+    # 0. 状态检查 — 只在 agent 已连接 cloud 时接管终端
+    local state
+    state=$(echo '{"id":"0","method":"status"}' | \
+        socat - UNIX-CONNECT:"$ipc_sock" 2>/dev/null | \
+        sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+    case "$state" in
+        connected|idle|running) ;;
+        *) return 1 ;;
+    esac
+
+    # 1. 创建 session
+    local resp nid
+    resp=$(echo "{\"id\":\"1\",\"method\":\"new_session\",\"params\":{\"tool\":\"$tool\",\"profile\":\"$profile\",\"cwd\":\"$cwd\"}}" | \
+        socat - UNIX-CONNECT:"$ipc_sock" 2>/dev/null)
+    nid=$(echo "$resp" | sed -n 's/.*"nid":"\([^"]*\)".*/\1/p')
+    [ -z "$nid" ] && return 1
+    echo "[kn] Session created: $nid" >&2
+
+    # 2. attach — 获取 pty.sock 路径
+    local pty_sock
+    pty_sock=$(echo "{\"id\":\"2\",\"method\":\"attach\",\"params\":{\"nid\":\"$nid\"}}" | \
+        socat - UNIX-CONNECT:"$ipc_sock" 2>/dev/null | \
+        sed -n 's/.*"pty_sock":"\([^"]*\)".*/\1/p')
+    [ -z "$pty_sock" ] && { echo "[kn] attach failed" >&2; return 1; }
+    echo "[kn] PTY proxy: $pty_sock" >&2
+
+    # 3. Ctrl+D / exit 时自动清理
+    trap "echo '{\"id\":\"9\",\"method\":\"kill_session\",\"params\":{\"nid\":\"$nid\"}}' | \
+        socat - UNIX-CONNECT:\"$ipc_sock\" 2>/dev/null" EXIT
+
+    # 4. 桥接本地终端 ↔ agent PTY（raw 模式，零磁盘 I/O）
+    socat -,raw,echo=0 UNIX-CONNECT:"$pty_sock"
+
+    return 0
+}
+
+# ── Direct launch (original logic) ──
+_ai_direct() {
     local cmd="${1:-}"
     if [ -z "$cmd" ]; then
         echo "Usage: ai <tool> [profile] [args...]"
@@ -414,6 +461,37 @@ ai() {
             echo "Unknown command: $cmd" >&2
             echo "Supported: claude, codex, qoderclicn, profile" >&2
             return 1
+            ;;
+    esac
+}
+
+# ── ai() — Agent routing wrapper ──
+ai() {
+    local cmd="${1:-}"
+    case "$cmd" in
+        claude|codex|qoderclicn)
+            local tool="$1"
+            local profile="${2:-}"
+            if [ -n "$profile" ]; then
+                local env_check
+                env_check=$(_profile_env "$profile" 2>/dev/null)
+                if [ -n "$env_check" ]; then
+                    shift 2
+                else
+                    profile=""
+                fi
+            else
+                local def
+                def=$(_default_profile 2>/dev/null)
+                profile="${def:-}"
+            fi
+            if _ai_agent_launch "$tool" "$profile" "$(pwd)"; then
+                return 0
+            fi
+            _ai_direct "$cmd" "${@:2}"
+            ;;
+        *)
+            _ai_direct "$@"
             ;;
     esac
 }

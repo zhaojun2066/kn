@@ -1,0 +1,79 @@
+[workspace]
+members = [
+    "common",
+    "agent",
+    "desktop/src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Error handling
+thiserror = "2"
+
+# Async runtime (agent only)
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+
+# WebSocket (agent only)
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+http = "1"
+tungstenite = "0.24"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false }
+
+# Logging (agent only)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# Cryptography
+aes-gcm = "0.10"
+rand = "0.8"
+security-framework = "2"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"
+hostname = "0.4"
+nanoid = "0.4"
+uuid = { version = "1", features = ["v4"] }
+
+# Cross-process file locking
+fs2 = "0.4"
+
+# PTY
+portable-pty = "0.8"
+
+# CLI argument parsing (agent only)
+clap = { version = "4", features = ["derive"] }
+
+# System info (agent only)
+sysinfo = "0.31"
+
+# Tauri (desktop only)
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-updater = "2"
+tauri-build = { version = "2", features = [] }
+
+# Misc
+libc = "0.2"
+tempfile = "3"
+toml = "0.8"
+toml_edit = "0.22"
+regex-lite = "0.1.9"

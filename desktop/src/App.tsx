@@ -3,6 +3,9 @@ import { useResizeHandle } from "./hooks/useResizeHandle";
 import { Toolbar } from "./components/Toolbar";
 import { MainPanel, ProjectGuide } from "./components/MainPanel";
 import { TerminalPanel } from "./components/TerminalPanel";
+import { AgentPanel } from "./components/AgentPanel";
+import { BindDialog } from "./components/BindDialog";
+import { RedeemDialog } from "./components/RedeemDialog";
 import { ProfileDialog } from "./components/ProfileDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { NameDialog } from "./components/NameDialog";
@@ -39,6 +42,7 @@ import { useProfiles } from "./hooks/useProfiles";
 import { useTerminal } from "./hooks/useTerminal";
 import { useToasts } from "./hooks/useToasts";
 import { useUsage } from "./hooks/useUsage";
+import { useAgent } from "./hooks/useAgent";
 import { useTheme } from "./hooks/useTheme";
 import { useProjects } from "./hooks/useProjects";
 import { useProjectContext } from "./hooks/useProjectContext";
@@ -99,6 +103,23 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
+  const [showAgentPanel, setShowAgentPanel] = useState(false);
+  const [showBindDialog, setShowBindDialog] = useState(false);
+  const [showRedeemDialog, setShowRedeemDialog] = useState(false);
+  const agentHook = useAgent();
+  const { clearTokenRevoked } = agentHook;
+  const handleCloseBindDialog = useCallback(() => {
+    setShowBindDialog(false);
+    clearTokenRevoked();
+  }, [clearTokenRevoked]);
+  const handleCloseRedeemDialog = useCallback(() => setShowRedeemDialog(false), []);
+
+  // Auto-open BindDialog when token is revoked by the server
+  useEffect(() => {
+    if (agentHook.tokenRevoked) {
+      setShowBindDialog(true);
+    }
+  }, [agentHook.tokenRevoked]);
   const [activeActivity, setActiveActivity] = useState<ActivityKey>("projects");
   const [skillData, setSkillData] = useState<ResourceScanData | null>(null);
   const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
@@ -1926,6 +1947,9 @@ export function App() {
         activeProject={activeProject}
         onOpenProfiles={() => setProfileDrawerOpen(true)}
         onOpenResources={() => setResourceDrawerOpen(true)}
+        onToggleAgent={() => setShowAgentPanel((v) => !v)}
+        agentPanelOpen={showAgentPanel}
+        agentStatusIcon={agentHook.statusIcon}
       />
 
       {/* Main content — ActivityBar | Sidebar/ResourceList | (MainPanel + BottomTerminal) | RightTerminal */}
@@ -2291,6 +2315,23 @@ export function App() {
       />
 
       <UsagePanel open={showUsage} onClose={() => setShowUsage(false)} />
+
+      {showAgentPanel && (
+        <AgentPanel
+          onClose={() => setShowAgentPanel(false)}
+          onBind={() => {
+            setShowAgentPanel(false);
+            setShowBindDialog(true);
+          }}
+          onRedeem={() => {
+            setShowAgentPanel(false);
+            setShowRedeemDialog(true);
+          }}
+          agent={agentHook}
+        />
+      )}
+      {showBindDialog && <BindDialog onClose={handleCloseBindDialog} agent={agentHook} />}
+      {showRedeemDialog && <RedeemDialog onClose={handleCloseRedeemDialog} agent={agentHook} />}
 
       <AboutDialog open={showAbout} onClose={() => setShowAbout(false)} />
 

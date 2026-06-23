@@ -47,7 +47,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "update.json"
+      "update.json",
+      "resources/kn-agent"
     ]
   }
 }

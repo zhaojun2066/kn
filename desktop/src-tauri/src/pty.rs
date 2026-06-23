@@ -1,3 +1,4 @@
+use kn_common::pty_trait::{PtyOutputSink, SharedChild, SharedWriter};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -14,14 +15,6 @@ pub enum PtyEvent {
     Error(String),
 }
 
-/// Thread-safe writer handle so `write_pty` can lock it independently
-/// without holding the global PtyState lock during I/O.
-pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
-
-/// Shared child process handle so `kill_pty` can terminate the process
-/// even if the reader thread is blocked on I/O.
-pub type SharedChild = Arc<Mutex<Option<Box<dyn portable_pty::Child + Send>>>>;
-
 pub struct PtyHandle {
     pub writer: SharedWriter,
     pub child: SharedChild,
@@ -32,7 +25,7 @@ pub struct PtyState {
     pub handles: HashMap<String, PtyHandle>,
 }
 
-fn drain_utf8_stream(buf: &mut Vec<u8>, on_event: &Channel<PtyEvent>) -> bool {
+fn drain_utf8_stream(buf: &mut Vec<u8>, sink: &impl PtyOutputSink) -> bool {
     loop {
         if buf.is_empty() {
             return true;
@@ -40,7 +33,7 @@ fn drain_utf8_stream(buf: &mut Vec<u8>, on_event: &Channel<PtyEvent>) -> bool {
 
         match std::str::from_utf8(buf) {
             Ok(s) => {
-                if !s.is_empty() && on_event.send(PtyEvent::Data(s.to_string())).is_err() {
+                if !s.is_empty() && sink.send(s.as_bytes()).is_err() {
                     return false;
                 }
                 buf.clear();
@@ -51,11 +44,7 @@ fn drain_utf8_stream(buf: &mut Vec<u8>, on_event: &Channel<PtyEvent>) -> bool {
 
                 if valid_up_to > 0 {
                     let valid = &buf[..valid_up_to];
-                    let valid_str = unsafe { std::str::from_utf8_unchecked(valid) };
-                    if on_event
-                        .send(PtyEvent::Data(valid_str.to_string()))
-                        .is_err()
-                    {
+                    if sink.send(valid).is_err() {
                         return false;
                     }
                 }
@@ -63,9 +52,7 @@ fn drain_utf8_stream(buf: &mut Vec<u8>, on_event: &Channel<PtyEvent>) -> bool {
                 match err.error_len() {
                     Some(len) => {
                         let invalid_end = valid_up_to + len;
-                        let invalid =
-                            String::from_utf8_lossy(&buf[valid_up_to..invalid_end]).to_string();
-                        if !invalid.is_empty() && on_event.send(PtyEvent::Data(invalid)).is_err() {
+                        if sink.send(&buf[valid_up_to..invalid_end]).is_err() {
                             return false;
                         }
                         buf.drain(..invalid_end);
@@ -77,6 +64,41 @@ fn drain_utf8_stream(buf: &mut Vec<u8>, on_event: &Channel<PtyEvent>) -> bool {
                 }
             }
         }
+    }
+}
+
+/// Tauri Channel 适配器 — 实现 PtyOutputSink，将 PTY 输出桥接到前端。
+struct ChannelSink {
+    channel: Channel<PtyEvent>,
+}
+
+impl PtyOutputSink for ChannelSink {
+    fn send(&self, data: &[u8]) -> Result<(), String> {
+        if let Ok(text) = std::str::from_utf8(data) {
+            self.channel
+                .send(PtyEvent::Data(text.to_string()))
+                .map_err(|e| e.to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn on_ready(&self) -> Result<(), String> {
+        self.channel
+            .send(PtyEvent::Ready)
+            .map_err(|e| e.to_string())
+    }
+
+    fn on_exit(&self, code: i32) -> Result<(), String> {
+        self.channel
+            .send(PtyEvent::Exit(code))
+            .map_err(|e| e.to_string())
+    }
+
+    fn on_error(&self, msg: &str) -> Result<(), String> {
+        self.channel
+            .send(PtyEvent::Error(msg.to_string()))
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -190,12 +212,18 @@ pub fn start_pty(
         );
     }
 
-    let _ = on_event.send(PtyEvent::Ready);
+    let sink = ChannelSink {
+        channel: on_event.clone(),
+    };
+    let _ = sink.on_ready();
 
     // Spawn reader thread with its own clone of the shared child handle.
     let reader_child = shared_child;
     let reader_state = state.inner().clone();
     let reader_session_id = session_id.clone();
+    let reader_sink = ChannelSink {
+        channel: on_event.clone(),
+    };
     std::thread::spawn(move || {
         let mut buf = [0u8; 16384];
         let mut utf8_pending: Vec<u8> = Vec::new();
@@ -203,27 +231,21 @@ pub fn start_pty(
             match reader.read(&mut buf) {
                 Ok(0) => {
                     if !utf8_pending.is_empty() {
-                        let pending = String::from_utf8_lossy(&utf8_pending).to_string();
-                        if !pending.is_empty() {
-                            let _ = on_event.send(PtyEvent::Data(pending));
-                        }
+                        let _ = reader_sink.send(&utf8_pending);
                     }
                     break;
                 }
                 Ok(n) => {
                     utf8_pending.extend_from_slice(&buf[..n]);
-                    if !drain_utf8_stream(&mut utf8_pending, &on_event) {
+                    if !drain_utf8_stream(&mut utf8_pending, &reader_sink) {
                         break;
                     }
                 }
                 Err(e) => {
                     if !utf8_pending.is_empty() {
-                        let pending = String::from_utf8_lossy(&utf8_pending).to_string();
-                        if !pending.is_empty() {
-                            let _ = on_event.send(PtyEvent::Data(pending));
-                        }
+                        let _ = reader_sink.send(&utf8_pending);
                     }
-                    let _ = on_event.send(PtyEvent::Error(e.to_string()));
+                    let _ = reader_sink.on_error(&e.to_string());
                     break;
                 }
             }
@@ -241,7 +263,7 @@ pub fn start_pty(
             1
         };
 
-        let _ = on_event.send(PtyEvent::Exit(exit_code));
+        let _ = reader_sink.on_exit(exit_code);
 
         if let Ok(mut handles) = reader_state.lock() {
             handles.handles.remove(&reader_session_id);

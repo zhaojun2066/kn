@@ -1,17 +1,11 @@
 use crate::profile_cmd;
-use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tauri::command;
 use tauri::Emitter;
 
 // ── Config backup paths ────────────────────────────────────
 fn config_dir() -> std::path::PathBuf {
-    for var in &["KN_HOME", "CLAUDE_PROFILES_HOME"] {
-        if let Ok(dir) = std::env::var(var) {
-            return std::path::PathBuf::from(dir);
-        }
-    }
-    crate::config_dir()
+    kn_common::path::config_dir()
 }
 fn config_file() -> std::path::PathBuf {
     config_dir().join("config.yaml")
@@ -465,7 +459,7 @@ pub struct ScanProfile {
 }
 
 pub(crate) fn home_dir() -> std::path::PathBuf {
-    crate::home_dir()
+    kn_common::path::home_dir()
 }
 
 /// Returns the user's home directory as a string, for use by the frontend
@@ -638,47 +632,7 @@ pub fn get_app_version(app: tauri::AppHandle) -> String {
 
 /// Find a system binary across common macOS paths
 pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
-    for name in names {
-        // Try full paths first
-        let paths: Vec<String> = vec![
-            format!("/usr/bin/{}", name),
-            format!("/opt/homebrew/bin/{}", name),
-            format!("/usr/local/bin/{}", name),
-        ];
-        for p in &paths {
-            if std::path::Path::new(p).exists() {
-                return Some(p.clone());
-            }
-        }
-    }
-    // Fallback: check login-shell PATH (catches ~/.local/bin, Homebrew, etc.)
-    for name in names {
-        if let Some(path) = resolve_from_shell_path(name) {
-            return Some(path);
-        }
-    }
-    // Final fallback: bare command name (relies on system PATH)
-    names.first().map(|n| n.to_string())
-}
-
-/// Resolve a binary name via login-shell PATH lookup.
-/// Tauri GUI apps have a minimal PATH; the login shell has the user's full PATH.
-fn resolve_from_shell_path(name: &str) -> Option<String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let cmd = format!(
-        "command -v {} 2>/dev/null || (type {} 2>/dev/null | grep -v 'not found')",
-        name, name
-    );
-    let output = std::process::Command::new(&shell)
-        .args(["-lc", &cmd])
-        .output()
-        .ok()?;
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() || path.contains("not found") {
-        None
-    } else {
-        Some(path)
-    }
+    kn_common::path::find_binary(names)
 }
 
 #[tauri::command]
@@ -765,11 +719,7 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
 
 #[tauri::command]
 pub fn verify_sha256(path: String, expected: String) -> Result<bool, String> {
-    let mut file = std::fs::File::open(&path).map_err(|e| format!("无法打开文件: {}", e))?;
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(|e| format!("读取文件失败: {}", e))?;
-    let actual = format!("{:x}", hasher.finalize());
-    Ok(actual == expected.to_lowercase())
+    kn_common::path::verify_sha256(std::path::Path::new(&path), &expected)
 }
 
 #[tauri::command]

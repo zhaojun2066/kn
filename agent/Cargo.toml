@@ -1,0 +1,45 @@
+[package]
+name = "kn-agent"
+version.workspace = true
+edition.workspace = true
+description = "kn-agent — PTY 多路复用守护进程，支持 iOS 远程控制 AI CLI 工具"
+
+[[bin]]
+name = "kn-agent"
+path = "src/main.rs"
+
+[dependencies]
+kn-common = { path = "../common" }
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+http.workspace = true
+tungstenite.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+hostname.workspace = true
+hex.workspace = true
+clap.workspace = true
+sysinfo.workspace = true
+nanoid.workspace = true
+uuid.workspace = true
+async-trait = "0.1"
+libc.workspace = true
+url = "2"
+rand.workspace = true
+portable-pty.workspace = true
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+
+[lints.rust]
+warnings = "deny"

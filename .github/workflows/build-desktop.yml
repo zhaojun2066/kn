@@ -100,9 +100,55 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      - name: Build kn-agent
+        run: |
+          cargo build --release --bin kn-agent
+          mkdir -p desktop/src-tauri/resources
+          cp target/release/kn-agent desktop/src-tauri/resources/kn-agent
+          chmod +x desktop/src-tauri/resources/kn-agent
+          echo "✅ kn-agent copied to desktop/src-tauri/resources/"
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'temporary-keychain-password' }}
+        run: |
+          CERTIFICATE_PATH=$(mktemp -d)/certificate.p12
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import "$CERTIFICATE_PATH" -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/pkgbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          echo "✅ Certificate imported"
+
       - name: Build Tauri
         working-directory: desktop
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx tauri build --target ${{ matrix.target }}
+
+      - name: Notarize .dmg
+        env:
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          DMG=$(find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -name "*.dmg" | head -1)
+          if [ -f "$DMG" ]; then
+            echo "Notarizing: $DMG"
+            xcrun notarytool submit "$DMG" \
+              --key <(echo "$APPLE_NOTARY_KEY") \
+              --key-id "$APPLE_NOTARY_KEY_ID" \
+              --issuer "$APPLE_NOTARY_ISSUER_ID" \
+              --wait
+            xcrun stapler staple "$DMG"
+            echo "✅ Notarized and stapled: $DMG"
+          else
+            echo "⚠️  No .dmg found, skipping notarization"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

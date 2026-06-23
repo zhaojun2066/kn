@@ -1,32 +1,33 @@
 [package]
 name = "kn"
-version = "0.0.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "kn — AI 开发工作台"
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-shell = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
-tauri-plugin-updater = "2"
-portable-pty = "0.8"
-fs2 = "0.4"
-libc = "0.2"
-sha2 = "0.10"
-tempfile = "3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-base64 = "0.22"
-serde_yaml = "0.9"
-reqwest = { version = "0.12", features = ["blocking"] }
-toml = "0.8"
-toml_edit = "0.22"
-chrono = { version = "0.4", features = ["serde"] }
-regex-lite = "0.1.9"
+kn-common = { path = "../../common" }
+tauri.workspace = true
+tauri-plugin-shell.workspace = true
+tauri-plugin-dialog.workspace = true
+tauri-plugin-fs.workspace = true
+tauri-plugin-updater.workspace = true
+portable-pty.workspace = true
+fs2.workspace = true
+libc.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+serde_yaml.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+toml.workspace = true
+toml_edit.workspace = true
+chrono.workspace = true
+regex-lite.workspace = true
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build.workspace = true
 
 [profile.release]
 strip = true
