@@ -89,6 +89,7 @@ pub async fn run_ws_loop(
             outgoing_rx,
             &incoming_tx,
             &shutdown,
+            state.clone(),
         )
         .await
         {
@@ -142,21 +143,20 @@ async fn connect_and_run(
     outgoing_rx: mpsc::UnboundedReceiver<String>,
     incoming_tx: &mpsc::UnboundedSender<AgentIncoming>,
     shutdown: &CancellationToken,
+    state: Arc<StateMachine>,
 ) -> Result<()> {
-    let _url = url::Url::parse(cloud_url)
+    let uri: http::Uri = cloud_url
+        .parse()
         .map_err(|e| AgentError::Ws(format!("无效的云端 URL: {}", e)))?;
 
-    let request = http::Request::builder()
-        .uri(cloud_url)
-        .header("Authorization", format!("Bearer {}", device_token))
-        .header("X-KN-Role", "kn-agent")
-        .header("X-KN-Machine-Id", machine_id)
-        .header("X-KN-Agent-Version", agent_version)
-        .header("X-KN-OS-Version", os_version)
-        .header("X-KN-Hostname", hostname)
-        .header("X-KN-Protocol-Version", "1")
-        .body(())
-        .map_err(|e| AgentError::Ws(format!("构建 WSS 请求失败: {}", e)))?;
+    let request = tokio_tungstenite::tungstenite::client::ClientRequestBuilder::new(uri)
+        .with_header("Authorization", format!("Bearer {}", device_token))
+        .with_header("X-KN-Role", "kn-agent")
+        .with_header("X-KN-Machine-Id", machine_id)
+        .with_header("X-KN-Agent-Version", agent_version)
+        .with_header("X-KN-OS-Version", os_version)
+        .with_header("X-KN-Hostname", hostname)
+        .with_header("X-KN-Protocol-Version", "1");
 
     tracing::info!("正在连接 {} ...", cloud_url);
 
@@ -182,6 +182,13 @@ async fn connect_and_run(
     }
 
     tracing::info!("WSS 已连接");
+
+    // 重连成功后切回 Connected 状态（解决重连后前端一直显示"重新连接中"）
+    if state.current().await == AgentState::Reconnecting {
+        let _ = state
+            .transition(StateEvent::WsConnected { has_token: true })
+            .await;
+    }
 
     let (mut write, mut read) = ws_stream.split();
 
@@ -224,9 +231,22 @@ async fn connect_and_run(
                                 }
                             }
                         }
-                        Some(Ok(Message::Close(_))) => {
-                            tracing::info!("WSS 收到关闭帧");
-                            *read_error_clone.lock().await = Some("server closed connection".into());
+                        Some(Ok(Message::Close(frame))) => {
+                            // 检查关闭码：4003/4001 表示服务端拒绝了认证
+                            // tungstenite 0.24 CloseCode 不含 Other 变体，需要转为 u16 比较
+                            let code: Option<u16> = frame.as_ref().map(|f| f.code.into());
+                            let reason = frame.as_ref().map(|f| f.reason.as_ref()).unwrap_or("");
+                            tracing::info!(code = ?code, reason = reason, "WSS 收到关闭帧");
+                            match code {
+                                Some(4003) | Some(4001) => {
+                                    *read_error_clone.lock().await =
+                                        Some("AUTH_REJECTED: 服务端关闭连接，关闭码 4003/4001".into());
+                                }
+                                _ => {
+                                    *read_error_clone.lock().await =
+                                        Some(format!("server closed connection (code={code:?})"));
+                                }
+                            }
                             break;
                         }
                         Some(Err(e)) => {

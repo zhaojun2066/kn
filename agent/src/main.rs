@@ -63,8 +63,8 @@ async fn send_project_list(
     let msg = proto::WsMessageBuilder::project_list(&info);
     if let Some(tx) = outgoing.lock().await.as_ref() {
         let _ = tx.send(msg);
+        tracing::info!(count = info.len(), "已上报项目列表");
     }
-    tracing::info!(count = info.len(), "已上报项目列表");
 }
 
 /// 启动 projects.json 文件监听，变化时自动重新上报。
