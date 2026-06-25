@@ -5,7 +5,7 @@
 
 use crate::error::{AgentError, Result};
 use crate::proto::WsMessageBuilder;
-use crate::state::{AgentState, StateMachine};
+use crate::state::StateMachine;
 use chrono::{DateTime, Utc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use portable_pty::PtySystem;
@@ -34,8 +34,6 @@ pub enum SessionStatus {
 pub struct ManagedSession {
     /// 会话 nanoid（s_ + 12 字符），wire 标识符
     pub nid: String,
-    /// 云端 DB 会话 ID（收到 start_session 后设置）
-    pub db_id: Option<i64>,
     /// CLI 工具类型
     pub tool: String,
     /// Profile 名称
@@ -96,7 +94,6 @@ impl ManagedSession {
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub nid: String,
-    pub db_id: Option<i64>,
     pub tool: String,
     pub profile: Option<String>,
     pub cwd: String,
@@ -136,7 +133,6 @@ pub trait SessionStore: Send + Sync {
     /// 按 nanoid 查找会话。
     async fn get(&self, nid: &str) -> Result<Option<ManagedSession>>;
     /// 按 DB ID 查找会话。
-    async fn get_by_db_id(&self, db_id: i64) -> Result<Option<ManagedSession>>;
     /// 列出所有会话摘要。
     async fn list(&self) -> Result<Vec<SessionSummary>>;
     /// 活跃会话数量（非 Ended 状态）。
@@ -150,15 +146,12 @@ pub trait SessionStore: Send + Sync {
 /// Phase 1 内存存储实现。
 pub struct MemorySessionStore {
     sessions: RwLock<HashMap<String, ManagedSession>>,
-    /// db_id → nid 索引，用于按 DB ID 快速查找
-    db_index: RwLock<HashMap<i64, String>>,
 }
 
 impl MemorySessionStore {
     pub fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
-            db_index: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -167,36 +160,18 @@ impl MemorySessionStore {
 impl SessionStore for MemorySessionStore {
     async fn insert(&self, session: ManagedSession) -> Result<()> {
         let nid = session.nid.clone();
-        let db_id = session.db_id;
 
-        // 先写 sessions，再写 db_index（保证引用目标先于索引存在）
         self.sessions.write().await.insert(nid.clone(), session);
-        if let Some(id) = db_id {
-            self.db_index.write().await.insert(id, nid);
-        }
         Ok(())
     }
 
     async fn remove(&self, nid: &str) -> Result<Option<ManagedSession>> {
         let session = self.sessions.write().await.remove(nid);
-        if let Some(ref s) = session {
-            if let Some(id) = s.db_id {
-                self.db_index.write().await.remove(&id);
-            }
-        }
         Ok(session)
     }
 
     async fn get(&self, nid: &str) -> Result<Option<ManagedSession>> {
         Ok(self.sessions.read().await.get(nid).cloned())
-    }
-
-    async fn get_by_db_id(&self, db_id: i64) -> Result<Option<ManagedSession>> {
-        let nid = self.db_index.read().await.get(&db_id).cloned();
-        match nid {
-            Some(nid) => self.get(&nid).await,
-            None => Ok(None),
-        }
     }
 
     async fn list(&self) -> Result<Vec<SessionSummary>> {
@@ -205,7 +180,7 @@ impl SessionStore for MemorySessionStore {
             .values()
             .map(|s| SessionSummary {
                 nid: s.nid.clone(),
-                db_id: s.db_id,
+                
                 tool: s.tool.clone(),
                 profile: s.profile.clone(),
                 cwd: s.cwd.clone(),
@@ -314,7 +289,7 @@ pub struct OutputFanout {
 struct OutputFanoutInner {
     wss_tx: Option<mpsc::UnboundedSender<String>>,
     ipc_tx: Option<mpsc::UnboundedSender<String>>,
-    db_session_id: i64,
+    session_nid: String,
     buffer: std::sync::Mutex<Vec<u8>>,
     /// 额外的 output subscriber（供 attach_pty 注册）
     extra_subscribers: std::sync::Mutex<Vec<mpsc::UnboundedSender<Vec<u8>>>>,
@@ -324,9 +299,9 @@ impl OutputFanout {
     /// 创建 OutputFanout 并启动 100ms 定时 flush 任务。
     /// `cancel` 用于停止定时器（session 结束时触发）。
     ///
-    /// `db_session_id` 是云端 DB 主键，对齐 Java `handleOutput` 中预期的 Long 类型。
+    /// `session_nid` 是云端 DB 主键，对齐新协议 `to_session_id` 类型。
     pub fn new(
-        db_session_id: i64,
+        session_nid: String,
         wss: Option<mpsc::UnboundedSender<String>>,
         ipc: Option<mpsc::UnboundedSender<String>>,
         cancel: tokio_util::sync::CancellationToken,
@@ -334,7 +309,7 @@ impl OutputFanout {
         let inner = Arc::new(OutputFanoutInner {
             wss_tx: wss,
             ipc_tx: ipc,
-            db_session_id,
+            session_nid,
             buffer: std::sync::Mutex::new(Vec::new()),
             extra_subscribers: std::sync::Mutex::new(Vec::new()),
         });
@@ -358,13 +333,13 @@ impl OutputFanout {
                         };
                         if !data.is_empty() {
                             let len = data.len();
-                            tracing::info!(len = len, db_id = inner_clone.db_session_id, "⏱️  [FLUSH] 100ms 定时器触发 flush");
+                            tracing::info!(len = len, nid = %inner_clone.session_nid, "⏱️  [FLUSH] 100ms 定时器触发 flush");
                             // Send to extra subscribers first (raw bytes, before data is moved)
                             for tx in &subscribers {
                                 let _ = tx.send(data.clone());
                             }
                             Self::flush_chunked(
-                                inner_clone.db_session_id,
+                                inner_clone.session_nid.clone(),
                                 data,
                                 inner_clone.wss_tx.clone(),
                                 inner_clone.ipc_tx.clone(),
@@ -407,15 +382,15 @@ impl OutputFanout {
             drop(buf); // 释放锁后再 flush
             let wss = self.inner.wss_tx.clone();
             let ipc = self.inner.ipc_tx.clone();
-            let db_id = self.inner.db_session_id;
-            tracing::info!(len = data.len(), db_id = db_id, "📟 [PTY-OUT] 达到 64KB 阈值, 立即 flush");
-            Self::flush_chunked(db_id, data, wss, ipc);
+            let nid = &self.inner.session_nid;
+            tracing::info!(len = data.len(), nid = %nid, "📟 [PTY-OUT] 达到 64KB 阈值, 立即 flush");
+            Self::flush_chunked(nid.clone(), data, wss, ipc);
         }
     }
 
     /// 将数据按 10KB 分块，分别发送到 WSS 和 IPC 通道。
     fn flush_chunked(
-        db_session_id: i64,
+        session_nid: String,
         data: Vec<u8>,
         wss_tx: Option<mpsc::UnboundedSender<String>>,
         ipc_tx: Option<mpsc::UnboundedSender<String>>,
@@ -425,7 +400,7 @@ impl OutputFanout {
         let chunks = data.chunks(CHUNK_SIZE).count();
         let preview = String::from_utf8_lossy(if data.len() <= 200 { &data } else { &data[..200] });
         tracing::info!(
-            db_id = db_session_id,
+            nid = %session_nid,
             total_len = total,
             chunks = chunks,
             preview = %preview.trim_end(),
@@ -434,7 +409,7 @@ impl OutputFanout {
         for (i, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
             let text = String::from_utf8_lossy(chunk);
             if let Some(ref tx) = wss_tx {
-                let msg = WsMessageBuilder::output(db_session_id, &text);
+                let msg = WsMessageBuilder::output(&session_nid, &text);
                 match tx.send(msg) {
                     Ok(_) => tracing::info!(chunk = i, len = chunk.len(), "📤 [FLUSH] chunk 已发送到 wss_tx"),
                     Err(e) => tracing::error!(chunk = i, error = %e, "📤 [FLUSH] chunk 发送到 wss_tx 失败"),
@@ -473,14 +448,14 @@ impl SessionManager {
     pub async fn create(
         &self,
         nid: String,
-        db_id: i64,
+        
         tool: String,
         profile: Option<String>,
         cwd: String,
     ) -> Result<ManagedSession> {
         let session = ManagedSession {
             nid: nid.clone(),
-            db_id: Some(db_id),
+            
             tool,
             profile,
             cwd,
@@ -494,7 +469,7 @@ impl SessionManager {
         };
 
         self.store.insert(session.clone()).await?;
-        tracing::info!(nid = %nid, db_id = %db_id, "会话已创建");
+        tracing::info!(nid = %nid, "会话已创建");
         Ok(session)
     }
 
@@ -561,14 +536,11 @@ impl SessionManager {
             return Ok(None);
         }
 
-        let db_id = match session.db_id {
-            Some(id) => id,
-            None => return Ok(None),
-        };
+        let nid = session.nid.clone();
 
         session.status = SessionStatus::Ended;
         self.store.insert(session).await?;
-        Ok(Some(WsMessageBuilder::session_ended(db_id, reason)))
+        Ok(Some(WsMessageBuilder::session_ended(&nid, reason)))
     }
 
     /// 存储 PTY writer + OutputFanout，供后续 `attach_pty` 使用。
@@ -662,11 +634,6 @@ impl SessionManager {
         self.store.get(nid).await
     }
 
-    /// 按 DB ID 获取会话。
-    pub async fn get_by_db_id(&self, db_id: i64) -> Result<Option<ManagedSession>> {
-        self.store.get_by_db_id(db_id).await
-    }
-
     /// 列出所有会话。
     pub async fn list(&self) -> Result<Vec<SessionSummary>> {
         self.store.list().await
@@ -681,6 +648,11 @@ impl SessionManager {
     pub async fn all_nids(&self) -> Result<Vec<String>> {
         let summaries = self.store.list().await?;
         Ok(summaries.into_iter().map(|s| s.nid).collect())
+    }
+
+    /// 获取会话的 CLI 子进程 PID（用于进程存活检测）。
+    pub async fn get_child_pid(&self, nid: &str) -> Option<u32> {
+        self.child_pids.lock().await.get(nid).copied()
     }
 
     /// 更新终端尺寸。
@@ -798,16 +770,8 @@ impl SessionManager {
             )));
 
         // 7. OutputFanout（带取消令牌，session 结束后停止定时器）
-        // 使用 DB session ID (Long) 对齐 Java handleOutput 期望的 to_session_id.asLong()
-        let db_id = self
-            .get(nid)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|s| s.db_id)
-            .unwrap_or(0);
         let fanout = OutputFanout::new(
-            db_id,
+            nid.to_string(),
             Some(wss_tx),
             Some(ipc_tx),
             session_cancel.clone(),
@@ -916,202 +880,33 @@ impl SessionManager {
         Ok(fanout)
     }
 
-    // ── Checkpoint ──────────────────────────────────────────
+    // ── Checkpoint (DEPRECATED: 由 CLI 心跳 + Redis 替代) ───
 
-    /// 原子写入 per-session checkpoint JSON 到
-    /// `~/.kn/agent/sessions/{nid}/checkpoint.json`。
-    pub async fn save_checkpoint(&self, nid: &str) -> std::result::Result<(), String> {
-        let session = self
-            .store
-            .get(nid)
-            .await
-            .map_err(|e| format!("{}", e))?
-            .ok_or_else(|| format!("session not found: {}", nid))?;
-
-        let status_str = match session.status {
-            SessionStatus::Created => "created",
-            SessionStatus::Running => "running",
-            SessionStatus::Ended => "ended",
-        };
-        let checkpoint = serde_json::json!({
-            "_format": 1,
-            "nid": session.nid,
-            "db_id": session.db_id,
-            "tool": session.tool,
-            "profile": session.profile,
-            "cwd": session.cwd,
-            "cols": session.cols,
-            "rows": session.rows,
-            "created_at": session.created_at.to_rfc3339(),
-            "status": status_str,
-            "last_input": session.last_input(),
-            "last_output_snippet": session.last_output_snippet(),
-        });
-
-        let path = checkpoint_path(nid);
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("create dir: {}", e))?;
-        }
-
-        let json =
-            serde_json::to_string_pretty(&checkpoint).map_err(|e| format!("serialize: {}", e))?;
-
-        // 原子写入: tmp → fsync → rename
-        let tmp = path.with_extension("tmp");
-        tokio::fs::write(&tmp, &json).await.map_err(|e| format!("write: {}", e))?;
-        // fsync (use tokio::fs::File for async)
-        if let Ok(f) = tokio::fs::File::open(&tmp).await {
-            let _ = f.sync_all().await;
-        }
-        tokio::fs::rename(&tmp, &path).await.map_err(|e| format!("rename: {}", e))?;
-
-        tracing::debug!(nid = %nid, "checkpoint 已保存");
+    /// @deprecated 由 cli_heartbeat 心跳 + Redis 替代。保留方法签名兼容旧调用。
+    #[deprecated(note = "use cli_heartbeat instead")]
+    pub async fn save_checkpoint(&self, _nid: &str) -> std::result::Result<(), String> {
         Ok(())
     }
 
-    /// 启动每 30 秒 checkpoint 循环。
-    ///
-    /// 仅在 Connected / Running / Idle 状态执行 checkpoint，
-    /// Stopped 状态退出循环。
-    pub fn start_checkpoint_loop(sm: Arc<SessionManager>, state: Arc<StateMachine>) {
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(30)).await;
-
-                let current = state.current().await;
-                match current {
-                    AgentState::Connected | AgentState::Running | AgentState::Idle => {}
-                    AgentState::Stopped => break,
-                    _ => continue,
-                }
-
-                if let Ok(nids) = sm.all_nids().await {
-                    for nid in &nids {
-                        if let Err(e) = sm.save_checkpoint(nid).await {
-                            tracing::warn!(nid = %nid, error = %e, "checkpoint 保存失败");
-                        }
-                    }
-                }
-            }
-            tracing::info!("checkpoint 循环已退出");
-        });
-    }
-
+    /// @deprecated 由 SessionHeartbeatMonitor 替代。
+    #[deprecated(note = "use cli_heartbeat instead")]
+    pub fn start_checkpoint_loop(_sm: Arc<SessionManager>, _state: Arc<StateMachine>) {}
 }
 
-/// 计算 per-session checkpoint 文件路径。
-fn checkpoint_path(nid: &str) -> std::path::PathBuf {
-    kn_common::path::agent_dir()
-        .join("sessions")
-        .join(nid)
-        .join("checkpoint.json")
-}
+    // 原 checkpoint 实现已删除。以下内容仅保留标记。
+// ── CLI Tool helpers ────────────────────────────────────────
 
-// ── Crash recovery: checkpoint loading ──────────────────────
-
-/// Checkpoint 文件的反序列化格式（与 save_checkpoint 输出的 JSON 对应）。
-#[derive(Debug, serde::Deserialize)]
-struct CheckpointFile {
-    nid: String,
-    tool: String,
-    #[serde(default)]
-    profile: Option<String>,
-    #[serde(default)]
-    cwd: String,
-    #[serde(default, rename = "last_input")]
-    last_input: String,
-    #[serde(default, rename = "last_output_snippet")]
-    last_output_snippet: String,
-}
-
-/// 扫描 `~/.kn/agent/sessions/*/checkpoint.json`，返回中断会话列表。
-///
-/// 在 WSS 重连后调用，用于上报崩溃前正在进行的会话。
-pub fn load_checkpoints() -> Vec<crate::proto::InterruptedSession> {
-    let sessions_dir = kn_common::path::agent_dir().join("sessions");
-    if !sessions_dir.exists() {
-        return Vec::new();
-    }
-
-    let mut results = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
-        for entry in entries.flatten() {
-            let cp_path = entry.path().join("checkpoint.json");
-            if !cp_path.exists() {
-                continue;
-            }
-            match std::fs::read_to_string(&cp_path) {
-                Ok(json) => {
-                    match serde_json::from_str::<CheckpointFile>(&json) {
-                        Ok(cp) => {
-                            results.push(crate::proto::InterruptedSession {
-                                nid: cp.nid,
-                                tool: cp.tool,
-                                profile: cp.profile,
-                                cwd: cp.cwd,
-                                last_input: cp.last_input,
-                                last_output_snippet: cp.last_output_snippet,
-                            });
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                path = %cp_path.display(),
-                                error = %e,
-                                "checkpoint 解析失败，跳过"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %cp_path.display(),
-                        error = %e,
-                        "checkpoint 读取失败，跳过"
-                    );
-                }
-            }
-        }
-    }
-
-    tracing::info!(count = results.len(), "已加载 checkpoint");
-
-    results
-}
-
-/// 将字符串包装为 TOML 双引号字符串（转义 `\` 和 `"`），
-/// 并对 shell 单引号做安全处理，用于拼接 `-c` 参数。
+/// TOML 字符串转义（用于 CLI -c 参数注入）。
 fn shell_safe_toml_string(s: &str) -> String {
     let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-    let toml_val = format!("\"{}\"", escaped);
-    // 单引号在 shell 单引号字符串中需要特殊处理: ' → '\''
-    toml_val.replace('\'', "'\\''")
+    format!("\"{}\"", escaped)
 }
 
-/// 恢复 Codex auth.json（从 kn-bak 备份），用于 session 清理。
+/// 恢复 Codex auth.json（DEPRECATED: 原 prepare_tool_env 写入 auth.json 后需恢复）。
+/// 当前实现为空操作，auth 管理已迁移至各 CLI 工具自行处理。
 fn restore_codex_auth() {
-    let codex_dir = kn_common::path::home_dir().join(".codex");
-    let auth_path = codex_dir.join("auth.json");
-    let bak_path = codex_dir.join("auth.json.kn-bak");
-    if bak_path.exists() {
-        let _ = std::fs::copy(&bak_path, &auth_path);
-        let _ = std::fs::remove_file(&bak_path);
-    }
+    // no-op: auth 管理已由 CLI 工具自行处理
 }
-
-/// 删除所有 checkpoint 目录（在成功上报 `session_interrupted` 后调用）。
-pub fn cleanup_checkpoints() {
-    let sessions_dir = kn_common::path::agent_dir().join("sessions");
-    if sessions_dir.exists() {
-        match std::fs::remove_dir_all(&sessions_dir) {
-            Ok(()) => tracing::info!("checkpoint 已清理"),
-            Err(e) => tracing::warn!(error = %e, "checkpoint 清理失败"),
-        }
-    }
-}
-
-// ── CLI Tool helpers ────────────────────────────────────────
 
 /// 根据 tool 名称查找 CLI 二进制路径。
 pub fn resolve_tool_path(tool: &str) -> std::result::Result<String, String> {
@@ -1218,7 +1013,6 @@ mod tests {
         let session = mgr
             .create(
                 "s_test123".into(),
-                42,
                 "claude".into(),
                 Some("my-profile".into()),
                 "/tmp".into(),
@@ -1227,7 +1021,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(session.nid, "s_test123");
-        assert_eq!(session.db_id, Some(42));
 
         let found = mgr.get("s_test123").await.unwrap().unwrap();
         assert_eq!(found.tool, "claude");
@@ -1236,7 +1029,7 @@ mod tests {
     #[tokio::test]
     async fn test_mark_running_and_end() {
         let mgr = make_manager();
-        mgr.create("s_test".into(), 1, "claude".into(), None, "/tmp".into())
+        mgr.create("s_test".into(), "claude".into(), None, "/tmp".into())
             .await
             .unwrap();
 
@@ -1250,7 +1043,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove() {
         let mgr = make_manager();
-        mgr.create("s_test".into(), 1, "claude".into(), None, "/tmp".into())
+        mgr.create("s_test".into(), "claude".into(), None, "/tmp".into())
             .await
             .unwrap();
         assert_eq!(mgr.active_count().await.unwrap(), 1);
@@ -1259,22 +1052,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_by_db_id() {
-        let mgr = make_manager();
-        mgr.create("s_abc".into(), 99, "codex".into(), None, "/tmp".into())
-            .await
-            .unwrap();
-        let found = mgr.get_by_db_id(99).await.unwrap().unwrap();
-        assert_eq!(found.nid, "s_abc");
-    }
-
-    #[tokio::test]
     async fn test_list() {
         let mgr = make_manager();
-        mgr.create("s_a".into(), 1, "claude".into(), None, "/tmp".into())
+        mgr.create("s_a".into(), "claude".into(), None, "/tmp".into())
             .await
             .unwrap();
-        mgr.create("s_b".into(), 2, "codex".into(), None, "/tmp".into())
+        mgr.create("s_b".into(), "codex".into(), None, "/tmp".into())
             .await
             .unwrap();
         let list = mgr.list().await.unwrap();
@@ -1284,7 +1067,7 @@ mod tests {
     #[tokio::test]
     async fn test_resize() {
         let mgr = make_manager();
-        mgr.create("s_test".into(), 1, "claude".into(), None, "/tmp".into())
+        mgr.create("s_test".into(), "claude".into(), None, "/tmp".into())
             .await
             .unwrap();
         mgr.resize("s_test", 120, 40).await.unwrap();

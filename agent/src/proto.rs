@@ -53,11 +53,8 @@ pub enum AgentIncoming {
         protocol_version: Option<u32>,
     },
     /// 启动新会话（来自 iOS/Desktop 用户）
+    /// sessionNid 由 Agent 自行生成（"s_" + nanoid(12)），cloud 不再预分配。
     StartSession {
-        /// 云端的 DB 会话 ID（Long）
-        db_session_id: i64,
-        /// 会话 nanoid（s_ + 12 字符）
-        session_nid: String,
         /// CLI 工具（claude/codex/qoder/bash）
         tool: String,
         /// Profile 名称
@@ -71,21 +68,21 @@ pub enum AgentIncoming {
         /// 初始终端行数
         rows: u16,
     },
-    /// 用户输入文本
+    /// 用户输入文本（session 由信封级 sessionId = sessionNid 标识）
     Input {
-        db_session_id: i64,
+        session_nid: String,
         seq: u64,
         content: String,
         from_user_id: u64,
     },
     /// 控制信号（Ctrl+C、Ctrl+D 等）
     Ctrl {
-        db_session_id: i64,
+        session_nid: String,
         signal: serde_json::Value,
     },
     /// 终端尺寸变化
     Resize {
-        db_session_id: i64,
+        session_nid: String,
         cols: u16,
         rows: u16,
     },
@@ -147,13 +144,8 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "start_session 缺少 data 字段".to_string())?;
+                // sessionNid 由 Agent 自行生成，cloud 不再预分配
                 Ok(AgentIncoming::StartSession {
-                    db_session_id: data["sessionId"].as_i64().unwrap_or(0),
-                    session_nid: self
-                        .session_id
-                        .clone()
-                        .or_else(|| data["sessionNid"].as_str().map(String::from))
-                        .unwrap_or_default(),
                     tool: data["tool"].as_str().unwrap_or("bash").to_string(),
                     profile: data["profile"].as_str().map(String::from),
                     cwd: data["cwd"].as_str().map(String::from),
@@ -167,8 +159,10 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "input 缺少 data 字段".to_string())?;
+                // session 由信封级 sessionId (sessionNid) 标识
+                let session_nid = self.session_id.clone().unwrap_or_default();
                 Ok(AgentIncoming::Input {
-                    db_session_id: data["sessionId"].as_i64().unwrap_or(0),
+                    session_nid,
                     seq: data["seq"].as_u64().unwrap_or(0),
                     content: data["content"].as_str().unwrap_or("").to_string(),
                     from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
@@ -179,9 +173,10 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "ctrl 缺少 data 字段".to_string())?;
-                // Cloud forwards ctrl with to_session_id (not sessionId)
+                // session 由 to_session_id (sessionNid, String) 标识
+                let session_nid = data["to_session_id"].as_str().unwrap_or("").to_string();
                 Ok(AgentIncoming::Ctrl {
-                    db_session_id: data["to_session_id"].as_i64().unwrap_or(0),
+                    session_nid,
                     signal: data.clone(),
                 })
             }
@@ -190,8 +185,9 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "resize 缺少 data 字段".to_string())?;
+                let session_nid = data["to_session_id"].as_str().unwrap_or("").to_string();
                 Ok(AgentIncoming::Resize {
-                    db_session_id: data["to_session_id"].as_i64().unwrap_or(0),
+                    session_nid,
                     cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
                     rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
                 })
@@ -226,35 +222,83 @@ impl WsMessageBuilder {
         r#"{"type":"ping"}"#.to_string()
     }
 
-    /// 会话创建确认。
-    pub fn session_created(db_session_id: i64) -> String {
+    /// 会话创建确认。sessionNid 已由 Agent 生成。
+    /// 携带 tool/cwd/cols/rows 供 cloud 写入 Redis Hash，pid 由后续 heartbeat 更新。
+    pub fn session_created(
+        session_nid: &str,
+        tool: &str,
+        cwd: &str,
+        profile: Option<&str>,
+        cols: u16,
+        rows: u16,
+    ) -> String {
+        let mut data = serde_json::json!({
+            "sessionId": session_nid,
+            "tool": tool,
+            "cwd": cwd,
+            "cols": cols,
+            "rows": rows
+        });
+        if let Some(p) = profile {
+            data["profile"] = serde_json::Value::String(p.to_string());
+        }
         serde_json::json!({
             "type": "session_created",
-            "data": { "sessionId": db_session_id }
+            "data": data
         })
         .to_string()
     }
 
     /// 会话结束通知。
-    pub fn session_ended(db_session_id: i64, reason: &str) -> String {
+    pub fn session_ended(session_nid: &str, reason: &str) -> String {
         serde_json::json!({
             "type": "session_ended",
             "data": {
-                "sessionId": db_session_id,
+                "sessionId": session_nid,
                 "reason": reason
             }
         })
         .to_string()
     }
 
-    /// PTY 输出数据。
-    pub fn output(to_session_id: i64, ansi_text: &str) -> String {
+    /// PTY 输出数据。session 由 to_session_id (sessionNid) 标识。
+    pub fn output(session_nid: &str, ansi_text: &str) -> String {
         serde_json::json!({
             "type": "output",
             "data": {
-                "to_session_id": to_session_id,
+                "to_session_id": session_nid,
                 "ansi_text": ansi_text
             }
+        })
+        .to_string()
+    }
+
+    /// 错误通知（Agent → Cloud → iOS）。
+    pub fn error_notify(code: &str, message: &str) -> String {
+        serde_json::json!({
+            "type": "error_notify",
+            "data": { "code": code, "message": message }
+        })
+        .to_string()
+    }
+
+    /// CLI 进程心跳（每 15s，替代 session_interrupted 崩溃恢复）。
+    pub fn cli_heartbeat(sessions: &[HeartbeatSession]) -> String {
+        serde_json::json!({
+            "type": "cli_heartbeat",
+            "data": {
+                "sessions": sessions
+            }
+        })
+        .to_string()
+    }
+
+    /// 会话中断上报（崩溃恢复，DEPRECATED: 由 cli_heartbeat 替代）。
+    #[deprecated(note = "use cli_heartbeat instead")]
+    pub fn session_interrupted(sessions: &[InterruptedSession]) -> String {
+        serde_json::json!({
+            "type": "session_interrupted",
+            "data": { "sessions": sessions }
         })
         .to_string()
     }
@@ -303,6 +347,16 @@ pub struct InterruptedSession {
     pub last_input: String,
     #[serde(rename = "lastOutputSnippet")]
     pub last_output_snippet: String,
+}
+
+/// CLI 进程心跳信息（每 15s 上报给云端）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeartbeatSession {
+    #[serde(rename = "sessionNid")]
+    pub session_nid: String,
+    pub pid: u32,
+    pub state: String,
 }
 
 /// Profile 信息（上报给云端）。
@@ -385,10 +439,7 @@ mod tests {
         let json = serde_json::json!({
             "type": "start_session",
             "ts": 1234567890,
-            "sessionId": "s_abc123def456",
             "data": {
-                "sessionId": 42,
-                "sessionNid": "s_abc123def456",
                 "tool": "claude",
                 "profile": "my-profile",
                 "cwd": "/Users/test/project",
@@ -401,8 +452,6 @@ mod tests {
         let msg = env.parse().unwrap();
         match msg {
             AgentIncoming::StartSession {
-                db_session_id,
-                session_nid,
                 tool,
                 profile,
                 cwd,
@@ -410,8 +459,6 @@ mod tests {
                 cols,
                 rows,
             } => {
-                assert_eq!(db_session_id, 42);
-                assert_eq!(session_nid, "s_abc123def456");
                 assert_eq!(tool, "claude");
                 assert_eq!(profile, Some("my-profile".into()));
                 assert_eq!(cwd, Some("/Users/test/project".into()));
@@ -428,7 +475,7 @@ mod tests {
         let json = serde_json::json!({
             "type": "resize",
             "data": {
-                "to_session_id": 42,
+                "to_session_id": "s_abc123def456",
                 "seq": 7,
                 "cols": 52,
                 "rows": 20
@@ -437,8 +484,8 @@ mod tests {
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
         let msg = env.parse().unwrap();
         match msg {
-            AgentIncoming::Resize { db_session_id, cols, rows } => {
-                assert_eq!(db_session_id, 42);
+            AgentIncoming::Resize { session_nid, cols, rows } => {
+                assert_eq!(session_nid, "s_abc123def456");
                 assert_eq!(cols, 52);
                 assert_eq!(rows, 20);
             }
@@ -452,7 +499,6 @@ mod tests {
             "type": "input",
             "sessionId": "s_abc",
             "data": {
-                "sessionId": 42,
                 "seq": 5,
                 "content": "hello world",
                 "fromUserId": 100
@@ -462,12 +508,12 @@ mod tests {
         let msg = env.parse().unwrap();
         match msg {
             AgentIncoming::Input {
-                db_session_id,
+                session_nid,
                 seq,
                 content,
                 from_user_id,
             } => {
-                assert_eq!(db_session_id, 42);
+                assert_eq!(session_nid, "s_abc");
                 assert_eq!(seq, 5);
                 assert_eq!(content, "hello world");
                 assert_eq!(from_user_id, 100);
@@ -484,30 +530,33 @@ mod tests {
 
     #[test]
     fn test_outbound_session_created() {
-        let json = WsMessageBuilder::session_created(42);
+        let json = WsMessageBuilder::session_created("s_abc123", "claude", "/home/user/proj", None, 80, 24);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "session_created");
-        assert_eq!(parsed["data"]["sessionId"], 42);
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["data"]["tool"], "claude");
+        assert_eq!(parsed["data"]["cwd"], "/home/user/proj");
+        assert_eq!(parsed["data"]["cols"], 80);
+        assert_eq!(parsed["data"]["rows"], 24);
     }
 
     #[test]
     fn test_outbound_output() {
-        let json = WsMessageBuilder::output(42, "hello\x1b[0m");
+        let json = WsMessageBuilder::output("s_abc123", "hello\x1b[0m");
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "output");
-        assert_eq!(parsed["data"]["to_session_id"], 42);
+        assert_eq!(parsed["data"]["to_session_id"], "s_abc123");
         assert_eq!(parsed["data"]["ansi_text"], "hello\x1b[0m");
     }
 
     #[test]
-    fn test_output_message_to_session_id_is_number() {
-        // 对齐 Java handleOutput: Long sessionId = data.get("to_session_id").asLong();
-        let msg = WsMessageBuilder::output(42, "hello");
+    fn test_output_message_to_session_id_is_string() {
+        // 对齐新协议: to_session_id 统一为 String (sessionNid)
+        let msg = WsMessageBuilder::output("s_abc123", "hello");
         let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
         let tsid = &parsed["data"]["to_session_id"];
-        assert!(tsid.is_number(), "to_session_id must be a number, got: {:?}", tsid);
-        assert!(!tsid.is_string(), "to_session_id must NOT be a string");
-        assert_eq!(tsid.as_i64().unwrap(), 42);
+        assert!(tsid.is_string(), "to_session_id must be a string (sessionNid), got: {:?}", tsid);
+        assert_eq!(tsid.as_str().unwrap(), "s_abc123");
     }
 
     #[test]

@@ -20,11 +20,11 @@ fn test_all_incoming_types_parse_without_panic() {
         // Connection
         (r#"{"type":"connected","data":{"ws_session_id":"x","node_id":null,"protocol_version":1}}"#, "connected"),
         // Session lifecycle (cloud forwards from iOS to agent)
-        (r#"{"type":"start_session","sessionId":"s_x","data":{"sessionId":1,"tool":"bash","fromUserId":1}}"#, "start_session"),
-        // Message routing (cloud forwards from iOS to agent)
-        (r#"{"type":"input","data":{"sessionId":1,"seq":1,"content":"hi","fromUserId":1}}"#, "input"),
-        (r#"{"type":"ctrl","data":{"to_session_id":1,"signal":"ctrl_c"}}"#, "ctrl"),
-        (r#"{"type":"resize","data":{"to_session_id":1,"cols":48,"rows":18}}"#, "resize"),
+        (r#"{"type":"start_session","data":{"tool":"bash","fromUserId":1}}"#, "start_session"),
+        // Message routing (cloud forwards from iOS to agent) — sessionNid in envelope sessionId
+        (r#"{"type":"input","sessionId":"s_abc","data":{"seq":1,"content":"hi","fromUserId":1}}"#, "input"),
+        (r#"{"type":"ctrl","data":{"to_session_id":"s_abc123","signal":"ctrl_c"}}"#, "ctrl"),
+        (r#"{"type":"resize","data":{"to_session_id":"s_abc123","cols":48,"rows":18}}"#, "resize"),
         // Server → agent
         (r#"{"type":"error_notify","data":{"code":"ERR","message":"test"}}"#, "error_notify"),
         (r#"{"type":"profile_list_ack"}"#, "profile_list_ack"),
@@ -61,38 +61,35 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
     }
 }
 
-// ── Output message format tests (align with Java handleOutput) ──────
+// ── Output message format tests (align with new String sessionNid protocol) ──────
 
 #[test]
-fn test_output_to_session_id_is_number_not_string() {
-    // Java handleOutput (KnWsHandler.java:564):
-    //   Long sessionId = data(msg).get("to_session_id").asLong();
-    // Must produce a JSON number, NOT a string.
-    let msg = WsMessageBuilder::output(42, "hello world");
+fn test_output_to_session_id_is_string_session_nid() {
+    // 新协议: to_session_id 统一为 String (sessionNid)
+    let msg = WsMessageBuilder::output("s_abc123", "hello world");
     let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
 
     assert_eq!(parsed["type"], "output");
     let tsid = &parsed["data"]["to_session_id"];
-    assert!(tsid.is_number(), "to_session_id must be a number, got {:?}", tsid);
-    assert!(!tsid.is_string(), "to_session_id must NOT be a string");
-    assert_eq!(tsid.as_i64().unwrap(), 42);
+    assert!(tsid.is_string(), "to_session_id must be a string (sessionNid), got {:?}", tsid);
+    assert_eq!(tsid.as_str().unwrap(), "s_abc123");
     // Verify ansi_text field is present
     assert_eq!(parsed["data"]["ansi_text"], "hello world");
 }
 
 #[test]
-fn test_output_format_matches_java_expectations() {
-    // Full format verification aligning with Java KnWsHandler.handleOutput:
+fn test_output_format_matches_new_protocol() {
+    // Full format verification:
     // - type: "output"
-    // - data.to_session_id: Long (number)
+    // - data.to_session_id: String (sessionNid)
     // - data.ansi_text: String
-    let msg = WsMessageBuilder::output(100, "test\x1b[0m");
+    let msg = WsMessageBuilder::output("s_def456", "test\x1b[0m");
     let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
 
     // Envelope-level type
     assert_eq!(v["type"], "output");
     // data fields
-    assert!(v["data"]["to_session_id"].is_number());
+    assert!(v["data"]["to_session_id"].is_string());
     assert!(v["data"]["ansi_text"].is_string());
 }
 
@@ -110,20 +107,21 @@ fn test_all_outbound_builders_produce_valid_json() {
     assert_eq!(v["type"], "ping");
 
     // session_created
-    let created = WsMessageBuilder::session_created(42);
+    let created = WsMessageBuilder::session_created("s_abc", "claude", "/tmp", None, 80, 24);
     let v: serde_json::Value = serde_json::from_str(&created).unwrap();
     assert_eq!(v["type"], "session_created");
-    assert_eq!(v["data"]["sessionId"], 42);
+    assert_eq!(v["data"]["sessionId"], "s_abc");
+    assert_eq!(v["data"]["tool"], "claude");
 
     // session_ended
-    let ended = WsMessageBuilder::session_ended(42, "user_disconnected");
+    let ended = WsMessageBuilder::session_ended("s_abc", "user_disconnected");
     let v: serde_json::Value = serde_json::from_str(&ended).unwrap();
     assert_eq!(v["type"], "session_ended");
-    assert_eq!(v["data"]["sessionId"], 42);
+    assert_eq!(v["data"]["sessionId"], "s_abc");
     assert_eq!(v["data"]["reason"], "user_disconnected");
 
     // output
-    let output = WsMessageBuilder::output(42, "ansi text");
+    let output = WsMessageBuilder::output("s_abc", "ansi text");
     let v: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(v["type"], "output");
     assert_eq!(v["data"]["to_session_id"], 42);
@@ -152,12 +150,12 @@ fn test_all_outbound_builders_produce_valid_json() {
 
 #[test]
 fn test_session_ended_builder_matches_java_expectations() {
-    let msg = WsMessageBuilder::session_ended(2301, "process_exit");
+    let msg = WsMessageBuilder::session_ended("s_abc123", "process_exit");
     let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
 
     assert_eq!(v["type"], "session_ended");
-    assert!(v["data"]["sessionId"].is_number());
-    assert_eq!(v["data"]["sessionId"], 2301);
+    assert!(v["data"]["sessionId"].is_string());
+    assert_eq!(v["data"]["sessionId"], "s_abc123");
     assert_eq!(v["data"]["reason"], "process_exit");
 }
 
@@ -226,8 +224,6 @@ fn test_start_session_parsing_matches_java_forward_format() {
     let env: WsEnvelope = serde_json::from_value(json).unwrap();
     match env.parse().unwrap() {
         AgentIncoming::StartSession {
-            db_session_id,
-            session_nid,
             tool,
             profile,
             cwd,
@@ -235,8 +231,6 @@ fn test_start_session_parsing_matches_java_forward_format() {
             cols,
             rows,
         } => {
-            assert_eq!(db_session_id, 42);
-            assert_eq!(session_nid, "s_abc123def456");
             assert_eq!(tool, "claude");
             assert_eq!(profile, Some("work".into()));
             assert_eq!(cwd, Some("/Users/test/project".into()));
@@ -248,19 +242,16 @@ fn test_start_session_parsing_matches_java_forward_format() {
     }
 }
 
-// ── input parsing (Java forward format) ─────────────────────
+// ── input parsing (new protocol: sessionNid in envelope) ────
 
 #[test]
-fn test_input_parsing_matches_java_forward_format() {
-    // Java WsMessageFactory.inputForward builds:
-    // {"type":"input","ts":...,"sessionId":"s_nanoid",
-    //  "data":{"sessionId":DB_ID,"seq":N,"content":"...","fromUserId":...}}
+fn test_input_parsing_matches_new_protocol() {
+    // 新协议: sessionNid 在 envelope 级 sessionId，不再有 data.sessionId
     let json = serde_json::json!({
         "type": "input",
         "sessionId": "s_abc",
         "ts": 1234567890i64,
         "data": {
-            "sessionId": 42,
             "seq": 5,
             "content": "hello world",
             "fromUserId": 100
@@ -269,12 +260,12 @@ fn test_input_parsing_matches_java_forward_format() {
     let env: WsEnvelope = serde_json::from_value(json).unwrap();
     match env.parse().unwrap() {
         AgentIncoming::Input {
-            db_session_id,
+            session_nid,
             seq,
             content,
             ..
         } => {
-            assert_eq!(db_session_id, 42);
+            assert_eq!(session_nid, "s_abc");
             assert_eq!(seq, 5);
             assert_eq!(content, "hello world");
         }
@@ -282,27 +273,26 @@ fn test_input_parsing_matches_java_forward_format() {
     }
 }
 
-// ── ctrl parsing (Java forward format) ──────────────────────
+// ── ctrl parsing (new protocol: String to_session_id) ───────
 
 #[test]
-fn test_ctrl_parsing_matches_java_forward_format() {
-    // Java forwards ctrl as raw JSON; agent extracts db_session_id
-    // from to_session_id field and the signal field contains the signal name
+fn test_ctrl_parsing_matches_new_protocol() {
+    // 新协议: to_session_id 为 String (sessionNid)
     let json = serde_json::json!({
         "type": "ctrl",
         "ts": 1234567890i64,
         "data": {
-            "to_session_id": 42,
+            "to_session_id": "s_abc123",
             "signal": "ctrl_c"
         }
     });
     let env: WsEnvelope = serde_json::from_value(json).unwrap();
     match env.parse().unwrap() {
         AgentIncoming::Ctrl {
-            db_session_id,
+            session_nid,
             signal,
         } => {
-            assert_eq!(db_session_id, 42);
+            assert_eq!(session_nid, "s_abc123");
             assert_eq!(signal["signal"], "ctrl_c");
         }
         other => panic!("expected Ctrl, got {:?}", other),

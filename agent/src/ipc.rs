@@ -523,15 +523,12 @@ impl IpcHandle {
         };
 
         let nid = format!("s_{}", nanoid::nanoid!(12));
-        // db_id = 0 is the sentinel for local-only sessions (no cloud DB entry)
-        let db_id: i64 = 0;
 
         // Create session record first
         match self
             .sessions
             .create(
                 nid.clone(),
-                db_id,
                 tool.to_string(),
                 profile.clone(),
                 cwd.clone(),
@@ -885,7 +882,6 @@ impl IpcHandle {
 fn session_to_json(s: &SessionSummary) -> serde_json::Value {
     serde_json::json!({
         "nid": s.nid,
-        "db_id": s.db_id,
         "tool": s.tool,
         "profile": s.profile,
         "cwd": s.cwd,

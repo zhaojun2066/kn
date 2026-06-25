@@ -630,7 +630,7 @@ async fn start_pty_basic(tool: &str) -> (String, Arc<kn_agent::session::SessionM
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
     sessions
-        .create(nid.clone(), 0, tool.to_string(), None, cwd.clone())
+        .create(nid.clone(), tool.to_string(), None, cwd.clone())
         .await
         .expect("create session");
 
@@ -638,7 +638,7 @@ async fn start_pty_basic(tool: &str) -> (String, Arc<kn_agent::session::SessionM
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .start_session(&nid, tool, None, &cwd, 80, 24, wss_tx, ipc_tx, merger)
+        .clone().start_session(&nid, tool, None, &cwd, 80, 24, wss_tx, ipc_tx, merger)
         .await
         .expect("start PTY session");
 
@@ -687,7 +687,7 @@ async fn test_pty_input_output_roundtrip() {
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
     sessions
-        .create(nid.clone(), 0, "bash".into(), None, cwd.clone())
+        .create(nid.clone(), "bash".into(), None, cwd.clone())
         .await
         .expect("create");
 
@@ -695,7 +695,7 @@ async fn test_pty_input_output_roundtrip() {
     let (ipc_tx, mut ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone())
+        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone())
         .await
         .expect("start PTY");
 
@@ -739,7 +739,7 @@ async fn test_pty_kill_session() {
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
     sessions
-        .create(nid.clone(), 0, "bash".into(), None, cwd.clone())
+        .create(nid.clone(), "bash".into(), None, cwd.clone())
         .await
         .expect("create");
 
@@ -747,7 +747,7 @@ async fn test_pty_kill_session() {
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger)
+        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger)
         .await
         .expect("start PTY");
 
@@ -776,7 +776,7 @@ async fn test_pty_resize_session() {
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
     sessions
-        .create(nid.clone(), 0, "bash".into(), None, cwd.clone())
+        .create(nid.clone(), "bash".into(), None, cwd.clone())
         .await
         .expect("create");
 
@@ -784,7 +784,7 @@ async fn test_pty_resize_session() {
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger)
+        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger)
         .await
         .expect("start PTY");
 
@@ -814,7 +814,7 @@ async fn test_pty_multiple_concurrent_sessions() {
     for _ in 0..2 {
         let nid = format!("s_concurrent_{}", nanoid::nanoid!(8));
         sessions
-            .create(nid.clone(), 0, "bash".into(), None, cwd.clone())
+            .create(nid.clone(), "bash".into(), None, cwd.clone())
             .await
             .expect("create");
 
@@ -823,7 +823,7 @@ async fn test_pty_multiple_concurrent_sessions() {
         let cancel = tokio_util::sync::CancellationToken::new();
 
         sessions
-            .start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone())
+            .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone())
             .await
             .expect("start PTY");
 
@@ -1172,117 +1172,6 @@ fn test_crash_count_increments_across_restarts() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Group G: Crash Recovery — checkpoint load + cleanup
-// ═══════════════════════════════════════════════════════════════════
-
-#[test]
-fn test_load_checkpoints_from_disk() {
-    let dir = TempDir::new("chkpt-load");
-
-    // Set KN_HOME so checkpoint functions use our temp dir
-    std::env::set_var("KN_HOME", dir.path().to_str().unwrap());
-
-    // Create a fake checkpoint file
-    let checkpoint_dir = dir.path().join("agent").join("sessions").join("s_test123");
-    std::fs::create_dir_all(&checkpoint_dir).unwrap();
-    let checkpoint_json = serde_json::json!({
-        "_format": 1,
-        "nid": "s_test123",
-        "db_id": null,
-        "tool": "claude",
-        "profile": "work",
-        "cwd": "/tmp/project",
-        "cols": 80,
-        "rows": 24,
-        "created_at": "2025-01-01T00:00:00Z",
-        "status": "running",
-        "last_input": "帮我写一个函数",
-        "last_output_snippet": "好的，这是你需要的代码..."
-    });
-    std::fs::write(
-        checkpoint_dir.join("checkpoint.json"),
-        checkpoint_json.to_string(),
-    ).unwrap();
-
-    // Load checkpoints
-    let sessions = kn_agent::session::load_checkpoints();
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].nid, "s_test123");
-    assert_eq!(sessions[0].tool, "claude");
-    assert_eq!(sessions[0].profile.as_deref(), Some("work"));
-    assert_eq!(sessions[0].cwd, "/tmp/project");
-    assert_eq!(sessions[0].last_input, "帮我写一个函数");
-    assert_eq!(sessions[0].last_output_snippet, "好的，这是你需要的代码...");
-
-    // Cleanup checkpoints
-    kn_agent::session::cleanup_checkpoints();
-    assert!(
-        !dir.path().join("agent").join("sessions").exists(),
-        "checkpoint directory should be removed after cleanup"
-    );
-
-    // After cleanup, load should return empty
-    let after = kn_agent::session::load_checkpoints();
-    assert!(after.is_empty());
-
-    // Restore KN_HOME
-    std::env::remove_var("KN_HOME");
-}
-
-#[test]
-fn test_load_checkpoints_empty_when_no_sessions() {
-    let dir = TempDir::new("chkpt-empty");
-    std::env::set_var("KN_HOME", dir.path().to_str().unwrap());
-
-    let sessions = kn_agent::session::load_checkpoints();
-    assert!(sessions.is_empty());
-
-    // cleanup should not panic when there's nothing to clean
-    kn_agent::session::cleanup_checkpoints();
-
-    std::env::remove_var("KN_HOME");
-}
-
-#[test]
-fn test_load_checkpoints_multiple_sessions() {
-    let dir = TempDir::new("chkpt-multi");
-    std::env::set_var("KN_HOME", dir.path().to_str().unwrap());
-
-    // Create 3 checkpoint files
-    for (nid, tool) in &[
-        ("s_aaaa", "claude"),
-        ("s_bbbb", "codex"),
-        ("s_cccc", "bash"),
-    ] {
-        let cp_dir = dir.path().join("agent").join("sessions").join(nid);
-        std::fs::create_dir_all(&cp_dir).unwrap();
-        std::fs::write(
-            cp_dir.join("checkpoint.json"),
-            serde_json::json!({
-                "nid": nid,
-                "tool": tool,
-                "profile": null,
-                "cwd": "/tmp",
-                "last_input": "",
-                "last_output_snippet": ""
-            }).to_string(),
-        ).unwrap();
-    }
-
-    let sessions = kn_agent::session::load_checkpoints();
-    assert_eq!(sessions.len(), 3);
-
-    // Verify tools are present (order depends on read_dir)
-    let tools: Vec<&str> = sessions.iter().map(|s| s.tool.as_str()).collect();
-    assert!(tools.contains(&"claude"));
-    assert!(tools.contains(&"codex"));
-    assert!(tools.contains(&"bash"));
-
-    kn_agent::session::cleanup_checkpoints();
-    std::env::remove_var("KN_HOME");
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // Group H: PTY Takeover — pty.sock 双向代理
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1353,13 +1242,13 @@ async fn test_output_fanout_subscriber_receives_data() {
     let nid = format!("s_sub_{}", nanoid::nanoid!(8));
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
-    sessions.create(nid.clone(), 0, "bash".into(), None, cwd.clone()).await.unwrap();
+    sessions.create(nid.clone(), "bash".into(), None, cwd.clone()).await.unwrap();
 
     let (wss_tx, _wss_rx) = mpsc::unbounded_channel();
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
-    // Start PTY and get fanout
-    let fanout = sessions.start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone()).await.unwrap();
+    // Start PTY and get fanout (start_session consumes Arc<Self>)
+    let fanout = sessions.clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone()).await.unwrap();
 
     // Register subscriber
     let mut sub_rx = fanout.register_subscriber();

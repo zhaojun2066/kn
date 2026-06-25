@@ -354,6 +354,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
                 wss_active = true;
                 tracing::info!("WSS 连接任务已启动");
+
+                // 启动 CLI 心跳循环（每 15s 上报进程存活状态）
+                let hb_sessions = sessions.clone();
+                let hb_outgoing = outgoing_tx_ref.clone();
+                let hb_shutdown = shutdown.clone();
+                tokio::spawn(async move {
+                    cli_heartbeat_loop(hb_sessions, hb_outgoing, hb_shutdown).await;
+                });
             }
 
             // ── 处理 WSS 入站消息 ──
@@ -431,6 +439,76 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
 // ── Message handling ────────────────────────────────────────
 
+/// CLI 心跳循环：每 15s 检查所有活跃会话的进程存活状态，上报给 cloud。
+///
+/// 替代旧的 checkpoint + session_interrupted 机制。
+async fn cli_heartbeat_loop(
+    sessions: Arc<session::SessionManager>,
+    outgoing: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    shutdown: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {},
+            _ = shutdown.cancelled() => {
+                tracing::info!("CLI 心跳循环收到关闭信号，退出");
+                return;
+            }
+        }
+
+        let mut alive_sessions: Vec<proto::HeartbeatSession> = Vec::new();
+
+        // 遍历所有非 Ended 的会话
+        if let Ok(summaries) = sessions.list().await {
+            for s in &summaries {
+                if s.status == session::SessionStatus::Ended {
+                    continue;
+                }
+
+                // 尝试检查进程是否存活 (kill(pid, 0))
+                let state = if let Some(pid) = sessions.get_child_pid(&s.nid).await {
+                    // kill(pid, 0) 不发送信号，仅检查进程是否存在
+                    let is_alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+                    if is_alive {
+                        "running".to_string()
+                    } else {
+                        // 进程已死，补发 session_ended
+                        tracing::warn!(nid = %s.nid, pid = pid, "CLI 进程已死亡，上报 session_ended");
+                        if let Ok(Some(msg)) = sessions
+                            .report_session_ended(&s.nid, "process_exit")
+                            .await
+                        {
+                            if let Some(tx) = outgoing.lock().await.as_ref() {
+                                let _ = tx.send(msg);
+                            }
+                        }
+                        "ended".to_string()
+                    }
+                } else {
+                    // 没有记录的 pid，无法检查
+                    "unknown".to_string()
+                };
+
+                if state == "running" {
+                    alive_sessions.push(proto::HeartbeatSession {
+                        session_nid: s.nid.clone(),
+                        pid: sessions.get_child_pid(&s.nid).await.unwrap_or(0),
+                        state,
+                    });
+                }
+            }
+        }
+
+        // 发送 cli_heartbeat 给 cloud
+        if let Some(tx) = outgoing.lock().await.as_ref() {
+            let msg = proto::WsMessageBuilder::cli_heartbeat(&alive_sessions);
+            if let Err(e) = tx.send(msg) {
+                tracing::warn!(error = %e, "cli_heartbeat 发送失败");
+            }
+        }
+    }
+}
+
 async fn handle_incoming(
     msg: proto::AgentIncoming,
     state: Arc<state::StateMachine>,
@@ -463,20 +541,10 @@ async fn handle_incoming(
             // 上报 project 列表
             send_project_list(&outgoing).await;
 
-            // 崩溃恢复：加载 checkpoint → 上报中断会话 → 清理
-            let interrupted = session::load_checkpoints();
-            if !interrupted.is_empty() {
-                tracing::info!(count = interrupted.len(), "检测到中断会话，上报云端");
-                let msg = proto::WsMessageBuilder::sessions_interrupted(&interrupted);
-                if let Some(tx) = outgoing.lock().await.as_ref() {
-                    let _ = tx.send(msg);
-                }
-                session::cleanup_checkpoints();
-            }
+            // 崩溃恢复已由 CLI 心跳循环（cli_heartbeat_loop）替代，
+            // 不再需要通过 checkpoint 文件上报 session_interrupted。
         }
         proto::AgentIncoming::StartSession {
-            db_session_id,
-            session_nid,
             tool,
             profile,
             cwd,
@@ -484,9 +552,10 @@ async fn handle_incoming(
             cols,
             rows,
         } => {
+            // Agent 自行生成 sessionNid，cloud 不再预分配
+            let session_nid = format!("s_{}", nanoid::nanoid!(12));
             tracing::info!(
                 nid = %session_nid,
-                db_id = db_session_id,
                 tool = %tool,
                 profile = ?profile,
                 user = from_user_id,
@@ -495,11 +564,28 @@ async fn handle_incoming(
 
             let cwd_resolved = cwd.unwrap_or_else(|| ".".into());
 
-            // 1. Create session record
+            // 1. 会话限制检查 (Agent 端 ≤10)
+            match sessions.active_count().await {
+                Ok(count) if count >= 10 => {
+                    let err = proto::WsMessageBuilder::error_notify(
+                        "SESSION_LIMIT",
+                        "Agent 会话数已满 (10/10)，请关闭之前的会话"
+                    );
+                    if let Some(tx) = outgoing.lock().await.as_ref() {
+                        let _ = tx.send(err);
+                    }
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "active_count 查询失败，放行");
+                }
+                _ => {} // count < 10, proceed
+            }
+
+            // 2. Create session record
             match sessions
                 .create(
                     session_nid.clone(),
-                    db_session_id,
                     tool.clone(),
                     profile.clone(),
                     cwd_resolved.clone(),
@@ -507,15 +593,22 @@ async fn handle_incoming(
                 .await
             {
                 Ok(_session) => {
-                    // 2. Send session_created confirmation to cloud
-                    let created_msg = proto::WsMessageBuilder::session_created(db_session_id);
+                    // 2. Send session_created confirmation to cloud (用 String nid)
+                    let created_msg = proto::WsMessageBuilder::session_created(
+                        &session_nid,
+                        &tool,
+                        &cwd_resolved,
+                        profile.as_deref(),
+                        cols,
+                        rows,
+                    );
                     if let Some(tx) = outgoing.lock().await.as_ref() {
                         match tx.send(created_msg) {
-                            Ok(_) => tracing::info!(db_id = db_session_id, "✅ [SESSION] session_created 已发送到 Cloud"),
-                            Err(e) => tracing::error!(db_id = db_session_id, error = %e, "❌ [SESSION] session_created 发送失败"),
+                            Ok(_) => tracing::info!(nid = %session_nid, "✅ [SESSION] session_created 已发送到 Cloud"),
+                            Err(e) => tracing::error!(nid = %session_nid, error = %e, "❌ [SESSION] session_created 发送失败"),
                         }
                     } else {
-                        tracing::error!(db_id = db_session_id, "❌ [SESSION] outgoing 通道为 None, 无法发送 session_created");
+                        tracing::error!(nid = %session_nid, "❌ [SESSION] outgoing 通道为 None, 无法发送 session_created");
                     }
 
                     // 3. Spawn PTY + CLI process
@@ -579,13 +672,13 @@ async fn handle_incoming(
             }
         }
         proto::AgentIncoming::Input {
-            db_session_id,
+            session_nid,
             seq,
             content,
             ..
         } => {
             tracing::info!(
-                db_id = db_session_id,
+                nid = %session_nid,
                 seq = seq,
                 content = %content,
                 "📱 [INPUT] 收到远程输入"
@@ -596,9 +689,9 @@ async fn handle_incoming(
             // if stuck in a subprocess like vim).
             let content_trimmed = content.trim();
             if content_trimmed == "/exit" || content_trimmed.starts_with("/exit ") {
-                tracing::info!(db_id = db_session_id, "🛑 [EXIT] 收到 /exit 命令，强制终止会话");
+                tracing::info!(nid = %session_nid, "🛑 [EXIT] 收到 /exit 命令，强制终止会话");
 
-                match sessions.get_by_db_id(db_session_id).await {
+                match sessions.get(&session_nid).await {
                     Ok(Some(session_summary)) => {
                         let nid = session_summary.nid;
 
@@ -608,32 +701,32 @@ async fn handle_incoming(
                             Ok(Some(msg)) => {
                                 if let Some(tx) = outgoing.lock().await.as_ref() {
                                     let _ = tx.send(msg);
-                                    tracing::info!(db_id = db_session_id, nid = %nid, "session_ended (user_exit) 已发送到 Cloud");
+                                    tracing::info!(nid = %session_nid, nid = %nid, "session_ended (user_exit) 已发送到 Cloud");
                                 }
                             }
                             Ok(None) => {
-                                tracing::warn!(db_id = db_session_id, nid = %nid, "session_ended 已上报过，跳过");
+                                tracing::warn!(nid = %session_nid, nid = %nid, "session_ended 已上报过，跳过");
                             }
                             Err(e) => {
-                                tracing::error!(db_id = db_session_id, nid = %nid, error = %e, "session_ended 发送失败");
+                                tracing::error!(nid = %session_nid, nid = %nid, error = %e, "session_ended 发送失败");
                             }
                         }
 
                         // 2. Kill the PTY process (SIGKILL + cleanup)
                         if let Err(e) = sessions.kill_session(&nid).await {
-                            tracing::error!(db_id = db_session_id, nid = %nid, error = %e, "kill_session 失败");
+                            tracing::error!(nid = %session_nid, nid = %nid, error = %e, "kill_session 失败");
                         }
                     }
                     Ok(None) => {
-                        tracing::warn!(db_id = db_session_id, "/exit 目标会话不存在");
+                        tracing::warn!(nid = %session_nid, "/exit 目标会话不存在");
                     }
                     Err(e) => {
-                        tracing::error!(db_id = db_session_id, error = %e, "/exit 查询会话失败");
+                        tracing::error!(nid = %session_nid, error = %e, "/exit 查询会话失败");
                     }
                 }
             } else {
                 // Normal input: route to PTY stdin
-                match sessions.get_by_db_id(db_session_id).await {
+                match sessions.get(&session_nid).await {
                     Ok(Some(session_summary)) => {
                         let nid = session_summary.nid.clone();
                         let text = content.clone();
@@ -647,20 +740,20 @@ async fn handle_incoming(
                         tracing::info!(nid = %nid, "📱 [INPUT] 已推入 InputMerger 队列");
                     }
                     Ok(None) => {
-                        tracing::warn!(db_id = db_session_id, "Input 目标会话不存在");
+                        tracing::warn!(nid = %session_nid, "Input 目标会话不存在");
                     }
                     Err(e) => {
-                        tracing::error!(db_id = db_session_id, error = %e, "Input 查询会话失败");
+                        tracing::error!(nid = %session_nid, error = %e, "Input 查询会话失败");
                     }
                 }
             }
         }
         proto::AgentIncoming::Ctrl {
-            db_session_id,
+            session_nid,
             signal,
         } => {
             tracing::debug!(
-                db_id = db_session_id,
+                nid = %session_nid,
                 signal = ?signal,
                 "收到远程控制信号"
             );
@@ -681,7 +774,7 @@ async fn handle_incoming(
                 }
             };
 
-            match sessions.get_by_db_id(db_session_id).await {
+            match sessions.get(&session_nid).await {
                 Ok(Some(session_summary)) => {
                     let text = String::from_utf8_lossy(&byte).to_string();
                     input_merger
@@ -693,61 +786,61 @@ async fn handle_incoming(
                         .await;
                 }
                 Ok(None) => {
-                    tracing::warn!(db_id = db_session_id, "Ctrl 目标会话不存在");
+                    tracing::warn!(nid = %session_nid, "Ctrl 目标会话不存在");
                 }
                 Err(e) => {
-                    tracing::error!(db_id = db_session_id, error = %e, "Ctrl 查询会话失败");
+                    tracing::error!(nid = %session_nid, error = %e, "Ctrl 查询会话失败");
                 }
             }
 
             if signal_name == "ctrl_c" {
-                match sessions.get_by_db_id(db_session_id).await {
+                match sessions.get(&session_nid).await {
                     Ok(Some(session_summary)) => {
                         match sessions.report_session_ended(&session_summary.nid, "user_interrupt").await {
                             Ok(Some(msg)) => {
                                 if let Some(tx) = outgoing.lock().await.as_ref() {
                                     let _ = tx.send(msg);
-                                    tracing::info!(db_id = db_session_id, "session_ended 已发送到 Cloud");
+                                    tracing::info!(nid = %session_nid, "session_ended 已发送到 Cloud");
                                 }
                             }
                             Ok(None) => {}
                             Err(e) => {
-                                tracing::error!(db_id = db_session_id, error = %e, "session_ended 发送失败");
+                                tracing::error!(nid = %session_nid, error = %e, "session_ended 发送失败");
                             }
                         }
                     }
                     Ok(None) => {
-                        tracing::warn!(db_id = db_session_id, "Ctrl 结束目标会话不存在");
+                        tracing::warn!(nid = %session_nid, "Ctrl 结束目标会话不存在");
                     }
                     Err(e) => {
-                        tracing::error!(db_id = db_session_id, error = %e, "Ctrl 结束查询会话失败");
+                        tracing::error!(nid = %session_nid, error = %e, "Ctrl 结束查询会话失败");
                     }
                 }
             }
         }
         proto::AgentIncoming::Resize {
-            db_session_id,
+            session_nid,
             cols,
             rows,
         } => {
             tracing::debug!(
-                db_id = db_session_id,
+                nid = %session_nid,
                 cols = cols,
                 rows = rows,
                 "收到远程 resize"
             );
 
-            match sessions.get_by_db_id(db_session_id).await {
+            match sessions.get(&session_nid).await {
                 Ok(Some(session_summary)) => {
                     if let Err(e) = sessions.resize(&session_summary.nid, cols, rows).await {
-                        tracing::error!(db_id = db_session_id, error = %e, "Resize 会话失败");
+                        tracing::error!(nid = %session_nid, error = %e, "Resize 会话失败");
                     }
                 }
                 Ok(None) => {
-                    tracing::warn!(db_id = db_session_id, "Resize 目标会话不存在");
+                    tracing::warn!(nid = %session_nid, "Resize 目标会话不存在");
                 }
                 Err(e) => {
-                    tracing::error!(db_id = db_session_id, error = %e, "Resize 查询会话失败");
+                    tracing::error!(nid = %session_nid, error = %e, "Resize 查询会话失败");
                 }
             }
         }

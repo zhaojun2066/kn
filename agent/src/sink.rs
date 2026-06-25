@@ -8,16 +8,16 @@ use tokio::sync::mpsc;
 
 /// WSS 输出 — PTY 数据包装为 output 消息推给云端。
 ///
-/// `db_session_id` 是云端 DB 主键 (Long)，对齐 Java `handleOutput` 的 `to_session_id.asLong()`。
+/// `session_nid` 为会话唯一标识 (String)，对齐新协议 `to_session_id` 类型。
 pub struct WssSink {
-    pub db_session_id: i64,
+    pub session_nid: String,
     pub tx: mpsc::UnboundedSender<String>,
 }
 
 impl PtyOutputSink for WssSink {
     fn send(&self, data: &[u8]) -> Result<(), String> {
         if let Ok(text) = std::str::from_utf8(data) {
-            let msg = WsMessageBuilder::output(self.db_session_id, text);
+            let msg = WsMessageBuilder::output(&self.session_nid, text);
             self.tx.send(msg).map_err(|e| e.to_string())
         } else {
             Ok(())

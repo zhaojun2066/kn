@@ -246,7 +246,7 @@ mod tests {
             .unwrap();
         write
             .send(Message::Text(
-                r#"{"type":"session_created","data":{"sessionId":42}}"#.into(),
+                r#"{"type":"session_created","data":{"sessionId":"s_abc123"}}"#.into(),
             ))
             .await
             .unwrap();
