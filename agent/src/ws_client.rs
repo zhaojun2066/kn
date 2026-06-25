@@ -160,17 +160,22 @@ async fn connect_and_run(
 
     tracing::info!("正在连接 {} ...", cloud_url);
 
-    let (ws_stream, response) = connect_async(request)
-        .await
-        .map_err(|e| {
-            // Check if the error indicates an auth failure (token revoked/expired)
-            let err_str = e.to_string();
-            if err_str.contains("401") || err_str.contains("403") {
-                AgentError::Ws("AUTH_REJECTED: device_token 已失效，请重新绑定".into())
-            } else {
-                AgentError::Ws(format!("WSS 连接失败: {}", e))
-            }
-        })?;
+    // 30 秒连接超时，避免在 DNS 失败或网络不可达时长时间阻塞
+    let (ws_stream, response) = tokio::time::timeout(
+        Duration::from_secs(30),
+        connect_async(request),
+    )
+    .await
+    .map_err(|_| AgentError::Ws("WSS 连接超时（30 秒），请检查网络".into()))?
+    .map_err(|e| {
+        // Check if the error indicates an auth failure (token revoked/expired)
+        let err_str = e.to_string();
+        if err_str.contains("401") || err_str.contains("403") {
+            AgentError::Ws("AUTH_REJECTED: device_token 已失效，请重新绑定".into())
+        } else {
+            AgentError::Ws(format!("WSS 连接失败: {}", e))
+        }
+    })?;
 
     // Also check HTTP upgrade response status
     if response.status() == http::StatusCode::UNAUTHORIZED

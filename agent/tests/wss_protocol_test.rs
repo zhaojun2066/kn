@@ -24,6 +24,7 @@ fn test_all_incoming_types_parse_without_panic() {
         // Message routing (cloud forwards from iOS to agent)
         (r#"{"type":"input","data":{"sessionId":1,"seq":1,"content":"hi","fromUserId":1}}"#, "input"),
         (r#"{"type":"ctrl","data":{"to_session_id":1,"signal":"ctrl_c"}}"#, "ctrl"),
+        (r#"{"type":"resize","data":{"to_session_id":1,"cols":48,"rows":18}}"#, "resize"),
         // Server → agent
         (r#"{"type":"error_notify","data":{"code":"ERR","message":"test"}}"#, "error_notify"),
         (r#"{"type":"profile_list_ack"}"#, "profile_list_ack"),
@@ -53,6 +54,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::StartSession { .. } => "start_session",
         AgentIncoming::Input { .. } => "input",
         AgentIncoming::Ctrl { .. } => "ctrl",
+        AgentIncoming::Resize { .. } => "resize",
         AgentIncoming::ErrorNotify { .. } => "error_notify",
         AgentIncoming::ProfileListAck => "profile_list_ack",
         AgentIncoming::Unknown { .. } => "unknown",
@@ -148,6 +150,17 @@ fn test_all_outbound_builders_produce_valid_json() {
     assert_eq!(arr[0]["lastOutputSnippet"], "sure");
 }
 
+#[test]
+fn test_session_ended_builder_matches_java_expectations() {
+    let msg = WsMessageBuilder::session_ended(2301, "process_exit");
+    let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+
+    assert_eq!(v["type"], "session_ended");
+    assert!(v["data"]["sessionId"].is_number());
+    assert_eq!(v["data"]["sessionId"], 2301);
+    assert_eq!(v["data"]["reason"], "process_exit");
+}
+
 // ── error_notify parsing tests ──────────────────────────────
 
 #[test]
@@ -205,7 +218,9 @@ fn test_start_session_parsing_matches_java_forward_format() {
             "tool": "claude",
             "profile": "work",
             "cwd": "/Users/test/project",
-            "fromUserId": 100
+            "fromUserId": 100,
+            "cols": 48,
+            "rows": 18
         }
     });
     let env: WsEnvelope = serde_json::from_value(json).unwrap();
@@ -217,6 +232,8 @@ fn test_start_session_parsing_matches_java_forward_format() {
             profile,
             cwd,
             from_user_id,
+            cols,
+            rows,
         } => {
             assert_eq!(db_session_id, 42);
             assert_eq!(session_nid, "s_abc123def456");
@@ -224,6 +241,8 @@ fn test_start_session_parsing_matches_java_forward_format() {
             assert_eq!(profile, Some("work".into()));
             assert_eq!(cwd, Some("/Users/test/project".into()));
             assert_eq!(from_user_id, 100);
+            assert_eq!(cols, 48);
+            assert_eq!(rows, 18);
         }
         other => panic!("expected StartSession, got {:?}", other),
     }

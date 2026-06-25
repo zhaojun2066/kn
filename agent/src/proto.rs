@@ -66,6 +66,10 @@ pub enum AgentIncoming {
         cwd: Option<String>,
         /// 发起用户 ID
         from_user_id: u64,
+        /// 初始终端列数
+        cols: u16,
+        /// 初始终端行数
+        rows: u16,
     },
     /// 用户输入文本
     Input {
@@ -78,6 +82,12 @@ pub enum AgentIncoming {
     Ctrl {
         db_session_id: i64,
         signal: serde_json::Value,
+    },
+    /// 终端尺寸变化
+    Resize {
+        db_session_id: i64,
+        cols: u16,
+        rows: u16,
     },
     /// 云端错误通知（对齐 Java MessageTypes.ERROR_NOTIFY + sendError()）
     ErrorNotify {
@@ -148,6 +158,8 @@ impl WsEnvelope {
                     profile: data["profile"].as_str().map(String::from),
                     cwd: data["cwd"].as_str().map(String::from),
                     from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
+                    cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
+                    rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
                 })
             }
             "input" => {
@@ -171,6 +183,17 @@ impl WsEnvelope {
                 Ok(AgentIncoming::Ctrl {
                     db_session_id: data["to_session_id"].as_i64().unwrap_or(0),
                     signal: data.clone(),
+                })
+            }
+            "resize" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "resize 缺少 data 字段".to_string())?;
+                Ok(AgentIncoming::Resize {
+                    db_session_id: data["to_session_id"].as_i64().unwrap_or(0),
+                    cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
+                    rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
                 })
             }
             "error_notify" => {
@@ -369,7 +392,9 @@ mod tests {
                 "tool": "claude",
                 "profile": "my-profile",
                 "cwd": "/Users/test/project",
-                "fromUserId": 100
+                "fromUserId": 100,
+                "cols": 48,
+                "rows": 18
             }
         });
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
@@ -382,6 +407,8 @@ mod tests {
                 profile,
                 cwd,
                 from_user_id,
+                cols,
+                rows,
             } => {
                 assert_eq!(db_session_id, 42);
                 assert_eq!(session_nid, "s_abc123def456");
@@ -389,8 +416,33 @@ mod tests {
                 assert_eq!(profile, Some("my-profile".into()));
                 assert_eq!(cwd, Some("/Users/test/project".into()));
                 assert_eq!(from_user_id, 100);
+                assert_eq!(cols, 48);
+                assert_eq!(rows, 18);
             }
             _ => panic!("expected StartSession"),
+        }
+    }
+
+    #[test]
+    fn test_parse_resize() {
+        let json = serde_json::json!({
+            "type": "resize",
+            "data": {
+                "to_session_id": 42,
+                "seq": 7,
+                "cols": 52,
+                "rows": 20
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::Resize { db_session_id, cols, rows } => {
+                assert_eq!(db_session_id, 42);
+                assert_eq!(cols, 52);
+                assert_eq!(rows, 20);
+            }
+            _ => panic!("expected Resize"),
         }
     }
 

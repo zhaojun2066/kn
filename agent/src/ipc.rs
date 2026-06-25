@@ -104,6 +104,8 @@ pub struct IpcServer {
     /// Generation counter: incremented on each new bind, prevents stale
     /// background tasks from corrupting state after a cancel+rebind cycle.
     bind_generation: Arc<AtomicU64>,
+    /// Channel to signal the main loop to start WSS after a successful bind.
+    wss_trigger: mpsc::UnboundedSender<()>,
 }
 
 impl IpcServer {
@@ -117,6 +119,7 @@ impl IpcServer {
         hostname: String,
         purchase_url: String,
         input_merger: Arc<InputMerger>,
+        wss_trigger: mpsc::UnboundedSender<()>,
     ) -> Self {
         Self {
             socket_path,
@@ -129,6 +132,7 @@ impl IpcServer {
             input_merger,
             bind_cancel: Arc::new(Mutex::new(None)),
             bind_generation: Arc::new(AtomicU64::new(0)),
+            wss_trigger,
         }
     }
 
@@ -204,6 +208,7 @@ impl IpcServer {
             input_merger: self.input_merger.clone(),
             bind_cancel: self.bind_cancel.clone(),
             bind_generation: self.bind_generation.clone(),
+            wss_trigger: self.wss_trigger.clone(),
         }
     }
 }
@@ -221,6 +226,7 @@ struct IpcHandle {
     input_merger: Arc<InputMerger>,
     bind_cancel: Arc<Mutex<Option<(CancellationToken, u64)>>>,
     bind_generation: Arc<AtomicU64>,
+    wss_trigger: mpsc::UnboundedSender<()>,
 }
 
 impl IpcHandle {
@@ -362,6 +368,7 @@ impl IpcHandle {
         // Bump generation — any previous task will see a stale generation and skip state transitions
         let generation = self.bind_generation.fetch_add(1, Ordering::Relaxed) + 1;
         let bind_gen = self.bind_generation.clone();
+        let wss_trigger = self.wss_trigger.clone();
 
         // Store (cancel token, generation) so stale cancel requests can't kill new binds
         {
@@ -382,8 +389,14 @@ impl IpcHandle {
                         return;
                     }
                     tracing::info!("IPC 绑定成功");
-                    let _ = crate::device::save_device_token(&token);
+                    if let Err(e) = crate::device::save_device_token(&token) {
+                        tracing::error!("保存 device_token 失败: {}", e);
+                    } else {
+                        tracing::info!("device_token 已持久化到磁盘");
+                    }
                     let _ = state.transition(StateEvent::BindResult).await;
+                    // 通知主循环启动 WSS 连接
+                    let _ = wss_trigger.send(());
                 }
                 Err(e) => {
                     // Only apply timeout if this is still the latest bind

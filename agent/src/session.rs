@@ -7,6 +7,7 @@ use crate::error::{AgentError, Result};
 use crate::proto::WsMessageBuilder;
 use crate::state::{AgentState, StateMachine};
 use chrono::{DateTime, Utc};
+use std::sync::atomic::{AtomicBool, Ordering};
 use portable_pty::PtySystem;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -53,6 +54,8 @@ pub struct ManagedSession {
     pub last_input: Arc<std::sync::Mutex<String>>,
     /// 最近的 PTY 输出片段（截断至 500 字符，供 checkpoint 使用）
     pub last_output_snippet: Arc<std::sync::Mutex<String>>,
+    /// 是否已经上报过 session_ended，避免重复发送。
+    ended_reported: Arc<AtomicBool>,
 }
 
 impl ManagedSession {
@@ -76,6 +79,16 @@ impl ManagedSession {
     /// 获取最近的 PTY 输出片段。
     pub fn last_output_snippet(&self) -> String {
         self.last_output_snippet.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 标记 session_ended 是否已上报；首次调用返回 true。
+    pub fn mark_ended_reported(&self) -> bool {
+        !self.ended_reported.swap(true, Ordering::SeqCst)
+    }
+
+    /// 检查 session_ended 是否已上报。
+    pub fn ended_reported(&self) -> bool {
+        self.ended_reported.load(Ordering::SeqCst)
     }
 }
 
@@ -252,10 +265,14 @@ impl InputMerger {
     /// 将消息入队并通知等待的 PTY stdin 循环。
     pub async fn push(&self, msg: InputMessage) {
         let sid = msg.session_id.clone();
+        let len = msg.text.len();
+        let preview = if msg.text.chars().count() <= 50 { msg.text.clone() } else { format!("{}...", msg.text.chars().take(50).collect::<String>()) };
+        tracing::info!(session_id = %sid, len = len, text = %preview, "📥 [MERGER] 消息入队");
         self.queues.lock().await.entry(sid.clone()).or_default().push_back(msg);
         // 如果该会话有注册的 Notify，唤醒它
         if let Some(notify) = self.notifies.lock().await.get(&sid) {
             notify.notify_one();
+            tracing::debug!(session_id = %sid, "🔔 [MERGER] 已唤醒 stdin writer");
         }
     }
 
@@ -340,6 +357,8 @@ impl OutputFanout {
                             }
                         };
                         if !data.is_empty() {
+                            let len = data.len();
+                            tracing::info!(len = len, db_id = inner_clone.db_session_id, "⏱️  [FLUSH] 100ms 定时器触发 flush");
                             // Send to extra subscribers first (raw bytes, before data is moved)
                             for tx in &subscribers {
                                 let _ = tx.send(data.clone());
@@ -378,14 +397,18 @@ impl OutputFanout {
     /// 来自 `spawn_blocking` 上下文（同步），使用 `std::sync::Mutex`。
     /// 缓冲区达到 64KB 时立即 flush，否则等待 100ms 定时器。
     pub fn broadcast(&self, data: &[u8]) {
+        let len = data.len();
         let mut buf = self.inner.buffer.lock().unwrap_or_else(|e| e.into_inner());
         buf.extend_from_slice(data);
-        if buf.len() >= 64 * 1024 {
+        let buf_len = buf.len();
+        tracing::debug!(received = len, buffered = buf_len, "📟 [PTY-OUT] 收到 PTY 输出");
+        if buf_len >= 64 * 1024 {
             let data = std::mem::take(&mut *buf);
             drop(buf); // 释放锁后再 flush
             let wss = self.inner.wss_tx.clone();
             let ipc = self.inner.ipc_tx.clone();
             let db_id = self.inner.db_session_id;
+            tracing::info!(len = data.len(), db_id = db_id, "📟 [PTY-OUT] 达到 64KB 阈值, 立即 flush");
             Self::flush_chunked(db_id, data, wss, ipc);
         }
     }
@@ -398,11 +421,26 @@ impl OutputFanout {
         ipc_tx: Option<mpsc::UnboundedSender<String>>,
     ) {
         const CHUNK_SIZE: usize = 10 * 1024; // 10KB
-        for chunk in data.chunks(CHUNK_SIZE) {
+        let total = data.len();
+        let chunks = data.chunks(CHUNK_SIZE).count();
+        let preview = String::from_utf8_lossy(if data.len() <= 200 { &data } else { &data[..200] });
+        tracing::info!(
+            db_id = db_session_id,
+            total_len = total,
+            chunks = chunks,
+            preview = %preview.trim_end(),
+            "📤 [FLUSH] 开始分块发送输出"
+        );
+        for (i, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
             let text = String::from_utf8_lossy(chunk);
             if let Some(ref tx) = wss_tx {
                 let msg = WsMessageBuilder::output(db_session_id, &text);
-                let _ = tx.send(msg);
+                match tx.send(msg) {
+                    Ok(_) => tracing::info!(chunk = i, len = chunk.len(), "📤 [FLUSH] chunk 已发送到 wss_tx"),
+                    Err(e) => tracing::error!(chunk = i, error = %e, "📤 [FLUSH] chunk 发送到 wss_tx 失败"),
+                }
+            } else {
+                tracing::warn!(chunk = i, "📤 [FLUSH] wss_tx 为 None, 跳过");
             }
             if let Some(ref tx) = ipc_tx {
                 let _ = tx.send(text.to_string());
@@ -452,6 +490,7 @@ impl SessionManager {
             status: SessionStatus::Created,
             last_input: Arc::new(std::sync::Mutex::new(String::new())),
             last_output_snippet: Arc::new(std::sync::Mutex::new(String::new())),
+            ended_reported: Arc::new(AtomicBool::new(false)),
         };
 
         self.store.insert(session.clone()).await?;
@@ -503,8 +542,33 @@ impl SessionManager {
             let _ = std::fs::remove_file(&sock);
         }
 
+        restore_codex_auth();
         let _ = self.end(nid).await;
         Ok(())
+    }
+
+    /// 上报 session_ended 到云端，仅允许执行一次。
+    pub async fn report_session_ended(
+        &self,
+        nid: &str,
+        reason: &str,
+    ) -> Result<Option<String>> {
+        let mut session = match self.store.get(nid).await? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        if !session.mark_ended_reported() {
+            return Ok(None);
+        }
+
+        let db_id = match session.db_id {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
+        session.status = SessionStatus::Ended;
+        self.store.insert(session).await?;
+        Ok(Some(WsMessageBuilder::session_ended(db_id, reason)))
     }
 
     /// 存储 PTY writer + OutputFanout，供后续 `attach_pty` 使用。
@@ -636,7 +700,7 @@ impl SessionManager {
 
     /// 创建 PTY 会话并启动 CLI 进程。返回 OutputFanout 用于接收 PTY 输出。
     pub async fn start_session(
-        &self,
+        self: Arc<Self>,
         nid: &str,
         tool: &str,
         profile: Option<&str>,
@@ -684,7 +748,7 @@ impl SessionManager {
         // 5. spawn shell + CLI
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
         let mut cmd = portable_pty::CommandBuilder::new(&shell);
-        cmd.args(["-i", "-l"]);
+        cmd.args(["-i", "-l", "-c"]);
         if !cwd.is_empty() { cmd.cwd(cwd); }
 
         for (k, v) in std::env::vars() { cmd.env(&k, &v); }
@@ -707,9 +771,11 @@ impl SessionManager {
         cmd.env("TERM_PROGRAM", "kn");
         if std::env::var_os("LANG").is_none() { cmd.env("LANG", "en_US.UTF-8"); }
 
-        // 构建 CLI 命令行: <binary> [--settings tmp.json] ...
-        cmd.arg(&binary);
-        for arg in &prep.extra_args { cmd.arg(arg); }
+        // 构建 CLI 命令行: zsh -i -l -c "exec <binary> [--settings tmp.json] ..."
+        // 使用 exec 替换 shell 进程，确保 CLI 退出时 PTY 会话正确结束
+        let mut exec_cmd = format!("exec {}", binary);
+        for arg in &prep.extra_args { exec_cmd.push(' '); exec_cmd.push_str(arg); }
+        cmd.arg(&exec_cmd);
 
         let mut child = pair.slave.spawn_command(cmd)
             .map_err(|e| {
@@ -762,6 +828,27 @@ impl SessionManager {
         let fanout_clone = fanout.clone();
         let reader_cancel = session_cancel.clone();
         let sid = nid.to_string();
+        let (end_tx, mut end_rx) = mpsc::unbounded_channel::<()>();
+        let end_wss_tx = fanout.inner.wss_tx.clone();
+        let sid_for_end = sid.clone();
+        let sessions_for_end = self.clone();
+        tokio::spawn(async move {
+            tracing::debug!(session_id = %sid_for_end, "session_ended 监听任务已启动");
+            while end_rx.recv().await.is_some() {
+                tracing::info!(session_id = %sid_for_end, "收到 session_ended 信号，准备上报");
+                if let Some(msg) = sessions_for_end.report_session_ended(&sid_for_end, "process_exit").await.ok().flatten() {
+                    if let Some(tx) = end_wss_tx.as_ref() {
+                        let _ = tx.send(msg);
+                        tracing::info!(session_id = %sid_for_end, "session_ended 已发送到 Cloud");
+                    } else {
+                        tracing::warn!(session_id = %sid_for_end, "wss_tx 不可用，无法发送 session_ended");
+                    }
+                } else {
+                    tracing::warn!(session_id = %sid_for_end, "report_session_ended 返回 None，可能已经上报过或 session 不存在");
+                }
+            }
+            tracing::debug!(session_id = %sid_for_end, "session_ended 监听任务退出");
+        });
         tokio::task::spawn_blocking(move || {
             let mut buf = [0u8; 16384];
             let result = loop {
@@ -776,11 +863,19 @@ impl SessionManager {
                 Ok(status) => tracing::info!(session_id=%sid, exit_code=%status.exit_code(), "PTY 进程已退出"),
                 Err(e) => tracing::warn!(session_id=%sid, error=%e, "PTY wait 失败"),
             }
+            // 恢复 Codex auth.json（如果 prepare_tool_env 写过）
+            restore_codex_auth();
             match result {
                 Ok(()) => tracing::info!(session_id=%sid, "PTY EOF"),
                 Err(e) => tracing::warn!(session_id=%sid, error=%e, "PTY read error"),
             }
             reader_cancel.cancel();
+            tracing::info!(session_id=%sid, "PTY 进程已退出，准备发送 session_ended 信号");
+            match end_tx.send(()) {
+                Ok(_) => tracing::info!(session_id=%sid, "session_ended 信号已发送到监听任务"),
+                Err(e) => tracing::error!(session_id=%sid, error=%e, "发送 session_ended 信号失败"),
+            }
+
         });
 
         // 9. PTY stdin 写入循环（B2：session_cancel 时退出）
@@ -794,8 +889,14 @@ impl SessionManager {
                 tokio::select! {
                     _ = notify.notified() => {
                         while let Some(msg) = merger_clone.pop(&sid).await {
+                            let txt = msg.text.clone();
+                            let len = txt.len();
+                            let preview = if txt.chars().count() <= 50 { txt.clone() } else { format!("{}...", txt.chars().take(50).collect::<String>()) };
                             let mut w = writer_clone.lock().await;
-                            let _ = w.write_all(msg.text.as_bytes());
+                            match w.write_all(msg.text.as_bytes()) {
+                                Ok(_) => tracing::info!(session_id = %sid, len = len, text = %preview, "⌨️  [PTY-IN] 写入 PTY stdin"),
+                                Err(e) => tracing::error!(session_id = %sid, error = %e, "⌨️  [PTY-IN] 写入失败"),
+                            }
                         }
                     }
                     _ = writer_cancel.cancelled() => {
@@ -979,6 +1080,26 @@ pub fn load_checkpoints() -> Vec<crate::proto::InterruptedSession> {
     results
 }
 
+/// 将字符串包装为 TOML 双引号字符串（转义 `\` 和 `"`），
+/// 并对 shell 单引号做安全处理，用于拼接 `-c` 参数。
+fn shell_safe_toml_string(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    let toml_val = format!("\"{}\"", escaped);
+    // 单引号在 shell 单引号字符串中需要特殊处理: ' → '\''
+    toml_val.replace('\'', "'\\''")
+}
+
+/// 恢复 Codex auth.json（从 kn-bak 备份），用于 session 清理。
+fn restore_codex_auth() {
+    let codex_dir = kn_common::path::home_dir().join(".codex");
+    let auth_path = codex_dir.join("auth.json");
+    let bak_path = codex_dir.join("auth.json.kn-bak");
+    if bak_path.exists() {
+        let _ = std::fs::copy(&bak_path, &auth_path);
+        let _ = std::fs::remove_file(&bak_path);
+    }
+}
+
 /// 删除所有 checkpoint 目录（在成功上报 `session_interrupted` 后调用）。
 pub fn cleanup_checkpoints() {
     let sessions_dir = kn_common::path::agent_dir().join("sessions");
@@ -1030,8 +1151,51 @@ fn prepare_tool_env(
                 extra_args: vec!["--settings".into(), tmp.to_string_lossy().to_string()],
             })
         }
-        "bash" | "codex" | "qoder" | "qoderclicn" => {
-            // Bash / Codex / Qoder: 通过环境变量注入，无需额外参数
+        "codex" => {
+            // Codex ignores OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL env vars.
+            // It reads only ~/.codex/auth.json + ~/.codex/config.toml + -c flags.
+            // Mirror the shell wrapper logic (shell/ai-profile.sh):
+            //   1. Write API key to auth.json (with backup)
+            //   2. Pass base_url via -c model_providers.custom.base_url=...
+            //   3. Pass model via -c model=...
+            let mut extra_args = Vec::new();
+            if let Some(ref env) = _env_vars {
+                // 1. Write auth.json
+                if let Some(apikey) = env.get("OPENAI_API_KEY") {
+                    let codex_dir = kn_common::path::home_dir().join(".codex");
+                    let auth_path = codex_dir.join("auth.json");
+                    let bak_path = codex_dir.join("auth.json.kn-bak");
+                    // Backup existing auth.json
+                    if auth_path.exists() {
+                        let _ = std::fs::copy(&auth_path, &bak_path);
+                    }
+                    if let Err(e) = std::fs::create_dir_all(&codex_dir) {
+                        return Err(format!("failed to create ~/.codex dir: {}", e));
+                    }
+                    let auth_content = format!(
+                        r#"{{"auth_mode":"apikey","OPENAI_API_KEY":"{}"}}"#,
+                        apikey
+                    );
+                    std::fs::write(&auth_path, auth_content)
+                        .map_err(|e| format!("failed to write auth.json: {}", e))?;
+                }
+                // 2. Model via -c (TOML-quoted: model="gpt-5.5")
+                if let Some(model) = env.get("OPENAI_MODEL") {
+                    let val = shell_safe_toml_string(model);
+                    extra_args.push("-c".into());
+                    extra_args.push(format!("'model={}'", val));
+                }
+                // 3. Base URL via -c (TOML-quoted: base_url="https://...")
+                if let Some(base_url) = env.get("OPENAI_BASE_URL") {
+                    let val = shell_safe_toml_string(base_url);
+                    extra_args.push("-c".into());
+                    extra_args.push(format!("'model_providers.custom.base_url={}'", val));
+                }
+            }
+            Ok(ToolPrep { extra_args })
+        }
+        "bash" | "qoder" | "qoderclicn" => {
+            // Bash / Qoder: 通过环境变量注入，无需额外参数
             Ok(ToolPrep { extra_args: vec![] })
         }
         _ => Ok(ToolPrep { extra_args: vec![] }),

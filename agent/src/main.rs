@@ -32,33 +32,43 @@ enum Command {
 
 /// 读取 ~/.kn/projects.json，返回项目列表。
 /// 文件不存在或解析失败时返回空列表（静默降级）。
-fn load_projects() -> Vec<ProjectInfo> {
+///
+/// 使用 spawn_blocking 将文件 I/O 移出 Tokio 异步运行时，
+/// 避免在 worker 线程上执行阻塞操作。
+async fn load_projects() -> Vec<ProjectInfo> {
     let path = kn_common::path::config_dir().join("projects.json");
 
-    match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            serde_json::from_str::<Vec<ProjectInfo>>(&content)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("解析 projects.json 失败: {}", e);
-                    vec![]
-                })
+    tokio::task::spawn_blocking(move || {
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                serde_json::from_str::<Vec<ProjectInfo>>(&content)
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("解析 projects.json 失败: {}", e);
+                        vec![]
+                    })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("projects.json 不存在，跳过项目上报");
+                vec![]
+            }
+            Err(e) => {
+                tracing::warn!("读取 projects.json 失败: {}", e);
+                vec![]
+            }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::debug!("projects.json 不存在，跳过项目上报");
-            vec![]
-        }
-        Err(e) => {
-            tracing::warn!("读取 projects.json 失败: {}", e);
-            vec![]
-        }
-    }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        tracing::warn!("spawn_blocking 执行失败，跳过项目上报");
+        vec![]
+    })
 }
 
 /// 发送 project_list 到云端。
 async fn send_project_list(
     outgoing: &std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
 ) {
-    let projects = load_projects();
+    let projects = load_projects().await;
     let info: Vec<proto::ProjectInfoOut> = projects.iter().map(|p| p.into()).collect();
     let msg = proto::WsMessageBuilder::project_list(&info);
     if let Some(tx) = outgoing.lock().await.as_ref() {
@@ -74,12 +84,26 @@ fn start_project_watcher(
 ) -> Option<notify::RecommendedWatcher> {
     let path = kn_common::path::config_dir().join("projects.json");
 
-    let (tx, rx) = std::sync::mpsc::channel();
+    // 使用 tokio::sync::mpsc 避免在 Tokio 任务中阻塞 worker 线程
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
+    // 记录要监听的文件名，用于在回调中过滤
+    let target_name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
 
     let mut watcher = match notify::recommended_watcher(
         move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
-                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                // 只响应 projects.json 的变更（原子替换 → 父目录下其他文件不改触发）
+                let is_projects = event.paths.iter().any(|p| {
+                    p.file_name().map_or(false, |n| n == target_name)
+                });
+                if is_projects
+                    && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+                {
+                    tracing::debug!(paths = ?event.paths, "projects.json 变更，触发重新上报");
                     let _ = tx.send(());
                 }
             }
@@ -103,15 +127,15 @@ fn start_project_watcher(
     // Spawn a task to handle events with debounce
     tokio::spawn(async move {
         loop {
-            match rx.recv() {
-                Ok(()) => {
+            match rx.recv().await {
+                Some(()) => {
                     // 简单防抖：收到事件后等 2 秒，期间的新事件被丢弃
                     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                     // 排空积压事件
                     while rx.try_recv().is_ok() {}
                     send_project_list(&outgoing).await;
                 }
-                Err(std::sync::mpsc::RecvError) => break,
+                None => break,
             }
         }
     });
@@ -193,7 +217,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let sessions = Arc::new(session::SessionManager::new(store));
     let input_merger = Arc::new(session::InputMerger::new());
 
-    // ── 10. 始终启动 IPC 服务器 ──
+    // ── 10. WSS 触发通道 ──
+    // 用于在主循环中触发 WSS 连接（初始启动 + 绑定完成后）
+    let (wss_trigger_tx, mut wss_trigger_rx) = mpsc::unbounded_channel::<()>();
+
+    // ── 11. 始终启动 IPC 服务器 ──
     // IPC 服务器独立于 WSS 连接运行。即使云端不可达（如 dev 模式下
     // kn-cloud 未启动），桌面应用仍能通过 Unix socket 查询 Agent 状态。
     {
@@ -206,6 +234,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             cfg.hostname.clone(),
             cfg.purchase_url.clone(),
             input_merger.clone(),
+            wss_trigger_tx.clone(),
         );
         let ipc_shutdown = shutdown.clone();
         tokio::spawn(async move {
@@ -215,128 +244,183 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // ── 11. 有 token 时，并行运行 WSS 连接 ──
-    let _project_watcher;
+    // ── 12. WSS lifecycle management ──
+    // WSS 连接生命周期由主事件循环统一管理：
+    // - 启动时若有 token → 通过 wss_trigger 触发连接
+    // - 绑定完成后 → IPC handler 通过 wss_trigger 触发连接
+    // - AUTH_REJECTED → 回到 Unbound 状态，等待下次绑定触发
+    // - 其他断开 → 由 run_ws_loop 内部自动重连（指数退避）
+
+    let outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+    let mut wss_active = false;
+    let mut wss_task = None; // Option<JoinHandle<kn_agent::error::Result<()>>>
+    let mut incoming_rx: Option<mpsc::UnboundedReceiver<proto::AgentIncoming>> = None;
+    let mut _project_watcher: Option<notify::RecommendedWatcher> = None;
+
+    // 初始状态转换
     if has_token {
-        let t = token.unwrap();
         state_machine
             .transition(state::StateEvent::WsConnected { has_token: true })
             .await?;
-
-        tracing::info!("已找到 device_token，并行运行 WSS 连接 + IPC 服务...");
-
-        // 消息通道
-        let (incoming_tx, mut incoming_rx) =
-            mpsc::unbounded_channel::<proto::AgentIncoming>();
-        let outgoing_tx_ref = Arc::new(tokio::sync::Mutex::new(
-            None::<mpsc::UnboundedSender<String>>,
-        ));
-
-        let ws_state = state_machine.clone();
-        let ws_shutdown = shutdown.clone();
-        let ws_token = t.clone();
-        let ws_url = cfg.cloud_url.clone();
-        let ws_machine = cfg.machine_id.clone();
-        let ws_version = env!("CARGO_PKG_VERSION").to_string();
-        let ws_os = cfg.os_version.clone();
-        let ws_host = cfg.hostname.clone();
-        let ws_outgoing = outgoing_tx_ref.clone();
-        let ws_sessions = sessions.clone();
-        let ws_input_merger = input_merger.clone();
-
-        // WSS 任务：在后台运行连接循环 + 消息处理
-        // IPC 服务器已在上一步启动，二者并行运行
-        //
-        // 注意：必须在 spawn 前 clone 所需的值，因为外层 loop 和内层
-        // ws_client::run_ws_loop 都需要使用它们。
-        let ws_state_inner = ws_state.clone();
-        let ws_outgoing_inner = ws_outgoing.clone();
-        let ws_shutdown_inner = ws_shutdown.clone();
-
-        tokio::spawn(async move {
-            let mut ws_handle = tokio::spawn(async move {
-                ws_client::run_ws_loop(
-                    &ws_token,
-                    &ws_url,
-                    &ws_machine,
-                    &ws_version,
-                    &ws_os,
-                    &ws_host,
-                    ws_state_inner,
-                    ws_outgoing_inner,
-                    incoming_tx,
-                    ws_shutdown_inner,
-                )
-                .await
-            });
-
-            loop {
-                tokio::select! {
-                    result = &mut ws_handle => {
-                        match result {
-                            Ok(Err(ref e)) if e.to_string().contains("AUTH_REJECTED") => {
-                                tracing::warn!("device_token 已失效，切换至未绑定状态（IPC 仍运行），保留旧 token 文件");
-                                // 不删除 token 文件：保留旧 token 以便重新绑定时覆盖，
-                                // 同时支持后端 URL 切换（切回原后端时 token 仍有效）
-                                let _ = ws_state
-                                    .transition(state::StateEvent::WsConnected { has_token: false })
-                                    .await;
-                            }
-                            Ok(Ok(())) => tracing::info!("WSS 循环正常退出"),
-                            Ok(Err(e)) => tracing::error!("WSS 循环错误: {}", e),
-                            Err(e) => tracing::error!("WSS 任务 panic: {}", e),
-                        }
-                        break;
-                    }
-                    _ = ws_shutdown.cancelled() => {
-                        tracing::info!("WSS 任务收到关闭信号");
-                        break;
-                    }
-                    msg = incoming_rx.recv() => {
-                        match msg {
-                            Some(m) => {
-                                handle_incoming(
-                                    m,
-                                    ws_state.clone(),
-                                    ws_outgoing.clone(),
-                                    ws_sessions.clone(),
-                                    ws_input_merger.clone(),
-                                ).await;
-                            }
-                            None => {
-                                tracing::info!("WSS 入站消息通道已关闭");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        // 启动 projects.json 文件监听，变化时自动重新上报
-        _project_watcher = start_project_watcher(outgoing_tx_ref.clone());
+        // 通过 trigger 通道统一触发 WSS 启动
+        let _ = wss_trigger_tx.send(());
     } else {
-        // 无 token：直接进入 Unbound 状态，等待桌面应用通过 IPC 发起绑定
         state_machine
             .transition(state::StateEvent::WsConnected { has_token: false })
             .await?;
         _project_watcher = None;
     }
 
-    // ── 12. 等待关闭信号 ──
     tracing::info!(
         "Agent 就绪: IPC={}, WSS={}",
         cfg.ipc_socket_path.display(),
-        if has_token { "enabled" } else { "disabled (no token)" }
+        if has_token { "initializing" } else { "disabled (no token)" }
     );
     tracing::info!("使用以下方式绑定:");
     tracing::info!("  1. 运行 'kn-agent bind' 开始绑定流程");
     tracing::info!("  2. 在 iOS App 中扫描二维码");
     tracing::info!("  3. 通过 IPC 发送 bind 请求");
 
-    shutdown.cancelled().await;
+    // ── 13. Main event loop ──
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                tracing::info!("收到关闭信号");
+                break;
+            }
 
-    // ── 13. 优雅关闭 ──
+            // ── WSS 触发：初始启动 或 绑定完成 ──
+            Some(()) = wss_trigger_rx.recv() => {
+                if wss_active {
+                    tracing::debug!("WSS 已在运行中，忽略重复触发");
+                    continue;
+                }
+
+                let t = match device::load_device_token() {
+                    Some(tok) if !tok.is_empty() => tok,
+                    _ => {
+                        tracing::warn!("WSS 触发但未找到 device_token，跳过");
+                        continue;
+                    }
+                };
+
+                tracing::info!("正在启动 WSS 连接...");
+
+                // 确保状态正确（绑定完成时可能已经是 Connected）
+                let current = state_machine.current().await;
+                if current != state::AgentState::Connected
+                    && current != state::AgentState::Reconnecting
+                {
+                    let _ = state_machine
+                        .transition(state::StateEvent::WsConnected { has_token: true })
+                        .await;
+                }
+
+                // 创建入站消息通道
+                let (incoming_tx, rx) = mpsc::unbounded_channel::<proto::AgentIncoming>();
+                incoming_rx = Some(rx);
+
+                // 启动 project watcher
+                _project_watcher = start_project_watcher(outgoing_tx_ref.clone());
+
+                // 复制 WSS 所需参数
+                let ws_token = t;
+                let ws_url = cfg.cloud_url.clone();
+                let ws_machine = cfg.machine_id.clone();
+                let ws_version = env!("CARGO_PKG_VERSION").to_string();
+                let ws_os = cfg.os_version.clone();
+                let ws_host = cfg.hostname.clone();
+                let ws_state = state_machine.clone();
+                let ws_outgoing = outgoing_tx_ref.clone();
+                let ws_shutdown = shutdown.clone();
+
+                // 在后台 spawn run_ws_loop（内部有无限重连逻辑）
+                wss_task = Some(tokio::spawn(async move {
+                    ws_client::run_ws_loop(
+                        &ws_token,
+                        &ws_url,
+                        &ws_machine,
+                        &ws_version,
+                        &ws_os,
+                        &ws_host,
+                        ws_state,
+                        ws_outgoing,
+                        incoming_tx,
+                        ws_shutdown,
+                    )
+                    .await
+                }));
+
+                wss_active = true;
+                tracing::info!("WSS 连接任务已启动");
+            }
+
+            // ── 处理 WSS 入站消息 ──
+            msg = async {
+                match incoming_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some(m) = msg {
+                    handle_incoming(
+                        m,
+                        state_machine.clone(),
+                        outgoing_tx_ref.clone(),
+                        sessions.clone(),
+                        input_merger.clone(),
+                    ).await;
+                }
+            }
+
+            // ── 处理 WSS 任务退出 ──
+            result = async {
+                match wss_task.as_mut() {
+                    Some(task) => Some(task.await),
+                    None => std::future::pending().await,
+                }
+            } => {
+                match result {
+                    Some(Ok(Err(ref e))) if e.to_string().contains("AUTH_REJECTED") => {
+                        tracing::warn!(
+                            "device_token 已失效，切换至未绑定状态（IPC 仍运行），保留旧 token 文件"
+                        );
+                        let _ = state_machine
+                            .transition(state::StateEvent::WsConnected { has_token: false })
+                            .await;
+                    }
+                    Some(Ok(Ok(()))) => {
+                        tracing::info!("WSS 循环正常退出");
+                        break; // shutdown 触发的正常退出
+                    }
+                    Some(Ok(Err(e))) => {
+                        tracing::error!("WSS 循环错误: {}", e);
+                        let _ = state_machine
+                            .transition(state::StateEvent::WsConnected { has_token: false })
+                            .await;
+                    }
+                    Some(Err(e)) => {
+                        tracing::error!("WSS 任务 panic: {}", e);
+                        let _ = state_machine
+                            .transition(state::StateEvent::WsConnected { has_token: false })
+                            .await;
+                    }
+                    None => {
+                        tracing::debug!("WSS task handle 为 None，忽略");
+                        continue;
+                    }
+                }
+
+                // 清理 WSS 状态，等待下次触发
+                wss_active = false;
+                wss_task = None;
+                incoming_rx = None;
+            }
+        }
+    }
+
+    // ── 14. 优雅关闭 ──
     state_machine
         .transition(state::StateEvent::Stop)
         .await?;
@@ -397,6 +481,8 @@ async fn handle_incoming(
             profile,
             cwd,
             from_user_id,
+            cols,
+            rows,
         } => {
             tracing::info!(
                 nid = %session_nid,
@@ -408,8 +494,6 @@ async fn handle_incoming(
             );
 
             let cwd_resolved = cwd.unwrap_or_else(|| ".".into());
-            let cols: u16 = 80;
-            let rows: u16 = 24;
 
             // 1. Create session record
             match sessions
@@ -426,12 +510,41 @@ async fn handle_incoming(
                     // 2. Send session_created confirmation to cloud
                     let created_msg = proto::WsMessageBuilder::session_created(db_session_id);
                     if let Some(tx) = outgoing.lock().await.as_ref() {
-                        let _ = tx.send(created_msg);
+                        match tx.send(created_msg) {
+                            Ok(_) => tracing::info!(db_id = db_session_id, "✅ [SESSION] session_created 已发送到 Cloud"),
+                            Err(e) => tracing::error!(db_id = db_session_id, error = %e, "❌ [SESSION] session_created 发送失败"),
+                        }
+                    } else {
+                        tracing::error!(db_id = db_session_id, "❌ [SESSION] outgoing 通道为 None, 无法发送 session_created");
                     }
 
                     // 3. Spawn PTY + CLI process
-                    let (wss_tx, _wss_rx) = mpsc::unbounded_channel::<String>();
-                    let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
+                    let (wss_tx, mut wss_rx) = mpsc::unbounded_channel::<String>();
+                    let (ipc_tx, mut ipc_rx) = mpsc::unbounded_channel::<String>();
+
+                    // 转发 task: OutputFanout 的输出 → 全局 WSS outgoing 通道
+                    let out = outgoing.clone();
+                    tokio::spawn(async move {
+                        while let Some(msg) = wss_rx.recv().await {
+                            let len = msg.len();
+                            if let Some(tx) = out.lock().await.as_ref() {
+                                match tx.send(msg) {
+                                    Ok(_) => tracing::info!(len = len, "📤 [OUTPUT] 已转发到全局 WSS"),
+                                    Err(e) => tracing::error!(len = len, error = %e, "📤 [OUTPUT] 转发失败"),
+                                }
+                            } else {
+                                tracing::warn!(len = len, "📤 [OUTPUT] outgoing 通道不可用");
+                            }
+                        }
+                        tracing::warn!("📤 [OUTPUT] wss_rx 通道关闭, 转发 task 退出");
+                    });
+
+                    // IPC 输出消费 task（避免 channel full 阻塞 OutputFanout）
+                    tokio::spawn(async move {
+                        while let Some(msg) = ipc_rx.recv().await {
+                            tracing::debug!(msg_len = msg.len(), "IPC output channel drained");
+                        }
+                    });
                     let s = sessions.clone();
                     let m = input_merger.clone();
                     let nid = session_nid.clone();
@@ -471,29 +584,74 @@ async fn handle_incoming(
             content,
             ..
         } => {
-            tracing::debug!(
+            tracing::info!(
                 db_id = db_session_id,
                 seq = seq,
-                len = content.len(),
-                "收到远程输入"
+                content = %content,
+                "📱 [INPUT] 收到远程输入"
             );
 
-            // Lookup session by DB id and route input to PTY stdin
-            match sessions.get_by_db_id(db_session_id).await {
-                Ok(Some(session_summary)) => {
-                    input_merger
-                        .push(session::InputMessage {
-                            session_id: session_summary.nid,
-                            text: content,
-                            source: "ios".into(),
-                        })
-                        .await;
+            // Intercept /exit command: force-kill PTY process and report session_ended,
+            // instead of passing it through as raw stdin text (which CLI may not handle
+            // if stuck in a subprocess like vim).
+            let content_trimmed = content.trim();
+            if content_trimmed == "/exit" || content_trimmed.starts_with("/exit ") {
+                tracing::info!(db_id = db_session_id, "🛑 [EXIT] 收到 /exit 命令，强制终止会话");
+
+                match sessions.get_by_db_id(db_session_id).await {
+                    Ok(Some(session_summary)) => {
+                        let nid = session_summary.nid;
+
+                        // 1. Report session_ended FIRST (atomic swap ensures this reason wins
+                        //    over any concurrent "process_exit" from PTY EOF handler)
+                        match sessions.report_session_ended(&nid, "user_exit").await {
+                            Ok(Some(msg)) => {
+                                if let Some(tx) = outgoing.lock().await.as_ref() {
+                                    let _ = tx.send(msg);
+                                    tracing::info!(db_id = db_session_id, nid = %nid, "session_ended (user_exit) 已发送到 Cloud");
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!(db_id = db_session_id, nid = %nid, "session_ended 已上报过，跳过");
+                            }
+                            Err(e) => {
+                                tracing::error!(db_id = db_session_id, nid = %nid, error = %e, "session_ended 发送失败");
+                            }
+                        }
+
+                        // 2. Kill the PTY process (SIGKILL + cleanup)
+                        if let Err(e) = sessions.kill_session(&nid).await {
+                            tracing::error!(db_id = db_session_id, nid = %nid, error = %e, "kill_session 失败");
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!(db_id = db_session_id, "/exit 目标会话不存在");
+                    }
+                    Err(e) => {
+                        tracing::error!(db_id = db_session_id, error = %e, "/exit 查询会话失败");
+                    }
                 }
-                Ok(None) => {
-                    tracing::warn!(db_id = db_session_id, "Input 目标会话不存在");
-                }
-                Err(e) => {
-                    tracing::error!(db_id = db_session_id, error = %e, "Input 查询会话失败");
+            } else {
+                // Normal input: route to PTY stdin
+                match sessions.get_by_db_id(db_session_id).await {
+                    Ok(Some(session_summary)) => {
+                        let nid = session_summary.nid.clone();
+                        let text = content.clone();
+                        input_merger
+                            .push(session::InputMessage {
+                                session_id: nid.clone(),
+                                text,
+                                source: "ios".into(),
+                            })
+                            .await;
+                        tracing::info!(nid = %nid, "📱 [INPUT] 已推入 InputMerger 队列");
+                    }
+                    Ok(None) => {
+                        tracing::warn!(db_id = db_session_id, "Input 目标会话不存在");
+                    }
+                    Err(e) => {
+                        tracing::error!(db_id = db_session_id, error = %e, "Input 查询会话失败");
+                    }
                 }
             }
         }
@@ -539,6 +697,57 @@ async fn handle_incoming(
                 }
                 Err(e) => {
                     tracing::error!(db_id = db_session_id, error = %e, "Ctrl 查询会话失败");
+                }
+            }
+
+            if signal_name == "ctrl_c" {
+                match sessions.get_by_db_id(db_session_id).await {
+                    Ok(Some(session_summary)) => {
+                        match sessions.report_session_ended(&session_summary.nid, "user_interrupt").await {
+                            Ok(Some(msg)) => {
+                                if let Some(tx) = outgoing.lock().await.as_ref() {
+                                    let _ = tx.send(msg);
+                                    tracing::info!(db_id = db_session_id, "session_ended 已发送到 Cloud");
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                tracing::error!(db_id = db_session_id, error = %e, "session_ended 发送失败");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!(db_id = db_session_id, "Ctrl 结束目标会话不存在");
+                    }
+                    Err(e) => {
+                        tracing::error!(db_id = db_session_id, error = %e, "Ctrl 结束查询会话失败");
+                    }
+                }
+            }
+        }
+        proto::AgentIncoming::Resize {
+            db_session_id,
+            cols,
+            rows,
+        } => {
+            tracing::debug!(
+                db_id = db_session_id,
+                cols = cols,
+                rows = rows,
+                "收到远程 resize"
+            );
+
+            match sessions.get_by_db_id(db_session_id).await {
+                Ok(Some(session_summary)) => {
+                    if let Err(e) = sessions.resize(&session_summary.nid, cols, rows).await {
+                        tracing::error!(db_id = db_session_id, error = %e, "Resize 会话失败");
+                    }
+                }
+                Ok(None) => {
+                    tracing::warn!(db_id = db_session_id, "Resize 目标会话不存在");
+                }
+                Err(e) => {
+                    tracing::error!(db_id = db_session_id, error = %e, "Resize 查询会话失败");
                 }
             }
         }

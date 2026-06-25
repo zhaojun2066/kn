@@ -214,8 +214,8 @@ except: pass
     # trap ensures temp files are cleaned up on any exit (normal, error, SIGINT).
     case "$tool" in
         claude)
-            # Claude Code v2.0.1+ bug: settings.json env overrides shell env vars.
-            # Workaround: generate temp settings file from profile, pass via --settings.
+            # settings.json 的 env swap 已在 ai() 中统一处理。
+            # 这里只需把 profile env 写成临时文件传给 --settings（兜底）。
             if command -v python3 >/dev/null 2>&1; then
                 local tmp_settings
                 tmp_settings=$(mktemp "${TMPDIR:-/tmp}/kn-claude.XXXXXX")
@@ -485,10 +485,48 @@ ai() {
                 def=$(_default_profile 2>/dev/null)
                 profile="${def:-}"
             fi
-            if _ai_agent_launch "$tool" "$profile" "$(pwd)"; then
-                return 0
+
+            # ── Claude Code 会优先读取 settings.json 的 env 而非 shell 环境变量 ──
+            # 在启动前把 profile env 临时写入 settings.json，退出后恢复。
+            # 放在 ai() 层级而非子函数中，确保 Agent IPC 和直接启动两条路径都生效。
+            local _kn_settings="$HOME/.claude/settings.json"
+            local _kn_bak=""
+            if [ "$tool" = "claude" ] && [ -n "$profile" ] && \
+               [ -f "$_kn_settings" ] && command -v python3 >/dev/null 2>&1; then
+                _kn_bak=$(mktemp "${TMPDIR:-/tmp}/kn-settings-bak.XXXXXX")
+                cp "$_kn_settings" "$_kn_bak"
+                _profile_env "$profile" | python3 -c "
+import sys, json
+env = {}
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith('export '):
+        continue
+    rest = line[7:]
+    eq = rest.index('=')
+    key = rest[:eq]
+    val = rest[eq+1:]
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in ('\"', \"'\"):
+        val = val[1:-1]
+    env[key] = val
+with open('$_kn_bak') as f:
+    base = json.load(f)
+base['env'] = env
+with open('$_kn_settings', 'w') as f:
+    json.dump(base, f, indent=2)
+" 2>/dev/null
             fi
-            _ai_direct "$cmd" "${@:2}"
+
+            if _ai_agent_launch "$tool" "$profile" "$(pwd)"; then
+                :
+            elif [ -n "$profile" ]; then
+                _ai_launch_with_profile "$tool" "$profile" "$@"
+            else
+                _ai_direct "$cmd" "${@:2}"
+            fi
+
+            # 恢复原 settings.json
+            [ -n "$_kn_bak" ] && [ -f "$_kn_bak" ] && mv "$_kn_bak" "$_kn_settings"
             ;;
         *)
             _ai_direct "$@"
