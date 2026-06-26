@@ -124,7 +124,7 @@ fn test_all_outbound_builders_produce_valid_json() {
     let output = WsMessageBuilder::output("s_abc", "ansi text");
     let v: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(v["type"], "output");
-    assert_eq!(v["data"]["to_session_id"], 42);
+    assert_eq!(v["data"]["to_session_id"], "s_abc");
     assert_eq!(v["data"]["ansi_text"], "ansi text");
 
     // sessions_interrupted

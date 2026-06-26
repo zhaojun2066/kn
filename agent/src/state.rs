@@ -239,14 +239,20 @@ fn crash_count_path() -> PathBuf {
 /// 仅测试用：覆盖 crash count 路径。
 #[cfg(test)]
 fn set_test_crash_dir(dir: &std::path::Path) {
-    // 直接设置 KN_HOME 是测试中最可靠的方式（每次调用 config_dir() 会重新读取）
-    // 但需要串行执行，用 --test-threads=1
     std::env::set_var("KN_HOME", dir.to_str().unwrap());
 }
 
 #[cfg(test)]
-fn clear_test_env() {
-    std::env::remove_var("KN_HOME");
+fn save_kn_home() -> Option<String> {
+    std::env::var("KN_HOME").ok()
+}
+
+#[cfg(test)]
+fn restore_kn_home(val: Option<String>) {
+    match val {
+        Some(v) => std::env::set_var("KN_HOME", v),
+        None => std::env::remove_var("KN_HOME"),
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────
@@ -339,6 +345,9 @@ mod tests {
 
     #[test]
     fn test_crash_count_persistence() {
+        // 与 device.rs 测试共享锁，防止多线程同时操作 KN_HOME 导致路径回退到 ~/.kn/
+        let _guard = crate::device::tests::kn_home_lock();
+        let prev = save_kn_home();
         let dir = std::env::temp_dir().join(format!("kn-test-crash-{}", std::process::id()));
         set_test_crash_dir(&dir);
 
@@ -353,7 +362,7 @@ mod tests {
         StateMachine::clear_crash_count();
         assert_eq!(StateMachine::load_crash_count(), 0);
 
-        clear_test_env();
+        restore_kn_home(prev);
         let _ = std::fs::remove_dir_all(dir);
     }
 

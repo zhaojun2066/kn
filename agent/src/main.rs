@@ -466,7 +466,8 @@ async fn cli_heartbeat_loop(
                 }
 
                 // 尝试检查进程是否存活 (kill(pid, 0))
-                let state = if let Some(pid) = sessions.get_child_pid(&s.nid).await {
+                let pid_opt = sessions.get_child_pid(&s.nid).await;
+                let state = if let Some(pid) = pid_opt {
                     // kill(pid, 0) 不发送信号，仅检查进程是否存在
                     let is_alive = unsafe { libc::kill(pid as i32, 0) == 0 };
                     if is_alive {
@@ -492,7 +493,7 @@ async fn cli_heartbeat_loop(
                 if state == "running" {
                     alive_sessions.push(proto::HeartbeatSession {
                         session_nid: s.nid.clone(),
-                        pid: sessions.get_child_pid(&s.nid).await.unwrap_or(0),
+                        pid: pid_opt.unwrap_or(0),
                         state,
                     });
                 }
@@ -704,20 +705,20 @@ async fn handle_incoming(
                             Ok(Some(msg)) => {
                                 if let Some(tx) = outgoing.lock().await.as_ref() {
                                     let _ = tx.send(msg.to_json());
-                                    tracing::info!(nid = %session_nid, nid = %nid, "session_ended (user_exit) 已发送到 Cloud");
+                                    tracing::info!(session_nid = %session_nid, nid = %nid, "session_ended (user_exit) 已发送到 Cloud");
                                 }
                             }
                             Ok(None) => {
-                                tracing::warn!(nid = %session_nid, nid = %nid, "session_ended 已上报过，跳过");
+                                tracing::warn!(session_nid = %session_nid, nid = %nid, "session_ended 已上报过，跳过");
                             }
                             Err(e) => {
-                                tracing::error!(nid = %session_nid, nid = %nid, error = %e, "session_ended 发送失败");
+                                tracing::error!(session_nid = %session_nid, nid = %nid, error = %e, "session_ended 发送失败");
                             }
                         }
 
                         // 2. Kill the PTY process (SIGKILL + cleanup)
                         if let Err(e) = sessions.kill_session(&nid).await {
-                            tracing::error!(nid = %session_nid, nid = %nid, error = %e, "kill_session 失败");
+                            tracing::error!(session_nid = %session_nid, nid = %nid, error = %e, "kill_session 失败");
                         }
                     }
                     Ok(None) => {
@@ -793,31 +794,6 @@ async fn handle_incoming(
                 }
                 Err(e) => {
                     tracing::error!(nid = %session_nid, error = %e, "Ctrl 查询会话失败");
-                }
-            }
-
-            if signal_name == "ctrl_c" {
-                match sessions.get(&session_nid).await {
-                    Ok(Some(session_summary)) => {
-                        match sessions.report_session_ended(&session_summary.nid, "user_interrupt").await {
-                            Ok(Some(msg)) => {
-                                if let Some(tx) = outgoing.lock().await.as_ref() {
-                                    let _ = tx.send(msg.to_json());
-                                    tracing::info!(nid = %session_nid, "session_ended 已发送到 Cloud");
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                tracing::error!(nid = %session_nid, error = %e, "session_ended 发送失败");
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        tracing::warn!(nid = %session_nid, "Ctrl 结束目标会话不存在");
-                    }
-                    Err(e) => {
-                        tracing::error!(nid = %session_nid, error = %e, "Ctrl 结束查询会话失败");
-                    }
                 }
             }
         }

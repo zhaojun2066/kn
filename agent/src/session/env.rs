@@ -1,6 +1,10 @@
-/// TOML 字符串转义（用于 CLI -c 参数注入）。
+/// TOML 字符串转义（用于 Codex CLI -c 参数注入）。
+///
+/// 外层 shell 参数使用单引号包裹，因此值中的单引号需要转义为 `'\''`。
 pub(crate) fn shell_safe_toml_string(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped = s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\'', "'\\''");
     format!("\"{}\"", escaped)
 }
 

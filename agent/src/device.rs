@@ -304,10 +304,32 @@ pub(crate) fn save_device_token(token: &str) -> Result<()> {
     Ok(())
 }
 
+/// 返回生产环境 device_token 路径（使用 home_dir，忽略 KN_HOME）。
+/// 用于安全检查：任何情况下都不能操作这个路径。
+fn production_device_token_path() -> PathBuf {
+    kn_common::path::home_dir().join(".kn").join("agent").join("device_token")
+}
+
 /// 删除本地 device_token 文件（在 token 失效/吊销时调用）。
 /// 使用原子 rename→delete 策略避免部分读取。
+///
+/// # 硬安全阀
+/// 如果目标路径等于生产环境路径 `$HOME/.kn/agent/device_token`，直接拒绝。
+/// 这个文件**永远**不能通过代码删除，无论 KN_HOME 如何设置。
 pub fn delete_device_token() {
     let path = device_token_path();
+
+    // 硬安全阀：生产路径绝对不能删。先规范化再比较，防止 symlink 绕过。
+    let prod = production_device_token_path();
+    let canonical_target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let canonical_prod = std::fs::canonicalize(&prod).unwrap_or_else(|_| prod.clone());
+    if canonical_target == canonical_prod {
+        tracing::warn!(
+            "delete_device_token 被硬拦截：目标路径是生产环境 token 文件 {}",
+            prod.display()
+        );
+        return;
+    }
     if path.exists() {
         let tmp = path.with_extension("deleting");
         // 先将文件移走（原子操作），防止其他读取者读到部分内容
@@ -325,19 +347,41 @@ pub fn delete_device_token() {
 // ── Tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use std::sync::Mutex;
 
-    // NOTE: These tests set the process-global KN_HOME environment variable.
-    // Since KN_HOME is shared across all test threads, these tests MUST run
-    // serially. Run with: cargo test --package kn-agent -- --test-threads=1
-    // (Same constraint as state.rs tests.)
+    // NOTE: These tests manipulate the process-global KN_HOME env var.
+    // std::env::set_var is NOT thread-safe — concurrent tests can race and
+    // temporarily leave KN_HOME unset, causing device_token_path() to fall
+    // back to $HOME/.kn and operate on the user's REAL token file.
+    //
+    // To prevent this, we use a static Mutex to serialize all KN_HOME
+    // manipulations across test threads, and we NEVER call remove_var().
+    // Instead we save/restore the original value.
+    static KN_HOME_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// 获取 KN_HOME 全局锁，防止并行测试更改环境变量导致路径退避到真实 ~/.kn/。
+    pub(crate) fn kn_home_lock() -> std::sync::MutexGuard<'static, ()> {
+        KN_HOME_MUTEX.lock().unwrap()
+    }
+
+    fn save_kn_home() -> Option<String> {
+        std::env::var("KN_HOME").ok()
+    }
+    fn restore_kn_home(val: Option<String>) {
+        match val {
+            Some(v) => std::env::set_var("KN_HOME", v),
+            None => std::env::remove_var("KN_HOME"),
+        }
+    }
 
     #[test]
     fn test_save_and_load_device_token() {
+        let _guard = KN_HOME_MUTEX.lock().unwrap();
+        let prev = save_kn_home();
         let dir = std::env::temp_dir().join(format!("kn-test-device-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        // KN_HOME is process-global — must run with --test-threads=1 (see module docs)
         std::env::set_var("KN_HOME", dir.to_str().unwrap());
 
         let token = "test-device-token-12345";
@@ -345,28 +389,30 @@ mod tests {
         let loaded = load_device_token().unwrap();
         assert_eq!(loaded, token);
 
-        std::env::remove_var("KN_HOME");
+        restore_kn_home(prev);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn test_load_device_token_not_found() {
+        let _guard = KN_HOME_MUTEX.lock().unwrap();
+        let prev = save_kn_home();
         let dir = std::env::temp_dir().join(format!("kn-test-device-empty-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        // KN_HOME is process-global — must run with --test-threads=1 (see module docs)
         std::env::set_var("KN_HOME", dir.to_str().unwrap());
 
         assert!(load_device_token().is_none());
 
-        std::env::remove_var("KN_HOME");
+        restore_kn_home(prev);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn test_delete_device_token() {
+        let _guard = KN_HOME_MUTEX.lock().unwrap();
+        let prev = save_kn_home();
         let dir = std::env::temp_dir().join(format!("kn-test-device-del-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        // KN_HOME is process-global — must run with --test-threads=1 (see module docs)
         std::env::set_var("KN_HOME", dir.to_str().unwrap());
 
         let token = "test-token-to-delete";
@@ -380,7 +426,7 @@ mod tests {
         delete_device_token();
         assert!(load_device_token().is_none());
 
-        std::env::remove_var("KN_HOME");
+        restore_kn_home(prev);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -105,6 +105,11 @@ pub async fn run_ws_loop(
                 // B12: token 被吊销/过期 — 不再重连，回到 Unbound
                 if err_msg.contains("AUTH_REJECTED") {
                     tracing::warn!("device_token 已失效，进入未绑定状态");
+                    // 清除 sender，防止后续 project watcher / heartbeat 向已关闭连接发送
+                    {
+                        let mut tx_ref = outgoing_tx_ref.lock().await;
+                        *tx_ref = None;
+                    }
                     match state
                         .transition(StateEvent::WsConnected {
                             has_token: false,
@@ -118,9 +123,6 @@ pub async fn run_ws_loop(
                 }
 
                 tracing::warn!("WSS 连接断开: {} (尝试 #{})", e, attempt + 1);
-                // 重置退避计数器：connect_and_run 内建 30s 连接超时提供自然退避，
-                // 累积 attempt 会导致短暂网络抖动后不必要地长时间阻塞。
-                attempt = 0;
                 attempt += 1;
 
                 if state.current().await != AgentState::Reconnecting {

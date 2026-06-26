@@ -2,7 +2,7 @@ use crate::proto::WsMessageBuilder;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing;
@@ -36,6 +36,23 @@ pub(crate) struct OutputFanoutInner {
 /// key = session nid, value = 该 session 日志的当前字节数。
 static STATIC_LOG_SIZES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<AtomicU64>>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// 全局日志文件写入锁表，防止并发 append + trim 导致的数据丢失。
+/// key = 日志文件规范路径, value = Mutex<()>。
+/// `append_log` 和 `trim_log_head` 通过此锁串行化，避免两个并发上下文
+/// （spawn_blocking PTY reader + 100ms timer flush）的写-读-写竞争。
+static LOG_FILE_LOCKS: std::sync::LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 获取或创建指定路径的日志写入锁。
+fn get_log_lock(path: &PathBuf) -> Arc<Mutex<()>> {
+    // 规范化路径避免同一文件不同表示产生不同的锁对象
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+    let mut map = LOG_FILE_LOCKS.lock().unwrap();
+    map.entry(canonical)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
 /// 获取或初始化指定 nid 的日志大小 AtomicU64。供 `append_log_static` 复用。
 pub(crate) fn get_static_log_size(nid: &str) -> Arc<AtomicU64> {
@@ -218,7 +235,12 @@ impl OutputFanout {
     }
 
     /// 追加写入环形日志，超过 OUTPUT_LOG_MAX_SIZE 时截掉头部。
+    ///
+    /// 使用 per-file Mutex 防止两个并发上下文（spawn_blocking PTY reader +
+    /// 100ms timer flush）的 write-all → trim 序列互相穿插导致数据丢失。
     fn append_log(path: &PathBuf, data: &[u8], log_size: &std::sync::atomic::AtomicU64) {
+        let lock = get_log_lock(path);
+        let _guard = lock.lock().unwrap();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

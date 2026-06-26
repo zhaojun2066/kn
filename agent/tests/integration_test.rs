@@ -1053,15 +1053,15 @@ fn test_agent_with_token_goes_to_wss_path() {
     )
     .unwrap();
 
-    // Start agent — with a token present, it should go to the WSS path and
-    // NOT start the IPC server. So the socket should never appear.
+    // Start agent — with a token present, it goes to the WSS path.
+    // The IPC server now always starts (unconditionally, for Desktop status queries),
+    // so the socket SHOULD appear regardless of token state.
     let _agent = spawn_agent(&dir);
 
-    // Wait a few seconds — IPC socket should NOT appear (token → WSS path)
     let appeared = wait_for_ipc_socket(&dir.ipc_sock(), 5);
     assert!(
-        !appeared,
-        "IPC socket should NOT appear when agent has a device_token (agent goes to WSS path, not IPC path)"
+        appeared,
+        "IPC socket SHOULD appear even when agent has a device_token (IPC server always starts)"
     );
 }
 
