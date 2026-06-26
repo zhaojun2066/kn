@@ -630,7 +630,7 @@ async fn start_pty_basic(tool: &str) -> (String, Arc<kn_agent::session::SessionM
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
     sessions
-        .create(nid.clone(), tool.to_string(), None, cwd.clone())
+        .create(nid.clone(), "test".into(), tool.to_string(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
         .await
         .expect("create session");
 
@@ -638,7 +638,7 @@ async fn start_pty_basic(tool: &str) -> (String, Arc<kn_agent::session::SessionM
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .clone().start_session(&nid, tool, None, &cwd, 80, 24, wss_tx, ipc_tx, merger)
+        .clone().start_session(&nid, tool, None, &cwd, 80, 24, wss_tx, ipc_tx, merger, None)
         .await
         .expect("start PTY session");
 
@@ -687,7 +687,7 @@ async fn test_pty_input_output_roundtrip() {
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
     sessions
-        .create(nid.clone(), "bash".into(), None, cwd.clone())
+        .create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
         .await
         .expect("create");
 
@@ -695,7 +695,7 @@ async fn test_pty_input_output_roundtrip() {
     let (ipc_tx, mut ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone())
+        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone(), None)
         .await
         .expect("start PTY");
 
@@ -739,7 +739,7 @@ async fn test_pty_kill_session() {
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
     sessions
-        .create(nid.clone(), "bash".into(), None, cwd.clone())
+        .create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
         .await
         .expect("create");
 
@@ -747,7 +747,7 @@ async fn test_pty_kill_session() {
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger)
+        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger, None)
         .await
         .expect("start PTY");
 
@@ -776,7 +776,7 @@ async fn test_pty_resize_session() {
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
     sessions
-        .create(nid.clone(), "bash".into(), None, cwd.clone())
+        .create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
         .await
         .expect("create");
 
@@ -784,7 +784,7 @@ async fn test_pty_resize_session() {
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger)
+        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger, None)
         .await
         .expect("start PTY");
 
@@ -814,7 +814,7 @@ async fn test_pty_multiple_concurrent_sessions() {
     for _ in 0..2 {
         let nid = format!("s_concurrent_{}", nanoid::nanoid!(8));
         sessions
-            .create(nid.clone(), "bash".into(), None, cwd.clone())
+            .create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
             .await
             .expect("create");
 
@@ -823,7 +823,7 @@ async fn test_pty_multiple_concurrent_sessions() {
         let cancel = tokio_util::sync::CancellationToken::new();
 
         sessions
-            .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone())
+            .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone(), None)
             .await
             .expect("start PTY");
 
@@ -1242,13 +1242,13 @@ async fn test_output_fanout_subscriber_receives_data() {
     let nid = format!("s_sub_{}", nanoid::nanoid!(8));
     let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
 
-    sessions.create(nid.clone(), "bash".into(), None, cwd.clone()).await.unwrap();
+    sessions.create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native).await.unwrap();
 
     let (wss_tx, _wss_rx) = mpsc::unbounded_channel();
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     // Start PTY and get fanout (start_session consumes Arc<Self>)
-    let fanout = sessions.clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone()).await.unwrap();
+    let fanout = sessions.clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone(), None).await.unwrap();
 
     // Register subscriber
     let mut sub_rx = fanout.register_subscriber();

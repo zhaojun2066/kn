@@ -8,7 +8,7 @@
 //! ```
 //!
 //! ## Agent 出站 (agent → cloud) — 7 种，对齐 Java ALLOWED_MESSAGES:
-//! - ping, session_created, session_ended, output, profile_list, project_list, session_interrupted
+//! - ping, session_created, session_ended, output, profile_list, project_list
 //!
 //! ## Agent 入站 (cloud → agent):
 //! - 心跳: pong
@@ -293,16 +293,6 @@ impl WsMessageBuilder {
         .to_string()
     }
 
-    /// 会话中断上报（崩溃恢复，DEPRECATED: 由 cli_heartbeat 替代）。
-    #[deprecated(note = "use cli_heartbeat instead")]
-    pub fn session_interrupted(sessions: &[InterruptedSession]) -> String {
-        serde_json::json!({
-            "type": "session_interrupted",
-            "data": { "sessions": sessions }
-        })
-        .to_string()
-    }
-
     /// 上报可用 Profile 列表。
     pub fn profile_list(profiles: &[ProfileInfo]) -> String {
         serde_json::json!({
@@ -377,6 +367,32 @@ impl From<&kn_common::profile::ProfileSummary> for ProfileInfo {
         }
     }
 }
+
+// ── Outgoing message enum (type-safe) ──────────────────────
+
+/// Agent 发送给云端的类型化消息。
+/// 在 channel 边界携带结构化数据，序列化延迟到发送时。
+#[derive(Debug, Clone)]
+pub enum OutgoingMessage {
+    /// 会话结束通知（session/manager.rs → main loop → WSS）
+    SessionEnded {
+        session_nid: String,
+        reason: String,
+    },
+}
+
+impl OutgoingMessage {
+    /// 序列化为 JSON 字符串（对齐 WsMessageBuilder 的 envelope 格式）。
+    pub fn to_json(&self) -> String {
+        match self {
+            Self::SessionEnded { session_nid, reason } => {
+                WsMessageBuilder::session_ended(session_nid, reason)
+            }
+        }
+    }
+}
+
+// ── Project info (outgoing) ────────────────────────────────
 
 /// 项目信息（上报给云端）。
 #[derive(Debug, Clone, Serialize)]

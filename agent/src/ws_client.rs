@@ -118,6 +118,9 @@ pub async fn run_ws_loop(
                 }
 
                 tracing::warn!("WSS 连接断开: {} (尝试 #{})", e, attempt + 1);
+                // 重置退避计数器：connect_and_run 内建 30s 连接超时提供自然退避，
+                // 累积 attempt 会导致短暂网络抖动后不必要地长时间阻塞。
+                attempt = 0;
                 attempt += 1;
 
                 if state.current().await != AgentState::Reconnecting {

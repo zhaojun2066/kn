@@ -529,9 +529,11 @@ impl IpcHandle {
             .sessions
             .create(
                 nid.clone(),
+                "desktop".to_string(),
                 tool.to_string(),
                 profile.clone(),
                 cwd.clone(),
+                crate::session::SessionKind::Native,
             )
             .await
         {
@@ -550,6 +552,7 @@ impl IpcHandle {
                 let tool_owned = tool.to_string();
                 let profile_owned = profile.clone();
                 let cwd_owned = cwd.clone();
+                let remote_enabled = Some(session.remote_enabled.clone());
 
                 tokio::spawn(async move {
                     match sessions
@@ -563,6 +566,7 @@ impl IpcHandle {
                             wss_tx,
                             ipc_tx,
                             merger,
+                            remote_enabled,
                         )
                         .await
                     {

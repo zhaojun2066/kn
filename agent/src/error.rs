@@ -22,6 +22,9 @@ pub enum AgentError {
     #[error("设备未绑定")]
     NotBound,
 
+    #[error("会话数量已达上限: 当前 {current}, 最大 {max}")]
+    SessionLimit { current: usize, max: usize },
+
     #[error("会话未找到: {0}")]
     SessionNotFound(String),
 

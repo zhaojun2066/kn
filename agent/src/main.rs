@@ -479,7 +479,7 @@ async fn cli_heartbeat_loop(
                             .await
                         {
                             if let Some(tx) = outgoing.lock().await.as_ref() {
-                                let _ = tx.send(msg);
+                                let _ = tx.send(msg.to_json());
                             }
                         }
                         "ended".to_string()
@@ -586,13 +586,15 @@ async fn handle_incoming(
             match sessions
                 .create(
                     session_nid.clone(),
+                    "ios".to_string(),
                     tool.clone(),
                     profile.clone(),
                     cwd_resolved.clone(),
+                    crate::session::SessionKind::Native,
                 )
                 .await
             {
-                Ok(_session) => {
+                Ok(session) => {
                     // 2. Send session_created confirmation to cloud (用 String nid)
                     let created_msg = proto::WsMessageBuilder::session_created(
                         &session_nid,
@@ -644,10 +646,11 @@ async fn handle_incoming(
                     let t = tool.clone();
                     let p = profile.clone();
                     let c = cwd_resolved.clone();
+                    let remote_enabled = Some(session.remote_enabled.clone());
 
                     tokio::spawn(async move {
                         match s
-                            .start_session(&nid, &t, p.as_deref(), &c, cols, rows, wss_tx, ipc_tx, m)
+                            .start_session(&nid, &t, p.as_deref(), &c, cols, rows, wss_tx, ipc_tx, m, remote_enabled)
                             .await
                         {
                             Ok(_fanout) => {
@@ -700,7 +703,7 @@ async fn handle_incoming(
                         match sessions.report_session_ended(&nid, "user_exit").await {
                             Ok(Some(msg)) => {
                                 if let Some(tx) = outgoing.lock().await.as_ref() {
-                                    let _ = tx.send(msg);
+                                    let _ = tx.send(msg.to_json());
                                     tracing::info!(nid = %session_nid, nid = %nid, "session_ended (user_exit) 已发送到 Cloud");
                                 }
                             }
@@ -799,7 +802,7 @@ async fn handle_incoming(
                         match sessions.report_session_ended(&session_summary.nid, "user_interrupt").await {
                             Ok(Some(msg)) => {
                                 if let Some(tx) = outgoing.lock().await.as_ref() {
-                                    let _ = tx.send(msg);
+                                    let _ = tx.send(msg.to_json());
                                     tracing::info!(nid = %session_nid, "session_ended 已发送到 Cloud");
                                 }
                             }
