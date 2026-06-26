@@ -24,6 +24,8 @@ pub trait SessionStore: Send + Sync {
     async fn count_active(&self) -> Result<usize>;
     /// 总会话数量（含 Ended）。
     async fn count_total(&self) -> Result<usize>;
+    /// 已开启远程控制的会话数量。
+    async fn count_remote_enabled(&self) -> Result<usize>;
 }
 
 // ── MemorySessionStore ───────────────────────────────────────
@@ -93,6 +95,16 @@ impl SessionStore for MemorySessionStore {
 
     async fn count_total(&self) -> Result<usize> {
         Ok(self.sessions.read().await.len())
+    }
+
+    async fn count_remote_enabled(&self) -> Result<usize> {
+        Ok(self
+            .sessions
+            .read()
+            .await
+            .values()
+            .filter(|s| s.status != SessionStatus::Ended && s.remote_enabled.load(Ordering::Relaxed))
+            .count())
     }
 }
 

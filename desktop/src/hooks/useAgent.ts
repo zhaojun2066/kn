@@ -27,6 +27,7 @@ export interface AgentSession {
   cwd: string;
   created_at: string;
   status: string;
+  remote_enabled: boolean;
 }
 
 export type StatusIcon =

@@ -222,6 +222,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (wss_trigger_tx, mut wss_trigger_rx) = mpsc::unbounded_channel::<()>();
 
     // ── 11. 始终启动 IPC 服务器 ──
+    // ── WSS outgoing channel（提前声明，IPC 模块需要引用） ──
+    let outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+
     // IPC 服务器独立于 WSS 连接运行。即使云端不可达（如 dev 模式下
     // kn-cloud 未启动），桌面应用仍能通过 Unix socket 查询 Agent 状态。
     {
@@ -235,6 +239,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             cfg.purchase_url.clone(),
             input_merger.clone(),
             wss_trigger_tx.clone(),
+            outgoing_tx_ref.clone(),
         );
         let ipc_shutdown = shutdown.clone();
         tokio::spawn(async move {
@@ -251,8 +256,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // - AUTH_REJECTED → 回到 Unbound 状态，等待下次绑定触发
     // - 其他断开 → 由 run_ws_loop 内部自动重连（指数退避）
 
-    let outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>> =
-        Arc::new(tokio::sync::Mutex::new(None));
     let mut wss_active = false;
     let mut wss_task = None; // Option<JoinHandle<kn_agent::error::Result<()>>>
     let mut incoming_rx: Option<mpsc::UnboundedReceiver<proto::AgentIncoming>> = None;
@@ -604,6 +607,7 @@ async fn handle_incoming(
                         profile.as_deref(),
                         cols,
                         rows,
+                        "ios",
                     );
                     if let Some(tx) = outgoing.lock().await.as_ref() {
                         match tx.send(created_msg) {
@@ -832,6 +836,49 @@ async fn handle_incoming(
         }
         proto::AgentIncoming::ProfileListAck => {
             tracing::debug!("Profile 列表已确认");
+        }
+        proto::AgentIncoming::ReplayOutput { session_nid } => {
+            tracing::info!(
+                nid = %session_nid,
+                "收到 replay_output 请求，读取本地输出日志"
+            );
+
+            match session::OutputFanout::replay_log(&session_nid) {
+                Some(data) => {
+                    // 环形日志存储的是原始字节（包含 ANSI escape），直接转为 String
+                    let ansi_text = String::from_utf8_lossy(&data).into_owned();
+                    let parts = ansi_text.as_bytes().len();
+                    tracing::info!(
+                        nid = %session_nid,
+                        bytes = parts,
+                        "回放输出日志"
+                    );
+
+                    // 分块发送：每块最多 32KB，避免单条 WSS 消息过大
+                    const CHUNK_SIZE: usize = 32 * 1024;
+                    let mut offset = 0;
+                    while offset < ansi_text.len() {
+                        let end = std::cmp::min(offset + CHUNK_SIZE, ansi_text.len());
+                        // 在 UTF-8 字符边界切割，避免截断多字节字符
+                        let mut chunk_end = end;
+                        while chunk_end > offset && !ansi_text.is_char_boundary(chunk_end) {
+                            chunk_end -= 1;
+                        }
+                        let chunk = &ansi_text[offset..chunk_end];
+                        let msg = proto::WsMessageBuilder::output(&session_nid, chunk);
+                        if let Some(tx) = outgoing.lock().await.as_ref() {
+                            let _ = tx.send(msg);
+                        }
+                        offset = chunk_end;
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        nid = %session_nid,
+                        "replay_output: 未找到输出日志或日志为空"
+                    );
+                }
+            }
         }
         proto::AgentIncoming::Unknown { msg_type, .. } => {
             tracing::debug!("未知消息类型: {}", msg_type);

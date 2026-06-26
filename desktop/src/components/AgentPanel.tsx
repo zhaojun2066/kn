@@ -1,5 +1,6 @@
-import React, { useState } from "react";
-import { X, ChevronRight, ChevronDown, Radio, Wifi, WifiOff, AlertTriangle, Loader2, Monitor, Gift, ExternalLink, Smartphone } from "lucide-react";
+import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { X, ChevronRight, ChevronDown, Radio, Wifi, WifiOff, AlertTriangle, Loader2, Monitor, Globe, Gift, ExternalLink, Smartphone, CheckSquare, Square } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import type { AgentSession, StatusIcon, AgentState, AgentStateName } from "../hooks/useAgent";
 
 const stateLabelCn: Record<AgentStateName, string> = {
@@ -59,31 +60,72 @@ function formatUptime(secs: number): string {
 
 // ── SessionRow ────────────────────────────────────────────────
 
-function SessionRow({ session }: { session: AgentSession }) {
+function basename(path: string): string {
+  return path.split("/").filter(Boolean).pop() || path;
+}
+
+// ── SessionRow ────────────────────────────────────────────────
+
+function SessionRow({
+  session,
+  checked,
+  onCheck,
+}: {
+  session: AgentSession;
+  checked: boolean;
+  onCheck: (nid: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   return (
     <div className="text-xs font-mono">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-1.5 px-2 py-1 hover:bg-[var(--app-hover)] transition-colors text-left"
-      >
-        {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-        <Monitor size={11} className="shrink-0" />
-        <span className="text-app-text truncate">{session.tool}@{session.profile || "default"}</span>
-        <span className="text-app-text-muted ml-auto shrink-0">
-          {session.status === "active" ? (
+      <div className="flex items-center gap-1.5 px-2 py-1 hover:bg-[var(--app-hover)] transition-colors">
+        {/* Selection checkbox */}
+        <button
+          onClick={(e) => { e.stopPropagation(); onCheck(session.nid); }}
+          className="shrink-0 text-app-text-dim hover:text-app-accent transition-colors"
+        >
+          {checked ? <CheckSquare size={12} className="text-app-accent" /> : <Square size={12} />}
+        </button>
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-1.5 text-left flex-1 min-w-0"
+        >
+          {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+          <Monitor size={11} className="shrink-0" />
+          <div className="flex-1 min-w-0 leading-tight">
+            <div className="text-app-text truncate">{session.tool}@{session.profile || "default"}</div>
+            <div className="text-[10px] text-app-text-muted truncate">{basename(session.cwd)} · {session.nid}</div>
+          </div>
+        </button>
+        {/* Remote status badge */}
+        {session.remote_enabled ? (
+          <span className="shrink-0 text-[10px] px-1 py-0.5 bg-emerald-400/15 text-emerald-400 border border-emerald-400/30 flex items-center gap-0.5">
+            <Globe size={10} />
+            远程
+          </span>
+        ) : (
+          <span className="shrink-0 text-[10px] px-1 py-0.5 bg-app-text-dim/10 text-app-text-muted border border-app-border flex items-center gap-0.5">
+            <Monitor size={10} />
+            本地
+          </span>
+        )}
+        <span className="shrink-0">
+          {session.status === "running" ? (
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
-          ) : (
+          ) : session.status === "ended" ? (
             <span className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block" />
+          ) : (
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block" />
           )}
         </span>
-      </button>
+      </div>
       {expanded && (
         <div className="ml-6 px-2 py-1 space-y-0.5 text-app-text-muted">
           <div>nid: {session.nid}</div>
           <div>cwd: {session.cwd}</div>
           <div>created: {session.created_at}</div>
+          <div>remote: {session.remote_enabled ? "已开启" : "已关闭"}</div>
         </div>
       )}
     </div>
@@ -93,8 +135,127 @@ function SessionRow({ session }: { session: AgentSession }) {
 // ── AgentPanel ────────────────────────────────────────────────
 
 export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps) {
-  const { agentStatus, sessions, isRunning, isBound, isBinding, isConnected, statusIcon: icon, isPolling } = agent;
+  const { agentStatus, sessions, isRunning, isBound, isBinding, isConnected, statusIcon: icon, isPolling, fetchSessions } = agent;
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [sessionTab, setSessionTab] = useState<"local" | "remote">("local");
+  const [selectedLocalNids, setSelectedLocalNids] = useState<Set<string>>(new Set());
+  const [selectedRemoteNids, setSelectedRemoteNids] = useState<Set<string>>(new Set());
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const runningSessions = useMemo(() => sessions.filter((s) => s.status === "running"), [sessions]);
+  const localSessions = useMemo(() => runningSessions.filter((s) => !s.remote_enabled), [runningSessions]);
+  const remoteSessions = useMemo(() => runningSessions.filter((s) => s.remote_enabled), [runningSessions]);
+
+  // Auto-dismiss error after 4 seconds
+  const showError = useCallback((msg: string) => {
+    setErrorMsg(msg);
+    if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+    errorTimerRef.current = setTimeout(() => setErrorMsg(null), 4000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+    };
+  }, []);
+
+  // ── 本地会话操作 ──
+
+  const handleCheckLocal = useCallback((nid: string) => {
+    setSelectedLocalNids((prev) => {
+      const next = new Set(prev);
+      if (next.has(nid)) next.delete(nid); else next.add(nid);
+      return next;
+    });
+  }, []);
+
+  const handleSelectAllLocal = useCallback(() => {
+    setSelectedLocalNids((prev) => {
+      if (prev.size === localSessions.length) return new Set();
+      return new Set(localSessions.map((s) => s.nid));
+    });
+  }, [localSessions]);
+
+  const handleEnableRemote = useCallback(async () => {
+    const targets = localSessions.filter((s) => selectedLocalNids.has(s.nid));
+    if (targets.length === 0) return;
+
+    // Frontend pre-check: total remote-enabled after operation must not exceed 10
+    if (remoteSessions.length + targets.length > 10) {
+      const remaining = 10 - remoteSessions.length;
+      showError(
+        remaining <= 0
+          ? "已达到远程控制上限（10个），请先关闭其他会话的远程控制"
+          : `最多还能开启 ${remaining} 个远程会话，当前选中了 ${targets.length} 个`,
+      );
+      return;
+    }
+
+    let failCount = 0;
+    for (const s of targets) {
+      try {
+        await invoke("agent_ipc", { method: "set_remote_enabled", params: { nid: s.nid, enabled: true } });
+      } catch (e) {
+        failCount++;
+        const errStr = String(e);
+        if (errStr.includes("WSS_NOT_CONNECTED")) {
+          showError("Agent 未连接到云端，请先绑定设备"); break;
+        }
+        if (errStr.includes("REMOTE_LIMIT")) {
+          showError("已达到远程控制上限（10个），请先关闭其他会话的远程控制"); break;
+        }
+        console.error("set_remote_enabled failed for", s.nid, e);
+      }
+    }
+    if (failCount > 0) showError(`${failCount} 个会话开启失败`);
+    setSelectedLocalNids(new Set());
+    fetchSessions();
+  }, [localSessions, remoteSessions.length, selectedLocalNids, fetchSessions, showError]);
+
+  // ── 远程会话操作 ──
+
+  const handleCheckRemote = useCallback((nid: string) => {
+    setSelectedRemoteNids((prev) => {
+      const next = new Set(prev);
+      if (next.has(nid)) next.delete(nid); else next.add(nid);
+      return next;
+    });
+  }, []);
+
+  const handleSelectAllRemote = useCallback(() => {
+    setSelectedRemoteNids((prev) => {
+      if (prev.size === remoteSessions.length) return new Set();
+      return new Set(remoteSessions.map((s) => s.nid));
+    });
+  }, [remoteSessions]);
+
+  const handleDisableRemote = useCallback(async () => {
+    const targets = remoteSessions.filter((s) => selectedRemoteNids.has(s.nid));
+    if (targets.length === 0) return;
+
+    let failCount = 0;
+    for (const s of targets) {
+      try {
+        await invoke("agent_ipc", { method: "set_remote_enabled", params: { nid: s.nid, enabled: false } });
+      } catch (e) {
+        failCount++;
+        const errStr = String(e);
+        if (errStr.includes("WSS_NOT_CONNECTED")) {
+          showError("Agent 未连接到云端，请先绑定设备"); break;
+        }
+        console.error("set_remote_enabled failed for", s.nid, e);
+      }
+    }
+    if (failCount > 0) showError(`${failCount} 个会话关闭失败`);
+    setSelectedRemoteNids(new Set());
+    fetchSessions();
+  }, [remoteSessions, selectedRemoteNids, fetchSessions, showError]);
+
+  // ── Select-all helpers ──
+
+  const localAllChecked = localSessions.length > 0 && selectedLocalNids.size === localSessions.length;
+  const remoteAllChecked = remoteSessions.length > 0 && selectedRemoteNids.size === remoteSessions.length;
 
   const hostname = agentStatus?.hostname;
   const uptime = agentStatus?.uptime_secs;
@@ -143,6 +304,13 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
               </div>
             )}
           </div>
+
+          {/* ── Error message ── */}
+          {errorMsg && (
+            <div className="px-3 py-2 text-xs font-mono text-red-400 bg-red-400/10 border border-red-400/30">
+              {errorMsg}
+            </div>
+          )}
 
           {/* ── Action buttons ── */}
           <div className="space-y-2">
@@ -206,18 +374,130 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
             </button>
             {showAdvanced && (
               <div className="mt-2 space-y-2">
-                {/* Sessions */}
-                {isRunning && (
+                {/* ── Sessions Tabs ── */}
+                {isRunning && runningSessions.length === 0 && (
+                  <div className="border border-app-border bg-[var(--app-cmd-bg)] px-3 py-2 text-xs text-app-text-muted font-mono">
+                    暂无活跃会话
+                  </div>
+                )}
+
+                {isRunning && runningSessions.length > 0 && (
                   <div className="border border-app-border bg-[var(--app-cmd-bg)]">
-                    <div className="px-3 py-1.5 text-xs font-mono text-app-text-dim border-b border-app-border">
-                      活跃会话 ({sessions.length})
+                    {/* Tab bar */}
+                    <div className="flex border-b border-app-border">
+                      <button
+                        onClick={() => setSessionTab("local")}
+                        className={`flex-1 px-3 py-1.5 text-xs font-mono flex items-center justify-center gap-1.5 transition-colors ${
+                          sessionTab === "local"
+                            ? "text-app-text border-b border-app-accent -mb-[1px]"
+                            : "text-app-text-dim hover:text-app-text"
+                        }`}
+                      >
+                        <Monitor size={11} />
+                        本地
+                        {localSessions.length > 0 && (
+                          <span className="text-[10px] opacity-60">({localSessions.length})</span>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => setSessionTab("remote")}
+                        className={`flex-1 px-3 py-1.5 text-xs font-mono flex items-center justify-center gap-1.5 transition-colors ${
+                          sessionTab === "remote"
+                            ? "text-app-text border-b border-app-accent -mb-[1px]"
+                            : "text-app-text-dim hover:text-app-text"
+                        }`}
+                      >
+                        <Globe size={11} className={sessionTab === "remote" ? "text-emerald-400" : ""} />
+                        远程
+                        {remoteSessions.length > 0 && (
+                          <span className="text-[10px] opacity-60">({remoteSessions.length})</span>
+                        )}
+                      </button>
                     </div>
-                    {sessions.length === 0 ? (
-                      <div className="px-3 py-2 text-xs text-app-text-muted font-mono">暂无活跃会话</div>
-                    ) : (
-                      <div className="max-h-[200px] overflow-y-auto">
-                        {sessions.map((s) => <SessionRow key={s.nid} session={s} />)}
-                      </div>
+
+                    {/* Tab content */}
+                    {sessionTab === "local" && (
+                      <>
+                        {localSessions.length === 0 ? (
+                          <div className="px-3 py-3 text-xs text-app-text-muted font-mono text-center">
+                            暂无本地会话
+                          </div>
+                        ) : (
+                          <>
+                            <div className="px-2 py-1.5 text-xs font-mono text-app-text-dim flex items-center justify-between">
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  onClick={handleSelectAllLocal}
+                                  className="shrink-0 text-app-text-dim hover:text-app-accent transition-colors"
+                                  title={localAllChecked ? "取消全选" : "全选"}
+                                >
+                                  {localAllChecked ? <CheckSquare size={12} className="text-app-accent" /> : <Square size={12} />}
+                                </button>
+                                <span>全选</span>
+                              </div>
+                              <button
+                                onClick={handleEnableRemote}
+                                disabled={selectedLocalNids.size === 0}
+                                className="px-2 py-0.5 text-[10px] border border-emerald-400/50 text-emerald-400 hover:bg-emerald-400/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                              >
+                                开启远程
+                              </button>
+                            </div>
+                            <div className="max-h-[150px] overflow-y-auto">
+                              {localSessions.map((s) => (
+                                <SessionRow
+                                  key={s.nid}
+                                  session={s}
+                                  checked={selectedLocalNids.has(s.nid)}
+                                  onCheck={handleCheckLocal}
+                                />
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </>
+                    )}
+
+                    {sessionTab === "remote" && (
+                      <>
+                        {remoteSessions.length === 0 ? (
+                          <div className="px-3 py-3 text-xs text-app-text-muted font-mono text-center">
+                            暂无远程会话
+                          </div>
+                        ) : (
+                          <>
+                            <div className="px-2 py-1.5 text-xs font-mono text-app-text-dim flex items-center justify-between">
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  onClick={handleSelectAllRemote}
+                                  className="shrink-0 text-app-text-dim hover:text-app-accent transition-colors"
+                                  title={remoteAllChecked ? "取消全选" : "全选"}
+                                >
+                                  {remoteAllChecked ? <CheckSquare size={12} className="text-app-accent" /> : <Square size={12} />}
+                                </button>
+                                <span>全选</span>
+                              </div>
+                              <button
+                                onClick={handleDisableRemote}
+                                disabled={selectedRemoteNids.size === 0}
+                                className="px-2 py-0.5 text-[10px] border border-app-border text-app-text-dim hover:text-app-text hover:border-app-text-dim transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                              >
+                                关闭远程
+                              </button>
+                            </div>
+                            <div className="max-h-[150px] overflow-y-auto">
+                              {remoteSessions.map((s) => (
+                                <SessionRow
+                                  key={s.nid}
+                                  session={s}
+                                  checked={selectedRemoteNids.has(s.nid)}
+                                  onCheck={handleCheckRemote}
+                                />
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </>
                     )}
                   </div>
                 )}

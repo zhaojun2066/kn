@@ -29,6 +29,7 @@ function mockSessions(): { sessions: AgentSession[] } {
         cwd: "/tmp",
         created_at: "2025-01-01T00:00:00Z",
         status: "running",
+        remote_enabled: true,
       },
     ],
   };

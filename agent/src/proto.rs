@@ -93,6 +93,10 @@ pub enum AgentIncoming {
     },
     /// 配置文件列表确认
     ProfileListAck,
+    /// 请求回放会话输出日志（iOS 恢复会话时发送）
+    ReplayOutput {
+        session_nid: String,
+    },
     /// 未知消息类型
     Unknown {
         msg_type: String,
@@ -203,6 +207,20 @@ impl WsEnvelope {
                 })
             }
             "profile_list_ack" => Ok(AgentIncoming::ProfileListAck),
+            "replay_output" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "replay_output 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionNid"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                if session_nid.is_empty() {
+                    return Err("replay_output sessionNid 为空".to_string());
+                }
+                Ok(AgentIncoming::ReplayOutput { session_nid })
+            }
             other => Ok(AgentIncoming::Unknown {
                 msg_type: other.to_string(),
                 raw: self.data.clone().unwrap_or(serde_json::Value::Null),
@@ -223,7 +241,8 @@ impl WsMessageBuilder {
     }
 
     /// 会话创建确认。sessionNid 已由 Agent 生成。
-    /// 携带 tool/cwd/cols/rows 供 cloud 写入 Redis Hash，pid 由后续 heartbeat 更新。
+    /// 携带 tool/cwd/cols/rows/source 供 cloud 写入 Redis Hash，pid 由后续 heartbeat 更新。
+    /// `source`: "ios" | "desktop" — 区分发起方，cloud 据此走不同注册逻辑。
     pub fn session_created(
         session_nid: &str,
         tool: &str,
@@ -231,13 +250,15 @@ impl WsMessageBuilder {
         profile: Option<&str>,
         cols: u16,
         rows: u16,
+        source: &str,
     ) -> String {
         let mut data = serde_json::json!({
             "sessionId": session_nid,
             "tool": tool,
             "cwd": cwd,
             "cols": cols,
-            "rows": rows
+            "rows": rows,
+            "source": source
         });
         if let Some(p) = profile {
             data["profile"] = serde_json::Value::String(p.to_string());

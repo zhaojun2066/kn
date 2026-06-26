@@ -26,10 +26,14 @@ pub struct SessionManager {
     attach_handles: tokio::sync::Mutex<HashMap<String, PtyAttachHandle>>,
     /// 创建互斥锁：防止 check+insert 竞态导致超过 SESSION_LIMIT
     create_mutex: tokio::sync::Mutex<()>,
+    /// 远程开关互斥锁：防止 check+set 竞态导致超过 REMOTE_LIMIT
+    remote_mutex: tokio::sync::Mutex<()>,
 }
 
 /// 全局会话数量上限
 pub const SESSION_LIMIT: usize = 10;
+/// 同时开启远程控制的会话数量上限
+pub const REMOTE_LIMIT: usize = 10;
 
 impl SessionManager {
     pub fn new(store: Box<dyn SessionStore>) -> Self {
@@ -38,6 +42,7 @@ impl SessionManager {
             child_pids: tokio::sync::Mutex::new(HashMap::new()),
             attach_handles: tokio::sync::Mutex::new(HashMap::new()),
             create_mutex: tokio::sync::Mutex::new(()),
+            remote_mutex: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -173,6 +178,28 @@ impl SessionManager {
         Ok(())
     }
 
+    /// 原子检查 + 开启远程控制。防止并发调用突破 REMOTE_LIMIT。
+    /// 返回 `Err(AgentError::SessionLimit)` 如果已达上限。
+    pub async fn try_enable_remote(&self, nid: &str) -> Result<()> {
+        let _guard = self.remote_mutex.lock().await;
+        let count = self.store.count_remote_enabled().await?;
+        if count >= REMOTE_LIMIT {
+            return Err(AgentError::SessionLimit {
+                current: count,
+                max: REMOTE_LIMIT,
+            });
+        }
+        let session = self
+            .store
+            .get(nid)
+            .await?
+            .ok_or_else(|| AgentError::SessionNotFound(nid.to_string()))?;
+        session.remote_enabled.store(true, Ordering::Relaxed);
+        self.store.insert(session).await?;
+        tracing::info!(nid = %nid, count = count + 1, "远程控制已开启");
+        Ok(())
+    }
+
     /// 设置会话的远程控制开关。
     pub async fn set_remote_enabled(&self, nid: &str, enabled: bool) -> Result<()> {
         let session = self
@@ -285,6 +312,11 @@ impl SessionManager {
     /// 活跃会话数量（非 Ended 状态）。
     pub async fn active_count(&self) -> Result<usize> {
         self.store.count_active().await
+    }
+
+    /// 已开启远程控制的会话数量。
+    pub async fn count_remote_enabled(&self) -> Result<usize> {
+        self.store.count_remote_enabled().await
     }
 
     /// 获取所有会话 nanoid 列表。

@@ -38,7 +38,7 @@ use tokio::net::UnixListener;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::error::Result;
+use crate::error::{AgentError, Result};
 use crate::session::{InputMerger, InputMessage, SessionManager, SessionSummary};
 use crate::state::{StateEvent, StateMachine};
 
@@ -106,6 +106,8 @@ pub struct IpcServer {
     bind_generation: Arc<AtomicU64>,
     /// Channel to signal the main loop to start WSS after a successful bind.
     wss_trigger: mpsc::UnboundedSender<()>,
+    /// Global WSS outgoing channel, shared with main loop.
+    outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
 }
 
 impl IpcServer {
@@ -120,6 +122,7 @@ impl IpcServer {
         purchase_url: String,
         input_merger: Arc<InputMerger>,
         wss_trigger: mpsc::UnboundedSender<()>,
+        outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
     ) -> Self {
         Self {
             socket_path,
@@ -133,6 +136,7 @@ impl IpcServer {
             bind_cancel: Arc::new(Mutex::new(None)),
             bind_generation: Arc::new(AtomicU64::new(0)),
             wss_trigger,
+            outgoing_tx_ref,
         }
     }
 
@@ -209,6 +213,7 @@ impl IpcServer {
             bind_cancel: self.bind_cancel.clone(),
             bind_generation: self.bind_generation.clone(),
             wss_trigger: self.wss_trigger.clone(),
+            outgoing_tx_ref: self.outgoing_tx_ref.clone(),
         }
     }
 }
@@ -227,6 +232,7 @@ struct IpcHandle {
     bind_cancel: Arc<Mutex<Option<(CancellationToken, u64)>>>,
     bind_generation: Arc<AtomicU64>,
     wss_trigger: mpsc::UnboundedSender<()>,
+    outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
 }
 
 impl IpcHandle {
@@ -284,6 +290,7 @@ impl IpcHandle {
             "ctrl" => self.handle_ctrl(req).await,
             "resize" => self.handle_resize(req).await,
             "kill_session" => self.handle_kill_session(req).await,
+            "set_remote_enabled" => self.handle_set_remote_enabled(req).await,
             "get_output_history" => self.handle_get_output_history(req).await,
             "get_version" => self.handle_get_version(req).await,
             "redeem" => self.handle_redeem(req).await,
@@ -544,8 +551,42 @@ impl IpcHandle {
                 }
 
                 // Spawn PTY + CLI process
-                let (wss_tx, _wss_rx) = mpsc::unbounded_channel::<String>();
+                let (wss_tx, wss_rx) = mpsc::unbounded_channel::<String>();
                 let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
+
+                // ── 同步到云端 ──
+                // 发送 session_created，让云端和 iOS 知道这个会话
+                let created_msg = crate::proto::WsMessageBuilder::session_created(
+                    &nid,
+                    &tool,
+                    &cwd,
+                    profile.as_deref(),
+                    cols,
+                    rows,
+                    "desktop",
+                );
+                let out = self.outgoing_tx_ref.clone();
+                if let Some(tx) = out.lock().await.as_ref() {
+                    match tx.send(created_msg) {
+                        Ok(_) => tracing::info!(nid = %nid, "✅ [SESSION] session_created 已发送到 Cloud (desktop)"),
+                        Err(e) => tracing::error!(nid = %nid, error = %e, "❌ [SESSION] session_created 发送失败"),
+                    }
+                } else {
+                    tracing::info!(nid = %nid, "📋 [SESSION] WSS 未连接，跳过 session_created 同步");
+                }
+
+                // ── WSS 转发 task：OutputFanout → 全局 outgoing 通道 ──
+                let out2 = self.outgoing_tx_ref.clone();
+                tokio::spawn(async move {
+                    let mut rx = wss_rx;
+                    while let Some(msg) = rx.recv().await {
+                        if let Some(tx) = out2.lock().await.as_ref() {
+                            let _ = tx.send(msg);
+                        }
+                    }
+                    tracing::debug!("📤 [OUTPUT] WSS 转发 task 退出 (desktop)");
+                });
+
                 let merger = self.input_merger.clone();
                 let session_nid = nid.clone();
                 let sessions = self.sessions.clone();
@@ -785,6 +826,81 @@ impl IpcHandle {
         }
     }
 
+    /// `set_remote_enabled` — enable/disable remote control for a session.
+    async fn handle_set_remote_enabled(&self, req: &IpcRequest) -> String {
+        let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => return err_response(&req.id, "INVALID_PARAMS", "缺少 nid 参数"),
+        };
+        let enabled = req.params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        // ── 检查 WSS 连接（尽快释放锁） ──
+        let outgoing_tx = {
+            let guard = self.outgoing_tx_ref.lock().await;
+            match guard.as_ref() {
+                Some(tx) => tx.clone(),
+                None => {
+                    return err_response(
+                        &req.id,
+                        "WSS_NOT_CONNECTED",
+                        "Agent 未连接到云端，请先绑定设备",
+                    );
+                }
+            }
+        }; // 锁在此处释放
+
+        // ── 更新内存状态（开启时原子检查 + 设置，防止并发超限）──
+        if enabled {
+            match self.sessions.try_enable_remote(nid).await {
+                Ok(()) => {}
+                Err(AgentError::SessionLimit { current, max }) => {
+                    return err_response(
+                        &req.id,
+                        "REMOTE_LIMIT",
+                        &format!("已达到远程控制上限（{}个），当前 {} 个，请先关闭其他会话的远程控制", max, current),
+                    );
+                }
+                Err(e) => return err_response(&req.id, "INTERNAL", &e.to_string()),
+            }
+        } else {
+            match self.sessions.set_remote_enabled(nid, false).await {
+                Ok(()) => {}
+                Err(e) => return err_response(&req.id, "INTERNAL", &e.to_string()),
+            }
+        }
+
+        // ── 通知云端 ──
+        if enabled {
+            // 复活已结束的会话（如果有）
+            let _ = self.sessions.reactivate_if_ended(nid).await;
+            // 读取 session 信息，发送 session_created
+            if let Ok(Some(session)) = self.sessions.get(nid).await {
+                let msg = crate::proto::WsMessageBuilder::session_created(
+                    nid,
+                    &session.tool,
+                    &session.cwd,
+                    session.profile.as_deref(),
+                    session.cols,
+                    session.rows,
+                    "desktop",
+                );
+                match outgoing_tx.send(msg) {
+                    Ok(_) => tracing::info!(nid = %nid, "✅ [REMOTE] session_created 已发送到 Cloud (启用远程)"),
+                    Err(e) => tracing::error!(nid = %nid, error = %e, "❌ [REMOTE] session_created 发送失败"),
+                }
+            }
+        } else {
+            // 发送 session_ended 通知云端远程已关闭
+            let msg = crate::proto::WsMessageBuilder::session_ended(nid, "remote_disabled");
+            match outgoing_tx.send(msg) {
+                Ok(_) => tracing::info!(nid = %nid, "✅ [REMOTE] session_ended (remote_disabled) 已发送到 Cloud"),
+                Err(e) => tracing::error!(nid = %nid, error = %e, "❌ [REMOTE] session_ended 发送失败"),
+            }
+        }
+
+        ok_response(&req.id, serde_json::json!({"ok": true, "nid": nid, "remote_enabled": enabled}))
+    }
+
     /// `get_output_history` — paginated output log (stub: Phase 2 PTY integration).
     async fn handle_get_output_history(&self, req: &IpcRequest) -> String {
         let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
@@ -897,6 +1013,7 @@ fn session_to_json(s: &SessionSummary) -> serde_json::Value {
             crate::session::SessionStatus::Running => "running",
             crate::session::SessionStatus::Ended => "ended",
         },
+        "remote_enabled": s.remote_enabled,
     })
 }
 
