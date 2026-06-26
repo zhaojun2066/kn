@@ -94,8 +94,8 @@ function SessionRow({
           {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
           <Monitor size={11} className="shrink-0" />
           <div className="flex-1 min-w-0 leading-tight">
-            <div className="text-app-text truncate">{session.tool}@{session.profile || "default"}</div>
-            <div className="text-[10px] text-app-text-muted truncate">{basename(session.cwd)} · {session.nid}</div>
+            <div className="text-app-text truncate">{basename(session.cwd)}</div>
+            <div className="text-[10px] text-app-text-muted truncate">{session.tool}@{session.profile || "default"} · {session.nid}</div>
           </div>
         </button>
         {/* Remote status badge */}
