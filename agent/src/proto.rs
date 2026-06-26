@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_outbound_session_created() {
-        let json = WsMessageBuilder::session_created("s_abc123", "claude", "/home/user/proj", None, 80, 24);
+        let json = WsMessageBuilder::session_created("s_abc123", "claude", "/home/user/proj", None, 80, 24, "ios");
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "session_created");
         assert_eq!(parsed["data"]["sessionId"], "s_abc123");
@@ -575,6 +575,7 @@ mod tests {
         assert_eq!(parsed["data"]["cwd"], "/home/user/proj");
         assert_eq!(parsed["data"]["cols"], 80);
         assert_eq!(parsed["data"]["rows"], 24);
+        assert_eq!(parsed["data"]["source"], "ios");
     }
 
     #[test]
