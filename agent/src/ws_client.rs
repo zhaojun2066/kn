@@ -268,6 +268,10 @@ async fn connect_and_run(
                             *read_error_clone.lock().await = Some("stream ended".into());
                             break;
                         }
+                        Some(Ok(Message::Binary(data))) => {
+                            tracing::warn!(len = data.len(), "收到意外的 Binary 帧，已丢弃（协议仅使用 Text）");
+                        }
+                        // Ping/Pong/Frame 由 tungstenite 自动处理，忽略
                         _ => {}
                     }
                 }

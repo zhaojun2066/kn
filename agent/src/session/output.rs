@@ -46,12 +46,22 @@ static LOG_FILE_LOCKS: std::sync::LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>
 
 /// 获取或创建指定路径的日志写入锁。
 fn get_log_lock(path: &PathBuf) -> Arc<Mutex<()>> {
-    // 规范化路径避免同一文件不同表示产生不同的锁对象
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
     let mut map = LOG_FILE_LOCKS.lock().unwrap();
     map.entry(canonical)
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
+}
+
+/// Session 结束时释放对应日志文件的锁条目，防止长期运行内存泄漏。
+pub(crate) fn remove_log_lock(nid: &str) {
+    let log_path = kn_common::path::agent_dir()
+        .join("sessions")
+        .join(nid)
+        .join("output.log");
+    let canonical = std::fs::canonicalize(&log_path).unwrap_or(log_path);
+    let mut map = LOG_FILE_LOCKS.lock().unwrap();
+    map.remove(&canonical);
 }
 
 /// 获取或初始化指定 nid 的日志大小 AtomicU64。供 `append_log_static` 复用。
@@ -174,14 +184,21 @@ impl OutputFanout {
         if buf_len >= 64 * 1024 {
             let data = std::mem::take(&mut *buf);
             drop(buf); // 释放锁后再 flush
-            let wss = self.inner.wss_tx.clone();
-            let ipc = self.inner.ipc_tx.clone();
-            let nid = &self.inner.session_nid;
-            let log_path = self.inner.log_path.clone();
-            let log_size = &self.inner.log_size;
-            let remote_enabled = self.inner.remote_enabled.clone();
-            tracing::info!(len = data.len(), nid = %nid, "📟 [PTY-OUT] 达到 64KB 阈值, 立即 flush");
-            Self::flush_chunked(nid.clone(), data, wss, ipc, log_path, log_size, remote_enabled);
+            let inner = self.inner.clone();
+            tracing::info!(len = data.len(), nid = %inner.session_nid, "📟 [PTY-OUT] 达到 64KB 阈值, 异步 flush");
+            // spawn 到 tokio 异步线程，避免在 PTY reader（spawn_blocking）中同步写环
+            // 形日志 + 分块发送 WSS/IPC，阻塞 PTY 读取。
+            tokio::spawn(async move {
+                Self::flush_chunked(
+                    inner.session_nid.clone(),
+                    data,
+                    inner.wss_tx.clone(),
+                    inner.ipc_tx.clone(),
+                    inner.log_path.clone(),
+                    &inner.log_size,
+                    inner.remote_enabled.clone(),
+                );
+            });
         }
     }
 

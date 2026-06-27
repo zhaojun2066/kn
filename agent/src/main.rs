@@ -6,7 +6,7 @@
 
 use clap::Parser;
 use kn_agent::{
-    bind, config, device, ipc, proto, session, state, ws_client,
+    bind, config, device, error::AgentError, ipc, proto, session, state, ws_client,
 };
 use kn_common::project::ProjectInfo;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
@@ -462,6 +462,10 @@ async fn cli_heartbeat_loop(
         let mut alive_sessions: Vec<proto::HeartbeatSession> = Vec::new();
 
         // 遍历所有非 Ended 的会话
+        // 关键修复：所有非 Ended 会话都应包含在心跳中，不管 PID 状态如何。
+        // 如果排除无 PID 的会话，云端 SessionHeartbeatMonitor 会在 30s 后
+        // 将 cli:heartbeat:{nid} key 过期视为 heartbeat_timeout，导致
+        // iOS 显示"已完成"但 Agent 面板仍显示在线。
         if let Ok(summaries) = sessions.list().await {
             for s in &summaries {
                 if s.status == session::SessionStatus::Ended {
@@ -470,14 +474,14 @@ async fn cli_heartbeat_loop(
 
                 // 尝试检查进程是否存活 (kill(pid, 0))
                 let pid_opt = sessions.get_child_pid(&s.nid).await;
-                let state = if let Some(pid) = pid_opt {
+                let (state, pid) = if let Some(p) = pid_opt {
                     // kill(pid, 0) 不发送信号，仅检查进程是否存在
-                    let is_alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+                    let is_alive = unsafe { libc::kill(p as i32, 0) == 0 };
                     if is_alive {
-                        "running".to_string()
+                        ("running", p)
                     } else {
                         // 进程已死，补发 session_ended
-                        tracing::warn!(nid = %s.nid, pid = pid, "CLI 进程已死亡，上报 session_ended");
+                        tracing::warn!(nid = %s.nid, pid = p, "CLI 进程已死亡，上报 session_ended");
                         if let Ok(Some(msg)) = sessions
                             .report_session_ended(&s.nid, "process_exit")
                             .await
@@ -486,20 +490,20 @@ async fn cli_heartbeat_loop(
                                 let _ = tx.send(msg.to_json());
                             }
                         }
-                        "ended".to_string()
+                        // 已死亡的会话不放入心跳（已发送 session_ended）
+                        continue;
                     }
                 } else {
-                    // 没有记录的 pid，无法检查
-                    "unknown".to_string()
+                    // 没有记录的 pid，无法做进程存活检测，但仍需上报，
+                    // 确保云端 cli:heartbeat:{nid} key 被刷新
+                    ("no_pid", 0)
                 };
 
-                if state == "running" {
-                    alive_sessions.push(proto::HeartbeatSession {
-                        session_nid: s.nid.clone(),
-                        pid: pid_opt.unwrap_or(0),
-                        state,
-                    });
-                }
+                alive_sessions.push(proto::HeartbeatSession {
+                    session_nid: s.nid.clone(),
+                    pid,
+                    state: state.to_string(),
+                });
             }
         }
 
@@ -545,8 +549,30 @@ async fn handle_incoming(
             // 上报 project 列表
             send_project_list(&outgoing).await;
 
-            // 崩溃恢复已由 CLI 心跳循环（cli_heartbeat_loop）替代，
-            // 不再需要通过 checkpoint 文件上报 session_interrupted。
+            // WSS 重连后，重新同步所有本地非 Ended 会话到云端。
+            // 如果某些桌面会话是在 WSS 断开期间创建的（session_created 被跳过），
+            // 重连时补发，确保云端和 iOS 能看到这些会话。
+            if let Ok(summaries) = sessions.list().await {
+                let out = outgoing.clone();
+                for s in &summaries {
+                    if s.status == session::SessionStatus::Ended {
+                        continue;
+                    }
+                    let msg = proto::WsMessageBuilder::session_created(
+                        &s.nid,
+                        &s.tool,
+                        &s.cwd,
+                        s.profile.as_deref(),
+                        s.cols,
+                        s.rows,
+                        &s.source,
+                    );
+                    if let Some(tx) = out.lock().await.as_ref() {
+                        let _ = tx.send(msg);
+                        tracing::info!(nid = %s.nid, source = %s.source, "🔄 [RECONNECT] 重连后补发 session_created");
+                    }
+                }
+            }
         }
         proto::AgentIncoming::StartSession {
             tool,
@@ -568,25 +594,7 @@ async fn handle_incoming(
 
             let cwd_resolved = cwd.unwrap_or_else(|| ".".into());
 
-            // 1. 会话限制检查 (Agent 端 ≤10)
-            match sessions.active_count().await {
-                Ok(count) if count >= 10 => {
-                    let err = proto::WsMessageBuilder::error_notify(
-                        "SESSION_LIMIT",
-                        "Agent 会话数已满 (10/10)，请关闭之前的会话"
-                    );
-                    if let Some(tx) = outgoing.lock().await.as_ref() {
-                        let _ = tx.send(err);
-                    }
-                    return;
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "active_count 查询失败，放行");
-                }
-                _ => {} // count < 10, proceed
-            }
-
-            // 2. Create session record
+            // 1. Create session record（create 内部持有 create_mutex，count+insert 原子性，会话数限制由 create 统一保证）
             match sessions
                 .create(
                     session_nid.clone(),
@@ -652,8 +660,10 @@ async fn handle_incoming(
                     let p = profile.clone();
                     let c = cwd_resolved.clone();
                     let remote_enabled = Some(session.remote_enabled.clone());
+                    let out = outgoing.clone();
 
                     tokio::spawn(async move {
+                        let s_cleanup = s.clone();
                         match s
                             .start_session(&nid, &t, p.as_deref(), &c, cols, rows, wss_tx, ipc_tx, m, remote_enabled)
                             .await
@@ -662,9 +672,14 @@ async fn handle_incoming(
                                 tracing::info!(nid = %nid, tool = %t, "WSS PTY session started");
                             }
                             Err(e) => {
-                                tracing::error!(nid = %nid, error = %e, "WSS PTY session start failed");
-                                // 注意: agent_error 不在 Java 白名单中，无法通过 WSS 发送；
-                                // 错误仅记录到本地日志。如需云端感知，应先修改 Java ALLOWED_MESSAGES。
+                                tracing::error!(nid = %nid, error = %e, "WSS PTY session start failed — cleaning up orphaned session record");
+                                // 清理残留的 session 记录，防止变成永久僵尸会话
+                                let _ = s_cleanup.end(&nid).await;
+                                if let Ok(Some(msg)) = s_cleanup.report_session_ended(&nid, "start_failed").await {
+                                    if let Some(tx) = out.lock().await.as_ref() {
+                                        let _ = tx.send(msg.to_json());
+                                    }
+                                }
                             }
                         }
                     });
@@ -676,6 +691,16 @@ async fn handle_incoming(
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "创建会话失败");
+                    // SessionLimit 错误需通知云端，让 iOS 显示友好提示
+                    if let AgentError::SessionLimit { current, max } = &e {
+                        let err = proto::WsMessageBuilder::error_notify(
+                            "SESSION_LIMIT",
+                            &format!("Agent 会话数已满 ({}/{}), 请关闭之前的会话", current, max),
+                        );
+                        if let Some(tx) = outgoing.lock().await.as_ref() {
+                            let _ = tx.send(err);
+                        }
+                    }
                 }
             }
         }

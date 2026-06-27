@@ -11,6 +11,7 @@ tauri-plugin-shell.workspace = true
 tauri-plugin-dialog.workspace = true
 tauri-plugin-fs.workspace = true
 tauri-plugin-updater.workspace = true
+tokio.workspace = true
 portable-pty.workspace = true
 fs2.workspace = true
 libc.workspace = true

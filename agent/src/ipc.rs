@@ -20,7 +20,7 @@
 //! | resume             | —                                  | Resume agent                         |
 //! | new_session        | tool, profile?, cwd?, cols?, rows? | Create session + spawn PTY + CLI     |
 //! | attach             | nid                                | Create pty.sock, bridge PTY I/O      |
-//! | detach             | nid                                | Unsubscribe (stub)                   |
+//! | detach             | nid                                | Unsubscribe (预留, 未实现)            |
 //! | input              | nid, text                          | Write text to PTY stdin              |
 //! | ctrl               | nid, signal                        | Send ctrl_c/ctrl_d/ctrl_z to PTY     |
 //! | resize             | nid, cols, rows                    | Update terminal size                 |
@@ -594,8 +594,10 @@ impl IpcHandle {
                 let profile_owned = profile.clone();
                 let cwd_owned = cwd.clone();
                 let remote_enabled = Some(session.remote_enabled.clone());
+                let out = self.outgoing_tx_ref.clone();
 
                 tokio::spawn(async move {
+                    let sessions_for_cleanup = sessions.clone();
                     match sessions
                         .start_session(
                             &session_nid,
@@ -615,7 +617,14 @@ impl IpcHandle {
                             tracing::info!(nid = %session_nid, tool = %tool_owned, "PTY session started");
                         }
                         Err(e) => {
-                            tracing::error!(nid = %session_nid, error = %e, "PTY session start failed");
+                            tracing::error!(nid = %session_nid, error = %e, "PTY session start failed — cleaning up orphaned session record");
+                            // 清理残留的 session 记录，防止变成永久僵尸会话
+                            let _ = sessions_for_cleanup.end(&session_nid).await;
+                            if let Ok(Some(msg)) = sessions_for_cleanup.report_session_ended(&session_nid, "start_failed").await {
+                                if let Some(tx) = out.lock().await.as_ref() {
+                                    let _ = tx.send(msg.to_json());
+                                }
+                            }
                         }
                     }
                 });
@@ -667,17 +676,16 @@ impl IpcHandle {
         }
     }
 
-    /// `detach` — unsubscribe from session output (stub: Phase 2 PTY integration).
+    /// `detach` — 取消订阅会话输出（预留，当前未实现）。
     async fn handle_detach(&self, req: &IpcRequest) -> String {
         let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
             Some(n) => n,
             None => return err_response(&req.id, "INVALID_PARAMS", "缺少 nid 参数"),
         };
+        // 先校验会话存在性，再返回未实现
         match self.sessions.get(nid).await {
-            Ok(Some(_)) => ok_response(&req.id, serde_json::json!({"ok": true, "nid": nid})),
-            Ok(None) => {
-                err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid))
-            }
+            Ok(Some(_)) => err_response(&req.id, "NOT_IMPLEMENTED", "detach 功能尚未实现"),
+            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }
     }

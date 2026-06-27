@@ -2,7 +2,7 @@ use crate::error::{AgentError, Result};
 use crate::state::StateMachine;
 use crate::session::env::{prepare_tool_env, resolve_tool_path};
 use crate::session::input::InputMerger;
-use crate::session::output::OutputFanout;
+use crate::session::output::{OutputFanout, remove_log_lock};
 use crate::session::store::SessionStore;
 use crate::session::types::{ManagedSession, SessionKind, SessionStatus, SessionSummary};
 use super::{pty_sock_path, PtyAttachHandle};
@@ -120,16 +120,27 @@ impl SessionManager {
     }
 
     /// 强制终止会话（SIGKILL + 清理）。
+    ///
+    /// 安全措施：
+    /// 1. 发 SIGKILL 前用 kill(pid, 0) 验活，防止 PID 重用误杀无关进程
+    /// 2. remove 语义：PID 取出即删，不会重复 kill
     pub async fn kill_session(&self, nid: &str) -> Result<()> {
         tracing::info!(nid = %nid, "强制终止会话");
 
-        // Kill PTY child process by PID
+        // Kill PTY child process by PID（remove 保证只 kill 一次）
         if let Some(pid) = self.child_pids.lock().await.remove(nid) {
             #[cfg(unix)]
             unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
+                // kill(pid, 0) 不发送信号，仅检查进程是否存在。
+                // 若进程已退出且 PID 被 OS 回收重用，此处返回 -1 (ESRCH)，
+                // 跳过 SIGKILL 避免误杀不相关进程。
+                if libc::kill(pid as i32, 0) == 0 {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                    tracing::info!(pid = pid, "已终止子进程");
+                } else {
+                    tracing::info!(pid = pid, "进程已退出，跳过 SIGKILL（避免 PID 重用）");
+                }
             }
-            tracing::info!(pid = pid, "已终止子进程");
         }
 
         // 清理 attach handle + proxy socket
@@ -138,6 +149,8 @@ impl SessionManager {
         if sock.exists() {
             let _ = std::fs::remove_file(&sock);
         }
+        // 清理日志文件锁条目，防止长期运行内存泄漏
+        remove_log_lock(nid);
 
         let _ = self.end(nid).await;
         Ok(())
@@ -473,6 +486,9 @@ impl SessionManager {
         let end_wss_tx = fanout.inner.wss_tx.clone();
         let sid_for_end = sid.clone();
         let sessions_for_end = self.clone();
+        // PID 清理：子进程退出后通过 self (Arc) 访问 child_pids 移除
+        let self_for_pid_cleanup = self.clone();
+        let cleanup_nid = nid.to_string();
         tokio::spawn(async move {
             tracing::debug!(session_id = %sid_for_end, "session_ended 监听任务已启动");
             while end_rx.recv().await.is_some() {
@@ -504,6 +520,13 @@ impl SessionManager {
                 Ok(status) => tracing::info!(session_id=%sid, exit_code=%status.exit_code(), "PTY 进程已退出"),
                 Err(e) => tracing::warn!(session_id=%sid, error=%e, "PTY wait 失败"),
             }
+            // 子进程已退出，立即从 child_pids 移除，防止 kill_session 操作已回收的 PID
+            {
+                let removed = self_for_pid_cleanup.child_pids.blocking_lock().remove(&cleanup_nid);
+                tracing::debug!(session_id=%cleanup_nid, pid_removed=?removed, "PID 已从 child_pids 清理");
+            }
+            // 清理日志文件锁条目，防止长期运行内存泄漏
+            remove_log_lock(&cleanup_nid);
             match result {
                 Ok(()) => tracing::info!(session_id=%sid, "PTY EOF"),
                 Err(e) => tracing::warn!(session_id=%sid, error=%e, "PTY read error"),
