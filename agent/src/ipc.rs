@@ -895,6 +895,10 @@ impl IpcHandle {
             .await
         {
             Ok(session) => {
+                // Desktop PTY sessions should NOT have remote control enabled by default.
+                // The user must explicitly enable remote via the AgentPanel.
+                let _ = self.sessions.set_remote_enabled(&nid, false).await;
+
                 // Sync to cloud
                 let created_msg = crate::proto::WsMessageBuilder::session_created(
                     &nid,

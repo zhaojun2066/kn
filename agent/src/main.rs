@@ -508,11 +508,15 @@ async fn cli_heartbeat_loop(
         }
 
         // 发送 cli_heartbeat 给 cloud
+        let count = alive_sessions.len();
         if let Some(tx) = outgoing.lock().await.as_ref() {
             let msg = proto::WsMessageBuilder::cli_heartbeat(&alive_sessions);
-            if let Err(e) = tx.send(msg) {
-                tracing::warn!(error = %e, "cli_heartbeat 发送失败");
+            match tx.send(msg) {
+                Ok(_) => tracing::info!(count = count, "💓 [HEARTBEAT] cli_heartbeat 已发送"),
+                Err(e) => tracing::warn!(count = count, error = %e, "💓 [HEARTBEAT] 发送失败"),
             }
+        } else {
+            tracing::warn!("💓 [HEARTBEAT] WSS 通道不可用，跳过");
         }
     }
 }
