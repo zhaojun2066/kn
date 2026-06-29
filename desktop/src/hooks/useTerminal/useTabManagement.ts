@@ -54,6 +54,10 @@ export function useTabManagement(
           invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
         }
       }
+      // Notify agent to end the session (WSS sync)
+      if (tab.agentNid) {
+        invoke("agent_ipc", { method: "kill_session", params: { nid: tab.agentNid } }).catch(() => {});
+      }
     }
   }, [isBottom, setIsOpen, setTabs, setActiveTabId, sessionsRef, activeTabIdRef,
       termRefs, writeBufRef, rafWriteRef, cleanupReadyWait]);
@@ -71,6 +75,10 @@ export function useTabManagement(
         cleanupReadyWait(leaf.paneId);
         const rid = rafWriteRef.current.get(leaf.paneId);
         if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(leaf.paneId); }
+      }
+      // Notify agent to end the session
+      if (tab.agentNid) {
+        invoke("agent_ipc", { method: "kill_session", params: { nid: tab.agentNid } }).catch(() => {});
       }
     }
     const kept = allTabs.find((t) => t.id === tabId);
@@ -93,6 +101,10 @@ export function useTabManagement(
         cleanupReadyWait(leaf.paneId);
         const rid = rafWriteRef.current.get(leaf.paneId);
         if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(leaf.paneId); }
+      }
+      // Notify agent to end the session
+      if (tab.agentNid) {
+        invoke("agent_ipc", { method: "kill_session", params: { nid: tab.agentNid } }).catch(() => {});
       }
     }
     setTabs((prev) => prev.slice(0, idx + 1));

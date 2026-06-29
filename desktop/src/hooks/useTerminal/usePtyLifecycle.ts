@@ -52,6 +52,13 @@ export function usePtyLifecycle(ctx: TerminalContext) {
               writeBufRef.current.set(pane.paneId, "");
             }
             termRefs.current.get(pane.paneId)?.writeln(`\r\n\x1b[90m[exit: ${msg.data}]\x1b[0m`);
+
+            // Read agentNid BEFORE setTabs (Lesson 8: never read ref after setState)
+            const tabForPane = sessionsRef.current.find((t) =>
+              findLeaf(t.rootNode, pane.paneId) !== null,
+            );
+            const agentNid = tabForPane?.agentNid;
+
             setTabs((prev) =>
               prev.map((tab) => {
                 const leaf = findLeaf(tab.rootNode, pane.paneId);
@@ -63,6 +70,11 @@ export function usePtyLifecycle(ctx: TerminalContext) {
                 });
               }),
             );
+
+            // Notify agent that this CLI session has ended
+            if (agentNid) {
+              invoke("agent_ipc", { method: "kill_session", params: { nid: agentNid } }).catch(() => {});
+            }
             break;
           }
           case "error":

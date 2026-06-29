@@ -24,7 +24,8 @@
 //! | input              | nid, text                          | Write text to PTY stdin              |
 //! | ctrl               | nid, signal                        | Send ctrl_c/ctrl_d/ctrl_z to PTY     |
 //! | resize             | nid, cols, rows                    | Update terminal size                 |
-//! | kill_session       | nid                                | SIGKILL PTY + end session            |
+//! | kill_session       | nid                                | SIGKILL PTY + end session + notify cloud |
+//! | register_session   | tool, profile?, cwd, source?       | Register desktop PTY (Relay, no PTY spawn) |
 //! | get_output_history | nid, offset?, limit?               | Paginated output log (stub)          |
 //! | get_version        | —                                  | Return agent version                 |
 //! | redeem             | code                               | Redeem card code (requires binding)  |
@@ -290,6 +291,7 @@ impl IpcHandle {
             "ctrl" => self.handle_ctrl(req).await,
             "resize" => self.handle_resize(req).await,
             "kill_session" => self.handle_kill_session(req).await,
+            "register_session" => self.handle_register_session(req).await,
             "set_remote_enabled" => self.handle_set_remote_enabled(req).await,
             "get_output_history" => self.handle_get_output_history(req).await,
             "get_version" => self.handle_get_version(req).await,
@@ -813,7 +815,7 @@ impl IpcHandle {
         }
     }
 
-    /// `kill_session` — SIGKILL PTY process + end session.
+    /// `kill_session` — SIGKILL PTY process + end session + notify cloud.
     async fn handle_kill_session(&self, req: &IpcRequest) -> String {
         let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
             Some(n) => n,
@@ -821,14 +823,109 @@ impl IpcHandle {
         };
 
         match self.sessions.get(nid).await {
-            Ok(Some(_)) => {
-                match self.sessions.kill_session(nid).await {
-                    Ok(()) => ok_response(&req.id, serde_json::json!({"ok": true, "nid": nid})),
+            Ok(Some(session)) => {
+                let nid = session.nid.clone();
+                match self.sessions.kill_session(&nid).await {
+                    Ok(()) => {
+                        // Report session_ended to cloud (idempotent — ended_reported flag prevents duplicates)
+                        if let Ok(Some(msg)) = self.sessions.report_session_ended(&nid, "user_closed_tab").await {
+                            if let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref() {
+                                let _ = tx.send(msg.to_json());
+                                tracing::info!(nid = %nid, "session_ended (user_closed_tab) 已发送到 Cloud");
+                            }
+                        }
+                        ok_response(&req.id, serde_json::json!({"ok": true, "nid": nid}))
+                    }
                     Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
                 }
             }
             Ok(None) => {
                 err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid))
+            }
+            Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
+        }
+    }
+
+    /// `register_session` — register a desktop-owned PTY session with the agent.
+    ///
+    /// Unlike `new_session`, this does NOT spawn a PTY. The desktop already owns
+    /// the PTY and just needs the agent to track the session for WSS/cloud sync.
+    ///
+    /// Params:
+    /// - `tool` (string): CLI tool name (claude | codex | qoder)
+    /// - `profile` (string, optional): profile name for env injection
+    /// - `cwd` (string): working directory
+    /// - `source` (string, default "desktop"): session origin
+    async fn handle_register_session(&self, req: &IpcRequest) -> String {
+        let tool = req
+            .params
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .unwrap_or("bash");
+        let profile = req
+            .params
+            .get("profile")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let cwd = req
+            .params
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".");
+        let source = req
+            .params
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("desktop")
+            .to_string();
+
+        let nid = format!("s_{}", nanoid::nanoid!(12));
+
+        // Create session record (Relay — agent doesn't own the PTY)
+        match self
+            .sessions
+            .create(
+                nid.clone(),
+                source.clone(),
+                tool.to_string(),
+                profile.clone(),
+                cwd.to_string(),
+                crate::session::SessionKind::Relay,
+            )
+            .await
+        {
+            Ok(session) => {
+                // Sync to cloud
+                let created_msg = crate::proto::WsMessageBuilder::session_created(
+                    &nid,
+                    tool,
+                    cwd,
+                    profile.as_deref(),
+                    80,
+                    24,
+                    &source,
+                );
+                if let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref() {
+                    match tx.send(created_msg) {
+                        Ok(_) => tracing::info!(nid = %nid, tool = %tool, "📋 [REGISTER] session_created 已发送到 Cloud (relay)"),
+                        Err(e) => tracing::error!(nid = %nid, error = %e, "❌ [REGISTER] session_created 发送失败"),
+                    }
+                } else {
+                    tracing::info!(nid = %nid, "📋 [REGISTER] WSS 未连接，跳过 session_created 同步");
+                }
+
+                ok_response(
+                    &req.id,
+                    serde_json::json!({
+                        "nid": session.nid,
+                        "tool": session.tool,
+                        "profile": session.profile,
+                        "cwd": session.cwd,
+                        "source": session.source,
+                        "status": "registered",
+                        "created_at": session.created_at.to_rfc3339(),
+                    }),
+                )
             }
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }

@@ -418,6 +418,21 @@ fn encode_project_path(path: &str) -> String {
 /// 1. Stat all jsonl files to get timestamps (fast, no file content read)
 /// 2. Sort by timestamp, take the `max_sessions` most recent
 /// 3. Extract titles only for those top sessions
+
+/// Check if any process with the given CLI name is currently running.
+/// Uses `pgrep -x` which is fast and reliable on macOS.
+fn is_cli_running(cli_name: &str) -> bool {
+    std::process::Command::new("pgrep")
+        .arg("-x")
+        .arg(cli_name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+
 fn scan_claude_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionInfo> {
     let home = crate::home_dir();
     let encoded = encode_project_path(project_path);
@@ -454,10 +469,17 @@ fn scan_claude_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionI
         .unwrap_or_default()
         .as_millis() as u64;
 
+    // Check if any Claude process is currently running.
+    // If no Claude is alive, only sessions modified within the last 30s are "active"
+    // (grace period for the process to flush its final writes).
+    // If Claude IS running, use a 2-hour window to handle idle-but-alive sessions.
+    let cli_alive = is_cli_running("claude");
+    let active_window_ms: u64 = if cli_alive { 7_200_000 } else { 30_000 };
+
     let mut sessions: Vec<SessionInfo> = Vec::with_capacity(entries.len());
     for (session_id, path, timestamp) in entries {
         let title = extract_claude_title(&path).unwrap_or_else(|| "无标题".to_string());
-        let status = if timestamp > 0 && (now_ms - timestamp) < 3600_000 {
+        let status = if timestamp > 0 && (now_ms - timestamp) < active_window_ms {
             "active"
         } else {
             "ended"
@@ -571,6 +593,20 @@ fn scan_codex_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionIn
     // Sort by timestamp descending, take top
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     sessions.truncate(max_sessions);
+
+    // Post-process status: use process liveness + timestamp instead of always "ended"
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let codex_alive = is_cli_running("codex");
+    let active_window: u64 = if codex_alive { 7_200_000 } else { 30_000 };
+    for s in &mut sessions {
+        if s.timestamp > 0 && (now_ms - s.timestamp) < active_window {
+            s.status = "active".to_string();
+        }
+    }
+
     sessions
 }
 
@@ -852,6 +888,16 @@ fn parse_qoder_list_output(output: &str, project_path: &str) -> Option<Vec<Sessi
     }
     if sessions.is_empty() { return None; }
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    // Post-process status: use process liveness + timestamp instead of always "ended"
+    let qoder_alive = is_cli_running("qoderclicn");
+    let active_window: u64 = if qoder_alive { 7_200_000 } else { 30_000 };
+    for s in &mut sessions {
+        if s.timestamp > 0 && (now - s.timestamp) < active_window {
+            s.status = "active".to_string();
+        }
+    }
+
     Some(sessions)
 }
 
@@ -909,6 +955,20 @@ fn scan_qoder_filesystem(project_path: &str) -> Vec<SessionInfo> {
         }
     }
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    // Post-process status: use process liveness + timestamp instead of always "ended"
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let qoder_alive = is_cli_running("qoderclicn");
+    let active_window: u64 = if qoder_alive { 7_200_000 } else { 30_000 };
+    for s in &mut sessions {
+        if s.timestamp > 0 && (now_ms - s.timestamp) < active_window {
+            s.status = "active".to_string();
+        }
+    }
+
     sessions
 }
 

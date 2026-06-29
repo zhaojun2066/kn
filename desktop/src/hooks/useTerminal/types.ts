@@ -18,6 +18,9 @@ export interface TabSession {
   // Backward-compat convenience fields (synced from active pane)
   sessionId: string;
   ptyRunning: boolean;
+  // Agent session NID — set after registering the CLI session with the agent.
+  // Used to notify agent/WSS when the tab is closed or PTY exits.
+  agentNid?: string;
 }
 
 export interface SessionRecord {

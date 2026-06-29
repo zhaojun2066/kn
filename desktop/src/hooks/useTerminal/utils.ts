@@ -1,3 +1,9 @@
+/** Normalize tool name: parseAiCmd returns "qoderclicn" but agent expects "qoder" */
+export function normalizeTool(tool: string): string {
+  if (tool === "qoderclicn") return "qoder";
+  return tool;
+}
+
 export function parseAiCmd(cmd: string): { tool: string; profile: string } | null {
   const m = cmd.match(/^ai\s+(claude|codex|qoderclicn)\s+(\S+)/);
   if (!m) return null;

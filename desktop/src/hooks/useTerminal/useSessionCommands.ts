@@ -6,7 +6,7 @@ import type { SessionRecord } from "./types";
 import { MAX_HISTORY, PTY_READY_SETTLE_MS, PTY_COMMAND_SETTLE_MS } from "./types";
 import { findLeaf, replaceNode } from "../../lib/pane-types";
 import { syncActivePaneFields, newTab } from "./helpers";
-import { parseAiCmd, buildResumeCmd, buildResumeLastCmd } from "./utils";
+import { parseAiCmd, buildResumeCmd, buildResumeLastCmd, normalizeTool } from "./utils";
 import type { ProjectInfo } from "../../lib/types";
 
 export function useSessionCommands(
@@ -69,6 +69,26 @@ export function useSessionCommands(
         sessionId: activeLeaf.sessionId,
         data: cmd + "\r",
       }).catch(() => {});
+
+      // Register CLI session with agent for WSS/cloud sync
+      const parsed = parseAiCmd(cmd);
+      if (parsed) {
+        invoke("agent_ipc", {
+          method: "register_session",
+          params: {
+            tool: normalizeTool(parsed.tool),
+            profile: parsed.profile,
+            cwd: workDir,
+            source: "desktop",
+          },
+        }).then((result: any) => {
+          if (result?.nid) {
+            setTabs((prev) =>
+              prev.map((t) => (t.id === tab.id ? { ...t, agentNid: result.nid } : t)),
+            );
+          }
+        }).catch(() => { /* agent not running — graceful */ });
+      }
     } catch (e) {
       reportTerminalError("运行终端命令失败", e);
     }
@@ -117,6 +137,26 @@ export function useSessionCommands(
         sessionId: newSessionId,
         data: cmd + "\r",
       }).catch(() => {});
+
+      // Register CLI session with agent for WSS/cloud sync
+      const parsed2 = parseAiCmd(cmd);
+      if (parsed2) {
+        invoke("agent_ipc", {
+          method: "register_session",
+          params: {
+            tool: normalizeTool(parsed2.tool),
+            profile: parsed2.profile,
+            cwd: workDir,
+            source: "desktop",
+          },
+        }).then((result: any) => {
+          if (result?.nid) {
+            setTabs((prev) =>
+              prev.map((t) => (t.id === tabId ? { ...t, agentNid: result.nid } : t)),
+            );
+          }
+        }).catch(() => { /* agent not running — graceful */ });
+      }
 
       if (!isBottom) {
         const parsed = parseAiCmd(cmd);
