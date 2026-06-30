@@ -636,7 +636,7 @@ async fn handle_incoming(
             cols,
             rows,
         } => {
-            // Agent 自行生成 sessionNid，cloud 不再预分配
+            // Agent 自行生成 sessionId，cloud 不再预分配
             let session_nid = format!("s_{}", nanoid::nanoid!(12));
             tracing::info!(
                 nid = %session_nid,

@@ -88,7 +88,7 @@ impl OutputFanout {
     /// 创建 OutputFanout 并启动 100ms 定时 flush 任务。
     /// `cancel` 用于停止定时器（session 结束时触发）。
     ///
-    /// `session_nid` 是云端 DB 主键，对齐新协议 `to_session_id` 类型。
+    /// `session_nid` 是会话唯一标识，对齐新协议 `sessionId` 类型。
     pub fn new(
         session_nid: String,
         wss: Option<mpsc::UnboundedSender<String>>,

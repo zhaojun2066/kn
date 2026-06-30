@@ -53,7 +53,7 @@ pub enum AgentIncoming {
         protocol_version: Option<u32>,
     },
     /// 启动新会话（来自 iOS/Desktop 用户）
-    /// sessionNid 由 Agent 自行生成（"s_" + nanoid(12)），cloud 不再预分配。
+    /// sessionId 由 Agent 自行生成（"s_" + nanoid(12)），cloud 不再预分配。
     StartSession {
         /// CLI 工具（claude/codex/qoder/bash）
         tool: String,
@@ -68,7 +68,7 @@ pub enum AgentIncoming {
         /// 初始终端行数
         rows: u16,
     },
-    /// 用户输入文本（session 由信封级 sessionId = sessionNid 标识）
+    /// 用户输入文本（session 由 data.sessionId 标识）
     Input {
         session_nid: String,
         seq: u64,
@@ -95,6 +95,16 @@ pub enum AgentIncoming {
     ProfileListAck,
     /// 请求回放会话输出日志（iOS 恢复会话时发送）
     ReplayOutput {
+        session_nid: String,
+    },
+    /// WSS 对 session_created 的确认
+    SessionCreatedAck {
+        session_nid: String,
+        status: String,
+        error: Option<String>,
+    },
+    /// iOS 恢复会话请求（cloud 已查 Redis，agent 做本地验证）
+    ResumeSession {
         session_nid: String,
     },
     /// 未知消息类型
@@ -148,7 +158,7 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "start_session 缺少 data 字段".to_string())?;
-                // sessionNid 由 Agent 自行生成，cloud 不再预分配
+                // sessionId 由 Agent 自行生成，cloud 不再预分配
                 Ok(AgentIncoming::StartSession {
                     tool: data["tool"].as_str().unwrap_or("bash").to_string(),
                     profile: data["profile"].as_str().map(String::from),
@@ -163,8 +173,14 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "input 缺少 data 字段".to_string())?;
-                // session 由信封级 sessionId (sessionNid) 标识
-                let session_nid = self.session_id.clone().unwrap_or_default();
+                // session 由 data.sessionId 标识，与 ctrl/resize/replay_output 一致。
+                let session_nid = data["sessionId"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                if session_nid.is_empty() {
+                    return Err("input sessionId 为空".to_string());
+                }
                 Ok(AgentIncoming::Input {
                     session_nid,
                     seq: data["seq"].as_u64().unwrap_or(0),
@@ -177,8 +193,8 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "ctrl 缺少 data 字段".to_string())?;
-                // session 由 to_session_id (sessionNid, String) 标识
-                let session_nid = data["to_session_id"].as_str().unwrap_or("").to_string();
+                // session 由 data.sessionId 标识
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
                 Ok(AgentIncoming::Ctrl {
                     session_nid,
                     signal: data.clone(),
@@ -189,7 +205,7 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "resize 缺少 data 字段".to_string())?;
-                let session_nid = data["to_session_id"].as_str().unwrap_or("").to_string();
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
                 Ok(AgentIncoming::Resize {
                     session_nid,
                     cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
@@ -212,14 +228,48 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "replay_output 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionNid"]
+                let session_nid = data["sessionId"]
                     .as_str()
                     .unwrap_or("")
                     .to_string();
                 if session_nid.is_empty() {
-                    return Err("replay_output sessionNid 为空".to_string());
+                    return Err("replay_output sessionId 为空".to_string());
                 }
                 Ok(AgentIncoming::ReplayOutput { session_nid })
+            }
+            "session_created_ack" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "session_created_ack 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                if session_nid.is_empty() {
+                    return Err("session_created_ack sessionId 为空".to_string());
+                }
+                let status = data["status"].as_str().unwrap_or("error").to_string();
+                let error = data["error"].as_str().map(String::from);
+                Ok(AgentIncoming::SessionCreatedAck {
+                    session_nid,
+                    status,
+                    error,
+                })
+            }
+            "resume_session" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "resume_session 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                if session_nid.is_empty() {
+                    return Err("resume_session sessionId 为空".to_string());
+                }
+                Ok(AgentIncoming::ResumeSession { session_nid })
             }
             other => Ok(AgentIncoming::Unknown {
                 msg_type: other.to_string(),
@@ -240,9 +290,10 @@ impl WsMessageBuilder {
         r#"{"type":"ping"}"#.to_string()
     }
 
-    /// 会话创建确认。sessionNid 已由 Agent 生成。
+    /// 会话创建确认。sessionId 已由 Agent 生成。
     /// 携带 tool/cwd/cols/rows/source 供 cloud 写入 Redis Hash，pid 由后续 heartbeat 更新。
     /// `source`: "ios" | "desktop" — 区分发起方，cloud 据此走不同注册逻辑。
+    /// `msg_id`: 可选 ACK 关联 ID，cloud 在 session_created_ack 中原样返回。
     pub fn session_created(
         session_nid: &str,
         tool: &str,
@@ -251,6 +302,20 @@ impl WsMessageBuilder {
         cols: u16,
         rows: u16,
         source: &str,
+    ) -> String {
+        Self::session_created_with_msg_id(session_nid, tool, cwd, profile, cols, rows, source, None)
+    }
+
+    /// 带 msg_id 的 session_created，用于 ACK 关联。
+    pub fn session_created_with_msg_id(
+        session_nid: &str,
+        tool: &str,
+        cwd: &str,
+        profile: Option<&str>,
+        cols: u16,
+        rows: u16,
+        source: &str,
+        msg_id: Option<&str>,
     ) -> String {
         let mut data = serde_json::json!({
             "sessionId": session_nid,
@@ -262,6 +327,9 @@ impl WsMessageBuilder {
         });
         if let Some(p) = profile {
             data["profile"] = serde_json::Value::String(p.to_string());
+        }
+        if let Some(mid) = msg_id {
+            data["msgId"] = serde_json::Value::String(mid.to_string());
         }
         serde_json::json!({
             "type": "session_created",
@@ -282,12 +350,12 @@ impl WsMessageBuilder {
         .to_string()
     }
 
-    /// PTY 输出数据。session 由 to_session_id (sessionNid) 标识。
+    /// PTY 输出数据。session 由 sessionId 标识。
     pub fn output(session_nid: &str, ansi_text: &str) -> String {
         serde_json::json!({
             "type": "output",
             "data": {
-                "to_session_id": session_nid,
+                "sessionId": session_nid,
                 "ansi_text": ansi_text
             }
         })
@@ -364,7 +432,7 @@ pub struct InterruptedSession {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeartbeatSession {
-    #[serde(rename = "sessionNid")]
+    #[serde(rename = "sessionId")]
     pub session_nid: String,
     pub pid: u32,
     pub state: String,
@@ -512,7 +580,7 @@ mod tests {
         let json = serde_json::json!({
             "type": "resize",
             "data": {
-                "to_session_id": "s_abc123def456",
+                "sessionId": "s_abc123def456",
                 "seq": 7,
                 "cols": 52,
                 "rows": 20
@@ -534,8 +602,8 @@ mod tests {
     fn test_parse_input() {
         let json = serde_json::json!({
             "type": "input",
-            "sessionId": "s_abc",
             "data": {
+                "sessionId": "s_abc",
                 "seq": 5,
                 "content": "hello world",
                 "fromUserId": 100
@@ -583,17 +651,18 @@ mod tests {
         let json = WsMessageBuilder::output("s_abc123", "hello\x1b[0m");
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "output");
-        assert_eq!(parsed["data"]["to_session_id"], "s_abc123");
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert!(parsed["data"].get("to_session_id").is_none());
         assert_eq!(parsed["data"]["ansi_text"], "hello\x1b[0m");
     }
 
     #[test]
     fn test_output_message_to_session_id_is_string() {
-        // 对齐新协议: to_session_id 统一为 String (sessionNid)
+        // 对齐新协议: sessionId 统一为 String
         let msg = WsMessageBuilder::output("s_abc123", "hello");
         let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
-        let tsid = &parsed["data"]["to_session_id"];
-        assert!(tsid.is_string(), "to_session_id must be a string (sessionNid), got: {:?}", tsid);
+        let tsid = &parsed["data"]["sessionId"];
+        assert!(tsid.is_string(), "sessionId must be a string, got: {:?}", tsid);
         assert_eq!(tsid.as_str().unwrap(), "s_abc123");
     }
 

@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+pub mod ack;
 pub mod bind;
 pub mod config;
 pub mod device;

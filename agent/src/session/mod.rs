@@ -10,6 +10,7 @@ pub mod types;
 pub mod store;
 pub mod input;
 pub mod output;
+pub mod persistence;
 mod manager;
 pub mod env;
 

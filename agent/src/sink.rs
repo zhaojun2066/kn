@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 /// WSS 输出 — PTY 数据包装为 output 消息推给云端。
 ///
-/// `session_nid` 为会话唯一标识 (String)，对齐新协议 `to_session_id` 类型。
+/// `session_nid` 为会话唯一标识 (String)，对齐新协议 `sessionId` 类型。
 pub struct WssSink {
     pub session_nid: String,
     pub tx: mpsc::UnboundedSender<String>,
