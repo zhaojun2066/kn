@@ -17,6 +17,7 @@ export interface TerminalContext {
   readyPromiseRefs: MutableRefObject<
     Map<string, { resolve: () => void; timeout: ReturnType<typeof setTimeout> }>
   >;
+  childPidRef: MutableRefObject<Map<string, number>>;  // paneId → CLI 子进程 PID
   errorCallbackRef: MutableRefObject<((msg: string) => void) | null>;
   openingRef: MutableRefObject<boolean>;
 

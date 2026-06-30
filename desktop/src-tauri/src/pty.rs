@@ -9,7 +9,8 @@ use tauri::ipc::Channel;
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "event", content = "data")]
 pub enum PtyEvent {
-    Ready,
+    /// PTY 创建成功，携带 CLI 子进程 PID
+    Ready(u32),
     Data(String),
     Exit(i32),
     Error(String),
@@ -83,9 +84,9 @@ impl PtyOutputSink for ChannelSink {
         }
     }
 
-    fn on_ready(&self) -> Result<(), String> {
+    fn on_ready(&self, pid: u32) -> Result<(), String> {
         self.channel
-            .send(PtyEvent::Ready)
+            .send(PtyEvent::Ready(pid))
             .map_err(|e| e.to_string())
     }
 
@@ -184,6 +185,9 @@ pub fn start_pty(
 
     drop(pair.slave);
 
+    // 提取子进程 PID（在 child 移入 shared_child 之前）
+    let child_pid = child.process_id().unwrap_or(0);
+
     // Share child handle between PtyHandle (for kill_pty) and reader thread (for wait).
     let shared_child: SharedChild = Arc::new(Mutex::new(Some(child)));
 
@@ -215,7 +219,7 @@ pub fn start_pty(
     let sink = ChannelSink {
         channel: on_event.clone(),
     };
-    let _ = sink.on_ready();
+    let _ = sink.on_ready(child_pid);
 
     // Spawn reader thread with its own clone of the shared child handle.
     let reader_child = shared_child;

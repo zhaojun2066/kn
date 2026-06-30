@@ -18,7 +18,7 @@ export function useSessionCommands(
   splitPane: (tabId: string, direction: "horizontal" | "vertical", workDir?: string, paneId?: string) => Promise<string | undefined>,
   saveHistory: (records: SessionRecord[]) => void,
 ) {
-  const { sessionsRef, isBottom, setIsOpen, setTabs, setActiveTabId, setHistory, setUsageCounts } = ctx;
+  const { sessionsRef, isBottom, setIsOpen, setTabs, setActiveTabId, setHistory, setUsageCounts, childPidRef } = ctx;
 
   const runInNewTab = useCallback(async (cmd: string, workDir: string, label?: string) => {
     try {
@@ -73,6 +73,7 @@ export function useSessionCommands(
       // Register CLI session with agent for WSS/cloud sync
       const parsed = parseAiCmd(cmd);
       if (parsed) {
+        const childPid = childPidRef.current.get(activeLeaf.paneId) || 0;
         invoke("agent_ipc", {
           method: "register_session",
           params: {
@@ -80,6 +81,7 @@ export function useSessionCommands(
             profile: parsed.profile,
             cwd: workDir,
             source: "desktop",
+            pid: childPid,
           },
         }).then((result: any) => {
           if (result?.nid) {

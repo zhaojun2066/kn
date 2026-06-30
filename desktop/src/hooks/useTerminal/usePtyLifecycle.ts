@@ -10,7 +10,7 @@ import { syncActivePaneFields } from "./helpers";
 export function usePtyLifecycle(ctx: TerminalContext) {
   const {
     sessionsRef, termRefs, writeBufRef, rafWriteRef,
-    setTabs, errorCallbackRef,
+    setTabs, errorCallbackRef, childPidRef,
   } = ctx;
 
   const spawnPty = useCallback((pane: PaneLeaf): Promise<void> => {
@@ -28,6 +28,8 @@ export function usePtyLifecycle(ctx: TerminalContext) {
       channel.onmessage = (msg: PtyEvent) => {
         switch (msg.event) {
           case "ready":
+            // 记录 CLI 子进程 PID，供 register_session 传回 agent
+            childPidRef.current.set(pane.paneId, msg.data);
             resolve();
             break;
           case "data": {

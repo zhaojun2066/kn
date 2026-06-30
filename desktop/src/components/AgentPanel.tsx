@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { X, ChevronRight, ChevronDown, Radio, Wifi, WifiOff, AlertTriangle, Loader2, Monitor, Globe, Gift, ExternalLink, Smartphone, CheckSquare, Square } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { ConfirmDialog } from "./ConfirmDialog";
 import type { AgentSession, StatusIcon, AgentState, AgentStateName } from "../hooks/useAgent";
 
 const stateLabelCn: Record<AgentStateName, string> = {
@@ -140,6 +141,8 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
   const [sessionTab, setSessionTab] = useState<"local" | "remote">("local");
   const [selectedLocalNids, setSelectedLocalNids] = useState<Set<string>>(new Set());
   const [selectedRemoteNids, setSelectedRemoteNids] = useState<Set<string>>(new Set());
+  const [remotingSessions, setRemotingSessions] = useState<Set<string>>(new Set());
+  const [killConfirm, setKillConfirm] = useState<AgentSession[] | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -181,6 +184,10 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
     const targets = localSessions.filter((s) => selectedLocalNids.has(s.nid));
     if (targets.length === 0) return;
 
+    // Don't start if any target is already being processed
+    const alreadyProcessing = targets.filter((s) => remotingSessions.has(s.nid));
+    if (alreadyProcessing.length > 0) return;
+
     // Frontend pre-check: total remote-enabled after operation must not exceed 10
     if (remoteSessions.length + targets.length > 10) {
       const remaining = 10 - remoteSessions.length;
@@ -194,6 +201,8 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
 
     let failCount = 0;
     for (const s of targets) {
+      // Mark as processing
+      setRemotingSessions((prev) => new Set(prev).add(s.nid));
       try {
         await invoke("agent_ipc", { method: "set_remote_enabled", params: { nid: s.nid, enabled: true } });
       } catch (e) {
@@ -205,13 +214,28 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
         if (errStr.includes("REMOTE_LIMIT")) {
           showError("已达到远程控制上限（10个），请先关闭其他会话的远程控制"); break;
         }
+        if (errStr.includes("WSS_ACK_TIMEOUT")) {
+          showError("云端确认超时，请检查网络后重试"); break;
+        }
+        if (errStr.includes("WSS_ACK_ERROR")) {
+          showError("云端拒绝远程连接，请稍后重试"); break;
+        }
         console.error("set_remote_enabled failed for", s.nid, e);
+      } finally {
+        // Remove from processing set
+        setRemotingSessions((prev) => {
+          const next = new Set(prev);
+          next.delete(s.nid);
+          return next;
+        });
       }
     }
-    if (failCount > 0) showError(`${failCount} 个会话开启失败`);
+    if (failCount > 0 && failCount === targets.length) {
+      showError(`${failCount} 个会话开启失败`);
+    }
     setSelectedLocalNids(new Set());
     fetchSessions();
-  }, [localSessions, remoteSessions.length, selectedLocalNids, fetchSessions, showError]);
+  }, [localSessions, remoteSessions.length, selectedLocalNids, remotingSessions, fetchSessions, showError]);
 
   // ── 远程会话操作 ──
 
@@ -252,6 +276,24 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
     fetchSessions();
   }, [remoteSessions, selectedRemoteNids, fetchSessions, showError]);
 
+  // ── 终止进程（批量） ──
+
+  const handleKillSessions = useCallback(async (targets: AgentSession[]) => {
+    let failCount = 0;
+    for (const s of targets) {
+      try {
+        await invoke("agent_ipc", { method: "kill_session", params: { nid: s.nid } });
+      } catch (e) {
+        failCount++;
+        console.error("kill_session failed for", s.nid, e);
+      }
+    }
+    if (failCount > 0) showError(`${failCount} 个进程终止失败`);
+    setSelectedLocalNids(new Set());
+    setSelectedRemoteNids(new Set());
+    fetchSessions();
+  }, [fetchSessions, showError]);
+
   // ── Select-all helpers ──
 
   const localAllChecked = localSessions.length > 0 && selectedLocalNids.size === localSessions.length;
@@ -262,6 +304,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
   const purchaseUrl = agentStatus?.purchase_url;
 
   return (
+    <>
     <div
       className="fixed inset-0 z-50 flex items-start justify-end pt-12 pr-4"
       onClick={onClose}
@@ -435,13 +478,34 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
                                 </button>
                                 <span>全选</span>
                               </div>
-                              <button
-                                onClick={handleEnableRemote}
-                                disabled={selectedLocalNids.size === 0}
-                                className="px-2 py-0.5 text-[10px] border border-emerald-400/50 text-emerald-400 hover:bg-emerald-400/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                              >
-                                开启远程
-                              </button>
+                              <div className="flex items-center gap-1">
+                                {(() => {
+                                  const isRemoting = [...selectedLocalNids].some((nid) => remotingSessions.has(nid));
+                                  return (
+                                    <button
+                                      onClick={handleEnableRemote}
+                                      disabled={selectedLocalNids.size === 0 || isRemoting}
+                                      className="px-2 py-0.5 text-[10px] border border-emerald-400/50 text-emerald-400 hover:bg-emerald-400/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1"
+                                    >
+                                      {isRemoting ? (
+                                        <>
+                                          <span className="inline-block w-2.5 h-2.5 border border-emerald-400/50 border-t-emerald-400 rounded-full animate-spin" />
+                                          开启中...
+                                        </>
+                                      ) : (
+                                        "开启远程"
+                                      )}
+                                    </button>
+                                  );
+                                })()}
+                                <button
+                                  onClick={() => setKillConfirm(localSessions.filter((s) => selectedLocalNids.has(s.nid)))}
+                                  disabled={selectedLocalNids.size === 0}
+                                  className="px-2 py-0.5 text-[10px] border border-red-400/50 text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                >
+                                  终止进程
+                                </button>
+                              </div>
                             </div>
                             <div className="max-h-[150px] overflow-y-auto">
                               {localSessions.map((s) => (
@@ -477,13 +541,22 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
                                 </button>
                                 <span>全选</span>
                               </div>
-                              <button
-                                onClick={handleDisableRemote}
-                                disabled={selectedRemoteNids.size === 0}
-                                className="px-2 py-0.5 text-[10px] border border-app-border text-app-text-dim hover:text-app-text hover:border-app-text-dim transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                              >
-                                关闭远程
-                              </button>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={handleDisableRemote}
+                                  disabled={selectedRemoteNids.size === 0}
+                                  className="px-2 py-0.5 text-[10px] border border-app-border text-app-text-dim hover:text-app-text hover:border-app-text-dim transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                >
+                                  关闭远程
+                                </button>
+                                <button
+                                  onClick={() => setKillConfirm(remoteSessions.filter((s) => selectedRemoteNids.has(s.nid)))}
+                                  disabled={selectedRemoteNids.size === 0}
+                                  className="px-2 py-0.5 text-[10px] border border-red-400/50 text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                >
+                                  终止进程
+                                </button>
+                              </div>
                             </div>
                             <div className="max-h-[150px] overflow-y-auto">
                               {remoteSessions.map((s) => (
@@ -532,5 +605,19 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
         </div>
       </div>
     </div>
+
+    <ConfirmDialog
+      open={killConfirm !== null}
+      title="终止进程"
+      message={`确定要终止 ${killConfirm?.length ?? 0} 个会话进程吗？此操作不可撤销。\n远程会话将在 iOS 端立即断开。`}
+      confirmLabel="终止"
+      variant="danger"
+      onConfirm={() => {
+        if (killConfirm) { handleKillSessions(killConfirm); }
+        setKillConfirm(null);
+      }}
+      onCancel={() => setKillConfirm(null)}
+    />
+    </>
   );
 }

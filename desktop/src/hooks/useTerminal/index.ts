@@ -38,6 +38,7 @@ export function useTerminal(panelId: string = "right") {
   const writeBufRef = useRef<Map<string, string>>(new Map());
   const rafWriteRef = useRef<Map<string, number>>(new Map());
   const readyPaneIdsRef = useRef<Set<string>>(new Set());
+  const childPidRef = useRef<Map<string, number>>(new Map());  // paneId → CLI PID
   const errorCallbackRef = useRef<((msg: string) => void) | null>(null);
   const openingRef = useRef(false);
   const readyPromiseRefs = useRef<Map<string, {
@@ -54,6 +55,7 @@ export function useTerminal(panelId: string = "right") {
     rafWriteRef,
     readyPaneIdsRef,
     readyPromiseRefs,
+    childPidRef,
     errorCallbackRef,
     openingRef,
     setTabs: state.setTabs,

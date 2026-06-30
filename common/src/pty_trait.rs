@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 pub trait PtyOutputSink: Send + 'static {
     /// 发送原始字节数据到目标
     fn send(&self, data: &[u8]) -> Result<(), String>;
-    /// PTY 就绪通知
-    fn on_ready(&self) -> Result<(), String> {
+    /// PTY 就绪通知，携带 CLI 子进程 PID
+    fn on_ready(&self, _pid: u32) -> Result<(), String> {
         Ok(())
     }
     /// PTY 退出通知（携带退出码）

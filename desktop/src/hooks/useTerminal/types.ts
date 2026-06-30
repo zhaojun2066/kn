@@ -35,7 +35,7 @@ export interface SessionRecord {
 }
 
 export type PtyEvent =
-  | { event: "ready" }
+  | { event: "ready"; data: number }
   | { event: "data"; data: string }
   | { event: "exit"; data: number }
   | { event: "error"; data: string };
