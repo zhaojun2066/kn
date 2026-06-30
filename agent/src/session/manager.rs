@@ -86,7 +86,7 @@ impl SessionManager {
             last_input: Arc::new(std::sync::Mutex::new(String::new())),
             last_output_snippet: Arc::new(std::sync::Mutex::new(String::new())),
             ended_reported: Arc::new(AtomicBool::new(false)),
-            remote_enabled: Arc::new(AtomicBool::new(true)),
+            remote_enabled: Arc::new(AtomicBool::new(false)),
             relay_inputs: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
 
@@ -151,6 +151,8 @@ impl SessionManager {
         }
         // 清理日志文件锁条目，防止长期运行内存泄漏
         remove_log_lock(nid);
+        // 清理持久化文件
+        super::persistence::delete_session_record(nid);
 
         let _ = self.end(nid).await;
         Ok(())
@@ -174,6 +176,8 @@ impl SessionManager {
 
         session.status = SessionStatus::Ended;
         self.store.insert(session).await?;
+        // 清理持久化文件
+        super::persistence::delete_session_record(&nid);
         Ok(Some(crate::proto::OutgoingMessage::SessionEnded {
             session_nid: nid,
             reason: reason.to_string(),
@@ -208,7 +212,11 @@ impl SessionManager {
             .await?
             .ok_or_else(|| AgentError::SessionNotFound(nid.to_string()))?;
         session.remote_enabled.store(true, Ordering::Relaxed);
-        self.store.insert(session).await?;
+        self.store.insert(session.clone()).await?;
+        // 同步 session.json
+        if let Some(pid) = self.child_pids.lock().await.get(nid).copied() {
+            super::persistence::update_session_record(&session, pid);
+        }
         tracing::info!(nid = %nid, count = count + 1, "远程控制已开启");
         Ok(())
     }
@@ -221,7 +229,11 @@ impl SessionManager {
             .await?
             .ok_or_else(|| AgentError::SessionNotFound(nid.to_string()))?;
         session.remote_enabled.store(enabled, Ordering::Relaxed);
-        self.store.insert(session).await?;
+        self.store.insert(session.clone()).await?;
+        // 同步 session.json
+        if let Some(pid) = self.child_pids.lock().await.get(nid).copied() {
+            super::persistence::update_session_record(&session, pid);
+        }
         tracing::info!(nid = %nid, enabled = enabled, "远程控制状态已更新");
         Ok(())
     }
@@ -343,6 +355,14 @@ impl SessionManager {
         self.child_pids.lock().await.get(nid).copied()
     }
 
+    /// 设置会话的 CLI 子进程 PID（desktop Relay session 补传 PID 时使用）。
+    pub async fn set_child_pid(&self, nid: &str, pid: u32) {
+        if pid > 0 {
+            self.child_pids.lock().await.insert(nid.to_string(), pid);
+            tracing::info!(nid = %nid, pid = pid, "PID 已记录");
+        }
+    }
+
     /// 更新终端尺寸。
     pub async fn resize(&self, nid: &str, cols: u16, rows: u16) -> Result<()> {
         let mut session = self
@@ -458,6 +478,9 @@ impl SessionManager {
                 pair.master.take_writer().map_err(|e| format!("take writer: {}", e))?,
             )));
 
+        // clone 在 remote_enabled 被 move 进 OutputFanout::new 之前
+        let remote_enabled_for_end = remote_enabled.clone();
+
         // 7. OutputFanout（带取消令牌，session 结束后停止定时器）
         let fanout = OutputFanout::new(
             nid.to_string(),
@@ -494,11 +517,17 @@ impl SessionManager {
             while end_rx.recv().await.is_some() {
                 tracing::info!(session_id = %sid_for_end, "收到 session_ended 信号，准备上报");
                 if let Some(msg) = sessions_for_end.report_session_ended(&sid_for_end, "process_exit").await.ok().flatten() {
-                    if let Some(tx) = end_wss_tx.as_ref() {
-                        let _ = tx.send(msg.to_json());
-                        tracing::info!(session_id = %sid_for_end, "session_ended 已发送到 Cloud");
-                    } else {
-                        tracing::warn!(session_id = %sid_for_end, "wss_tx 不可用，无法发送 session_ended");
+                    // 只对开启了远程的会话发送 session_ended 到云端
+                    let is_remote = remote_enabled_for_end.as_ref()
+                        .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+                        .unwrap_or(false);
+                    if is_remote {
+                        if let Some(tx) = end_wss_tx.as_ref() {
+                            let _ = tx.send(msg.to_json());
+                            tracing::info!(session_id = %sid_for_end, "session_ended 已发送到 Cloud");
+                        } else {
+                            tracing::warn!(session_id = %sid_for_end, "wss_tx 不可用，无法发送 session_ended");
+                        }
                     }
                 } else {
                     tracing::warn!(session_id = %sid_for_end, "report_session_ended 返回 None，可能已经上报过或 session 不存在");
@@ -573,6 +602,15 @@ impl SessionManager {
         // 存储 PID 供 kill_session 使用（跳过 0，防止误杀进程组）
         if child_pid > 0 {
             self.child_pids.lock().await.insert(nid.to_string(), child_pid);
+        }
+
+        // 持久化：写 session.json，agent 重启后可恢复
+        if child_pid > 0 {
+            if let Ok(Some(session)) = self.get(nid).await {
+                if let Err(e) = super::persistence::write_session_record(&session, child_pid) {
+                    tracing::warn!(nid = %nid, error = %e, "写 session.json 失败");
+                }
+            }
         }
 
         Ok(fanout)

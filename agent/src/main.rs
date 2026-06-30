@@ -6,7 +6,7 @@
 
 use clap::Parser;
 use kn_agent::{
-    bind, config, device, error::AgentError, ipc, proto, session, state, ws_client,
+    ack, bind, config, device, error::AgentError, ipc, proto, session, state, ws_client,
 };
 use kn_common::project::ProjectInfo;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
@@ -217,6 +217,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let sessions = Arc::new(session::SessionManager::new(store));
     let input_merger = Arc::new(session::InputMerger::new());
 
+    // ── 9.5. 恢复上次异常退出时残留的会话 ──
+    match session::persistence::recover_surviving_sessions(&sessions).await {
+        Ok(n) if n > 0 => tracing::info!("恢复了 {} 个残留会话", n),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "会话恢复扫描失败"),
+    }
+
     // ── 10. WSS 触发通道 ──
     // 用于在主循环中触发 WSS 连接（初始启动 + 绑定完成后）
     let (wss_trigger_tx, mut wss_trigger_rx) = mpsc::unbounded_channel::<()>();
@@ -225,6 +232,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // ── WSS outgoing channel（提前声明，IPC 模块需要引用） ──
     let outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>> =
         Arc::new(tokio::sync::Mutex::new(None));
+
+    // ── ACK 注册表（session_created → session_created_ack 关联） ──
+    let ack_registry = Arc::new(ack::AckRegistry::new());
 
     // IPC 服务器独立于 WSS 连接运行。即使云端不可达（如 dev 模式下
     // kn-cloud 未启动），桌面应用仍能通过 Unix socket 查询 Agent 状态。
@@ -240,6 +250,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             input_merger.clone(),
             wss_trigger_tx.clone(),
             outgoing_tx_ref.clone(),
+            ack_registry.clone(),
         );
         let ipc_shutdown = shutdown.clone();
         tokio::spawn(async move {
@@ -381,6 +392,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         outgoing_tx_ref.clone(),
                         sessions.clone(),
                         input_merger.clone(),
+                        ack_registry.clone(),
                     ).await;
                 }
             }
@@ -461,14 +473,13 @@ async fn cli_heartbeat_loop(
 
         let mut alive_sessions: Vec<proto::HeartbeatSession> = Vec::new();
 
-        // 遍历所有非 Ended 的会话
-        // 关键修复：所有非 Ended 会话都应包含在心跳中，不管 PID 状态如何。
-        // 如果排除无 PID 的会话，云端 SessionHeartbeatMonitor 会在 30s 后
-        // 将 cli:heartbeat:{nid} key 过期视为 heartbeat_timeout，导致
-        // iOS 显示"已完成"但 Agent 面板仍显示在线。
+        // 遍历所有非 Ended 且开启远程的会话
         if let Ok(summaries) = sessions.list().await {
             for s in &summaries {
                 if s.status == session::SessionStatus::Ended {
+                    continue;
+                }
+                if !s.remote_enabled {
                     continue;
                 }
 
@@ -527,6 +538,7 @@ async fn handle_incoming(
     outgoing: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
     sessions: Arc<session::SessionManager>,
     input_merger: Arc<session::InputMerger>,
+    ack_registry: Arc<ack::AckRegistry>, // Phase 3 开始使用
 ) {
 
     match msg {
@@ -553,28 +565,66 @@ async fn handle_incoming(
             // 上报 project 列表
             send_project_list(&outgoing).await;
 
-            // WSS 重连后，重新同步所有本地非 Ended 会话到云端。
-            // 如果某些桌面会话是在 WSS 断开期间创建的（session_created 被跳过），
-            // 重连时补发，确保云端和 iOS 能看到这些会话。
+            // WSS 重连后，重新同步所有开启远程的会话到云端。
+            // agent 是会话状态的权威来源：即使云端因心跳超时把会话标为 ended，
+            // agent 重发 session_created 应能复活会话。
             if let Ok(summaries) = sessions.list().await {
-                let out = outgoing.clone();
                 for s in &summaries {
                     if s.status == session::SessionStatus::Ended {
                         continue;
                     }
-                    let msg = proto::WsMessageBuilder::session_created(
-                        &s.nid,
-                        &s.tool,
-                        &s.cwd,
-                        s.profile.as_deref(),
-                        s.cols,
-                        s.rows,
-                        &s.source,
-                    );
-                    if let Some(tx) = out.lock().await.as_ref() {
-                        let _ = tx.send(msg);
-                        tracing::info!(nid = %s.nid, source = %s.source, "🔄 [RECONNECT] 重连后补发 session_created");
+                    if !s.remote_enabled {
+                        continue;
                     }
+
+                    let ack_nid = s.nid.clone();
+                    let ack_tool = s.tool.clone();
+                    let ack_cwd = s.cwd.clone();
+                    let ack_profile = s.profile.clone();
+                    let ack_cols = s.cols;
+                    let ack_rows = s.rows;
+                    let ack_source = s.source.clone();
+                    let ack_outgoing = outgoing.clone();
+                    let ack_registry = ack_registry.clone();
+                    let ack_sessions = sessions.clone();
+
+                    tokio::spawn(async move {
+                        let msg_id = format!("reconnect-{}", ack_nid);
+                        let msg = proto::WsMessageBuilder::session_created_with_msg_id(
+                            &ack_nid, &ack_tool, &ack_cwd,
+                            ack_profile.as_deref(),
+                            ack_cols, ack_rows, &ack_source,
+                            Some(&msg_id),
+                        );
+
+                        let send_ok = {
+                            let guard = ack_outgoing.lock().await;
+                            match guard.as_ref() {
+                                Some(tx) => tx.send(msg).is_ok(),
+                                None => false,
+                            }
+                        };
+
+                        if !send_ok {
+                            tracing::warn!(nid = %ack_nid, "reconnect: session_created 发送失败");
+                            return;
+                        }
+
+                        tracing::info!(nid = %ack_nid, "🔄 [RECONNECT] 重连后补发 session_created，等待 ACK");
+                        let rx = ack_registry.register(&ack_nid).await;
+                        match tokio::time::timeout(
+                            tokio::time::Duration::from_secs(10), rx
+                        ).await {
+                            Ok(Ok(crate::ack::AckResult::Ok)) => {
+                                tracing::info!(nid = %ack_nid, "reconnect: ACK 成功，会话已恢复");
+                            }
+                            _ => {
+                                // 重连 ACK 失败 → 降级，关闭远程
+                                tracing::warn!(nid = %ack_nid, "reconnect: ACK 失败，关闭远程");
+                                let _ = ack_sessions.set_remote_enabled(&ack_nid, false).await;
+                            }
+                        }
+                    });
                 }
             }
         }
@@ -611,26 +661,10 @@ async fn handle_incoming(
                 .await
             {
                 Ok(session) => {
-                    // 2. Send session_created confirmation to cloud (用 String nid)
-                    let created_msg = proto::WsMessageBuilder::session_created(
-                        &session_nid,
-                        &tool,
-                        &cwd_resolved,
-                        profile.as_deref(),
-                        cols,
-                        rows,
-                        "ios",
-                    );
-                    if let Some(tx) = outgoing.lock().await.as_ref() {
-                        match tx.send(created_msg) {
-                            Ok(_) => tracing::info!(nid = %session_nid, "✅ [SESSION] session_created 已发送到 Cloud"),
-                            Err(e) => tracing::error!(nid = %session_nid, error = %e, "❌ [SESSION] session_created 发送失败"),
-                        }
-                    } else {
-                        tracing::error!(nid = %session_nid, "❌ [SESSION] outgoing 通道为 None, 无法发送 session_created");
-                    }
+                    // iOS 远程会话：显式开启 remote_enabled（create 默认 false）
+                    let _ = sessions.set_remote_enabled(&session_nid, true).await;
 
-                    // 3. Spawn PTY + CLI process
+                    // Spawn PTY + CLI process (before ACK — process needs to be running)
                     let (wss_tx, mut wss_rx) = mpsc::unbounded_channel::<String>();
                     let (ipc_tx, mut ipc_rx) = mpsc::unbounded_channel::<String>();
 
@@ -688,7 +722,80 @@ async fn handle_incoming(
                         }
                     });
 
-                    // 4. Transition to Running state
+                    // ACK retry task: send session_created to WSS, retry up to 3 times
+                    // If all retries fail → kill the PTY process and clean up
+                    let ack_sessions = sessions.clone();
+                    let ack_outgoing = outgoing.clone();
+                    let ack_registry = ack_registry.clone();
+                    let ack_nid = session_nid.clone();
+                    let ack_tool = tool.clone();
+                    let ack_cwd = cwd_resolved.clone();
+                    let ack_profile = profile.clone();
+                    let ack_cols = cols;
+                    let ack_rows = rows;
+
+                    tokio::spawn(async move {
+                        const MAX_RETRIES: u32 = 3;
+                        let backoffs = [1u64, 2, 4];
+
+                        for attempt in 0..MAX_RETRIES {
+                            let msg_id = format!("{}-{}", ack_nid, attempt);
+                            let msg = proto::WsMessageBuilder::session_created_with_msg_id(
+                                &ack_nid, &ack_tool, &ack_cwd,
+                                ack_profile.as_deref(),
+                                ack_cols, ack_rows, "ios",
+                                Some(&msg_id),
+                            );
+
+                            let send_ok = {
+                                let guard = ack_outgoing.lock().await;
+                                match guard.as_ref() {
+                                    Some(tx) => tx.send(msg).is_ok(),
+                                    None => false,
+                                }
+                            };
+
+                            if !send_ok {
+                                tracing::warn!(nid = %ack_nid, attempt = attempt, "WSS channel 不可用");
+                                if attempt + 1 < MAX_RETRIES {
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(backoffs[attempt as usize])).await;
+                                    continue;
+                                }
+                                break;
+                            }
+
+                            tracing::info!(nid = %ack_nid, attempt = attempt, "session_created 已发送，等待 ACK");
+                            let rx = ack_registry.register(&ack_nid).await;
+                            match tokio::time::timeout(
+                                tokio::time::Duration::from_secs(10), rx
+                            ).await {
+                                Ok(Ok(crate::ack::AckResult::Ok)) => {
+                                    tracing::info!(nid = %ack_nid, attempt = attempt, "session_created ACK 成功");
+                                    return;
+                                }
+                                Ok(Ok(crate::ack::AckResult::Error(e))) => {
+                                    // Cloud 明确拒绝，不重试
+                                    tracing::error!(nid = %ack_nid, error = %e, "session_created ACK 被云端拒绝");
+                                    break;
+                                }
+                                Ok(Err(_)) | Err(_) => {
+                                    // Timeout or oneshot sender dropped
+                                    tracing::warn!(nid = %ack_nid, attempt = attempt, "session_created ACK 超时");
+                                    if attempt + 1 < MAX_RETRIES {
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(backoffs[attempt as usize])).await;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
+                        // All retries exhausted or cloud rejected → kill PTY + clean up
+                        tracing::error!(nid = %ack_nid, "所有 session_created ACK 重试失败，终止会话");
+                        let _ = ack_sessions.kill_session(&ack_nid).await;
+                        let _ = ack_sessions.report_session_ended(&ack_nid, "wss_ack_failed").await;
+                    });
+
+                    // Transition to Running state
                     let _ = state
                         .transition(state::StateEvent::SessionStarted)
                         .await;
@@ -731,14 +838,18 @@ async fn handle_incoming(
                 match sessions.get(&session_nid).await {
                     Ok(Some(session_summary)) => {
                         let nid = session_summary.nid;
+                        let is_remote = session_summary.remote_enabled.load(std::sync::atomic::Ordering::Relaxed);
 
                         // 1. Report session_ended FIRST (atomic swap ensures this reason wins
                         //    over any concurrent "process_exit" from PTY EOF handler)
+                        // 只对开启了远程的会话同步 session_ended 到云端
                         match sessions.report_session_ended(&nid, "user_exit").await {
                             Ok(Some(msg)) => {
-                                if let Some(tx) = outgoing.lock().await.as_ref() {
-                                    let _ = tx.send(msg.to_json());
-                                    tracing::info!(session_nid = %session_nid, nid = %nid, "session_ended (user_exit) 已发送到 Cloud");
+                                if is_remote {
+                                    if let Some(tx) = outgoing.lock().await.as_ref() {
+                                        let _ = tx.send(msg.to_json());
+                                        tracing::info!(session_nid = %session_nid, nid = %nid, "session_ended (user_exit) 已发送到 Cloud");
+                                    }
                                 }
                             }
                             Ok(None) => {
@@ -911,6 +1022,44 @@ async fn handle_incoming(
         }
         proto::AgentIncoming::Unknown { msg_type, .. } => {
             tracing::debug!("未知消息类型: {}", msg_type);
+        }
+        proto::AgentIncoming::SessionCreatedAck { session_nid, status, .. } => {
+            let result = if status == "ok" {
+                crate::ack::AckResult::Ok
+            } else {
+                crate::ack::AckResult::Error(status.clone())
+            };
+            let resolved = ack_registry.resolve(&session_nid, result).await;
+            tracing::info!(nid = %session_nid, status = %status, resolved = resolved, "收到 session_created_ack");
+        }
+        proto::AgentIncoming::ResumeSession { session_nid } => {
+            tracing::info!(nid = %session_nid, "收到 resume_session");
+            match sessions.get(&session_nid).await {
+                Ok(Some(summary)) if summary.status != crate::session::SessionStatus::Ended => {
+                    // 会话存在且未结束 → 重发 session_created 恢复云端状态
+                    let msg = proto::WsMessageBuilder::session_created(
+                        &summary.nid,
+                        &summary.tool,
+                        &summary.cwd,
+                        summary.profile.as_deref(),
+                        summary.cols,
+                        summary.rows,
+                        &summary.source,
+                    );
+                    if let Some(tx) = outgoing.lock().await.as_ref() {
+                        let _ = tx.send(msg);
+                        tracing::info!(nid = %session_nid, "resume: session_created 已重发");
+                    }
+                }
+                _ => {
+                    // 会话不存在或已结束 → 清理云端残留状态
+                    tracing::warn!(nid = %session_nid, "resume: 会话不存在或已结束，清理云端状态");
+                    let msg = proto::WsMessageBuilder::session_ended(&session_nid, "stale_redis");
+                    if let Some(tx) = outgoing.lock().await.as_ref() {
+                        let _ = tx.send(msg);
+                    }
+                }
+            }
         }
     }
 }
