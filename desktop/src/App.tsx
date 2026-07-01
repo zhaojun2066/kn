@@ -108,6 +108,10 @@ export function App() {
       setShowBindDialog(true);
     }
   }, [agentHook.tokenRevoked]);
+
+  useEffect(() => {
+    rightTerminal.syncAgentSessions(agentHook.sessions);
+  }, [agentHook.sessions, rightTerminal.syncAgentSessions]);
   const [activeActivity, setActiveActivity] = useState<ActivityKey>("projects");
   const [skillData, setSkillData] = useState<ResourceScanData | null>(null);
   const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
@@ -1977,6 +1981,10 @@ export function App() {
           onRedeem={() => {
             setShowAgentPanel(false);
             setShowRedeemDialog(true);
+          }}
+          onOpenRemoteSession={(session) => {
+            rightTerminal.openRemoteSession(session);
+            setShowAgentPanel(false);
           }}
           agent={agentHook}
         />

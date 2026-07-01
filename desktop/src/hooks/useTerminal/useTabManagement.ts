@@ -2,7 +2,45 @@ import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { TerminalContext } from "./context";
 import { flattenPanes } from "../../lib/pane-types";
+import type { TabSession } from "./types";
 import { newTab } from "./helpers";
+
+export interface TerminalCloseKillTargets {
+  ptySessionIds: string[];
+  agentNids: string[];
+}
+
+export function collectTerminalCloseKills(tab: TabSession): TerminalCloseKillTargets {
+  const ptySessionIds = new Set<string>();
+  const agentNids = new Set<string>();
+
+  for (const leaf of flattenPanes(tab.rootNode)) {
+    if (leaf.sessionId.startsWith("s_")) {
+      agentNids.add(leaf.sessionId);
+    } else if (leaf.ptyRunning) {
+      ptySessionIds.add(leaf.sessionId);
+    }
+  }
+
+  if (tab.agentNid) {
+    agentNids.add(tab.agentNid);
+  }
+
+  return {
+    ptySessionIds: Array.from(ptySessionIds),
+    agentNids: Array.from(agentNids),
+  };
+}
+
+function killTabProcesses(tab: TabSession): void {
+  const targets = collectTerminalCloseKills(tab);
+  for (const sessionId of targets.ptySessionIds) {
+    invoke("kill_pty", { sessionId }).catch(() => {});
+  }
+  for (const nid of targets.agentNids) {
+    invoke("agent_ipc", { method: "kill_session", params: { nid } }).catch(() => {});
+  }
+}
 
 export function useTabManagement(
   ctx: TerminalContext,
@@ -47,17 +85,8 @@ export function useTabManagement(
       return next;
     });
 
-    // Kill PTYs for all panes in this tab
     if (tab) {
-      for (const leaf of flattenPanes(tab.rootNode)) {
-        if (leaf.ptyRunning) {
-          invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
-        }
-      }
-      // Notify agent to end the session (WSS sync)
-      if (tab.agentNid) {
-        invoke("agent_ipc", { method: "kill_session", params: { nid: tab.agentNid } }).catch(() => {});
-      }
+      killTabProcesses(tab);
     }
   }, [isBottom, setIsOpen, setTabs, setActiveTabId, sessionsRef, activeTabIdRef,
       termRefs, writeBufRef, rafWriteRef, cleanupReadyWait]);
@@ -67,19 +96,13 @@ export function useTabManagement(
     for (const tab of allTabs) {
       if (tab.id === tabId) continue;
       for (const leaf of flattenPanes(tab.rootNode)) {
-        if (leaf.ptyRunning) {
-          invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
-        }
         termRefs.current.delete(leaf.paneId);
         writeBufRef.current.delete(leaf.paneId);
         cleanupReadyWait(leaf.paneId);
         const rid = rafWriteRef.current.get(leaf.paneId);
         if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(leaf.paneId); }
       }
-      // Notify agent to end the session
-      if (tab.agentNid) {
-        invoke("agent_ipc", { method: "kill_session", params: { nid: tab.agentNid } }).catch(() => {});
-      }
+      killTabProcesses(tab);
     }
     const kept = allTabs.find((t) => t.id === tabId);
     setTabs(kept ? [kept] : (isBottom ? [newTab("终端")] : []));
@@ -93,19 +116,13 @@ export function useTabManagement(
     const toClose = allTabs.slice(idx + 1);
     for (const tab of toClose) {
       for (const leaf of flattenPanes(tab.rootNode)) {
-        if (leaf.ptyRunning) {
-          invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
-        }
         termRefs.current.delete(leaf.paneId);
         writeBufRef.current.delete(leaf.paneId);
         cleanupReadyWait(leaf.paneId);
         const rid = rafWriteRef.current.get(leaf.paneId);
         if (rid) { cancelAnimationFrame(rid); rafWriteRef.current.delete(leaf.paneId); }
       }
-      // Notify agent to end the session
-      if (tab.agentNid) {
-        invoke("agent_ipc", { method: "kill_session", params: { nid: tab.agentNid } }).catch(() => {});
-      }
+      killTabProcesses(tab);
     }
     setTabs((prev) => prev.slice(0, idx + 1));
     if (toClose.some((t) => t.id === activeTabIdRef.current)) {

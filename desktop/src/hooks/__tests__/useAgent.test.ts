@@ -24,6 +24,8 @@ function mockSessions(): { sessions: AgentSession[] } {
     sessions: [
       {
         nid: "s_test123",
+        kind: "Native",
+        source: "desktop",
         tool: "claude",
         profile: "work",
         cwd: "/tmp",

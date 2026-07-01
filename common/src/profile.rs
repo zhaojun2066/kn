@@ -102,8 +102,7 @@ pub fn acquire_lock(file: &std::fs::File, timeout: Duration) -> Result<(), Strin
 }
 
 pub fn release_lock(file: &std::fs::File) -> Result<(), String> {
-    file.unlock()
-        .map_err(|e| format!("释放锁失败: {}", e))
+    file.unlock().map_err(|e| format!("释放锁失败: {}", e))
 }
 
 // ── File operations ─────────────────────────────────────────
@@ -276,9 +275,7 @@ pub fn validate_profile_name(name: &str) -> Result<(), String> {
         || name.starts_with('-')
         || name.ends_with('-')
     {
-        return Err(
-            "profile 名称只能包含小写字母、数字和连字符，不能以连字符开头或结尾".into(),
-        );
+        return Err("profile 名称只能包含小写字母、数字和连字符，不能以连字符开头或结尾".into());
     }
     if RESERVED_KEYWORDS.contains(&name) {
         return Err(format!(

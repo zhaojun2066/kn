@@ -64,7 +64,11 @@ pub async fn run_ws_loop(
 
         if attempt > 0 {
             let delay = backoff_delay(attempt);
-            tracing::info!(attempt = attempt, delay_ms = delay.as_millis(), "WSS 重连等待");
+            tracing::info!(
+                attempt = attempt,
+                delay_ms = delay.as_millis(),
+                "WSS 重连等待"
+            );
             tokio::select! {
                 _ = tokio::time::sleep(delay) => {}
                 _ = shutdown.cancelled() => return Ok(()),
@@ -111,9 +115,7 @@ pub async fn run_ws_loop(
                         *tx_ref = None;
                     }
                     match state
-                        .transition(StateEvent::WsConnected {
-                            has_token: false,
-                        })
+                        .transition(StateEvent::WsConnected { has_token: false })
                         .await
                     {
                         Ok(_) => tracing::info!("状态已转换为 Unbound"),
@@ -166,21 +168,19 @@ async fn connect_and_run(
     tracing::info!("正在连接 {} ...", cloud_url);
 
     // 30 秒连接超时，避免在 DNS 失败或网络不可达时长时间阻塞
-    let (ws_stream, response) = tokio::time::timeout(
-        Duration::from_secs(30),
-        connect_async(request),
-    )
-    .await
-    .map_err(|_| AgentError::Ws("WSS 连接超时（30 秒），请检查网络".into()))?
-    .map_err(|e| {
-        // Check if the error indicates an auth failure (token revoked/expired)
-        let err_str = e.to_string();
-        if err_str.contains("401") || err_str.contains("403") {
-            AgentError::Ws("AUTH_REJECTED: device_token 已失效，请重新绑定".into())
-        } else {
-            AgentError::Ws(format!("WSS 连接失败: {}", e))
-        }
-    })?;
+    let (ws_stream, response) =
+        tokio::time::timeout(Duration::from_secs(30), connect_async(request))
+            .await
+            .map_err(|_| AgentError::Ws("WSS 连接超时（30 秒），请检查网络".into()))?
+            .map_err(|e| {
+                // Check if the error indicates an auth failure (token revoked/expired)
+                let err_str = e.to_string();
+                if err_str.contains("401") || err_str.contains("403") {
+                    AgentError::Ws("AUTH_REJECTED: device_token 已失效，请重新绑定".into())
+                } else {
+                    AgentError::Ws(format!("WSS 连接失败: {}", e))
+                }
+            })?;
 
     // Also check HTTP upgrade response status
     if response.status() == http::StatusCode::UNAUTHORIZED
@@ -355,7 +355,9 @@ async fn connect_and_run(
         Ok(())
     } else {
         // 返回第一个非空错误
-        let reason = read_err.or(write_err).unwrap_or_else(|| "unknown disconnect".into());
+        let reason = read_err
+            .or(write_err)
+            .unwrap_or_else(|| "unknown disconnect".into());
         Err(AgentError::Ws(reason))
     }
 }

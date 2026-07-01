@@ -22,11 +22,18 @@ pub fn is_debug_build() -> bool {
 pub fn get_platform_info() -> PlatformInfo {
     PlatformInfo {
         os: "macos".into(),
-        arch: if cfg!(target_arch = "aarch64") { "aarch64".into() } else { "x86_64".into() },
+        arch: if cfg!(target_arch = "aarch64") {
+            "aarch64".into()
+        } else {
+            "x86_64".into()
+        },
     }
 }
 
 #[command]
 pub fn get_app_version(app: tauri::AppHandle) -> String {
-    app.config().version.clone().unwrap_or_else(|| "0.0.0".into())
+    app.config()
+        .version
+        .clone()
+        .unwrap_or_else(|| "0.0.0".into())
 }

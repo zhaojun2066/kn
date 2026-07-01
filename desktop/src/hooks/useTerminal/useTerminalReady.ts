@@ -10,12 +10,14 @@ import { parseAiCmd } from "./utils";
 export function useTerminalReady(ctx: TerminalContext) {
   const { sessionsRef, readyPaneIdsRef, readyPromiseRefs, errorCallbackRef } = ctx;
   const deleteHistoryRef = useRef<((id: string) => void) | null>(null);
+  const lastResizeByPaneRef = useRef<Map<string, { cols: number; rows: number }>>(new Map());
 
   // Valid profile names (for validating history restore)
   const profileNamesRef = useRef<Set<string>>(new Set());
 
   const cleanupReadyWait = useCallback((paneId: string) => {
     readyPaneIdsRef.current.delete(paneId);
+    lastResizeByPaneRef.current.delete(paneId);
     const pending = readyPromiseRefs.current.get(paneId);
     if (pending) {
       clearTimeout(pending.timeout);
@@ -56,9 +58,18 @@ export function useTerminalReady(ctx: TerminalContext) {
   const handleTerminalResize = useCallback((paneId: string, cols: number, rows: number) => {
     if (cols < MIN_COLS || rows < MIN_ROWS) return;
     const leaf = findPaneInTabs(sessionsRef.current, paneId);
-    if (leaf?.ptyRunning) {
-      invoke("resize_pty", { sessionId: leaf.sessionId, cols, rows }).catch(() => {});
+    if (!leaf?.ptyRunning) return;
+    const lastSize = lastResizeByPaneRef.current.get(paneId);
+    if (lastSize?.cols === cols && lastSize.rows === rows) return;
+    lastResizeByPaneRef.current.set(paneId, { cols, rows });
+    if (leaf.sessionId.startsWith("s_")) {
+      invoke("agent_ipc", {
+        method: "resize",
+        params: { nid: leaf.sessionId, cols, rows },
+      }).catch(() => {});
+      return;
     }
+    invoke("resize_pty", { sessionId: leaf.sessionId, cols, rows }).catch(() => {});
   }, [sessionsRef]);
 
   const attachTerminal = useCallback((paneId: string, term: Terminal) => {

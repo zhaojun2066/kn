@@ -21,6 +21,30 @@ pub enum SessionKind {
     Relay,
 }
 
+/// 当前 PTY 视口尺寸的主控端。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportOwner {
+    Desktop,
+    Ios,
+}
+
+impl ViewportOwner {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ViewportOwner::Desktop => "desktop",
+            ViewportOwner::Ios => "ios",
+        }
+    }
+
+    pub fn from_source(source: &str) -> Self {
+        if source.eq_ignore_ascii_case("ios") {
+            ViewportOwner::Ios
+        } else {
+            ViewportOwner::Desktop
+        }
+    }
+}
+
 /// 受管理的 AI CLI 会话。
 #[derive(Debug, Clone)]
 pub struct ManagedSession {
@@ -40,6 +64,8 @@ pub struct ManagedSession {
     pub cols: u16,
     /// 终端行数
     pub rows: u16,
+    /// 当前 PTY 视口尺寸主控端。
+    pub viewport_owner: ViewportOwner,
     /// 创建时间
     pub created_at: DateTime<Utc>,
     /// 当前状态
@@ -66,17 +92,26 @@ impl ManagedSession {
     /// 记录最近的 PTY 输出片段（截断至 500 字符）。
     pub fn record_output_snippet(&self, text: &str) {
         let truncated: String = text.chars().take(500).collect();
-        *self.last_output_snippet.lock().unwrap_or_else(|e| e.into_inner()) = truncated;
+        *self
+            .last_output_snippet
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = truncated;
     }
 
     /// 获取最近的用户输入。
     pub fn last_input(&self) -> String {
-        self.last_input.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.last_input
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 获取最近的 PTY 输出片段。
     pub fn last_output_snippet(&self) -> String {
-        self.last_output_snippet.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.last_output_snippet
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 标记 session_ended 是否已上报；首次调用返回 true。
@@ -101,9 +136,8 @@ pub struct SessionSummary {
     pub source: String,
     pub cols: u16,
     pub rows: u16,
+    pub viewport_owner: ViewportOwner,
     pub created_at: DateTime<Utc>,
     pub status: SessionStatus,
     pub remote_enabled: bool,
 }
-
-

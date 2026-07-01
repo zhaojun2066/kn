@@ -74,6 +74,7 @@ impl SessionStore for MemorySessionStore {
                 cwd: s.cwd.clone(),
                 cols: s.cols,
                 rows: s.rows,
+                viewport_owner: s.viewport_owner,
                 created_at: s.created_at,
                 status: s.status,
                 remote_enabled: s.remote_enabled.load(Ordering::Relaxed),
@@ -103,7 +104,9 @@ impl SessionStore for MemorySessionStore {
             .read()
             .await
             .values()
-            .filter(|s| s.status != SessionStatus::Ended && s.remote_enabled.load(Ordering::Relaxed))
+            .filter(|s| {
+                s.status != SessionStatus::Ended && s.remote_enabled.load(Ordering::Relaxed)
+            })
             .count())
     }
 }

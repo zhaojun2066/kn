@@ -214,10 +214,7 @@ pub async fn redeem(http_url: &str, device_token: &str, code: &str) -> Result<(S
     // of HTTP status code. kn-cloud returns business errors (code≠0, message)
     // with HTTP 200, and auth errors with HTTP 401 + JSON body.
     let status = response.status();
-    let body_bytes = response
-        .bytes()
-        .await
-        .map_err(|e| AgentError::Http(e))?;
+    let body_bytes = response.bytes().await.map_err(|e| AgentError::Http(e))?;
 
     let envelope: CloudEnvelope<RedeemResponseData> =
         serde_json::from_slice(&body_bytes).map_err(|_e| {
@@ -267,7 +264,9 @@ pub fn load_device_token() -> Option<String> {
 // ── Helpers ─────────────────────────────────────────────────
 
 fn device_token_path() -> PathBuf {
-    kn_common::path::config_dir().join("agent").join("device_token")
+    kn_common::path::config_dir()
+        .join("agent")
+        .join("device_token")
 }
 
 /// 原子保存 device_token（tmp → fsync → rename，权限 0600）。
@@ -307,7 +306,10 @@ pub(crate) fn save_device_token(token: &str) -> Result<()> {
 /// 返回生产环境 device_token 路径（使用 home_dir，忽略 KN_HOME）。
 /// 用于安全检查：任何情况下都不能操作这个路径。
 fn production_device_token_path() -> PathBuf {
-    kn_common::path::home_dir().join(".kn").join("agent").join("device_token")
+    kn_common::path::home_dir()
+        .join(".kn")
+        .join("agent")
+        .join("device_token")
 }
 
 /// 删除本地 device_token 文件（在 token 失效/吊销时调用）。

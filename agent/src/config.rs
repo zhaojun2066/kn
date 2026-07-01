@@ -58,8 +58,8 @@ impl AgentConfig {
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
-        let os_version = sysinfo::System::long_os_version()
-            .unwrap_or_else(|| "unknown".to_string());
+        let os_version =
+            sysinfo::System::long_os_version().unwrap_or_else(|| "unknown".to_string());
 
         let purchase_url = std::env::var("KN_PURCHASE_URL")
             .ok()
@@ -90,7 +90,10 @@ impl AgentConfig {
         match serde_json::from_str(&content) {
             Ok(cfg) => Some(cfg),
             Err(e) => {
-                eprintln!("[kn-agent] 警告: config.json 解析失败 ({}), 使用默认配置", e);
+                eprintln!(
+                    "[kn-agent] 警告: config.json 解析失败 ({}), 使用默认配置",
+                    e
+                );
                 None
             }
         }

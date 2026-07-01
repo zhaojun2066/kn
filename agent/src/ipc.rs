@@ -41,7 +41,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ack::AckRegistry;
 use crate::error::{AgentError, Result};
-use crate::session::{InputMerger, InputMessage, SessionManager, SessionSummary};
+use crate::session::{InputMerger, InputMessage, SessionManager, SessionSummary, ViewportOwner};
 use crate::state::{StateEvent, StateMachine};
 
 // ── IPC wire helpers ──────────────────────────────────────────
@@ -168,10 +168,7 @@ impl IpcServer {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                &self.socket_path,
-                std::fs::Permissions::from_mode(0o600),
-            )?;
+            std::fs::set_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o600))?;
         }
 
         tracing::info!("IPC 服务器已启动: {}", self.socket_path.display());
@@ -335,8 +332,7 @@ impl IpcHandle {
     async fn handle_sessions(&self, req: &IpcRequest) -> String {
         match self.sessions.list().await {
             Ok(sessions) => {
-                let items: Vec<serde_json::Value> =
-                    sessions.iter().map(session_to_json).collect();
+                let items: Vec<serde_json::Value> = sessions.iter().map(session_to_json).collect();
                 ok_response(
                     &req.id,
                     serde_json::json!({
@@ -362,19 +358,21 @@ impl IpcHandle {
         }
 
         // Step 1: 同步获取绑定码
-        let (bind_code, expires_in, confirm_url) = match crate::device::bind_init(&self.bind_http_url, &self.machine_id).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("bind_init 失败: {}", e);
-                let _ = self.state.transition(StateEvent::BindTimeout).await;
-                let msg = if e.to_string().contains("connect") || e.to_string().contains("timeout") {
-                    "绑定服务不可用，请检查网络连接后重试"
-                } else {
-                    "绑定失败，请稍后重试"
-                };
-                return err_response(&req.id, "BIND_ERROR", msg);
-            }
-        };
+        let (bind_code, expires_in, confirm_url) =
+            match crate::device::bind_init(&self.bind_http_url, &self.machine_id).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("bind_init 失败: {}", e);
+                    let _ = self.state.transition(StateEvent::BindTimeout).await;
+                    let msg =
+                        if e.to_string().contains("connect") || e.to_string().contains("timeout") {
+                            "绑定服务不可用，请检查网络连接后重试"
+                        } else {
+                            "绑定失败，请稍后重试"
+                        };
+                    return err_response(&req.id, "BIND_ERROR", msg);
+                }
+            };
 
         // Step 2: 后台轮询绑定结果（B2: generation guard 防止旧任务污染新绑定的状态）
         let state = self.state.clone();
@@ -449,7 +447,11 @@ impl IpcHandle {
         if let Some((token, gen)) = guard.take() {
             // R1: Only cancel if this is still the latest bind (stale cancel from old dialog)
             if gen != current_gen {
-                tracing::info!("取消绑定请求已过期 (gen={}, current={})，忽略", gen, current_gen);
+                tracing::info!(
+                    "取消绑定请求已过期 (gen={}, current={})，忽略",
+                    gen,
+                    current_gen
+                );
                 return ok_response(&req.id, serde_json::json!({"status": "stale_cancel"}));
             }
             token.cancel();
@@ -615,9 +617,13 @@ impl IpcHandle {
                             tracing::error!(nid = %session_nid, error = %e, "PTY session start failed — cleaning up orphaned session record");
                             // 清理残留的 session 记录，防止变成永久僵尸会话
                             let _ = sessions_for_cleanup.end(&session_nid).await;
-                            if let Ok(Some(msg)) = sessions_for_cleanup.report_session_ended(&session_nid, "start_failed").await {
+                            if let Ok(Some(msg)) = sessions_for_cleanup
+                                .report_session_ended(&session_nid, "start_failed")
+                                .await
+                            {
                                 // 只对开启了远程的会话同步到云端
-                                let is_remote = remote_enabled_for_cleanup.as_ref()
+                                let is_remote = remote_enabled_for_cleanup
+                                    .as_ref()
                                     .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
                                     .unwrap_or(false);
                                 if is_remote {
@@ -668,11 +674,14 @@ impl IpcHandle {
         }
 
         match self.sessions.attach_pty(&nid).await {
-            Ok(sock_path) => ok_response(&req.id, serde_json::json!({
-                "ok": true,
-                "nid": nid,
-                "pty_sock": sock_path.to_string_lossy()
-            })),
+            Ok(sock_path) => ok_response(
+                &req.id,
+                serde_json::json!({
+                    "ok": true,
+                    "nid": nid,
+                    "pty_sock": sock_path.to_string_lossy()
+                }),
+            ),
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }
     }
@@ -711,17 +720,20 @@ impl IpcHandle {
         // Verify session exists before pushing input
         match self.sessions.get(&nid).await {
             Ok(Some(_)) => {
-                self.input_merger.push(InputMessage {
-                    session_id: nid.clone(),
-                    text,
-                    source: "desktop".into(),
-                })
-                .await;
+                let _ = self
+                    .sessions
+                    .set_viewport_owner(&nid, ViewportOwner::Desktop)
+                    .await;
+                self.input_merger
+                    .push(InputMessage {
+                        session_id: nid.clone(),
+                        text,
+                        source: "desktop".into(),
+                    })
+                    .await;
                 ok_response(&req.id, serde_json::json!({"ok": true, "nid": nid}))
             }
-            Ok(None) => {
-                err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid))
-            }
+            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }
     }
@@ -765,19 +777,25 @@ impl IpcHandle {
         // Verify session exists before sending ctrl
         match self.sessions.get(&nid).await {
             Ok(Some(_)) => {
+                let _ = self
+                    .sessions
+                    .set_viewport_owner(&nid, ViewportOwner::Desktop)
+                    .await;
                 // Push ctrl byte as text into PTY stdin
                 let text = String::from_utf8_lossy(&byte).to_string();
-                self.input_merger.push(InputMessage {
-                    session_id: nid.clone(),
-                    text,
-                    source: "desktop".into(),
-                })
-                .await;
-                ok_response(&req.id, serde_json::json!({"ok": true, "signal": signal, "nid": nid}))
+                self.input_merger
+                    .push(InputMessage {
+                        session_id: nid.clone(),
+                        text,
+                        source: "desktop".into(),
+                    })
+                    .await;
+                ok_response(
+                    &req.id,
+                    serde_json::json!({"ok": true, "signal": signal, "nid": nid}),
+                )
             }
-            Ok(None) => {
-                err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid))
-            }
+            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }
     }
@@ -805,7 +823,11 @@ impl IpcHandle {
             Err(e) => return err_response(&req.id, "INTERNAL", &e.to_string()),
         }
 
-        match self.sessions.resize(nid, cols, rows).await {
+        match self
+            .sessions
+            .resize_from_source(nid, cols, rows, ViewportOwner::Desktop)
+            .await
+        {
             Ok(_) => ok_response(
                 &req.id,
                 serde_json::json!({"ok": true, "nid": nid, "cols": cols, "rows": rows}),
@@ -824,11 +846,17 @@ impl IpcHandle {
         match self.sessions.get(nid).await {
             Ok(Some(session)) => {
                 let nid = session.nid.clone();
-                let remote_was_enabled = session.remote_enabled.load(std::sync::atomic::Ordering::Relaxed);
+                let remote_was_enabled = session
+                    .remote_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 match self.sessions.kill_session(&nid).await {
                     Ok(()) => {
                         // Report session_ended — 只有开启了远程的会话才同步到云端
-                        if let Ok(Some(msg)) = self.sessions.report_session_ended(&nid, "user_closed_tab").await {
+                        if let Ok(Some(msg)) = self
+                            .sessions
+                            .report_session_ended(&nid, "user_closed_tab")
+                            .await
+                        {
                             if remote_was_enabled {
                                 if let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref() {
                                     let _ = tx.send(msg.to_json());
@@ -841,9 +869,7 @@ impl IpcHandle {
                     Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
                 }
             }
-            Ok(None) => {
-                err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid))
-            }
+            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }
     }
@@ -880,11 +906,7 @@ impl IpcHandle {
             .and_then(|v| v.as_str())
             .unwrap_or("desktop")
             .to_string();
-        let pid = req
-            .params
-            .get("pid")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        let pid = req.params.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
         let nid = format!("s_{}", nanoid::nanoid!(12));
 
@@ -940,7 +962,11 @@ impl IpcHandle {
             Some(n) => n,
             None => return err_response(&req.id, "INVALID_PARAMS", "缺少 nid 参数"),
         };
-        let enabled = req.params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+        let enabled = req
+            .params
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         // ── 检查 WSS 连接 ──
         let outgoing_tx = {
@@ -948,8 +974,11 @@ impl IpcHandle {
             match guard.as_ref() {
                 Some(tx) => tx.clone(),
                 None => {
-                    return err_response(&req.id, "WSS_NOT_CONNECTED",
-                        "Agent 未连接到云端，请先绑定设备");
+                    return err_response(
+                        &req.id,
+                        "WSS_NOT_CONNECTED",
+                        "Agent 未连接到云端，请先绑定设备",
+                    );
                 }
             }
         };
@@ -962,17 +991,28 @@ impl IpcHandle {
             // 2. 发 session_created + 等 ACK
             if let Ok(Some(session)) = self.sessions.get(nid).await {
                 let msg = crate::proto::WsMessageBuilder::session_created_with_msg_id(
-                    nid, &session.tool, &session.cwd,
+                    nid,
+                    &session.tool,
+                    &session.cwd,
                     session.profile.as_deref(),
-                    session.cols, session.rows, "desktop",
+                    session.cols,
+                    session.rows,
+                    "desktop",
                     Some(&format!("desktop-{}", nid)),
                 );
+                let rx = self.ack_registry.register(nid).await;
                 if let Err(e) = outgoing_tx.send(msg) {
+                    let _ = self
+                        .ack_registry
+                        .resolve(
+                            nid,
+                            crate::ack::AckResult::Error(format!("send failed: {}", e)),
+                        )
+                        .await;
                     return err_response(&req.id, "WSS_SEND_FAILED", &e.to_string());
                 }
 
                 tracing::info!(nid = %nid, "等待 WSS ACK");
-                let rx = self.ack_registry.register(nid).await;
                 match tokio::time::timeout(tokio::time::Duration::from_secs(10), rx).await {
                     Ok(Ok(crate::ack::AckResult::Ok)) => {
                         // ACK 成功 → 原子检查 limit + 设 remote_enabled=true
@@ -983,10 +1023,15 @@ impl IpcHandle {
                             Err(AgentError::SessionLimit { current, max }) => {
                                 // 并发超限 → 清理云端残留
                                 let cleanup = crate::proto::WsMessageBuilder::session_ended(
-                                    nid, "remote_disabled");
+                                    nid,
+                                    "remote_disabled",
+                                );
                                 let _ = outgoing_tx.send(cleanup);
-                                return err_response(&req.id, "REMOTE_LIMIT",
-                                    &format!("已达上限({}/{})，请先关闭其他远程", current, max));
+                                return err_response(
+                                    &req.id,
+                                    "REMOTE_LIMIT",
+                                    &format!("已达上限({}/{})，请先关闭其他远程", current, max),
+                                );
                             }
                             Err(e) => {
                                 return err_response(&req.id, "INTERNAL", &e.to_string());
@@ -1010,7 +1055,10 @@ impl IpcHandle {
             tracing::info!(nid = %nid, "远程已关闭（fire-and-forget）");
         }
 
-        ok_response(&req.id, serde_json::json!({"ok": true, "nid": nid, "remote_enabled": enabled}))
+        ok_response(
+            &req.id,
+            serde_json::json!({"ok": true, "nid": nid, "remote_enabled": enabled}),
+        )
     }
 
     /// `get_output_history` — paginated output log (stub: Phase 2 PTY integration).
@@ -1041,9 +1089,7 @@ impl IpcHandle {
                     "limit": limit,
                 }),
             ),
-            Ok(None) => {
-                err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid))
-            }
+            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }
     }
@@ -1112,13 +1158,21 @@ impl IpcHandle {
 
 /// Convert a `SessionSummary` to a JSON value for serialization.
 fn session_to_json(s: &SessionSummary) -> serde_json::Value {
+    let kind = match s.kind {
+        crate::session::SessionKind::Native => "Native",
+        crate::session::SessionKind::Relay => "Relay",
+    };
+
     serde_json::json!({
         "nid": s.nid,
+        "kind": kind,
+        "source": s.source,
         "tool": s.tool,
         "profile": s.profile,
         "cwd": s.cwd,
         "cols": s.cols,
         "rows": s.rows,
+        "viewport_owner": s.viewport_owner.as_str(),
         "created_at": s.created_at.to_rfc3339(),
         "status": match s.status {
             crate::session::SessionStatus::Created => "created",
@@ -1165,8 +1219,7 @@ mod tests {
         // Should end with newline
         assert!(resp.ends_with('\n'));
         // Should be valid JSON with trailing newline stripped
-        let parsed: serde_json::Value =
-            serde_json::from_str(resp.trim_end()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(resp.trim_end()).unwrap();
         assert_eq!(parsed["id"], "abc");
         assert_eq!(parsed["result"]["key"], "value");
     }
@@ -1175,18 +1228,40 @@ mod tests {
     fn test_err_response_format() {
         let resp = err_response("abc", "NOT_FOUND", "session not found");
         assert!(resp.ends_with('\n'));
-        let parsed: serde_json::Value =
-            serde_json::from_str(resp.trim_end()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(resp.trim_end()).unwrap();
         assert_eq!(parsed["id"], "abc");
         assert_eq!(parsed["error"]["code"], "NOT_FOUND");
         assert_eq!(parsed["error"]["message"], "session not found");
     }
 
     #[test]
+    fn test_session_to_json_includes_kind_and_source() {
+        let summary = crate::session::types::SessionSummary {
+            nid: "s_test".to_string(),
+            kind: crate::session::types::SessionKind::Native,
+            tool: "claude".to_string(),
+            profile: Some("work".to_string()),
+            cwd: "/tmp/project".to_string(),
+            source: "desktop".to_string(),
+            cols: 100,
+            rows: 30,
+            viewport_owner: crate::session::types::ViewportOwner::Desktop,
+            created_at: chrono::Utc::now(),
+            status: crate::session::SessionStatus::Running,
+            remote_enabled: false,
+        };
+
+        let json = session_to_json(&summary);
+
+        assert_eq!(json["kind"], "Native");
+        assert_eq!(json["source"], "desktop");
+        assert_eq!(json["nid"], "s_test");
+    }
+
+    #[test]
     fn test_parse_error_no_id() {
         let resp = parse_error("expected value");
-        let parsed: serde_json::Value =
-            serde_json::from_str(resp.trim_end()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(resp.trim_end()).unwrap();
         assert_eq!(parsed["id"], "");
         assert_eq!(parsed["error"]["code"], "PARSE_ERROR");
     }

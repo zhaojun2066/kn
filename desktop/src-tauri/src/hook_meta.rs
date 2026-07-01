@@ -74,44 +74,44 @@ fn load_all() -> Vec<HookMeta> {
 
 fn save_all(metas: &[HookMeta]) -> Result<(), String> {
     with_write_lock(|| {
-    let path = meta_path();
-    // Ensure directory exists
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
-    }
-    let text = serde_yaml::to_string(metas).map_err(|e| format!("序列化 YAML 失败: {}", e))?;
+        let path = meta_path();
+        // Ensure directory exists
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+        }
+        let text = serde_yaml::to_string(metas).map_err(|e| format!("序列化 YAML 失败: {}", e))?;
 
-    // Backup + atomic write via tmp file + rename
-    let mut bak_name = path.to_string_lossy().to_string();
-    bak_name.push_str(".bak");
-    if path.exists() {
-        let _ = fs::copy(&path, &bak_name);
-    }
+        // Backup + atomic write via tmp file + rename
+        let mut bak_name = path.to_string_lossy().to_string();
+        bak_name.push_str(".bak");
+        if path.exists() {
+            let _ = fs::copy(&path, &bak_name);
+        }
 
-    let mut tmp_name = path.to_string_lossy().to_string();
-    tmp_name.push_str(".tmp");
-    let tmp_path = PathBuf::from(&tmp_name);
-    fs::write(&tmp_path, &text).map_err(|e| format!("写入临时文件失败: {}", e))?;
-    #[cfg(unix)]
-    {
-        if let Ok(file) = std::fs::File::open(&tmp_path) {
-            use std::os::unix::io::AsRawFd;
-            unsafe {
-                libc::fsync(file.as_raw_fd());
+        let mut tmp_name = path.to_string_lossy().to_string();
+        tmp_name.push_str(".tmp");
+        let tmp_path = PathBuf::from(&tmp_name);
+        fs::write(&tmp_path, &text).map_err(|e| format!("写入临时文件失败: {}", e))?;
+        #[cfg(unix)]
+        {
+            if let Ok(file) = std::fs::File::open(&tmp_path) {
+                use std::os::unix::io::AsRawFd;
+                unsafe {
+                    libc::fsync(file.as_raw_fd());
+                }
             }
         }
-    }
-    // Use atomic_rename which handles overwrite atomically on all platforms
-    if let Err(e) = atomic_rename(&tmp_path, &path) {
-        let _ = fs::remove_file(&tmp_path);
-        if !path.exists() {
-            let _ = fs::copy(&bak_name, &path);
+        // Use atomic_rename which handles overwrite atomically on all platforms
+        if let Err(e) = atomic_rename(&tmp_path, &path) {
+            let _ = fs::remove_file(&tmp_path);
+            if !path.exists() {
+                let _ = fs::copy(&bak_name, &path);
+            }
+            let _ = fs::remove_file(&bak_name);
+            return Err(format!("替换文件失败: {}", e));
         }
         let _ = fs::remove_file(&bak_name);
-        return Err(format!("替换文件失败: {}", e));
-    }
-    let _ = fs::remove_file(&bak_name);
-    Ok(())
+        Ok(())
     }) // with_write_lock
 }
 

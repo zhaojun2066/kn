@@ -33,9 +33,18 @@ impl InputMerger {
     pub async fn push(&self, msg: InputMessage) {
         let sid = msg.session_id.clone();
         let len = msg.text.len();
-        let preview = if msg.text.chars().count() <= 50 { msg.text.clone() } else { format!("{}...", msg.text.chars().take(50).collect::<String>()) };
+        let preview = if msg.text.chars().count() <= 50 {
+            msg.text.clone()
+        } else {
+            format!("{}...", msg.text.chars().take(50).collect::<String>())
+        };
         tracing::info!(session_id = %sid, len = len, text = %preview, "📥 [MERGER] 消息入队");
-        self.queues.lock().await.entry(sid.clone()).or_default().push_back(msg);
+        self.queues
+            .lock()
+            .await
+            .entry(sid.clone())
+            .or_default()
+            .push_back(msg);
         // 如果该会话有注册的 Notify，唤醒它
         if let Some(notify) = self.notifies.lock().await.get(&sid) {
             notify.notify_one();

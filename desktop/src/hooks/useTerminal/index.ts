@@ -8,6 +8,7 @@
  */
 import { useState, useRef, useCallback } from "react";
 import type { Terminal } from "@xterm/xterm";
+import type { AgentSession } from "../useAgent";
 import { useTerminalState } from "./useTerminalState";
 import { usePtyLifecycle } from "./usePtyLifecycle";
 import { useTerminalReady } from "./useTerminalReady";
@@ -17,6 +18,7 @@ import { useSessionHistory } from "./useSessionHistory";
 import { useTabManagement } from "./useTabManagement";
 import { usePaneManagement } from "./usePaneManagement";
 import type { TerminalContext } from "./context";
+import { syncNativeAgentSessions } from "./agentSessionSync";
 
 export function useTerminal(panelId: string = "right") {
   const isBottom = panelId === "bottom";
@@ -39,6 +41,10 @@ export function useTerminal(panelId: string = "right") {
   const rafWriteRef = useRef<Map<string, number>>(new Map());
   const readyPaneIdsRef = useRef<Set<string>>(new Set());
   const childPidRef = useRef<Map<string, number>>(new Map());  // paneId → CLI PID
+  const agentSessionsRef = useRef<AgentSession[]>([]);
+  const startupAgentSessionCutoffMsRef = useRef(Date.now());
+  const didInitialAgentSessionSyncRef = useRef(false);
+  const dismissedAgentNidsRef = useRef<Set<string>>(new Set());
   const errorCallbackRef = useRef<((msg: string) => void) | null>(null);
   const openingRef = useRef(false);
   const readyPromiseRefs = useRef<Map<string, {
@@ -56,6 +62,8 @@ export function useTerminal(panelId: string = "right") {
     readyPaneIdsRef,
     readyPromiseRefs,
     childPidRef,
+    agentSessionsRef,
+    dismissedAgentNidsRef,
     errorCallbackRef,
     openingRef,
     setTabs: state.setTabs,
@@ -68,7 +76,7 @@ export function useTerminal(panelId: string = "right") {
   };
 
   // ── PTY lifecycle ──
-  const { spawnPty } = usePtyLifecycle(ctx);
+  const { spawnPty, attachAgentPty } = usePtyLifecycle(ctx);
 
   // ── Terminal ready / attach / resize ──
   const ready = useTerminalReady(ctx);
@@ -81,7 +89,7 @@ export function useTerminal(panelId: string = "right") {
 
   // ── Session commands (run commands in terminal) ──
   const commands = useSessionCommands(
-    ctx, state.isOpen, spawnPty, ready.waitForReady, ready.reportTerminalError,
+    ctx, state.isOpen, spawnPty, attachAgentPty, ready.waitForReady, ready.reportTerminalError,
     panes.splitPane, state.saveHistory,
   );
 
@@ -110,6 +118,21 @@ export function useTerminal(panelId: string = "right") {
     try { localStorage.setItem(STORAGE_SIZE, String(clamped)); } catch { /* */ }
   }, [isBottom, MIN_SIZE, STORAGE_SIZE, state.setSizeState]);
 
+  const syncAgentSessions = useCallback((sessions: AgentSession[]) => {
+    agentSessionsRef.current = sessions;
+    if (!isBottom && !didInitialAgentSessionSyncRef.current && sessions.length > 0) {
+      const visibleSessions = sessions.filter((session) => {
+        const createdAt = Date.parse(session.created_at);
+        return Number.isFinite(createdAt) &&
+          createdAt <= startupAgentSessionCutoffMsRef.current &&
+          !dismissedAgentNidsRef.current.has(session.nid);
+      });
+      if (visibleSessions.length === 0) return;
+      didInitialAgentSessionSyncRef.current = true;
+      state.setTabs((prev) => syncNativeAgentSessions(prev, visibleSessions));
+    }
+  }, [isBottom, state.setTabs]);
+
   // ── Derived active tab ──
   const activeTab = state.tabs.find((t) => t.id === state.activeTabId) || state.tabs[0];
 
@@ -136,6 +159,8 @@ export function useTerminal(panelId: string = "right") {
     runInSplitPane: commands.runInSplitPane,
     runInTerminal: commands.runInTerminal,
     runInNewTab: commands.runInNewTab,
+    openRemoteSession: commands.openRemoteSession,
+    syncAgentSessions,
     runProjectCommand: commands.runProjectCommand,
     newEmptyTab: actions.newEmptyTab,
     resumeSession: history.resumeSession,

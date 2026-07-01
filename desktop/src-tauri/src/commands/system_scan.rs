@@ -55,11 +55,18 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
         let mut env = std::collections::HashMap::new();
         if let Some(env_obj) = json.get("env").and_then(|e| e.as_object()) {
             for (k, v) in env_obj {
-                if let Some(s) = v.as_str() { env.insert(k.clone(), s.to_string()); }
+                if let Some(s) = v.as_str() {
+                    env.insert(k.clone(), s.to_string());
+                }
             }
         }
         if !env.is_empty() {
-            profiles.push(ScanProfile { name: sanitize_scan_name("claude"), cli_type: "claude".into(), env, source: claude_str });
+            profiles.push(ScanProfile {
+                name: sanitize_scan_name("claude"),
+                cli_type: "claude".into(),
+                env,
+                source: claude_str,
+            });
         }
     }
 
@@ -81,18 +88,24 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
     if let Ok(content) = std::fs::read_to_string(&codex_config) {
         if let Ok(root) = toml::from_str::<toml::Value>(&content) {
             if let Some(model) = root.get("model").and_then(|v| v.as_str()) {
-                if !model.is_empty() { codex_env.insert("OPENAI_MODEL".into(), model.to_string()); }
+                if !model.is_empty() {
+                    codex_env.insert("OPENAI_MODEL".into(), model.to_string());
+                }
             }
             if let Some(base_url) = root.get("base_url").and_then(|v| v.as_str()) {
-                if !base_url.is_empty() { codex_env.insert("OPENAI_BASE_URL".into(), base_url.to_string()); }
+                if !base_url.is_empty() {
+                    codex_env.insert("OPENAI_BASE_URL".into(), base_url.to_string());
+                }
             }
         }
     }
 
     if !codex_env.is_empty() {
         profiles.push(ScanProfile {
-            name: sanitize_scan_name("codex"), cli_type: "codex".into(),
-            env: codex_env, source: format!("{}, {}", codex_auth_str, codex_config_str),
+            name: sanitize_scan_name("codex"),
+            cli_type: "codex".into(),
+            env: codex_env,
+            source: format!("{}, {}", codex_auth_str, codex_config_str),
         });
     }
 
@@ -109,8 +122,10 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
             }
         }
         profiles.push(ScanProfile {
-            name: sanitize_scan_name("qoder-cn"), cli_type: "qoderclicn".into(),
-            env: qoder_env, source: qoder_str,
+            name: sanitize_scan_name("qoder-cn"),
+            cli_type: "qoderclicn".into(),
+            env: qoder_env,
+            source: qoder_str,
         });
     }
 
@@ -129,7 +144,11 @@ mod tests {
     #[test]
     fn test_home_dir_returns_existing_path() {
         let home = home_dir();
-        assert!(home.exists(), "home_dir should return an existing path: {:?}", home);
+        assert!(
+            home.exists(),
+            "home_dir should return an existing path: {:?}",
+            home
+        );
         assert!(home.is_absolute());
     }
 }

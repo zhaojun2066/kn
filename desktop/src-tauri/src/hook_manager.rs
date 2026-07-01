@@ -64,50 +64,50 @@ fn home_dir() -> PathBuf {
 /// This prevents data corruption from crashes or concurrent writes mid-write.
 fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
     with_write_lock(|| {
-    with_cross_process_lock(|| {
-    // Compute backup path up front — needed for recovery on Windows rename failure.
-    let mut bak_name = path.to_string_lossy().to_string();
-    bak_name.push_str(".bak");
+        with_cross_process_lock(|| {
+            // Compute backup path up front — needed for recovery on Windows rename failure.
+            let mut bak_name = path.to_string_lossy().to_string();
+            bak_name.push_str(".bak");
 
-    // Create backup before modifying (best-effort)
-    if path.exists() {
-        let _ = fs::copy(path, &bak_name);
-    }
-
-    // Write to temp file, then rename
-    let mut tmp_name = path.to_string_lossy().to_string();
-    tmp_name.push_str(".tmp");
-    let tmp_path = std::path::PathBuf::from(&tmp_name);
-
-    fs::write(&tmp_path, content).map_err(|e| format!("写入临时文件失败: {}", e))?;
-
-    // fsync on Unix to flush OS buffers before rename
-    #[cfg(unix)]
-    {
-        if let Ok(file) = std::fs::File::open(&tmp_path) {
-            use std::os::unix::io::AsRawFd;
-            unsafe {
-                libc::fsync(file.as_raw_fd());
+            // Create backup before modifying (best-effort)
+            if path.exists() {
+                let _ = fs::copy(path, &bak_name);
             }
-        }
-    }
 
-    // Use atomic_rename which handles overwrite atomically on all platforms
-    // (MoveFileExW on Windows, standard rename on Unix)
-    if let Err(e) = atomic_rename(&tmp_path, path) {
-        let _ = fs::remove_file(&tmp_path);
-        // Attempt to restore from backup if we deleted the target above
-        if !path.exists() {
-            let _ = fs::copy(&bak_name, path);
-        }
-        // Clean up backup regardless
-        let _ = fs::remove_file(&bak_name);
-        return Err(format!("替换文件失败: {}", e));
-    }
-    // Clean up backup on success
-    let _ = fs::remove_file(&bak_name);
-    Ok(())
-    }) // with_cross_process_lock
+            // Write to temp file, then rename
+            let mut tmp_name = path.to_string_lossy().to_string();
+            tmp_name.push_str(".tmp");
+            let tmp_path = std::path::PathBuf::from(&tmp_name);
+
+            fs::write(&tmp_path, content).map_err(|e| format!("写入临时文件失败: {}", e))?;
+
+            // fsync on Unix to flush OS buffers before rename
+            #[cfg(unix)]
+            {
+                if let Ok(file) = std::fs::File::open(&tmp_path) {
+                    use std::os::unix::io::AsRawFd;
+                    unsafe {
+                        libc::fsync(file.as_raw_fd());
+                    }
+                }
+            }
+
+            // Use atomic_rename which handles overwrite atomically on all platforms
+            // (MoveFileExW on Windows, standard rename on Unix)
+            if let Err(e) = atomic_rename(&tmp_path, path) {
+                let _ = fs::remove_file(&tmp_path);
+                // Attempt to restore from backup if we deleted the target above
+                if !path.exists() {
+                    let _ = fs::copy(&bak_name, path);
+                }
+                // Clean up backup regardless
+                let _ = fs::remove_file(&bak_name);
+                return Err(format!("替换文件失败: {}", e));
+            }
+            // Clean up backup on success
+            let _ = fs::remove_file(&bak_name);
+            Ok(())
+        }) // with_cross_process_lock
     }) // with_write_lock
 }
 
@@ -130,7 +130,12 @@ fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
 ///   }
 /// }
 /// ```
-fn scan_json_hooks(cli: &str, settings_path: &PathBuf, source: &str, project_name: Option<String>) -> Vec<HookEntry> {
+fn scan_json_hooks(
+    cli: &str,
+    settings_path: &PathBuf,
+    source: &str,
+    project_name: Option<String>,
+) -> Vec<HookEntry> {
     let mut hooks = Vec::new();
     let text = match fs::read_to_string(settings_path) {
         Ok(t) => t,
@@ -168,10 +173,7 @@ fn scan_json_hooks(cli: &str, settings_path: &PathBuf, source: &str, project_nam
     let scope_key: String = if source == "project" {
         // settings_path is e.g. /foo/proj/.claude/settings.json
         // parent() → /foo/proj/.claude → parent() → /foo/proj
-        if let Some(proj_root) = settings_path
-            .parent()
-            .and_then(|p| p.parent())
-        {
+        if let Some(proj_root) = settings_path.parent().and_then(|p| p.parent()) {
             crate::hash_path(&proj_root.to_string_lossy())
         } else {
             "project".into()
@@ -215,7 +217,10 @@ fn scan_json_hooks(cli: &str, settings_path: &PathBuf, source: &str, project_nam
                     .unwrap_or(false);
 
                 hooks.push(HookEntry {
-                    id: format!("{}:hook:{}:{}:{}:{}", cli, scope_key, event_type, group_idx, hook_idx),
+                    id: format!(
+                        "{}:hook:{}:{}:{}:{}",
+                        cli, scope_key, event_type, group_idx, hook_idx
+                    ),
                     cli: cli.to_string(),
                     event_type: event_type.clone(),
                     matcher: matcher.clone(),
@@ -274,7 +279,11 @@ fn scan_qoder_hooks() -> Vec<HookEntry> {
 /// command = "echo hello"
 /// type = "command"
 /// ```
-fn scan_codex_hooks_at(config_path: &PathBuf, source: &str, project_name: Option<String>) -> Vec<HookEntry> {
+fn scan_codex_hooks_at(
+    config_path: &PathBuf,
+    source: &str,
+    project_name: Option<String>,
+) -> Vec<HookEntry> {
     let mut hooks = Vec::new();
     let text = match fs::read_to_string(&config_path) {
         Ok(t) => t,
@@ -295,10 +304,7 @@ fn scan_codex_hooks_at(config_path: &PathBuf, source: &str, project_name: Option
 
     // Compute unique scope key (same logic as scan_json_hooks)
     let scope_key: String = if source == "project" {
-        if let Some(proj_root) = config_path
-            .parent()
-            .and_then(|p| p.parent())
-        {
+        if let Some(proj_root) = config_path.parent().and_then(|p| p.parent()) {
             crate::hash_path(&proj_root.to_string_lossy())
         } else {
             "project".into()
@@ -375,7 +381,10 @@ fn scan_codex_hooks_at(config_path: &PathBuf, source: &str, project_name: Option
                     let enabled = !command.is_empty();
 
                     hooks.push(HookEntry {
-                        id: format!("codex:hook:{}:{}:{}:{}", scope_key, event_type, group_idx, hook_idx),
+                        id: format!(
+                            "codex:hook:{}:{}:{}:{}",
+                            scope_key, event_type, group_idx, hook_idx
+                        ),
                         cli: "codex".to_string(),
                         event_type: event_type.clone(),
                         matcher: matcher.clone(),
@@ -521,13 +530,9 @@ pub fn toggle_hook(
 ) -> Result<(), String> {
     let config_path = std::path::PathBuf::from(&path);
     match cli.as_str() {
-        "claude" | "qoder" => toggle_json_hook(
-            &config_path,
-            &event_type,
-            group_idx,
-            hook_idx,
-            enabled,
-        ),
+        "claude" | "qoder" => {
+            toggle_json_hook(&config_path, &event_type, group_idx, hook_idx, enabled)
+        }
         "codex" => toggle_codex_hook_at(&config_path, &event_type, group_idx, hook_idx, enabled),
         _ => Err(format!("不支持的 CLI: {}", cli)),
     }
@@ -701,12 +706,7 @@ pub fn delete_hook(
 ) -> Result<(), String> {
     let config_path = std::path::PathBuf::from(&path);
     let result = match cli.as_str() {
-        "claude" | "qoder" => delete_json_hook(
-            &config_path,
-            &event_type,
-            group_idx,
-            hook_idx,
-        ),
+        "claude" | "qoder" => delete_json_hook(&config_path, &event_type, group_idx, hook_idx),
         "codex" => delete_codex_hook_at(&config_path, &event_type, group_idx, hook_idx),
         _ => Err(format!("不支持的 CLI: {}", cli)),
     };
@@ -773,7 +773,12 @@ fn delete_codex_hook(event_type: &str, group_idx: usize, hook_idx: usize) -> Res
     delete_codex_hook_at(&config_path, event_type, group_idx, hook_idx)
 }
 
-fn delete_codex_hook_at(config_path: &std::path::PathBuf, event_type: &str, group_idx: usize, hook_idx: usize) -> Result<(), String> {
+fn delete_codex_hook_at(
+    config_path: &std::path::PathBuf,
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+) -> Result<(), String> {
     let text = fs::read_to_string(&config_path).map_err(|e| format!("读取失败: {}", e))?;
 
     // Use toml_edit for comment-preserving mutation
@@ -1127,9 +1132,27 @@ pub fn move_hook_entry(
     let from = std::path::PathBuf::from(&from_path);
     let to = std::path::PathBuf::from(&to_path);
     if cli == "codex" {
-        move_codex_hook_entry(&cli, &event_type, group_idx, hook_idx, &from, &to, &from_scope, &to_scope)
+        move_codex_hook_entry(
+            &cli,
+            &event_type,
+            group_idx,
+            hook_idx,
+            &from,
+            &to,
+            &from_scope,
+            &to_scope,
+        )
     } else {
-        move_json_hook_entry(&cli, &event_type, group_idx, hook_idx, &from, &to, &from_scope, &to_scope)
+        move_json_hook_entry(
+            &cli,
+            &event_type,
+            group_idx,
+            hook_idx,
+            &from,
+            &to,
+            &from_scope,
+            &to_scope,
+        )
     }
 }
 
@@ -1191,7 +1214,10 @@ pub fn undo_move_hook(undo_info: HookMoveUndoInfo) -> Result<(), String> {
 /// 1. Position-based removal with snapshot verification (fast path, 99% of cases)
 /// 2. Fallback: search by content — only delete on unique match
 /// 3. Multiple matches → error, don't guess
-fn remove_json_hook_for_undo(undo: &HookMoveUndoInfo, path: &std::path::PathBuf) -> Result<(), String> {
+fn remove_json_hook_for_undo(
+    undo: &HookMoveUndoInfo,
+    path: &std::path::PathBuf,
+) -> Result<(), String> {
     // Step 1: Try position-based removal with verification
     if let (Some(g_idx), Some(h_idx)) = (undo.target_group_idx, undo.target_hook_idx) {
         if verify_json_hook_at_position(&undo.hook_snapshot, &undo.event_type, g_idx, h_idx, path) {
@@ -1210,10 +1236,14 @@ fn remove_json_hook_for_undo(undo: &HookMoveUndoInfo, path: &std::path::PathBuf)
 }
 
 /// Try to remove a Codex TOML hook from the target using the three-step strategy.
-fn remove_codex_hook_for_undo(undo: &HookMoveUndoInfo, path: &std::path::PathBuf) -> Result<(), String> {
+fn remove_codex_hook_for_undo(
+    undo: &HookMoveUndoInfo,
+    path: &std::path::PathBuf,
+) -> Result<(), String> {
     // Step 1: Try position-based removal with verification
     if let (Some(g_idx), Some(h_idx)) = (undo.target_group_idx, undo.target_hook_idx) {
-        if verify_codex_hook_at_position(&undo.hook_snapshot, &undo.event_type, g_idx, h_idx, path) {
+        if verify_codex_hook_at_position(&undo.hook_snapshot, &undo.event_type, g_idx, h_idx, path)
+        {
             return remove_codex_hook_entry_by_idx(&undo.event_type, g_idx, h_idx, path);
         }
     }
@@ -1229,65 +1259,168 @@ fn remove_codex_hook_for_undo(undo: &HookMoveUndoInfo, path: &std::path::PathBuf
 
 /// Check whether the hook at (event_type, group_idx, hook_idx) in a JSON config file
 /// matches the given snapshot (by command + type + matcher).
-fn verify_json_hook_at_position(snapshot: &serde_json::Value, event_type: &str, group_idx: usize, hook_idx: usize, path: &std::path::PathBuf) -> bool {
-    let text = match fs::read_to_string(path) { Ok(t) => t, Err(_) => return false };
-    let root: serde_json::Value = match serde_json::from_str(&text) { Ok(r) => r, Err(_) => return false };
-    let hooks = match root.get("hooks").and_then(|v| v.as_object()) { Some(h) => h, None => return false };
-    let arr = match hooks.get(event_type).and_then(|v| v.as_array()) { Some(a) => a, None => return false };
-    let group = match arr.get(group_idx) { Some(g) => g, None => return false };
-    let inner = match group.get("hooks").and_then(|v| v.as_array()) { Some(i) => i, None => return false };
-    let hook = match inner.get(hook_idx) { Some(h) => h, None => return false };
+fn verify_json_hook_at_position(
+    snapshot: &serde_json::Value,
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+    path: &std::path::PathBuf,
+) -> bool {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let root: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let hooks = match root.get("hooks").and_then(|v| v.as_object()) {
+        Some(h) => h,
+        None => return false,
+    };
+    let arr = match hooks.get(event_type).and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return false,
+    };
+    let group = match arr.get(group_idx) {
+        Some(g) => g,
+        None => return false,
+    };
+    let inner = match group.get("hooks").and_then(|v| v.as_array()) {
+        Some(i) => i,
+        None => return false,
+    };
+    let hook = match inner.get(hook_idx) {
+        Some(h) => h,
+        None => return false,
+    };
 
-    let snapshot_matcher = snapshot.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
+    let snapshot_matcher = snapshot
+        .get("matcher")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let group_matcher = group.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
 
     group_matcher == snapshot_matcher
         && hook.get("command").and_then(|v| v.as_str()).unwrap_or("")
-        == snapshot.get("command").and_then(|v| v.as_str()).unwrap_or("")
-        && hook.get("type").and_then(|v| v.as_str()).unwrap_or("command")
-        == snapshot.get("type").and_then(|v| v.as_str()).unwrap_or("command")
+            == snapshot
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+        && hook
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("command")
+            == snapshot
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("command")
 }
 
 /// Check whether the hook at (event_type, group_idx, hook_idx) in a Codex TOML config file
 /// matches the given snapshot.
-fn verify_codex_hook_at_position(snapshot: &serde_json::Value, event_type: &str, group_idx: usize, hook_idx: usize, path: &std::path::PathBuf) -> bool {
-    let text = match fs::read_to_string(path) { Ok(t) => t, Err(_) => return false };
-    let root: toml::Value = match text.parse() { Ok(r) => r, Err(_) => return false };
-    let hooks_table = match root.get("hooks").and_then(|v| v.as_table()) { Some(h) => h, None => return false };
-    let arr = match hooks_table.get(event_type).and_then(|v| v.as_array()) { Some(a) => a, None => return false };
-    let group = match arr.get(group_idx) { Some(g) => g, None => return false };
-    let inner = match group.get("hooks").and_then(|v| v.as_array()) { Some(i) => i, None => return false };
-    let hook = match inner.get(hook_idx) { Some(h) => h, None => return false };
+fn verify_codex_hook_at_position(
+    snapshot: &serde_json::Value,
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+    path: &std::path::PathBuf,
+) -> bool {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let root: toml::Value = match text.parse() {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let hooks_table = match root.get("hooks").and_then(|v| v.as_table()) {
+        Some(h) => h,
+        None => return false,
+    };
+    let arr = match hooks_table.get(event_type).and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return false,
+    };
+    let group = match arr.get(group_idx) {
+        Some(g) => g,
+        None => return false,
+    };
+    let inner = match group.get("hooks").and_then(|v| v.as_array()) {
+        Some(i) => i,
+        None => return false,
+    };
+    let hook = match inner.get(hook_idx) {
+        Some(h) => h,
+        None => return false,
+    };
 
-    let snapshot_matcher = snapshot.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
+    let snapshot_matcher = snapshot
+        .get("matcher")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let group_matcher = group.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
 
     group_matcher == snapshot_matcher
         && hook.get("command").and_then(|v| v.as_str()).unwrap_or("")
-        == snapshot.get("command").and_then(|v| v.as_str()).unwrap_or("")
-        && hook.get("type").and_then(|v| v.as_str()).unwrap_or("command")
-        == snapshot.get("type").and_then(|v| v.as_str()).unwrap_or("command")
+            == snapshot
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+        && hook
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("command")
+            == snapshot
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("command")
 }
 
 /// Count how many hooks in a JSON config file match the given snapshot by content.
-fn count_json_hook_matches(snapshot: &serde_json::Value, event_type: &str, path: &std::path::PathBuf) -> usize {
-    let text = match fs::read_to_string(path) { Ok(t) => t, Err(_) => return 0 };
-    let root: serde_json::Value = match serde_json::from_str(&text) { Ok(r) => r, Err(_) => return 0 };
-    let cmd = snapshot.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    let hook_type = snapshot.get("type").and_then(|v| v.as_str()).unwrap_or("command");
-    let matcher = snapshot.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
+fn count_json_hook_matches(
+    snapshot: &serde_json::Value,
+    event_type: &str,
+    path: &std::path::PathBuf,
+) -> usize {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    let root: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(r) => r,
+        Err(_) => return 0,
+    };
+    let cmd = snapshot
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let hook_type = snapshot
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("command");
+    let matcher = snapshot
+        .get("matcher")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     let mut count = 0;
     if let Some(hooks) = root.get("hooks").and_then(|v| v.as_object()) {
         if let Some(arr) = hooks.get(event_type).and_then(|v| v.as_array()) {
             for g in arr {
                 let g_matcher = g.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
-                if g_matcher != matcher { continue; }
+                if g_matcher != matcher {
+                    continue;
+                }
                 if let Some(inner) = g.get("hooks").and_then(|v| v.as_array()) {
-                    count += inner.iter().filter(|h| {
-                        h.get("command").and_then(|v| v.as_str()).unwrap_or("") == cmd
-                            && h.get("type").and_then(|v| v.as_str()).unwrap_or("command") == hook_type
-                    }).count();
+                    count += inner
+                        .iter()
+                        .filter(|h| {
+                            h.get("command").and_then(|v| v.as_str()).unwrap_or("") == cmd
+                                && h.get("type").and_then(|v| v.as_str()).unwrap_or("command")
+                                    == hook_type
+                        })
+                        .count();
                 }
             }
         }
@@ -1296,24 +1429,49 @@ fn count_json_hook_matches(snapshot: &serde_json::Value, event_type: &str, path:
 }
 
 /// Count how many hooks in a Codex TOML config file match the given snapshot by content.
-fn count_codex_hook_matches(snapshot: &serde_json::Value, event_type: &str, path: &std::path::PathBuf) -> usize {
-    let text = match fs::read_to_string(path) { Ok(t) => t, Err(_) => return 0 };
-    let root: toml::Value = match text.parse() { Ok(r) => r, Err(_) => return 0 };
-    let cmd = snapshot.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    let hook_type = snapshot.get("type").and_then(|v| v.as_str()).unwrap_or("command");
-    let matcher = snapshot.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
+fn count_codex_hook_matches(
+    snapshot: &serde_json::Value,
+    event_type: &str,
+    path: &std::path::PathBuf,
+) -> usize {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    let root: toml::Value = match text.parse() {
+        Ok(r) => r,
+        Err(_) => return 0,
+    };
+    let cmd = snapshot
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let hook_type = snapshot
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("command");
+    let matcher = snapshot
+        .get("matcher")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     let mut count = 0;
     if let Some(hooks_table) = root.get("hooks").and_then(|v| v.as_table()) {
         if let Some(arr) = hooks_table.get(event_type).and_then(|v| v.as_array()) {
             for g in arr {
                 let g_matcher = g.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
-                if g_matcher != matcher { continue; }
+                if g_matcher != matcher {
+                    continue;
+                }
                 if let Some(inner) = g.get("hooks").and_then(|v| v.as_array()) {
-                    count += inner.iter().filter(|h| {
-                        h.get("command").and_then(|v| v.as_str()).unwrap_or("") == cmd
-                            && h.get("type").and_then(|v| v.as_str()).unwrap_or("command") == hook_type
-                    }).count();
+                    count += inner
+                        .iter()
+                        .filter(|h| {
+                            h.get("command").and_then(|v| v.as_str()).unwrap_or("") == cmd
+                                && h.get("type").and_then(|v| v.as_str()).unwrap_or("command")
+                                    == hook_type
+                        })
+                        .count();
                 }
             }
         }
@@ -1323,16 +1481,29 @@ fn count_codex_hook_matches(snapshot: &serde_json::Value, event_type: &str, path
 
 /// Remove a JSON hook by exact (event_type, group_idx, hook_idx) — no content verification.
 /// Only used when the caller has already verified the position is correct.
-fn remove_json_hook_by_index(event_type: &str, group_idx: usize, hook_idx: usize, path: &std::path::PathBuf) -> Result<(), String> {
+fn remove_json_hook_by_index(
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+    path: &std::path::PathBuf,
+) -> Result<(), String> {
     let text = fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
-    let mut root: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
     if let Some(hooks) = root.get_mut("hooks").and_then(|v| v.as_object_mut()) {
         if let Some(arr) = hooks.get_mut(event_type).and_then(|v| v.as_array_mut()) {
             if let Some(g) = arr.get_mut(group_idx) {
                 if let Some(inner) = g.get_mut("hooks").and_then(|v| v.as_array_mut()) {
-                    if hook_idx < inner.len() { inner.remove(hook_idx); }
+                    if hook_idx < inner.len() {
+                        inner.remove(hook_idx);
+                    }
                 }
-                if g.get("hooks").and_then(|v| v.as_array()).map_or(true, |a| a.is_empty()) { arr.remove(group_idx); }
+                if g.get("hooks")
+                    .and_then(|v| v.as_array())
+                    .map_or(true, |a| a.is_empty())
+                {
+                    arr.remove(group_idx);
+                }
             }
         }
     }
@@ -1354,61 +1525,111 @@ fn move_json_hook_entry(
     to_scope: &str,
 ) -> Result<HookMoveUndoInfo, String> {
     let text = fs::read_to_string(from).map_err(|e| format!("读取源文件失败: {}", e))?;
-    let mut root: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
-    let hooks = root.get_mut("hooks").and_then(|v| v.as_object_mut()).ok_or("源文件无 hooks")?;
-    let event_arr = hooks.get_mut(event_type).and_then(|v| v.as_array_mut()).ok_or_else(|| format!("事件 '{}' 不存在", event_type))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
+    let hooks = root
+        .get_mut("hooks")
+        .and_then(|v| v.as_object_mut())
+        .ok_or("源文件无 hooks")?;
+    let event_arr = hooks
+        .get_mut(event_type)
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| format!("事件 '{}' 不存在", event_type))?;
     let group = event_arr.get_mut(group_idx).ok_or("group_idx 越界")?;
     // Read matcher before getting mutable reference to inner hooks (borrow checker)
-    let group_matcher = group.get("matcher").and_then(|v| v.as_str()).map(|s| s.to_string()).filter(|s| !s.is_empty());
-    let inner = group.get_mut("hooks").and_then(|v| v.as_array_mut()).ok_or("hooks 数组不存在")?;
+    let group_matcher = group
+        .get("matcher")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+    let inner = group
+        .get_mut("hooks")
+        .and_then(|v| v.as_array_mut())
+        .ok_or("hooks 数组不存在")?;
     let mut entry = inner.get(hook_idx).ok_or("hook_idx 越界")?.clone();
     // Preserve the matcher from the source group
     if let Some(ref matcher) = group_matcher {
         if entry.get("matcher").is_none() {
             if let Some(obj) = entry.as_object_mut() {
-                obj.insert("matcher".to_string(), serde_json::Value::String(matcher.clone()));
+                obj.insert(
+                    "matcher".to_string(),
+                    serde_json::Value::String(matcher.clone()),
+                );
             }
         }
     }
     let snapshot = entry.clone();
-    let name = entry.get("command").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+    let name = entry
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
 
     // Backup both source and destination before any mutation
     let _ = fs::copy(from, from.with_extension("json.bak"));
-    if to.exists() { let _ = fs::copy(to, to.with_extension("json.bak")); }
+    if to.exists() {
+        let _ = fs::copy(to, to.with_extension("json.bak"));
+    }
 
     // Write to dest FIRST — if this fails, source is untouched, no data loss
     let (target_group_idx, target_hook_idx) = write_json_hook_entry(&entry, event_type, to)?;
 
     // Only after target write succeeds, remove from source
     inner.remove(hook_idx);
-    if inner.is_empty() { event_arr.remove(group_idx); }
+    if inner.is_empty() {
+        event_arr.remove(group_idx);
+    }
     let new_src = serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {}", e))?;
     atomic_write(from, &new_src)?;
 
     Ok(HookMoveUndoInfo {
-        resource_name: name, from_scope: from_scope.into(), to_scope: to_scope.into(),
-        cli: cli.into(), event_type: event_type.into(), group_idx, hook_idx,
+        resource_name: name,
+        from_scope: from_scope.into(),
+        to_scope: to_scope.into(),
+        cli: cli.into(),
+        event_type: event_type.into(),
+        group_idx,
+        hook_idx,
         hook_snapshot: snapshot,
-        from_path: from.to_string_lossy().into(), to_path: to.to_string_lossy().into(),
+        from_path: from.to_string_lossy().into(),
+        to_path: to.to_string_lossy().into(),
         target_group_idx: Some(target_group_idx),
         target_hook_idx: Some(target_hook_idx),
     })
 }
 
-fn copy_json_hook_entry(event_type: &str, group_idx: usize, hook_idx: usize, from: &std::path::PathBuf, to: &std::path::PathBuf) -> Result<(), String> {
+fn copy_json_hook_entry(
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+    from: &std::path::PathBuf,
+    to: &std::path::PathBuf,
+) -> Result<(), String> {
     let text = fs::read_to_string(from).map_err(|e| format!("读取源文件失败: {}", e))?;
-    let root: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
-    let hooks = root.get("hooks").and_then(|v| v.as_object()).ok_or("源文件无 hooks")?;
-    let event_arr = hooks.get(event_type).and_then(|v| v.as_array()).ok_or_else(|| format!("事件 '{}' 不存在", event_type))?;
+    let root: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
+    let hooks = root
+        .get("hooks")
+        .and_then(|v| v.as_object())
+        .ok_or("源文件无 hooks")?;
+    let event_arr = hooks
+        .get(event_type)
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("事件 '{}' 不存在", event_type))?;
     let group = event_arr.get(group_idx).ok_or("group_idx 越界")?;
-    let inner = group.get("hooks").and_then(|v| v.as_array()).ok_or("hooks 数组不存在")?;
+    let inner = group
+        .get("hooks")
+        .and_then(|v| v.as_array())
+        .ok_or("hooks 数组不存在")?;
     let mut entry = inner.get(hook_idx).ok_or("hook_idx 越界")?.clone();
     // Preserve the matcher from the source group so the destination keeps it
     if let Some(matcher) = group.get("matcher").and_then(|v| v.as_str()) {
         if !matcher.is_empty() && entry.get("matcher").is_none() {
             if let Some(obj) = entry.as_object_mut() {
-                obj.insert("matcher".to_string(), serde_json::Value::String(matcher.to_string()));
+                obj.insert(
+                    "matcher".to_string(),
+                    serde_json::Value::String(matcher.to_string()),
+                );
             }
         }
     }
@@ -1418,32 +1639,50 @@ fn copy_json_hook_entry(event_type: &str, group_idx: usize, hook_idx: usize, fro
 
 /// Write a hook entry to a JSON config file. Returns the target (group_idx, hook_idx)
 /// where the entry was inserted, for precise undo targeting.
-fn write_json_hook_entry(entry: &serde_json::Value, event_type: &str, path: &std::path::PathBuf) -> Result<(usize, usize), String> {
-    let text = if path.exists() { fs::read_to_string(path).unwrap_or_default() } else { "{}".into() };
+fn write_json_hook_entry(
+    entry: &serde_json::Value,
+    event_type: &str,
+    path: &std::path::PathBuf,
+) -> Result<(usize, usize), String> {
+    let text = if path.exists() {
+        fs::read_to_string(path).unwrap_or_default()
+    } else {
+        "{}".into()
+    };
     let mut root: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::json!({}));
     let hooks = root.as_object_mut().ok_or("根对象不是 JSON object")?;
-    let hooks_val = hooks.entry("hooks".to_string()).or_insert_with(|| serde_json::json!({}));
+    let hooks_val = hooks
+        .entry("hooks".to_string())
+        .or_insert_with(|| serde_json::json!({}));
     let hooks_obj = hooks_val.as_object_mut().ok_or("hooks 不是对象")?;
     let arr = if let Some(a) = hooks_obj.get_mut(event_type).and_then(|v| v.as_array_mut()) {
         a
     } else {
         // Use .insert() instead of [] indexing — serde_json::Map's IndexMut panics on missing keys
         hooks_obj.insert(event_type.to_string(), serde_json::json!([]));
-        hooks_obj.get_mut(event_type).and_then(|v| v.as_array_mut()).ok_or("无法创建事件数组")?
+        hooks_obj
+            .get_mut(event_type)
+            .and_then(|v| v.as_array_mut())
+            .ok_or("无法创建事件数组")?
     };
     let matcher = entry.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
 
     let (target_group_idx, target_hook_idx): (usize, usize);
 
     // Find existing group with matching matcher (use position() to avoid borrow conflicts)
-    let group_pos = arr.iter().position(|g| g.get("matcher").and_then(|v| v.as_str()).unwrap_or("") == matcher);
+    let group_pos = arr
+        .iter()
+        .position(|g| g.get("matcher").and_then(|v| v.as_str()).unwrap_or("") == matcher);
     if let Some(g_idx) = group_pos {
         target_group_idx = g_idx;
         let g = &mut arr[g_idx];
         if let Some(inner_arr) = g.get_mut("hooks").and_then(|v| v.as_array_mut()) {
             // Check for existing hook with same type+command — overwrite instead of append
             let cmd = entry.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let ht = entry.get("type").and_then(|v| v.as_str()).unwrap_or("command");
+            let ht = entry
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("command");
             if let Some(existing_pos) = inner_arr.iter().position(|h| {
                 h.get("command").and_then(|v| v.as_str()).unwrap_or("") == cmd
                     && h.get("type").and_then(|v| v.as_str()).unwrap_or("command") == ht
@@ -1470,24 +1709,41 @@ fn write_json_hook_entry(entry: &serde_json::Value, event_type: &str, path: &std
         arr.push(serde_json::json!({"matcher": matcher, "hooks": [entry]}));
     }
 
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?; }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
     let new_text = serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {}", e))?;
     atomic_write(path, &new_text)?;
     Ok((target_group_idx, target_hook_idx))
 }
 
 #[allow(dead_code)]
-fn remove_json_hook_entry(event_type: &str, group_idx: usize, hook_idx: usize, path: &std::path::PathBuf) -> Result<(), String> {
-    if !path.exists() { return Ok(()); }
+fn remove_json_hook_entry(
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+    path: &std::path::PathBuf,
+) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
     let text = fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
-    let mut root: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
     if let Some(hooks) = root.get_mut("hooks").and_then(|v| v.as_object_mut()) {
         if let Some(arr) = hooks.get_mut(event_type).and_then(|v| v.as_array_mut()) {
             if let Some(g) = arr.get_mut(group_idx) {
                 if let Some(inner) = g.get_mut("hooks").and_then(|v| v.as_array_mut()) {
-                    if hook_idx < inner.len() { inner.remove(hook_idx); }
+                    if hook_idx < inner.len() {
+                        inner.remove(hook_idx);
+                    }
                 }
-                if g.get("hooks").and_then(|v| v.as_array()).map_or(true, |a| a.is_empty()) { arr.remove(group_idx); }
+                if g.get("hooks")
+                    .and_then(|v| v.as_array())
+                    .map_or(true, |a| a.is_empty())
+                {
+                    arr.remove(group_idx);
+                }
             }
         }
     }
@@ -1498,27 +1754,48 @@ fn remove_json_hook_entry(event_type: &str, group_idx: usize, hook_idx: usize, p
 
 /// Remove a JSON hook by matching snapshot content (command + type within matcher group).
 /// Safer than index-based removal for undo operations where target indices may differ from source.
-fn remove_json_hook_by_snapshot(snapshot: &serde_json::Value, event_type: &str, path: &std::path::PathBuf) -> Result<(), String> {
-    if !path.exists() { return Ok(()); }
+fn remove_json_hook_by_snapshot(
+    snapshot: &serde_json::Value,
+    event_type: &str,
+    path: &std::path::PathBuf,
+) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
     let text = fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
-    let mut root: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析 JSON 失败: {}", e))?;
 
-    let cmd = snapshot.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    let hook_type = snapshot.get("type").and_then(|v| v.as_str()).unwrap_or("command");
-    let matcher = snapshot.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
+    let cmd = snapshot
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let hook_type = snapshot
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("command");
+    let matcher = snapshot
+        .get("matcher")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     if let Some(hooks) = root.get_mut("hooks").and_then(|v| v.as_object_mut()) {
         if let Some(arr) = hooks.get_mut(event_type).and_then(|v| v.as_array_mut()) {
             for (g_idx, g) in arr.iter_mut().enumerate() {
                 let g_matcher = g.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
-                if g_matcher != matcher { continue; }
+                if g_matcher != matcher {
+                    continue;
+                }
                 if let Some(inner) = g.get_mut("hooks").and_then(|v| v.as_array_mut()) {
                     if let Some(pos) = inner.iter().position(|h| {
                         h.get("command").and_then(|v| v.as_str()).unwrap_or("") == cmd
-                            && h.get("type").and_then(|v| v.as_str()).unwrap_or("command") == hook_type
+                            && h.get("type").and_then(|v| v.as_str()).unwrap_or("command")
+                                == hook_type
                     }) {
                         inner.remove(pos);
-                        if inner.is_empty() { arr.remove(g_idx); }
+                        if inner.is_empty() {
+                            arr.remove(g_idx);
+                        }
                         break;
                     }
                 }
@@ -1531,7 +1808,10 @@ fn remove_json_hook_by_snapshot(snapshot: &serde_json::Value, event_type: &str, 
     Ok(())
 }
 
-fn restore_json_hook_entry(undo: &HookMoveUndoInfo, path: &std::path::PathBuf) -> Result<(), String> {
+fn restore_json_hook_entry(
+    undo: &HookMoveUndoInfo,
+    path: &std::path::PathBuf,
+) -> Result<(), String> {
     let _ = write_json_hook_entry(&undo.hook_snapshot, &undo.event_type, path)?;
     Ok(())
 }
@@ -1549,11 +1829,17 @@ fn move_codex_hook_entry(
     to_scope: &str,
 ) -> Result<HookMoveUndoInfo, String> {
     let snapshot = extract_codex_hook_snapshot(event_type, group_idx, hook_idx, from)?;
-    let name = snapshot.get("command").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+    let name = snapshot
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
 
     // Backup both source and destination before any mutation
     let _ = fs::copy(from, from.with_extension("toml.bak"));
-    if to.exists() { let _ = fs::copy(to, to.with_extension("toml.bak")); }
+    if to.exists() {
+        let _ = fs::copy(to, to.with_extension("toml.bak"));
+    }
 
     // Write to dest FIRST — if this fails, source is untouched
     let (target_group_idx, target_hook_idx) = append_codex_hook_entry(&snapshot, event_type, to)?;
@@ -1562,58 +1848,106 @@ fn move_codex_hook_entry(
     remove_codex_hook_entry_by_idx(event_type, group_idx, hook_idx, from)?;
 
     Ok(HookMoveUndoInfo {
-        resource_name: name, from_scope: from_scope.into(), to_scope: to_scope.into(),
-        cli: cli.into(), event_type: event_type.into(), group_idx, hook_idx,
+        resource_name: name,
+        from_scope: from_scope.into(),
+        to_scope: to_scope.into(),
+        cli: cli.into(),
+        event_type: event_type.into(),
+        group_idx,
+        hook_idx,
         hook_snapshot: snapshot,
-        from_path: from.to_string_lossy().into(), to_path: to.to_string_lossy().into(),
+        from_path: from.to_string_lossy().into(),
+        to_path: to.to_string_lossy().into(),
         target_group_idx: Some(target_group_idx),
         target_hook_idx: Some(target_hook_idx),
     })
 }
 
-fn copy_codex_hook_entry(event_type: &str, group_idx: usize, hook_idx: usize, from: &std::path::PathBuf, to: &std::path::PathBuf) -> Result<(), String> {
+fn copy_codex_hook_entry(
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+    from: &std::path::PathBuf,
+    to: &std::path::PathBuf,
+) -> Result<(), String> {
     let snapshot = extract_codex_hook_snapshot(event_type, group_idx, hook_idx, from)?;
     let _ = append_codex_hook_entry(&snapshot, event_type, to)?;
     Ok(())
 }
 
-fn extract_codex_hook_snapshot(event_type: &str, group_idx: usize, hook_idx: usize, path: &std::path::PathBuf) -> Result<serde_json::Value, String> {
+fn extract_codex_hook_snapshot(
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+    path: &std::path::PathBuf,
+) -> Result<serde_json::Value, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("读取 Codex 配置失败: {}", e))?;
     let root: toml::Value = text.parse().map_err(|e| format!("解析 TOML 失败: {}", e))?;
     // Navigate hooks → event_type (toml::Value::get does NOT support dotted keys)
-    let hooks_table = root.get("hooks").and_then(|v| v.as_table()).ok_or("hooks 不存在")?;
-    let arr = hooks_table.get(event_type).and_then(|v| v.as_array()).ok_or_else(|| format!("hooks.{} 不存在", event_type))?;
+    let hooks_table = root
+        .get("hooks")
+        .and_then(|v| v.as_table())
+        .ok_or("hooks 不存在")?;
+    let arr = hooks_table
+        .get(event_type)
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("hooks.{} 不存在", event_type))?;
     let group = arr.get(group_idx).ok_or("group_idx 越界")?;
-    let inner = group.get("hooks").and_then(|v| v.as_array()).ok_or("hooks 数组不存在")?;
+    let inner = group
+        .get("hooks")
+        .and_then(|v| v.as_array())
+        .ok_or("hooks 数组不存在")?;
     let hook = inner.get(hook_idx).ok_or("hook_idx 越界")?;
     let mut m = serde_json::Map::new();
-    if let Some(v) = hook.get("type").and_then(|v| v.as_str()) { m.insert("type".into(), v.into()); }
-    if let Some(v) = hook.get("command").and_then(|v| v.as_str()) { m.insert("command".into(), v.into()); }
-    if let Some(v) = group.get("matcher").and_then(|v| v.as_str()) { m.insert("matcher".into(), v.into()); }
-    if let Some(v) = hook.get("timeout").and_then(|v| v.as_integer()) { m.insert("timeout".into(), serde_json::json!(v)); }
-    if let Some(v) = hook.get("statusMessage").and_then(|v| v.as_str()) { m.insert("statusMessage".into(), v.into()); }
+    if let Some(v) = hook.get("type").and_then(|v| v.as_str()) {
+        m.insert("type".into(), v.into());
+    }
+    if let Some(v) = hook.get("command").and_then(|v| v.as_str()) {
+        m.insert("command".into(), v.into());
+    }
+    if let Some(v) = group.get("matcher").and_then(|v| v.as_str()) {
+        m.insert("matcher".into(), v.into());
+    }
+    if let Some(v) = hook.get("timeout").and_then(|v| v.as_integer()) {
+        m.insert("timeout".into(), serde_json::json!(v));
+    }
+    if let Some(v) = hook.get("statusMessage").and_then(|v| v.as_str()) {
+        m.insert("statusMessage".into(), v.into());
+    }
     Ok(serde_json::Value::Object(m))
 }
 
 #[allow(dead_code)]
 fn remove_codex_hook_entry(event_type: &str, path: &std::path::PathBuf) -> Result<(), String> {
-    if !path.exists() { return Ok(()); }
+    if !path.exists() {
+        return Ok(());
+    }
     let text = fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
     let mut doc: toml::Table = text.parse().map_err(|e| format!("解析 TOML 失败: {}", e))?;
     // Navigate hooks → event_type (toml::Table::get_mut does NOT support dotted keys)
-    if let Some(hooks_val) = doc.get_mut("hooks").and_then(|v| v.as_table_mut()).and_then(|h| h.get_mut(event_type)) {
+    if let Some(hooks_val) = doc
+        .get_mut("hooks")
+        .and_then(|v| v.as_table_mut())
+        .and_then(|h| h.get_mut(event_type))
+    {
         // For array-of-tables, we need to work with the inner tables
         if let Some(tables) = hooks_val.as_array_mut() {
             // Each element is a toml::Value::Table
             for g in tables.iter_mut().rev() {
                 if let Some(t) = g.as_table_mut() {
                     if let Some(inner) = t.get_mut("hooks").and_then(|v| v.as_array_mut()) {
-                        if !inner.is_empty() { inner.pop(); break; }
+                        if !inner.is_empty() {
+                            inner.pop();
+                            break;
+                        }
                     }
                 }
             }
-            tables.retain(|g| g.as_table().and_then(|t| t.get("hooks").and_then(|v| v.as_array()))
-                .map_or(false, |a| !a.is_empty()));
+            tables.retain(|g| {
+                g.as_table()
+                    .and_then(|t| t.get("hooks").and_then(|v| v.as_array()))
+                    .map_or(false, |a| !a.is_empty())
+            });
         }
     }
     let new_text = toml::to_string(&doc).map_err(|e| format!("序列化 TOML 失败: {}", e))?;
@@ -1621,19 +1955,39 @@ fn remove_codex_hook_entry(event_type: &str, path: &std::path::PathBuf) -> Resul
     Ok(())
 }
 
-fn remove_codex_hook_entry_by_idx(event_type: &str, group_idx: usize, hook_idx: usize, path: &std::path::PathBuf) -> Result<(), String> {
+fn remove_codex_hook_entry_by_idx(
+    event_type: &str,
+    group_idx: usize,
+    hook_idx: usize,
+    path: &std::path::PathBuf,
+) -> Result<(), String> {
     let text = fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
     let mut doc: toml::Table = text.parse().map_err(|e| format!("解析 TOML 失败: {}", e))?;
     // Navigate hooks → event_type (toml::Table::get_mut does NOT support dotted keys)
-    if let Some(tables) = doc.get_mut("hooks").and_then(|v| v.as_table_mut()).and_then(|h| h.get_mut(event_type)).and_then(|v| v.as_array_mut()) {
+    if let Some(tables) = doc
+        .get_mut("hooks")
+        .and_then(|v| v.as_table_mut())
+        .and_then(|h| h.get_mut(event_type))
+        .and_then(|v| v.as_array_mut())
+    {
         if let Some(g) = tables.get_mut(group_idx).and_then(|v| v.as_table_mut()) {
             if let Some(inner) = g.get_mut("hooks").and_then(|v| v.as_array_mut()) {
-                if hook_idx < inner.len() { inner.remove(hook_idx); }
+                if hook_idx < inner.len() {
+                    inner.remove(hook_idx);
+                }
             }
-            if g.get("hooks").and_then(|v| v.as_array()).map_or(true, |a| a.is_empty()) { tables.remove(group_idx); }
+            if g.get("hooks")
+                .and_then(|v| v.as_array())
+                .map_or(true, |a| a.is_empty())
+            {
+                tables.remove(group_idx);
+            }
         }
-        tables.retain(|g| g.as_table().and_then(|t| t.get("hooks").and_then(|v| v.as_array()))
-            .map_or(false, |a| !a.is_empty()));
+        tables.retain(|g| {
+            g.as_table()
+                .and_then(|t| t.get("hooks").and_then(|v| v.as_array()))
+                .map_or(false, |a| !a.is_empty())
+        });
     }
     let new_text = toml::to_string(&doc).map_err(|e| format!("序列化 TOML 失败: {}", e))?;
     atomic_write(path, &new_text)?;
@@ -1642,36 +1996,64 @@ fn remove_codex_hook_entry_by_idx(event_type: &str, group_idx: usize, hook_idx: 
 
 /// Remove a Codex TOML hook by matching snapshot content (command + type within matcher group).
 /// Safer than index-based removal for undo operations where target indices may differ from source.
-fn remove_codex_hook_by_snapshot(snapshot: &serde_json::Value, event_type: &str, path: &std::path::PathBuf) -> Result<(), String> {
-    if !path.exists() { return Ok(()); }
+fn remove_codex_hook_by_snapshot(
+    snapshot: &serde_json::Value,
+    event_type: &str,
+    path: &std::path::PathBuf,
+) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
     let text = fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
     let mut doc: toml::Table = text.parse().map_err(|e| format!("解析 TOML 失败: {}", e))?;
 
-    let cmd = snapshot.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    let hook_type = snapshot.get("type").and_then(|v| v.as_str()).unwrap_or("command");
-    let matcher = snapshot.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
+    let cmd = snapshot
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let hook_type = snapshot
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("command");
+    let matcher = snapshot
+        .get("matcher")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     // Navigate hooks → event_type
-    if let Some(tables) = doc.get_mut("hooks").and_then(|v| v.as_table_mut()).and_then(|h| h.get_mut(event_type)).and_then(|v| v.as_array_mut()) {
+    if let Some(tables) = doc
+        .get_mut("hooks")
+        .and_then(|v| v.as_table_mut())
+        .and_then(|h| h.get_mut(event_type))
+        .and_then(|v| v.as_array_mut())
+    {
         for (g_idx, g) in tables.iter_mut().enumerate() {
             let g_matcher = g.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
-            if g_matcher != matcher { continue; }
+            if g_matcher != matcher {
+                continue;
+            }
             if let Some(t) = g.as_table_mut() {
                 if let Some(inner) = t.get_mut("hooks").and_then(|v| v.as_array_mut()) {
                     if let Some(pos) = inner.iter().position(|h| {
                         h.get("command").and_then(|v| v.as_str()).unwrap_or("") == cmd
-                            && h.get("type").and_then(|v| v.as_str()).unwrap_or("command") == hook_type
+                            && h.get("type").and_then(|v| v.as_str()).unwrap_or("command")
+                                == hook_type
                     }) {
                         inner.remove(pos);
-                        if inner.is_empty() { tables.remove(g_idx); }
+                        if inner.is_empty() {
+                            tables.remove(g_idx);
+                        }
                         break;
                     }
                 }
             }
         }
         // Clean up empty groups
-        tables.retain(|g| g.as_table().and_then(|t| t.get("hooks").and_then(|v| v.as_array()))
-            .map_or(false, |a| !a.is_empty()));
+        tables.retain(|g| {
+            g.as_table()
+                .and_then(|t| t.get("hooks").and_then(|v| v.as_array()))
+                .map_or(false, |a| !a.is_empty())
+        });
     }
 
     let new_text = toml::to_string(&doc).map_err(|e| format!("序列化 TOML 失败: {}", e))?;
@@ -1682,10 +2064,23 @@ fn remove_codex_hook_by_snapshot(snapshot: &serde_json::Value, event_type: &str,
 /// Append a hook to a Codex TOML config file, preserving [[double-bracket]] format.
 /// Returns the target (group_idx, hook_idx) where the entry was inserted.
 /// Uses toml_edit (not toml) so the output keeps the same structure as create_codex_hook_new.
-fn append_codex_hook_entry(snapshot: &serde_json::Value, event_type: &str, path: &std::path::PathBuf) -> Result<(usize, usize), String> {
-    let matcher = snapshot.get("matcher").and_then(|v| v.as_str()).unwrap_or("");
-    let cmd = snapshot.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    let ht = snapshot.get("type").and_then(|v| v.as_str()).unwrap_or("command");
+fn append_codex_hook_entry(
+    snapshot: &serde_json::Value,
+    event_type: &str,
+    path: &std::path::PathBuf,
+) -> Result<(usize, usize), String> {
+    let matcher = snapshot
+        .get("matcher")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let cmd = snapshot
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let ht = snapshot
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("command");
 
     let mut doc: toml_edit::DocumentMut = if path.exists() {
         let text = fs::read_to_string(path).map_err(|e| format!("读取 Codex 配置失败: {}", e))?;
@@ -1715,10 +2110,16 @@ fn append_codex_hook_entry(snapshot: &serde_json::Value, event_type: &str, path:
 
     // Ensure the event type array exists as ArrayOfTables
     if !hooks.contains_key(event_type) {
-        hooks.insert(event_type, toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+        hooks.insert(
+            event_type,
+            toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()),
+        );
     } else if hooks[event_type].as_array_of_tables().is_none() {
         // Existing entry is a plain array (e.g. PreToolUse = [] written by Codex CLI)
-        hooks.insert(event_type, toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+        hooks.insert(
+            event_type,
+            toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()),
+        );
     }
 
     let event_arr = hooks[event_type]
@@ -1726,9 +2127,9 @@ fn append_codex_hook_entry(snapshot: &serde_json::Value, event_type: &str, path:
         .ok_or("事件类型数组格式错误")?;
 
     // Find existing group with matching matcher
-    let group_pos = event_arr.iter().position(|g| {
-        g.get("matcher").and_then(|v| v.as_str()).unwrap_or("") == matcher
-    });
+    let group_pos = event_arr
+        .iter()
+        .position(|g| g.get("matcher").and_then(|v| v.as_str()).unwrap_or("") == matcher);
 
     let target_group_idx: usize;
     let target_hook_idx: usize;
@@ -1736,7 +2137,8 @@ fn append_codex_hook_entry(snapshot: &serde_json::Value, event_type: &str, path:
     if let Some(g_idx) = group_pos {
         target_group_idx = g_idx;
         // Group exists — check for existing inner hook to overwrite
-        if let Some(inner_arr) = event_arr.get_mut(g_idx)
+        if let Some(inner_arr) = event_arr
+            .get_mut(g_idx)
             .and_then(|g| g.get_mut("hooks"))
             .and_then(|v| v.as_array_of_tables_mut())
         {
@@ -1789,13 +2191,18 @@ fn append_codex_hook_entry(snapshot: &serde_json::Value, event_type: &str, path:
         event_arr.push(group);
     }
 
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?; }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
     let new_text = doc.to_string();
     atomic_write(path, &new_text)?;
     Ok((target_group_idx, target_hook_idx))
 }
 
-fn restore_codex_hook_entry(undo: &HookMoveUndoInfo, path: &std::path::PathBuf) -> Result<(), String> {
+fn restore_codex_hook_entry(
+    undo: &HookMoveUndoInfo,
+    path: &std::path::PathBuf,
+) -> Result<(), String> {
     let _ = append_codex_hook_entry(&undo.hook_snapshot, &undo.event_type, path)?;
     Ok(())
 }
@@ -1832,8 +2239,7 @@ pub fn set_hook_command(
                 .unwrap_or("command")
                 .to_string();
             delete_codex_hook_at(&config_path, &event_type, group_idx, hook_idx)?;
-            let result =
-                create_codex_hook_new(&event_type, &matcher, &command, &hook_type);
+            let result = create_codex_hook_new(&event_type, &matcher, &command, &hook_type);
             if result.is_err() {
                 // Rollback: restore the original hook
                 let _ = append_codex_hook_entry(&hook_snapshot, &event_type, &config_path);
@@ -1866,7 +2272,7 @@ fn set_json_hook_command(
     let bak3 = path.with_extension("json.bak.3");
     let bak2 = path.with_extension("json.bak.2");
     let bak1 = path.with_extension("json.bak.1");
-    let bak  = path.with_extension("json.bak");
+    let bak = path.with_extension("json.bak");
     let _ = fs::rename(&bak2, &bak3);
     let _ = fs::rename(&bak1, &bak2);
     let _ = fs::rename(&bak, &bak1);
@@ -1874,15 +2280,16 @@ fn set_json_hook_command(
 
     hook["command"] = serde_json::Value::String(command.to_string());
 
-    let new_text =
-        serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {}", e))?;
+    let new_text = serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {}", e))?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, &new_text).map_err(|e| format!("写入失败: {}", e))?;
     #[cfg(unix)]
     {
         if let Ok(f) = fs::File::open(&tmp) {
             use std::os::unix::io::AsRawFd;
-            unsafe { libc::fsync(f.as_raw_fd()); }
+            unsafe {
+                libc::fsync(f.as_raw_fd());
+            }
         }
     }
     crate::atomic_rename(&tmp, path)?;
@@ -1907,8 +2314,9 @@ fn snapshot_codex_hook_at(
         .and_then(|g| g.get("hooks"))
         .and_then(|h| h.as_array())
         .ok_or_else(|| "hooks 列表不存在".to_string())?;
-    let hook = inner_arr.get(hook_idx).ok_or_else(|| "hook 不存在".to_string())?;
-    let json_str =
-        serde_json::to_string(&hook).map_err(|e| format!("序列化失败: {}", e))?;
+    let hook = inner_arr
+        .get(hook_idx)
+        .ok_or_else(|| "hook 不存在".to_string())?;
+    let json_str = serde_json::to_string(&hook).map_err(|e| format!("序列化失败: {}", e))?;
     serde_json::from_str(&json_str).map_err(|e| format!("JSON 解析失败: {}", e))
 }

@@ -39,9 +39,8 @@ pub fn config_dir() -> PathBuf {
             }
         }
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| {
-        std::env::temp_dir().to_string_lossy().to_string()
-    });
+    let home = std::env::var("HOME")
+        .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().to_string());
     PathBuf::from(&home).join(".kn")
 }
 

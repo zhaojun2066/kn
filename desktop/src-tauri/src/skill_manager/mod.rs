@@ -586,9 +586,7 @@ fn scan_codex_cache_dir(
                     continue;
                 }
                 let source = format!("cache@{}", mkt_name);
-                if let Some(plugin) =
-                    read_codex_plugin_manifest(&version_path, states, &source)
-                {
+                if let Some(plugin) = read_codex_plugin_manifest(&version_path, states, &source) {
                     if !plugins.iter().any(|existing| existing.id == plugin.id) {
                         plugins.push(plugin);
                     }
@@ -647,13 +645,14 @@ fn deduplicate_plugins_by_name(plugins: &mut Vec<PluginEntry>) {
     }
 
     // Collect kept items, merging enabled state from all same-name entries
-    let name_to_enabled: std::collections::HashMap<String, bool> = plugins
-        .iter()
-        .fold(std::collections::HashMap::new(), |mut acc, p| {
-            let entry = acc.entry(p.name.clone()).or_insert(false);
-            *entry = *entry || p.enabled;
-            acc
-        });
+    let name_to_enabled: std::collections::HashMap<String, bool> =
+        plugins
+            .iter()
+            .fold(std::collections::HashMap::new(), |mut acc, p| {
+                let entry = acc.entry(p.name.clone()).or_insert(false);
+                *entry = *entry || p.enabled;
+                acc
+            });
 
     // Build the deduplicated list
     let all_indices: std::collections::HashSet<usize> = drop_indices.into_iter().collect();
@@ -1070,7 +1069,8 @@ fn scan_claude_project_plugins(project_root: &Path) -> Vec<PluginEntry> {
                         let (name, marketplace) = parse_plugin_id(full_name);
                         if let Some(arr) = installs.as_array() {
                             for inst in arr {
-                                let scope = inst.get("scope").and_then(|v| v.as_str()).unwrap_or("user");
+                                let scope =
+                                    inst.get("scope").and_then(|v| v.as_str()).unwrap_or("user");
                                 if scope != "project" {
                                     continue;
                                 }
@@ -1540,9 +1540,7 @@ pub fn toggle_codex_plugin(plugin_id: &str, enabled: bool) -> Result<(), String>
     // Collect all keys that match this plugin's base name
     let matching_keys: Vec<String> = plugins
         .keys()
-        .filter(|k| {
-            *k == base_name || k.starts_with(&format!("{}@", base_name))
-        })
+        .filter(|k| *k == base_name || k.starts_with(&format!("{}@", base_name)))
         .cloned()
         .collect();
     for key in &matching_keys {
@@ -1558,9 +1556,7 @@ pub fn toggle_codex_plugin(plugin_id: &str, enabled: bool) -> Result<(), String>
             continue;
         }
         let mkt_key = format!("{}@{}", p.name, p.marketplace);
-        if !matching_keys.contains(&mkt_key)
-            && !matching_keys.contains(&p.name)
-        {
+        if !matching_keys.contains(&mkt_key) && !matching_keys.contains(&p.name) {
             let mut new_plugin = toml::Table::new();
             new_plugin.insert("enabled".into(), toml::Value::Boolean(enabled));
             plugins.insert(mkt_key, toml::Value::Table(new_plugin));
@@ -1593,7 +1589,11 @@ pub fn toggle_codex_plugin(plugin_id: &str, enabled: bool) -> Result<(), String>
 /// Searches `~/.codex/.tmp/plugins/plugins/<name>/`.
 fn toggle_codex_flat_plugin_on_disk(name: &str, enabled: bool) -> Result<(), String> {
     let home = home_dir().ok_or("无法获取 HOME 目录")?;
-    let flat_root = home.join(".codex").join(".tmp").join("plugins").join("plugins");
+    let flat_root = home
+        .join(".codex")
+        .join(".tmp")
+        .join("plugins")
+        .join("plugins");
     if !flat_root.exists() {
         return Ok(());
     }
@@ -1602,19 +1602,19 @@ fn toggle_codex_flat_plugin_on_disk(name: &str, enabled: bool) -> Result<(), Str
         return Ok(());
     }
     let manifest = plugin_dir.join(".codex-plugin").join("plugin.json");
-    let disabled = plugin_dir.join(".codex-plugin").join("plugin.json.disabled");
+    let disabled = plugin_dir
+        .join(".codex-plugin")
+        .join("plugin.json.disabled");
 
     if enabled {
         // Enable: rename .disabled → active
         if disabled.exists() && !manifest.exists() {
-            fs::rename(&disabled, &manifest)
-                .map_err(|e| format!("启用 {} 失败: {}", name, e))?;
+            fs::rename(&disabled, &manifest).map_err(|e| format!("启用 {} 失败: {}", name, e))?;
         }
     } else {
         // Disable: rename active → .disabled
         if manifest.exists() {
-            fs::rename(&manifest, &disabled)
-                .map_err(|e| format!("禁用 {} 失败: {}", name, e))?;
+            fs::rename(&manifest, &disabled).map_err(|e| format!("禁用 {} 失败: {}", name, e))?;
         }
     }
     Ok(())
@@ -1908,7 +1908,6 @@ pub fn exec_claude_plugin_update(plugin_id: &str) -> Result<String, String> {
     // Step 1: sync marketplace
     let sync = std::process::Command::new(cli_binary("claude"))
         .args(["plugin", "marketplace", "update", marketplace])
-        
         .output()
         .map_err(|e| format!("同步 marketplace 失败: {}", e))?;
     if !sync.status.success() {
@@ -1919,7 +1918,6 @@ pub fn exec_claude_plugin_update(plugin_id: &str) -> Result<String, String> {
     // Step 2: update the plugin
     let update = std::process::Command::new(cli_binary("claude"))
         .args(["plugin", "update", full_name])
-        
         .output()
         .map_err(|e| format!("更新插件失败: {}", e))?;
     if !update.status.success() {
@@ -2282,10 +2280,16 @@ fn scan_project_plugin_keys(project_root: &Path) -> std::collections::HashSet<St
     let mut keys = std::collections::HashSet::new();
 
     for plugin in scan_claude_project_plugins(project_root) {
-        keys.insert(format!("{}:{}@{}", plugin.cli, plugin.name, plugin.marketplace));
+        keys.insert(format!(
+            "{}:{}@{}",
+            plugin.cli, plugin.name, plugin.marketplace
+        ));
     }
     for plugin in scan_codex_project_plugins(project_root) {
-        keys.insert(format!("{}:{}@{}", plugin.cli, plugin.name, plugin.marketplace));
+        keys.insert(format!(
+            "{}:{}@{}",
+            plugin.cli, plugin.name, plugin.marketplace
+        ));
     }
 
     keys
@@ -2340,7 +2344,6 @@ fn run_cli_marketplace_add(cli_name: &str, source: &str) -> Result<String, Strin
     let do_add = || -> Result<String, String> {
         let output = std::process::Command::new(&binary)
             .args(["plugin", "marketplace", "add", source])
-            
             .output()
             .map_err(|e| format!("无法执行 {} ({}): {}", cli_name, binary, e))?;
 
@@ -2505,7 +2508,6 @@ fn run_cli_marketplace_remove(cli_name: &str, name: &str) -> Result<String, Stri
     let binary = cli_binary(cli_name);
     let output = std::process::Command::new(&binary)
         .args(["plugin", "marketplace", "remove", name])
-        
         .output()
         .map_err(|e| format!("无法执行 {} ({}): {}", cli_name, binary, e))?;
 
@@ -2736,8 +2738,7 @@ fn run_command_with_timeout(
     command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        ;
+        .stderr(Stdio::piped());
     if let Some(dir) = current_dir {
         command.current_dir(dir);
     }
@@ -3474,7 +3475,8 @@ mod tests {
         toggle_claude_project_plugin("superpowers@openai-curated", false, &project)
             .expect("disable project plugin");
 
-        let text = std::fs::read_to_string(claude_dir.join("settings.json")).expect("read settings");
+        let text =
+            std::fs::read_to_string(claude_dir.join("settings.json")).expect("read settings");
         let root: serde_json::Value = serde_json::from_str(&text).expect("parse settings");
         let enabled = root
             .get("enabledPlugins")

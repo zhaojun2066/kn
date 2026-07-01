@@ -80,8 +80,11 @@ mod tests {
     fn extracts_description_from_crlf_frontmatter() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("SKILL.md");
-        std::fs::write(&path, "---\r\ndescription: \"CRLF skill\"\r\n---\r\nBody\r\n")
-            .expect("write skill");
+        std::fs::write(
+            &path,
+            "---\r\ndescription: \"CRLF skill\"\r\n---\r\nBody\r\n",
+        )
+        .expect("write skill");
 
         assert_eq!(extract_description(&path), Some("CRLF skill".to_string()));
     }

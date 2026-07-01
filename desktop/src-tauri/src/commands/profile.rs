@@ -66,7 +66,9 @@ pub fn batch_delete_profiles(names: Vec<String>) -> Result<Vec<String>, String> 
     let mut deleted: Vec<String> = Vec::new();
     for name in &names {
         match profile_cmd::remove_profile_cmd(name) {
-            Ok(r) if r.ok => { deleted.push(name.clone()); }
+            Ok(r) if r.ok => {
+                deleted.push(name.clone());
+            }
             Ok(_) => {}
             Err(e) => return Err(format!("删除 '{}' 失败: {}", name, e)),
         }
@@ -92,7 +94,10 @@ pub fn get_env(name: String) -> Result<profile_cmd::EnvOutput, String> {
 }
 
 #[command]
-pub fn add_profile(name: String, desc: Option<String>) -> Result<profile_cmd::MutationResult, String> {
+pub fn add_profile(
+    name: String,
+    desc: Option<String>,
+) -> Result<profile_cmd::MutationResult, String> {
     profile_cmd::add_profile_cmd(&name, desc.as_deref())
 }
 
@@ -102,7 +107,11 @@ pub fn remove_profile(name: String) -> Result<profile_cmd::MutationResult, Strin
 }
 
 #[command]
-pub fn set_env_var(name: String, key: String, value: String) -> Result<profile_cmd::MutationResult, String> {
+pub fn set_env_var(
+    name: String,
+    key: String,
+    value: String,
+) -> Result<profile_cmd::MutationResult, String> {
     profile_cmd::set_env_var_cmd(&name, &key, &value)
 }
 
@@ -140,7 +149,11 @@ mod tests {
     #[test]
     fn test_backup_file_path() {
         let bak = backup_file();
-        assert!(bak.ends_with("config.yaml.bak"), "backup_file should end with config.yaml.bak, got: {:?}", bak);
+        assert!(
+            bak.ends_with("config.yaml.bak"),
+            "backup_file should end with config.yaml.bak, got: {:?}",
+            bak
+        );
     }
 
     #[test]
@@ -151,7 +164,10 @@ mod tests {
     fn temp_config_setup() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("CLAUDE_PROFILES_HOME", dir.path().to_string_lossy().to_string());
+        std::env::set_var(
+            "CLAUDE_PROFILES_HOME",
+            dir.path().to_string_lossy().to_string(),
+        );
         (guard, dir)
     }
 
@@ -165,14 +181,26 @@ mod tests {
     fn test_crud_flow_full_lifecycle() {
         let (_guard, dir) = temp_config_setup();
 
-        assert!(add_profile("alpha".into(), Some("first".into())).unwrap().ok);
+        assert!(
+            add_profile("alpha".into(), Some("first".into()))
+                .unwrap()
+                .ok
+        );
         assert!(add_profile("beta".into(), None).unwrap().ok);
-        assert!(add_profile("gamma".into(), Some("third".into())).unwrap().ok);
+        assert!(
+            add_profile("gamma".into(), Some("third".into()))
+                .unwrap()
+                .ok
+        );
 
         let list = list_profiles().unwrap();
         assert_eq!(list.profiles.len(), 3);
 
-        assert!(set_env_var("alpha".into(), "KEY1".into(), "val1".into()).unwrap().ok);
+        assert!(
+            set_env_var("alpha".into(), "KEY1".into(), "val1".into())
+                .unwrap()
+                .ok
+        );
         let detail = show_profile("alpha".into()).unwrap();
         assert_eq!(detail.env.get("KEY1"), Some(&"val1".to_string()));
 

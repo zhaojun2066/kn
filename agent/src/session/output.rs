@@ -101,7 +101,7 @@ impl OutputFanout {
             .join(&session_nid)
             .join("output.log");
         let log_size = std::sync::atomic::AtomicU64::new(
-            std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0)
+            std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0),
         );
 
         let inner = Arc::new(OutputFanoutInner {
@@ -162,7 +162,11 @@ impl OutputFanout {
     /// 返回 receiver，调用方应持续读取并转发到客户端。
     pub fn register_subscriber(&self) -> mpsc::UnboundedReceiver<Vec<u8>> {
         let (tx, rx) = mpsc::unbounded_channel();
-        self.inner.extra_subscribers.lock().unwrap_or_else(|e| e.into_inner()).push(tx);
+        self.inner
+            .extra_subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(tx);
         rx
     }
 
@@ -180,7 +184,11 @@ impl OutputFanout {
         let mut buf = self.inner.buffer.lock().unwrap_or_else(|e| e.into_inner());
         buf.extend_from_slice(data);
         let buf_len = buf.len();
-        tracing::debug!(received = len, buffered = buf_len, "📟 [PTY-OUT] 收到 PTY 输出");
+        tracing::debug!(
+            received = len,
+            buffered = buf_len,
+            "📟 [PTY-OUT] 收到 PTY 输出"
+        );
         if buf_len >= 64 * 1024 {
             let data = std::mem::take(&mut *buf);
             drop(buf); // 释放锁后再 flush
@@ -216,8 +224,13 @@ impl OutputFanout {
         const CHUNK_SIZE: usize = 10 * 1024; // 10KB
         let total = data.len();
         let chunks = data.chunks(CHUNK_SIZE).count();
-        let preview = String::from_utf8_lossy(if data.len() <= 200 { &data } else { &data[..200] });
-        let wss_blocked = remote_enabled.as_ref()
+        let preview = String::from_utf8_lossy(if data.len() <= 200 {
+            &data
+        } else {
+            &data[..200]
+        });
+        let wss_blocked = remote_enabled
+            .as_ref()
             .map(|f| !f.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(false);
         tracing::info!(
@@ -238,8 +251,14 @@ impl OutputFanout {
                 if let Some(ref tx) = wss_tx {
                     let msg = WsMessageBuilder::output(&session_nid, &text);
                     match tx.send(msg) {
-                        Ok(_) => tracing::info!(chunk = i, len = chunk.len(), "📤 [FLUSH] chunk 已发送到 wss_tx"),
-                        Err(e) => tracing::error!(chunk = i, error = %e, "📤 [FLUSH] chunk 发送到 wss_tx 失败"),
+                        Ok(_) => tracing::info!(
+                            chunk = i,
+                            len = chunk.len(),
+                            "📤 [FLUSH] chunk 已发送到 wss_tx"
+                        ),
+                        Err(e) => {
+                            tracing::error!(chunk = i, error = %e, "📤 [FLUSH] chunk 发送到 wss_tx 失败")
+                        }
                     }
                 } else {
                     tracing::warn!(chunk = i, "📤 [FLUSH] wss_tx 为 None, 跳过");
@@ -261,7 +280,11 @@ impl OutputFanout {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             Ok(mut f) => {
                 use std::io::Write;
                 if let Err(e) = f.write_all(data) {
@@ -274,7 +297,8 @@ impl OutputFanout {
                 return;
             }
         }
-        let new_size = log_size.fetch_add(data.len() as u64, std::sync::atomic::Ordering::Relaxed) + data.len() as u64;
+        let new_size = log_size.fetch_add(data.len() as u64, std::sync::atomic::Ordering::Relaxed)
+            + data.len() as u64;
         if new_size > OUTPUT_LOG_MAX_SIZE {
             Self::trim_log_head(path, log_size);
         }
@@ -314,7 +338,9 @@ impl OutputFanout {
                     tracing::debug!(path = %path.display(), old_len = data.len(), new_len = tail.len(), "环形日志已截断");
                 }
             }
-            Err(e) => tracing::warn!(path = %path.display(), error = %e, "环形日志读取失败（截断时）"),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "环形日志读取失败（截断时）")
+            }
             _ => {}
         }
     }

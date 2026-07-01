@@ -1,13 +1,11 @@
 /// TOML 字符串转义（用于 Codex CLI -c 参数注入）。
-///
-/// 外层 shell 参数使用单引号包裹，因此值中的单引号需要转义为 `'\''`。
-pub(crate) fn shell_safe_toml_string(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\")
+pub(crate) fn toml_string(s: &str) -> String {
+    let escaped = s
+        .replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('\'', "'\\''");
+        .replace('\'', "\\'");
     format!("\"{}\"", escaped)
 }
-
 
 /// 根据 tool 名称查找 CLI 二进制路径。
 pub fn resolve_tool_path(tool: &str) -> std::result::Result<String, String> {
@@ -19,8 +17,7 @@ pub fn resolve_tool_path(tool: &str) -> std::result::Result<String, String> {
         "bash" => &["bash"],
         _ => return Err(format!("未知 tool: {}", tool)),
     };
-    kn_common::path::find_binary(candidates)
-        .ok_or_else(|| format!("未找到 {} 二进制", tool))
+    kn_common::path::find_binary(candidates).ok_or_else(|| format!("未找到 {} 二进制", tool))
 }
 
 pub(crate) struct ToolPrep {
@@ -40,9 +37,13 @@ pub(crate) fn prepare_tool_env(
                 std::process::id(),
                 chrono::Utc::now().timestamp_millis()
             ));
-            let settings = serde_json::json!({"env": _env_vars});
-            std::fs::write(&tmp, serde_json::to_string(&settings).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
+            let settings_env = _env_vars.clone().unwrap_or_default();
+            let settings = serde_json::json!({"env": settings_env});
+            std::fs::write(
+                &tmp,
+                serde_json::to_string(&settings).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
             Ok(ToolPrep {
                 extra_args: vec!["--settings".into(), tmp.to_string_lossy().to_string()],
             })
@@ -68,24 +69,22 @@ pub(crate) fn prepare_tool_env(
                     if let Err(e) = std::fs::create_dir_all(&codex_dir) {
                         return Err(format!("failed to create ~/.codex dir: {}", e));
                     }
-                    let auth_content = format!(
-                        r#"{{"auth_mode":"apikey","OPENAI_API_KEY":"{}"}}"#,
-                        apikey
-                    );
+                    let auth_content =
+                        format!(r#"{{"auth_mode":"apikey","OPENAI_API_KEY":"{}"}}"#, apikey);
                     std::fs::write(&auth_path, auth_content)
                         .map_err(|e| format!("failed to write auth.json: {}", e))?;
                 }
                 // 2. Model via -c (TOML-quoted: model="gpt-5.5")
                 if let Some(model) = env.get("OPENAI_MODEL") {
-                    let val = shell_safe_toml_string(model);
+                    let val = toml_string(model);
                     extra_args.push("-c".into());
-                    extra_args.push(format!("'model={}'", val));
+                    extra_args.push(format!("model={}", val));
                 }
                 // 3. Base URL via -c (TOML-quoted: base_url="https://...")
                 if let Some(base_url) = env.get("OPENAI_BASE_URL") {
-                    let val = shell_safe_toml_string(base_url);
+                    let val = toml_string(base_url);
                     extra_args.push("-c".into());
-                    extra_args.push(format!("'model_providers.custom.base_url={}'", val));
+                    extra_args.push(format!("model_providers.custom.base_url={}", val));
                 }
             }
             Ok(ToolPrep { extra_args })

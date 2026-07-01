@@ -10,18 +10,16 @@ use super::system_scan::home_dir;
 pub(crate) fn is_safe_path(path: &std::path::Path) -> Option<PathBuf> {
     let resolved = match path.canonicalize() {
         Ok(r) => r,
-        Err(_) => {
-            match path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                Some(parent) => match parent.canonicalize() {
-                    Ok(parent_resolved) => {
-                        let name = path.file_name().unwrap_or(std::ffi::OsStr::new("unnamed"));
-                        parent_resolved.join(name)
-                    }
-                    Err(_) => return None,
-                },
-                None => return None,
-            }
-        }
+        Err(_) => match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            Some(parent) => match parent.canonicalize() {
+                Ok(parent_resolved) => {
+                    let name = path.file_name().unwrap_or(std::ffi::OsStr::new("unnamed"));
+                    parent_resolved.join(name)
+                }
+                Err(_) => return None,
+            },
+            None => return None,
+        },
     };
     let home = home_dir();
     let tmp = std::env::temp_dir();
@@ -36,22 +34,22 @@ pub(crate) fn is_safe_path(path: &std::path::Path) -> Option<PathBuf> {
 
 #[command]
 pub fn write_file(path: String, content: String) -> Result<(), String> {
-    let safe_path = is_safe_path(std::path::Path::new(&path))
-        .ok_or_else(|| "不允许访问此路径".to_string())?;
+    let safe_path =
+        is_safe_path(std::path::Path::new(&path)).ok_or_else(|| "不允许访问此路径".to_string())?;
     std::fs::write(&safe_path, &content).map_err(|e| format!("写入文件失败: {}", e))
 }
 
 #[command]
 pub fn read_file(path: String) -> Result<String, String> {
-    let safe_path = is_safe_path(std::path::Path::new(&path))
-        .ok_or_else(|| "不允许访问此路径".to_string())?;
+    let safe_path =
+        is_safe_path(std::path::Path::new(&path)).ok_or_else(|| "不允许访问此路径".to_string())?;
     std::fs::read_to_string(&safe_path).map_err(|e| format!("读取文件失败: {}", e))
 }
 
 #[command]
 pub fn read_file_base64(path: String) -> Result<String, String> {
-    let safe_path = is_safe_path(std::path::Path::new(&path))
-        .ok_or_else(|| "不允许访问此路径".to_string())?;
+    let safe_path =
+        is_safe_path(std::path::Path::new(&path)).ok_or_else(|| "不允许访问此路径".to_string())?;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     let bytes = std::fs::read(&safe_path).map_err(|e| format!("读取文件失败: {}", e))?;
     Ok(STANDARD.encode(&bytes))
@@ -81,20 +79,39 @@ fn build_tree_inner(
     visited: &mut std::collections::HashSet<PathBuf>,
     depth: u32,
 ) -> Result<FileTreeNode, String> {
-    let name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let name = root
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let path = root.display().to_string();
     let is_dir = root.is_dir();
 
     if !is_dir {
-        return Ok(FileTreeNode { name, path, is_dir: false, children: None });
+        return Ok(FileTreeNode {
+            name,
+            path,
+            is_dir: false,
+            children: None,
+        });
     }
 
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if !visited.insert(canonical) {
-        return Ok(FileTreeNode { name, path, is_dir: true, children: Some(vec![]) });
+        return Ok(FileTreeNode {
+            name,
+            path,
+            is_dir: true,
+            children: Some(vec![]),
+        });
     }
     if depth >= MAX_TREE_DEPTH {
-        return Ok(FileTreeNode { name, path, is_dir: true, children: Some(vec![]) });
+        return Ok(FileTreeNode {
+            name,
+            path,
+            is_dir: true,
+            children: Some(vec![]),
+        });
     }
 
     let mut children: Vec<FileTreeNode> = Vec::new();
@@ -105,9 +122,15 @@ fn build_tree_inner(
 
     for entry in entries.flatten() {
         let fname = entry.file_name().to_string_lossy().to_string();
-        if SKIP_NAMES.contains(&fname.as_str()) { continue; }
+        if SKIP_NAMES.contains(&fname.as_str()) {
+            continue;
+        }
         let fpath = entry.path();
-        if fpath.is_dir() { dirs.push((fname, fpath)); } else { files.push((fname, fpath)); }
+        if fpath.is_dir() {
+            dirs.push((fname, fpath));
+        } else {
+            files.push((fname, fpath));
+        }
     }
 
     dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
@@ -121,24 +144,42 @@ fn build_tree_inner(
     }
     for (fname, fpath) in &files {
         children.push(FileTreeNode {
-            name: fname.clone(), path: fpath.display().to_string(),
-            is_dir: false, children: None,
+            name: fname.clone(),
+            path: fpath.display().to_string(),
+            is_dir: false,
+            children: None,
         });
     }
 
-    Ok(FileTreeNode { name, path, is_dir: true, children: Some(children) })
+    Ok(FileTreeNode {
+        name,
+        path,
+        is_dir: true,
+        children: Some(children),
+    })
 }
 
 #[command]
 pub fn list_directory_tree(path: String) -> Result<FileTreeNode, String> {
     let p = std::path::Path::new(&path);
     if p.is_file() {
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
+        let name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
         let safe_path = is_safe_path(p).ok_or_else(|| "不允许访问此路径".to_string())?;
-        return Ok(FileTreeNode { name: name.clone(), path: safe_path.to_string_lossy().to_string(), is_dir: false, children: None });
+        return Ok(FileTreeNode {
+            name: name.clone(),
+            path: safe_path.to_string_lossy().to_string(),
+            is_dir: false,
+            children: None,
+        });
     }
     let root = p.to_path_buf();
-    if !root.exists() { return Err(format!("路径不存在: {}", root.display())); }
+    if !root.exists() {
+        return Err(format!("路径不存在: {}", root.display()));
+    }
     let safe_root = is_safe_path(&root).ok_or_else(|| "不允许访问此路径".to_string())?;
     build_tree(&safe_root)
 }
@@ -146,8 +187,12 @@ pub fn list_directory_tree(path: String) -> Result<FileTreeNode, String> {
 #[command]
 pub fn list_directory_children(path: String) -> Result<Vec<FileTreeNode>, String> {
     let p = std::path::Path::new(&path);
-    if !p.is_dir() { return Err("路径不是目录".into()); }
-    if !p.exists() { return Err(format!("路径不存在: {}", p.display())); }
+    if !p.is_dir() {
+        return Err("路径不是目录".into());
+    }
+    if !p.exists() {
+        return Err(format!("路径不存在: {}", p.display()));
+    }
     let safe_p = is_safe_path(p).ok_or_else(|| "不允许访问此路径".to_string())?;
 
     let mut dirs: Vec<(String, PathBuf)> = Vec::new();
@@ -156,9 +201,15 @@ pub fn list_directory_children(path: String) -> Result<Vec<FileTreeNode>, String
     let entries = std::fs::read_dir(&safe_p).map_err(|e| format!("读取目录失败: {}", e))?;
     for entry in entries.flatten() {
         let fname = entry.file_name().to_string_lossy().to_string();
-        if SKIP_NAMES.contains(&fname.as_str()) { continue; }
+        if SKIP_NAMES.contains(&fname.as_str()) {
+            continue;
+        }
         let fpath = entry.path();
-        if fpath.is_dir() { dirs.push((fname, fpath)); } else { files.push((fname, fpath)); }
+        if fpath.is_dir() {
+            dirs.push((fname, fpath));
+        } else {
+            files.push((fname, fpath));
+        }
     }
 
     dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
@@ -166,10 +217,20 @@ pub fn list_directory_children(path: String) -> Result<Vec<FileTreeNode>, String
 
     let mut children: Vec<FileTreeNode> = Vec::with_capacity(dirs.len() + files.len());
     for (name, fpath) in &dirs {
-        children.push(FileTreeNode { name: name.clone(), path: fpath.display().to_string(), is_dir: true, children: None });
+        children.push(FileTreeNode {
+            name: name.clone(),
+            path: fpath.display().to_string(),
+            is_dir: true,
+            children: None,
+        });
     }
     for (fname, fpath) in &files {
-        children.push(FileTreeNode { name: fname.clone(), path: fpath.display().to_string(), is_dir: false, children: None });
+        children.push(FileTreeNode {
+            name: fname.clone(),
+            path: fpath.display().to_string(),
+            is_dir: false,
+            children: None,
+        });
     }
     Ok(children)
 }
@@ -198,7 +259,9 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
         let resolved = is_safe_path(&tmp);
         assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("kn-test-temp-nonexistent-file.dmg"));
+        assert!(resolved
+            .unwrap()
+            .ends_with("kn-test-temp-nonexistent-file.dmg"));
     }
 
     #[test]
@@ -208,7 +271,9 @@ mod tests {
         let _ = std::fs::remove_file(&safe);
         let resolved = is_safe_path(&safe);
         assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with(".kn-test-home-nonexistent-file.tmp"));
+        assert!(resolved
+            .unwrap()
+            .ends_with(".kn-test-home-nonexistent-file.tmp"));
     }
 
     #[test]
@@ -223,7 +288,11 @@ mod tests {
         let resolved = is_safe_path(&safe);
         assert!(resolved.is_some());
         std::fs::remove_dir_all(&safe).ok();
-        if let Some(value) = old_home { std::env::set_var("HOME", value); } else { std::env::remove_var("HOME"); }
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 
     #[test]

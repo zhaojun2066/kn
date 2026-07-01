@@ -2,7 +2,10 @@ use kn_common::pty_trait::{PtyOutputSink, SharedChild, SharedWriter};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::Shutdown;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
 
@@ -17,9 +20,20 @@ pub enum PtyEvent {
 }
 
 pub struct PtyHandle {
-    pub writer: SharedWriter,
-    pub child: SharedChild,
-    pub master: Box<dyn portable_pty::MasterPty + Send>,
+    pub kind: PtyHandleKind,
+}
+
+pub enum PtyHandleKind {
+    Local {
+        writer: SharedWriter,
+        child: SharedChild,
+        master: Box<dyn portable_pty::MasterPty + Send>,
+    },
+    #[cfg(unix)]
+    Attached {
+        writer: SharedWriter,
+        stream: Arc<Mutex<UnixStream>>,
+    },
 }
 
 pub struct PtyState {
@@ -84,12 +98,6 @@ impl PtyOutputSink for ChannelSink {
         }
     }
 
-    fn on_ready(&self, pid: u32) -> Result<(), String> {
-        self.channel
-            .send(PtyEvent::Ready(pid))
-            .map_err(|e| e.to_string())
-    }
-
     fn on_exit(&self, code: i32) -> Result<(), String> {
         self.channel
             .send(PtyEvent::Exit(code))
@@ -126,7 +134,9 @@ pub fn start_pty(
         .map_err(|e| format!("openpty: {}", e))?;
 
     // Resolve shell binary — use $SHELL or default to /bin/zsh
-    let shell = std::env::var("SHELL").ok().unwrap_or_else(|| "/bin/zsh".into());
+    let shell = std::env::var("SHELL")
+        .ok()
+        .unwrap_or_else(|| "/bin/zsh".into());
 
     let mut cmd = CommandBuilder::new(&shell);
     cmd.args(["-i", "-l"]);
@@ -209,17 +219,16 @@ pub fn start_pty(
         handles.handles.insert(
             session_id.clone(),
             PtyHandle {
-                writer,
-                child: shared_child.clone(),
-                master,
+                kind: PtyHandleKind::Local {
+                    writer,
+                    child: shared_child.clone(),
+                    master,
+                },
             },
         );
     }
 
-    let sink = ChannelSink {
-        channel: on_event.clone(),
-    };
-    let _ = sink.on_ready(child_pid);
+    let _ = on_event.send(PtyEvent::Ready(child_pid));
 
     // Spawn reader thread with its own clone of the shared child handle.
     let reader_child = shared_child;
@@ -277,6 +286,92 @@ pub fn start_pty(
     Ok(())
 }
 
+#[cfg(unix)]
+#[tauri::command]
+pub fn attach_agent_pty(
+    state: tauri::State<'_, Arc<Mutex<PtyState>>>,
+    session_id: String,
+    pty_sock: String,
+    on_event: Channel<PtyEvent>,
+) -> Result<(), String> {
+    let stream = UnixStream::connect(&pty_sock)
+        .map_err(|e| format!("connect pty.sock {}: {}", pty_sock, e))?;
+    stream
+        .set_nonblocking(false)
+        .map_err(|e| format!("set blocking: {}", e))?;
+
+    let mut reader = stream
+        .try_clone()
+        .map_err(|e| format!("clone reader: {}", e))?;
+    let writer_stream = stream
+        .try_clone()
+        .map_err(|e| format!("clone writer: {}", e))?;
+    let shutdown_stream = Arc::new(Mutex::new(stream));
+    let writer: SharedWriter =
+        Arc::new(Mutex::new(Box::new(writer_stream) as Box<dyn Write + Send>));
+
+    {
+        let mut handles = state.lock().map_err(|e| format!("lock: {}", e))?;
+        if let Some(old) = handles.handles.remove(&session_id) {
+            if let PtyHandleKind::Attached { stream, .. } = old.kind {
+                if let Ok(s) = stream.lock() {
+                    let _ = s.shutdown(Shutdown::Both);
+                }
+            }
+        }
+        handles.handles.insert(
+            session_id.clone(),
+            PtyHandle {
+                kind: PtyHandleKind::Attached {
+                    writer,
+                    stream: shutdown_stream.clone(),
+                },
+            },
+        );
+    }
+
+    let _ = on_event.send(PtyEvent::Ready(0));
+
+    let reader_state = state.inner().clone();
+    let reader_session_id = session_id.clone();
+    let reader_sink = ChannelSink { channel: on_event };
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 16384];
+        let mut utf8_pending: Vec<u8> = Vec::new();
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => {
+                    if !utf8_pending.is_empty() {
+                        let _ = reader_sink.send(&utf8_pending);
+                    }
+                    break;
+                }
+                Ok(n) => {
+                    utf8_pending.extend_from_slice(&buf[..n]);
+                    if !drain_utf8_stream(&mut utf8_pending, &reader_sink) {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if !utf8_pending.is_empty() {
+                        let _ = reader_sink.send(&utf8_pending);
+                    }
+                    let _ = reader_sink.on_error(&e.to_string());
+                    break;
+                }
+            }
+        }
+
+        let _ = reader_sink.on_exit(0);
+
+        if let Ok(mut handles) = reader_state.lock() {
+            handles.handles.remove(&reader_session_id);
+        }
+    });
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn write_pty(
     state: tauri::State<'_, Arc<Mutex<PtyState>>>,
@@ -289,12 +384,15 @@ pub fn write_pty(
     // operations on the same or other sessions.
     let writer: SharedWriter = {
         let handles = state.lock().map_err(|e| format!("lock: {}", e))?;
-        handles
+        let handle = handles
             .handles
             .get(&session_id)
-            .ok_or_else(|| format!("session not found: {}", session_id))?
-            .writer
-            .clone()
+            .ok_or_else(|| format!("session not found: {}", session_id))?;
+        match &handle.kind {
+            PtyHandleKind::Local { writer, .. } => writer.clone(),
+            #[cfg(unix)]
+            PtyHandleKind::Attached { writer, .. } => writer.clone(),
+        }
     };
 
     let mut w = writer.lock().map_err(|e| format!("writer lock: {}", e))?;
@@ -325,10 +423,13 @@ pub fn resize_pty(
         .get(&session_id)
         .ok_or_else(|| format!("session not found: {}", session_id))?;
 
-    handle
-        .master
-        .resize(size)
-        .map_err(|e| format!("resize: {}", e))
+    match &handle.kind {
+        PtyHandleKind::Local { master, .. } => {
+            master.resize(size).map_err(|e| format!("resize: {}", e))
+        }
+        #[cfg(unix)]
+        PtyHandleKind::Attached { .. } => Ok(()),
+    }
 }
 
 #[tauri::command]
@@ -336,19 +437,30 @@ pub fn kill_pty(
     state: tauri::State<'_, Arc<Mutex<PtyState>>>,
     session_id: String,
 ) -> Result<(), String> {
-    let child = {
+    let handle = {
         let handles = state.lock().map_err(|e| format!("lock: {}", e))?;
         handles
             .handles
             .get(&session_id)
-            .map(|handle| handle.child.clone())
+            .map(|handle| match &handle.kind {
+                PtyHandleKind::Local { child, .. } => (Some(child.clone()), None),
+                #[cfg(unix)]
+                PtyHandleKind::Attached { stream, .. } => (None, Some(stream.clone())),
+            })
     };
 
-    if let Some(child) = child {
+    if let Some((child, stream)) = handle {
         // Kill the child process first to unblock the reader thread.
-        if let Ok(mut guard) = child.lock() {
-            if let Some(ref mut c) = *guard {
-                let _ = c.kill();
+        if let Some(child) = child {
+            if let Ok(mut guard) = child.lock() {
+                if let Some(ref mut c) = *guard {
+                    let _ = c.kill();
+                }
+            }
+        }
+        if let Some(stream) = stream {
+            if let Ok(s) = stream.lock() {
+                let _ = s.shutdown(Shutdown::Both);
             }
         }
     }
@@ -358,4 +470,15 @@ pub fn kill_pty(
     // Closing master fd → kernel sends SIGHUP → child terminates.
     handles.handles.remove(&session_id);
     Ok(())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+pub fn attach_agent_pty(
+    _state: tauri::State<'_, Arc<Mutex<PtyState>>>,
+    _session_id: String,
+    _pty_sock: String,
+    _on_event: Channel<PtyEvent>,
+) -> Result<(), String> {
+    Err("attach_agent_pty is only supported on Unix".to_string())
 }

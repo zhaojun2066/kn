@@ -22,6 +22,8 @@ export interface AgentStatus {
 
 export interface AgentSession {
   nid: string;
+  kind: "Native" | "Relay";
+  source: "desktop" | "ios";
   tool: string;
   profile: string | null;
   cwd: string;

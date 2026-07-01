@@ -1,6 +1,7 @@
 import type { MutableRefObject, Dispatch, SetStateAction } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { TabSession, SessionRecord } from "./types";
+import type { AgentSession } from "../useAgent";
 
 /**
  * Shared state and refs passed to all sub-hooks.
@@ -18,6 +19,8 @@ export interface TerminalContext {
     Map<string, { resolve: () => void; timeout: ReturnType<typeof setTimeout> }>
   >;
   childPidRef: MutableRefObject<Map<string, number>>;  // paneId → CLI 子进程 PID
+  agentSessionsRef: MutableRefObject<AgentSession[]>;
+  dismissedAgentNidsRef: MutableRefObject<Set<string>>;
   errorCallbackRef: MutableRefObject<((msg: string) => void) | null>;
   openingRef: MutableRefObject<boolean>;
 

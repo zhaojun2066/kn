@@ -282,7 +282,12 @@ fn agent_from_frontmatter(
     let enabled = !path.to_string_lossy().ends_with(".disabled");
 
     let id = if let Some(root) = project_root {
-        format!("{}:agent:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), name)
+        format!(
+            "{}:agent:{}:{}",
+            cli,
+            crate::hash_path(&root.to_string_lossy()),
+            name
+        )
     } else {
         format!("{}:agent:{}", cli, name)
     };
@@ -475,7 +480,12 @@ fn scan_codex_toml_agents_in_dir(
             .unwrap_or_default();
 
         let id = if let Some(root) = project_root {
-            format!("{}:agent:{}:{}", cli, crate::hash_path(&root.to_string_lossy()), stem)
+            format!(
+                "{}:agent:{}:{}",
+                cli,
+                crate::hash_path(&root.to_string_lossy()),
+                stem
+            )
         } else {
             format!("{}:agent:{}", cli, stem)
         };
@@ -734,7 +744,12 @@ pub fn analyze_impact(target_id: String, graph: DependencyGraph) -> Vec<String> 
 
 /// Toggle agent enabled state by renaming file: `name.{ext}` ↔ `name.{ext}.disabled`.
 #[tauri::command]
-pub fn toggle_agent(cli: String, name: String, enabled: bool, path: Option<String>) -> Result<(), String> {
+pub fn toggle_agent(
+    cli: String,
+    name: String,
+    enabled: bool,
+    path: Option<String>,
+) -> Result<(), String> {
     // If path is provided, use path-based toggle (works for both user and project level)
     if let Some(ref p) = path {
         return crate::skill_manager::toggle_resource_by_path(p, enabled);

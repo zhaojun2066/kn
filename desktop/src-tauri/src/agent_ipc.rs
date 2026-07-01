@@ -20,10 +20,13 @@ pub async fn agent_ipc(
     method: String,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let stream = tokio::time::timeout(Duration::from_secs(5), UnixStream::connect(ipc_socket_path()))
-        .await
-        .map_err(|_| "Agent IPC 连接超时（5 秒）".to_string())?
-        .map_err(|e| format!("Agent IPC 连接失败: {}", e))?;
+    let stream = tokio::time::timeout(
+        Duration::from_secs(5),
+        UnixStream::connect(ipc_socket_path()),
+    )
+    .await
+    .map_err(|_| "Agent IPC 连接超时（5 秒）".to_string())?
+    .map_err(|e| format!("Agent IPC 连接失败: {}", e))?;
 
     let request = serde_json::json!({
         "id": "desktop",
@@ -59,7 +62,12 @@ pub async fn agent_ipc(
 
     // Agent IPC wraps result in {"id":"...","result":{...}}, extract it
     if let Some(err) = parsed.get("error") {
-        return Err(format!("Agent 错误: {}", err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")));
+        return Err(format!(
+            "Agent 错误: {}",
+            err.get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown")
+        ));
     }
     Ok(parsed.get("result").cloned().unwrap_or(parsed))
 }

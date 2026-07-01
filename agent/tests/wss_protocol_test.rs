@@ -18,22 +18,52 @@ fn test_all_incoming_types_parse_without_panic() {
         // Heartbeat
         (r#"{"type":"pong","data":{"ts":123}}"#, "pong"),
         // Connection
-        (r#"{"type":"connected","data":{"ws_session_id":"x","node_id":null,"protocol_version":1}}"#, "connected"),
+        (
+            r#"{"type":"connected","data":{"ws_session_id":"x","node_id":null,"protocol_version":1}}"#,
+            "connected",
+        ),
         // Session lifecycle (cloud forwards from iOS to agent)
-        (r#"{"type":"start_session","data":{"tool":"bash","fromUserId":1}}"#, "start_session"),
+        (
+            r#"{"type":"start_session","data":{"tool":"bash","fromUserId":1}}"#,
+            "start_session",
+        ),
         // Message routing (cloud forwards from iOS to agent) — sessionId identifies the session
-        (r#"{"type":"input","data":{"sessionId":"s_abc","seq":1,"content":"hi","fromUserId":1}}"#, "input"),
-        (r#"{"type":"ctrl","data":{"sessionId":"s_abc123","signal":"ctrl_c"}}"#, "ctrl"),
-        (r#"{"type":"resize","data":{"sessionId":"s_abc123","cols":48,"rows":18}}"#, "resize"),
+        (
+            r#"{"type":"input","data":{"sessionId":"s_abc","seq":1,"content":"hi","fromUserId":1}}"#,
+            "input",
+        ),
+        (
+            r#"{"type":"ctrl","data":{"sessionId":"s_abc123","signal":"ctrl_c"}}"#,
+            "ctrl",
+        ),
+        (
+            r#"{"type":"resize","data":{"sessionId":"s_abc123","cols":48,"rows":18}}"#,
+            "resize",
+        ),
         // Server → agent
-        (r#"{"type":"error_notify","data":{"code":"ERR","message":"test"}}"#, "error_notify"),
+        (
+            r#"{"type":"error_notify","data":{"code":"ERR","message":"test"}}"#,
+            "error_notify",
+        ),
         (r#"{"type":"profile_list_ack"}"#, "profile_list_ack"),
         // New: session_created_ack
-        (r#"{"type":"session_created_ack","data":{"sessionId":"s_abc123","status":"ok"}}"#, "session_created_ack"),
-        (r#"{"type":"session_created_ack","data":{"sessionId":"s_def456","status":"error","error":"Redis timeout"}}"#, "session_created_ack"),
+        (
+            r#"{"type":"session_created_ack","data":{"sessionId":"s_abc123","status":"ok"}}"#,
+            "session_created_ack",
+        ),
+        (
+            r#"{"type":"session_created_ack","data":{"sessionId":"s_def456","status":"error","error":"Redis timeout"}}"#,
+            "session_created_ack",
+        ),
         // New: resume_session
-        (r#"{"type":"replay_output","data":{"sessionId":"s_abc123"}}"#, "replay_output"),
-        (r#"{"type":"resume_session","data":{"sessionId":"s_abc123"}}"#, "resume_session"),
+        (
+            r#"{"type":"replay_output","data":{"sessionId":"s_abc123"}}"#,
+            "replay_output",
+        ),
+        (
+            r#"{"type":"resume_session","data":{"sessionId":"s_abc123"}}"#,
+            "resume_session",
+        ),
         // Forward compat
         (r#"{"type":"future_type","data":{}}"#, "unknown"),
     ];
@@ -41,7 +71,8 @@ fn test_all_incoming_types_parse_without_panic() {
     for (json_str, expected_type) in test_cases {
         let env: WsEnvelope = serde_json::from_str(json_str)
             .unwrap_or_else(|e| panic!("Failed to parse '{}' envelope: {}", expected_type, e));
-        let msg = env.parse()
+        let msg = env
+            .parse()
             .unwrap_or_else(|e| panic!("Failed to parse '{}' message: {}", expected_type, e));
 
         let actual = variant_name(&msg);
@@ -80,7 +111,11 @@ fn test_output_session_id_is_string() {
 
     assert_eq!(parsed["type"], "output");
     let tsid = &parsed["data"]["sessionId"];
-    assert!(tsid.is_string(), "sessionId must be a string, got {:?}", tsid);
+    assert!(
+        tsid.is_string(),
+        "sessionId must be a string, got {:?}",
+        tsid
+    );
     assert_eq!(tsid.as_str().unwrap(), "s_abc123");
     assert!(parsed["data"].get("to_session_id").is_none());
     // Verify ansi_text field is present
@@ -92,7 +127,12 @@ fn test_input_reads_session_id_from_data_only() {
     let json = r#"{"type":"input","sessionId":"s_wrong","data":{"sessionId":"s_data","seq":7,"content":"hi","fromUserId":1}}"#;
     let env: WsEnvelope = serde_json::from_str(json).unwrap();
     match env.parse().unwrap() {
-        AgentIncoming::Input { session_nid, seq, content, from_user_id } => {
+        AgentIncoming::Input {
+            session_nid,
+            seq,
+            content,
+            from_user_id,
+        } => {
             assert_eq!(session_nid, "s_data");
             assert_eq!(seq, 7);
             assert_eq!(content, "hi");
@@ -104,7 +144,8 @@ fn test_input_reads_session_id_from_data_only() {
 
 #[test]
 fn test_input_rejects_missing_data_session_id() {
-    let json = r#"{"type":"input","sessionId":"s_top","data":{"seq":7,"content":"hi","fromUserId":1}}"#;
+    let json =
+        r#"{"type":"input","sessionId":"s_top","data":{"seq":7,"content":"hi","fromUserId":1}}"#;
     let env: WsEnvelope = serde_json::from_str(json).unwrap();
 
     assert!(env.parse().is_err());

@@ -37,6 +37,7 @@ pub fn write_app_config(config: AppConfig) -> Result<(), String> {
         .join("update");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
     let path = dir.join("update.json");
-    let content = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
+    let content =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
     std::fs::write(&path, &content).map_err(|e| format!("写入失败: {}", e))
 }

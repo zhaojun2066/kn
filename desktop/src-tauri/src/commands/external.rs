@@ -17,7 +17,9 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
             break;
         }
     }
-    if !spawned { return Err("未找到可用的终端应用 (iTerm/Warp/Terminal)".into()); }
+    if !spawned {
+        return Err("未找到可用的终端应用 (iTerm/Warp/Terminal)".into());
+    }
     Ok(())
 }
 
@@ -37,7 +39,9 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
     match editor.as_str() {
         "code" => {
             if let Some(bin) = find_binary(&["code"]) {
-                std::process::Command::new(&bin).arg(&path).spawn()
+                std::process::Command::new(&bin)
+                    .arg(&path)
+                    .spawn()
                     .map_err(|_| "启动 VS Code 失败，请确认已安装或重试".to_string())?;
             } else {
                 std::process::Command::new("open")
@@ -49,7 +53,9 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
         }
         "cursor" => {
             if let Some(bin) = find_binary(&["cursor"]) {
-                std::process::Command::new(&bin).arg(&path).spawn()
+                std::process::Command::new(&bin)
+                    .arg(&path)
+                    .spawn()
                     .map_err(|_| "启动 Cursor 失败，请确认已安装或重试".to_string())?;
             } else {
                 std::process::Command::new("open")
@@ -61,13 +67,18 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
         }
         "idea" => {
             if let Some(bin) = find_binary(&["idea"]) {
-                std::process::Command::new(&bin).arg(&path).spawn()
+                std::process::Command::new(&bin)
+                    .arg(&path)
+                    .spawn()
                     .map_err(|_| "启动 IntelliJ IDEA 失败，请确认已安装或重试".to_string())?;
             } else {
                 std::process::Command::new("open")
                     .args(["-a", "IntelliJ IDEA", &path])
                     .spawn()
-                    .map_err(|_| "未找到 IntelliJ IDEA。请确认已安装，下载: https://jetbrains.com/idea".to_string())?;
+                    .map_err(|_| {
+                        "未找到 IntelliJ IDEA。请确认已安装，下载: https://jetbrains.com/idea"
+                            .to_string()
+                    })?;
             }
             Ok(())
         }

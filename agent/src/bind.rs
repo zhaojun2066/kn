@@ -30,8 +30,7 @@ pub async fn run_bind_command(config: AgentConfig) -> Result<()> {
 
     // ── Step 4: 轮询绑定结果 ──
     eprintln!("[kn-agent] 等待 iOS App 确认绑定...");
-    let token =
-        device::bind_poll(&config.cloud_http_url, &bind_code, expires_in, shutdown).await?;
+    let token = device::bind_poll(&config.cloud_http_url, &bind_code, expires_in, shutdown).await?;
 
     // ── Step 5: 保存 token ──
     device::save_device_token(&token)?;
@@ -98,7 +97,5 @@ fn empty_box_line() -> String {
 
 /// 粗略估算终端列宽：ASCII 字符为 1，非 ASCII（CJK、emoji 等）为 2。
 fn display_width(s: &str) -> usize {
-    s.chars()
-        .map(|c| if c as u32 > 0x7F { 2 } else { 1 })
-        .sum()
+    s.chars().map(|c| if c as u32 > 0x7F { 2 } else { 1 }).sum()
 }

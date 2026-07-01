@@ -46,7 +46,6 @@ fn hooks_dir() -> PathBuf {
     crate::config_dir().join("hooks")
 }
 
-
 // ── Hook Definitions ─────────────────────────────────────────────
 
 fn all_hooks() -> Vec<StoreHook> {
@@ -508,7 +507,10 @@ pub fn repair_missing_hook_scripts() {
                         let _ = std::fs::set_permissions(&script_path, perms);
                     }
                 }
-                eprintln!("[kn] Repaired missing hook script: {}", script_path.display());
+                eprintln!(
+                    "[kn] Repaired missing hook script: {}",
+                    script_path.display()
+                );
             }
         }
     }
@@ -528,8 +530,7 @@ pub fn list_store_hooks() -> HookStoreData {
             let has = existing.hooks.iter().any(|h| {
                 h.cli == *cli
                     && h.event_type == hook.event_type
-                    && h.command
-                        .contains(&format!(".kn/hooks/{}", hook.id))
+                    && h.command.contains(&format!(".kn/hooks/{}", hook.id))
             });
             if has {
                 installed.push(cli.clone());
@@ -595,9 +596,7 @@ pub fn install_store_hook(hook_id: String, cli: String) -> Result<(), String> {
     let existing = hook_manager::scan_hooks(None);
     let cmd_pattern = format!(".kn/hooks/{}", hook_id);
     let already_installed = existing.hooks.iter().any(|h| {
-        h.cli == cli
-            && h.event_type == hook.event_type
-            && h.command.contains(&cmd_pattern)
+        h.cli == cli && h.event_type == hook.event_type && h.command.contains(&cmd_pattern)
     });
     if already_installed {
         return Ok(()); // idempotent — already installed, nothing to do
@@ -709,4 +708,3 @@ pub fn uninstall_store_hook(hook_id: String, cli: String) -> Result<(), String> 
 
     Ok(())
 }
-

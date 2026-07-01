@@ -8,9 +8,9 @@
 //! - hex_nonce — 12-byte AES-GCM nonce (24 hex chars)
 //! - hex_ciphertext — AES-GCM encrypted payload (variable length)
 
+use crate::error::{CommonError, Result};
 use aes_gcm::aead::{Aead, OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, Key, KeyInit, Nonce};
-use crate::error::{CommonError, Result};
 
 /// Version prefix for ciphertext.
 const CIPHER_PREFIX: &str = "kn:v1:";
@@ -65,9 +65,8 @@ pub fn encrypt_value(keystore: &dyn KeyStore, plaintext: &str) -> Result<String>
         .map_err(|e| CommonError::Crypto(format!("加密失败: {}", e)))?;
 
     // Encode: kn:v1:<hex_nonce><hex_ciphertext>
-    let mut result = String::with_capacity(
-        CIPHER_PREFIX.len() + NONCE_SIZE * 2 + ciphertext.len() * 2,
-    );
+    let mut result =
+        String::with_capacity(CIPHER_PREFIX.len() + NONCE_SIZE * 2 + ciphertext.len() * 2);
     result.push_str(CIPHER_PREFIX);
     result.push_str(&hex::encode(nonce.as_slice()));
     result.push_str(&hex::encode(&ciphertext));
@@ -95,8 +94,8 @@ pub fn decrypt_value(keystore: &dyn KeyStore, encoded: &str) -> Result<String> {
 
     let nonce_bytes = hex_to_bytes(nonce_hex)
         .map_err(|e| CommonError::Crypto(format!("nonce 解析失败: {}", e)))?;
-    let ct_bytes = hex_to_bytes(ct_hex)
-        .map_err(|e| CommonError::Crypto(format!("密文解析失败: {}", e)))?;
+    let ct_bytes =
+        hex_to_bytes(ct_hex).map_err(|e| CommonError::Crypto(format!("密文解析失败: {}", e)))?;
 
     let key_bytes = load_or_create_key(keystore)?;
     let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
@@ -170,10 +169,7 @@ fn hex_to_bytes(hex: &str) -> std::result::Result<Vec<u8>, String> {
     }
     (0..hex.len())
         .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16)
-                .map_err(|e| format!("hex 解码失败: {}", e))
-        })
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| format!("hex 解码失败: {}", e)))
         .collect()
 }
 
@@ -181,7 +177,9 @@ fn hex_to_bytes(hex: &str) -> std::result::Result<Vec<u8>, String> {
 
 /// Path to the encryption key file.
 fn key_file_path() -> std::path::PathBuf {
-    crate::path::config_dir().join("agent").join(".encryption_key")
+    crate::path::config_dir()
+        .join("agent")
+        .join(".encryption_key")
 }
 
 /// Read the master key from the key file.
@@ -190,7 +188,8 @@ fn key_file_read() -> Result<Option<Vec<u8>>> {
     if !path.exists() {
         return Ok(None);
     }
-    let data = std::fs::read(&path).map_err(|e| CommonError::Keychain(format!("读取密钥文件失败: {}", e)))?;
+    let data = std::fs::read(&path)
+        .map_err(|e| CommonError::Keychain(format!("读取密钥文件失败: {}", e)))?;
     Ok(Some(data))
 }
 
@@ -198,7 +197,8 @@ fn key_file_read() -> Result<Option<Vec<u8>>> {
 fn key_file_write(key: &[u8]) -> Result<()> {
     let path = key_file_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| CommonError::Keychain(format!("创建密钥目录失败: {}", e)))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CommonError::Keychain(format!("创建密钥目录失败: {}", e)))?;
     }
 
     // Atomic write with 0600 permissions from creation time (no permission window)
@@ -216,8 +216,10 @@ fn key_file_write(key: &[u8]) -> Result<()> {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).ok();
         }
-        f.write_all(key).map_err(|e| CommonError::Keychain(format!("写入密钥失败: {}", e)))?;
-        f.sync_all().map_err(|e| CommonError::Keychain(format!("同步密钥文件失败: {}", e)))?;
+        f.write_all(key)
+            .map_err(|e| CommonError::Keychain(format!("写入密钥失败: {}", e)))?;
+        f.sync_all()
+            .map_err(|e| CommonError::Keychain(format!("同步密钥文件失败: {}", e)))?;
     }
 
     std::fs::rename(&tmp, &path)
@@ -231,7 +233,8 @@ fn key_file_write(key: &[u8]) -> Result<()> {
 fn key_file_delete() -> Result<()> {
     let path = key_file_path();
     if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| CommonError::Keychain(format!("删除密钥文件失败: {}", e)))?;
+        std::fs::remove_file(&path)
+            .map_err(|e| CommonError::Keychain(format!("删除密钥文件失败: {}", e)))?;
     }
     Ok(())
 }

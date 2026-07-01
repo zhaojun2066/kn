@@ -12,10 +12,10 @@ mod skill_manager;
 mod usage;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use tauri::Manager;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tauri::Manager;
 
 use fs2::FileExt;
 
@@ -24,16 +24,32 @@ pub(crate) use kn_common::path::{
     atomic_rename, config_dir, hash_path, home_dir, project_name_from_root,
 };
 
-
 /// Global write lock — serializes all config file writes to prevent
 /// data corruption when multiple Tauri commands run concurrently.
 /// (The Python CLI already uses fcntl.flock for its own writes.)
-static WRITE_LOCK: std::sync::LazyLock<Mutex<()>> =
-    std::sync::LazyLock::new(|| Mutex::new(()));
+static WRITE_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: std::sync::LazyLock<Mutex<()>> =
     std::sync::LazyLock::new(|| Mutex::new(()));
+
+fn files_differ(left: &Path, right: &Path) -> bool {
+    let left_meta = match left.metadata() {
+        Ok(meta) => meta,
+        Err(_) => return true,
+    };
+    let right_meta = match right.metadata() {
+        Ok(meta) => meta,
+        Err(_) => return true,
+    };
+    if left_meta.len() != right_meta.len() {
+        return true;
+    }
+    match (std::fs::read(left), std::fs::read(right)) {
+        (Ok(left_bytes), Ok(right_bytes)) => left_bytes != right_bytes,
+        _ => true,
+    }
+}
 
 /// Acquire the global write lock and run the closure.
 /// All file-write operations should pass through this to avoid races.
@@ -83,8 +99,7 @@ where
 {
     let lock_path = config_dir().join(".config.lock");
     if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建锁目录失败: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建锁目录失败: {}", e))?;
     }
     let lock_fh = std::fs::OpenOptions::new()
         .create(true)
@@ -271,13 +286,11 @@ pub fn run() {
                 }
             } else {
                 // ── Production: copy from app bundle, only start if needed ──
+                let mut agent_updated = false;
                 if let Ok(resource_dir) = app.path().resource_dir() {
                     let bundled = resource_dir.join("resources").join("kn-agent");
                     if bundled.exists() {
-                        let needs_copy = !agent_bin.exists()
-                            || bundled.metadata().ok().map(|m| m.len()).unwrap_or(0)
-                                != agent_bin.metadata().ok().map(|m| m.len()).unwrap_or(0);
-                        if needs_copy {
+                        if files_differ(&bundled, &agent_bin) {
                             let tmp = agent_dir.join("kn-agent.tmp");
                             if std::fs::copy(&bundled, &tmp).is_ok() {
                                 #[cfg(unix)]
@@ -292,6 +305,7 @@ pub fn run() {
                                     let _ = f.sync_all();
                                 }
                                 if std::fs::rename(&tmp, &agent_bin).is_ok() {
+                                    agent_updated = true;
                                     eprintln!("[kn] kn-agent binary installed/updated");
                                 }
                             }
@@ -302,6 +316,14 @@ pub fn run() {
                 }
 
                 if agent_bin.exists() {
+                    if agent_updated {
+                        eprintln!("[kn] kn-agent updated, restarting launchd service...");
+                        let _ = std::process::Command::new("launchctl")
+                            .args(["bootout", &service_name])
+                            .output();
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+
                     if !plist_path.exists() {
                         let _ = std::fs::create_dir_all(&log_dir);
                         let plist_content = format!(
@@ -413,6 +435,7 @@ pub fn run() {
             commands::batch_export_profiles,
             commands::batch_delete_profiles,
             pty::start_pty,
+            pty::attach_agent_pty,
             pty::write_pty,
             pty::resize_pty,
             pty::kill_pty,
@@ -500,8 +523,13 @@ mod tests {
         assert!(has_parent, "test input should contain '..'");
 
         let p2 = std::path::PathBuf::from("/tmp/valid");
-        let has_parent2 = p2.components().any(|c| c == std::path::Component::ParentDir);
-        assert!(!has_parent2, "clean path should not have parent dir components");
+        let has_parent2 = p2
+            .components()
+            .any(|c| c == std::path::Component::ParentDir);
+        assert!(
+            !has_parent2,
+            "clean path should not have parent dir components"
+        );
     }
 
     #[test]
@@ -534,7 +562,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
         let _ = fs::remove_dir_all(&dir);
     }
-
 
     #[test]
     fn test_hash_path_deterministic() {

@@ -38,23 +38,18 @@ enum Command {
 async fn load_projects() -> Vec<ProjectInfo> {
     let path = kn_common::path::config_dir().join("projects.json");
 
-    tokio::task::spawn_blocking(move || {
-        match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                serde_json::from_str::<Vec<ProjectInfo>>(&content)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("解析 projects.json 失败: {}", e);
-                        vec![]
-                    })
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!("projects.json 不存在，跳过项目上报");
-                vec![]
-            }
-            Err(e) => {
-                tracing::warn!("读取 projects.json 失败: {}", e);
-                vec![]
-            }
+    tokio::task::spawn_blocking(move || match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str::<Vec<ProjectInfo>>(&content).unwrap_or_else(|e| {
+            tracing::warn!("解析 projects.json 失败: {}", e);
+            vec![]
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!("projects.json 不存在，跳过项目上报");
+            vec![]
+        }
+        Err(e) => {
+            tracing::warn!("读取 projects.json 失败: {}", e);
+            vec![]
         }
     })
     .await
@@ -66,7 +61,9 @@ async fn load_projects() -> Vec<ProjectInfo> {
 
 /// 发送 project_list 到云端。
 async fn send_project_list(
-    outgoing: &std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
+    outgoing: &std::sync::Arc<
+        tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+    >,
 ) {
     let projects = load_projects().await;
     let info: Vec<proto::ProjectInfoOut> = projects.iter().map(|p| p.into()).collect();
@@ -80,7 +77,9 @@ async fn send_project_list(
 /// 启动 projects.json 文件监听，变化时自动重新上报。
 /// 返回 watcher handle，需要保持存活（drop 时停止监听）。
 fn start_project_watcher(
-    outgoing: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
+    outgoing: std::sync::Arc<
+        tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+    >,
 ) -> Option<notify::RecommendedWatcher> {
     let path = kn_common::path::config_dir().join("projects.json");
 
@@ -93,22 +92,19 @@ fn start_project_watcher(
         .map(|n| n.to_os_string())
         .unwrap_or_default();
 
-    let mut watcher = match notify::recommended_watcher(
-        move |res: Result<Event, notify::Error>| {
-            if let Ok(event) = res {
-                // 只响应 projects.json 的变更（原子替换 → 父目录下其他文件不改触发）
-                let is_projects = event.paths.iter().any(|p| {
-                    p.file_name().map_or(false, |n| n == target_name)
-                });
-                if is_projects
-                    && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
-                {
-                    tracing::debug!(paths = ?event.paths, "projects.json 变更，触发重新上报");
-                    let _ = tx.send(());
-                }
+    let mut watcher = match notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+        if let Ok(event) = res {
+            // 只响应 projects.json 的变更（原子替换 → 父目录下其他文件不改触发）
+            let is_projects = event
+                .paths
+                .iter()
+                .any(|p| p.file_name().map_or(false, |n| n == target_name));
+            if is_projects && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                tracing::debug!(paths = ?event.paths, "projects.json 变更，触发重新上报");
+                let _ = tx.send(());
             }
-        },
-    ) {
+        }
+    }) {
         Ok(w) => w,
         Err(e) => {
             tracing::warn!("创建文件监听器失败: {}", e);
@@ -158,7 +154,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // ── 2. 初始化日志 ──
     init_logging(&cfg.log_dir)?;
-    tracing::info!("kn-agent v{} 启动", env!("CARGO_PKG_VERSION"));
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        git = env!("KN_BUILD_GIT_SHA"),
+        "kn-agent 启动"
+    );
     tracing::info!(
         "配置: cloud={}, dir={}, machine_id={}",
         cfg.cloud_url,
@@ -188,9 +188,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     // ── 7. 启动 → 递增崩溃计数 ──
-    state_machine
-        .transition(state::StateEvent::Start)
-        .await?;
+    state_machine.transition(state::StateEvent::Start).await?;
     let new_count = state_machine.increment_crash();
     state::StateMachine::persist_crash_count(new_count);
 
@@ -289,7 +287,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         "Agent 就绪: IPC={}, WSS={}",
         cfg.ipc_socket_path.display(),
-        if has_token { "initializing" } else { "disabled (no token)" }
+        if has_token {
+            "initializing"
+        } else {
+            "disabled (no token)"
+        }
     );
     tracing::info!("使用以下方式绑定:");
     tracing::info!("  1. 运行 'kn-agent bind' 开始绑定流程");
@@ -444,9 +446,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     // ── 14. 优雅关闭 ──
-    state_machine
-        .transition(state::StateEvent::Stop)
-        .await?;
+    state_machine.transition(state::StateEvent::Stop).await?;
     tracing::info!("Agent 已停止");
 
     Ok(())
@@ -493,9 +493,8 @@ async fn cli_heartbeat_loop(
                     } else {
                         // 进程已死，补发 session_ended
                         tracing::warn!(nid = %s.nid, pid = p, "CLI 进程已死亡，上报 session_ended");
-                        if let Ok(Some(msg)) = sessions
-                            .report_session_ended(&s.nid, "process_exit")
-                            .await
+                        if let Ok(Some(msg)) =
+                            sessions.report_session_ended(&s.nid, "process_exit").await
                         {
                             if let Some(tx) = outgoing.lock().await.as_ref() {
                                 let _ = tx.send(msg.to_json());
@@ -540,7 +539,6 @@ async fn handle_incoming(
     input_merger: Arc<session::InputMerger>,
     ack_registry: Arc<ack::AckRegistry>, // Phase 3 开始使用
 ) {
-
     match msg {
         proto::AgentIncoming::Pong { .. } => {}
         proto::AgentIncoming::Connected {
@@ -555,7 +553,8 @@ async fn handle_incoming(
             );
             // 上报 profile 列表
             if let Ok(profiles) = kn_common::profile::list_profiles_cmd() {
-                let info: Vec<proto::ProfileInfo> = profiles.profiles.iter().map(|p| p.into()).collect();
+                let info: Vec<proto::ProfileInfo> =
+                    profiles.profiles.iter().map(|p| p.into()).collect();
                 let msg = proto::WsMessageBuilder::profile_list(&info);
                 if let Some(tx) = outgoing.lock().await.as_ref() {
                     let _ = tx.send(msg);
@@ -591,9 +590,13 @@ async fn handle_incoming(
                     tokio::spawn(async move {
                         let msg_id = format!("reconnect-{}", ack_nid);
                         let msg = proto::WsMessageBuilder::session_created_with_msg_id(
-                            &ack_nid, &ack_tool, &ack_cwd,
+                            &ack_nid,
+                            &ack_tool,
+                            &ack_cwd,
                             ack_profile.as_deref(),
-                            ack_cols, ack_rows, &ack_source,
+                            ack_cols,
+                            ack_rows,
+                            &ack_source,
                             Some(&msg_id),
                         );
 
@@ -612,9 +615,7 @@ async fn handle_incoming(
 
                         tracing::info!(nid = %ack_nid, "🔄 [RECONNECT] 重连后补发 session_created，等待 ACK");
                         let rx = ack_registry.register(&ack_nid).await;
-                        match tokio::time::timeout(
-                            tokio::time::Duration::from_secs(10), rx
-                        ).await {
+                        match tokio::time::timeout(tokio::time::Duration::from_secs(10), rx).await {
                             Ok(Ok(crate::ack::AckResult::Ok)) => {
                                 tracing::info!(nid = %ack_nid, "reconnect: ACK 成功，会话已恢复");
                             }
@@ -675,8 +676,12 @@ async fn handle_incoming(
                             let len = msg.len();
                             if let Some(tx) = out.lock().await.as_ref() {
                                 match tx.send(msg) {
-                                    Ok(_) => tracing::info!(len = len, "📤 [OUTPUT] 已转发到全局 WSS"),
-                                    Err(e) => tracing::error!(len = len, error = %e, "📤 [OUTPUT] 转发失败"),
+                                    Ok(_) => {
+                                        tracing::info!(len = len, "📤 [OUTPUT] 已转发到全局 WSS")
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(len = len, error = %e, "📤 [OUTPUT] 转发失败")
+                                    }
                                 }
                             } else {
                                 tracing::warn!(len = len, "📤 [OUTPUT] outgoing 通道不可用");
@@ -703,7 +708,18 @@ async fn handle_incoming(
                     tokio::spawn(async move {
                         let s_cleanup = s.clone();
                         match s
-                            .start_session(&nid, &t, p.as_deref(), &c, cols, rows, wss_tx, ipc_tx, m, remote_enabled)
+                            .start_session(
+                                &nid,
+                                &t,
+                                p.as_deref(),
+                                &c,
+                                cols,
+                                rows,
+                                wss_tx,
+                                ipc_tx,
+                                m,
+                                remote_enabled,
+                            )
                             .await
                         {
                             Ok(_fanout) => {
@@ -713,7 +729,9 @@ async fn handle_incoming(
                                 tracing::error!(nid = %nid, error = %e, "WSS PTY session start failed — cleaning up orphaned session record");
                                 // 清理残留的 session 记录，防止变成永久僵尸会话
                                 let _ = s_cleanup.end(&nid).await;
-                                if let Ok(Some(msg)) = s_cleanup.report_session_ended(&nid, "start_failed").await {
+                                if let Ok(Some(msg)) =
+                                    s_cleanup.report_session_ended(&nid, "start_failed").await
+                                {
                                     if let Some(tx) = out.lock().await.as_ref() {
                                         let _ = tx.send(msg.to_json());
                                     }
@@ -741,9 +759,13 @@ async fn handle_incoming(
                         for attempt in 0..MAX_RETRIES {
                             let msg_id = format!("{}-{}", ack_nid, attempt);
                             let msg = proto::WsMessageBuilder::session_created_with_msg_id(
-                                &ack_nid, &ack_tool, &ack_cwd,
+                                &ack_nid,
+                                &ack_tool,
+                                &ack_cwd,
                                 ack_profile.as_deref(),
-                                ack_cols, ack_rows, "ios",
+                                ack_cols,
+                                ack_rows,
+                                "ios",
                                 Some(&msg_id),
                             );
 
@@ -758,7 +780,10 @@ async fn handle_incoming(
                             if !send_ok {
                                 tracing::warn!(nid = %ack_nid, attempt = attempt, "WSS channel 不可用");
                                 if attempt + 1 < MAX_RETRIES {
-                                    tokio::time::sleep(tokio::time::Duration::from_secs(backoffs[attempt as usize])).await;
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(
+                                        backoffs[attempt as usize],
+                                    ))
+                                    .await;
                                     continue;
                                 }
                                 break;
@@ -766,9 +791,9 @@ async fn handle_incoming(
 
                             tracing::info!(nid = %ack_nid, attempt = attempt, "session_created 已发送，等待 ACK");
                             let rx = ack_registry.register(&ack_nid).await;
-                            match tokio::time::timeout(
-                                tokio::time::Duration::from_secs(10), rx
-                            ).await {
+                            match tokio::time::timeout(tokio::time::Duration::from_secs(10), rx)
+                                .await
+                            {
                                 Ok(Ok(crate::ack::AckResult::Ok)) => {
                                     tracing::info!(nid = %ack_nid, attempt = attempt, "session_created ACK 成功");
                                     return;
@@ -782,7 +807,10 @@ async fn handle_incoming(
                                     // Timeout or oneshot sender dropped
                                     tracing::warn!(nid = %ack_nid, attempt = attempt, "session_created ACK 超时");
                                     if attempt + 1 < MAX_RETRIES {
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(backoffs[attempt as usize])).await;
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                                            backoffs[attempt as usize],
+                                        ))
+                                        .await;
                                         continue;
                                     }
                                 }
@@ -792,13 +820,13 @@ async fn handle_incoming(
                         // All retries exhausted or cloud rejected → kill PTY + clean up
                         tracing::error!(nid = %ack_nid, "所有 session_created ACK 重试失败，终止会话");
                         let _ = ack_sessions.kill_session(&ack_nid).await;
-                        let _ = ack_sessions.report_session_ended(&ack_nid, "wss_ack_failed").await;
+                        let _ = ack_sessions
+                            .report_session_ended(&ack_nid, "wss_ack_failed")
+                            .await;
                     });
 
                     // Transition to Running state
-                    let _ = state
-                        .transition(state::StateEvent::SessionStarted)
-                        .await;
+                    let _ = state.transition(state::StateEvent::SessionStarted).await;
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "创建会话失败");
@@ -838,7 +866,9 @@ async fn handle_incoming(
                 match sessions.get(&session_nid).await {
                     Ok(Some(session_summary)) => {
                         let nid = session_summary.nid;
-                        let is_remote = session_summary.remote_enabled.load(std::sync::atomic::Ordering::Relaxed);
+                        let is_remote = session_summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed);
 
                         // 1. Report session_ended FIRST (atomic swap ensures this reason wins
                         //    over any concurrent "process_exit" from PTY EOF handler)
@@ -907,10 +937,7 @@ async fn handle_incoming(
             );
 
             // Extract signal name from ctrl message data (Java forwards signal as raw JSON)
-            let signal_name = signal
-                .get("signal")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let signal_name = signal.get("signal").and_then(|v| v.as_str()).unwrap_or("");
 
             let byte = match signal_name {
                 "ctrl_c" => vec![0x03u8],
@@ -955,7 +982,15 @@ async fn handle_incoming(
 
             match sessions.get(&session_nid).await {
                 Ok(Some(session_summary)) => {
-                    if let Err(e) = sessions.resize(&session_summary.nid, cols, rows).await {
+                    if let Err(e) = sessions
+                        .resize_from_source(
+                            &session_summary.nid,
+                            cols,
+                            rows,
+                            session::ViewportOwner::Ios,
+                        )
+                        .await
+                    {
                         tracing::error!(nid = %session_nid, error = %e, "Resize 会话失败");
                     }
                 }
@@ -1023,7 +1058,11 @@ async fn handle_incoming(
         proto::AgentIncoming::Unknown { msg_type, .. } => {
             tracing::debug!("未知消息类型: {}", msg_type);
         }
-        proto::AgentIncoming::SessionCreatedAck { session_nid, status, .. } => {
+        proto::AgentIncoming::SessionCreatedAck {
+            session_nid,
+            status,
+            ..
+        } => {
             let result = if status == "ok" {
                 crate::ack::AckResult::Ok
             } else {
@@ -1061,14 +1100,53 @@ async fn handle_incoming(
                 }
             }
         }
+        proto::AgentIncoming::KillSession {
+            session_nid,
+            reason,
+        } => {
+            tracing::info!(nid = %session_nid, reason = %reason, "收到 kill_session");
+            match sessions.get(&session_nid).await {
+                Ok(Some(session_summary)) => {
+                    let nid = session_summary.nid;
+                    let is_remote = session_summary
+                        .remote_enabled
+                        .load(std::sync::atomic::Ordering::Relaxed);
+
+                    match sessions.report_session_ended(&nid, &reason).await {
+                        Ok(Some(msg)) => {
+                            if is_remote {
+                                if let Some(tx) = outgoing.lock().await.as_ref() {
+                                    let _ = tx.send(msg.to_json());
+                                    tracing::info!(nid = %nid, reason = %reason, "session_ended 已发送到 Cloud");
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::warn!(nid = %nid, "session_ended 已上报过，跳过");
+                        }
+                        Err(e) => {
+                            tracing::error!(nid = %nid, error = %e, "session_ended 发送失败");
+                        }
+                    }
+
+                    if let Err(e) = sessions.kill_session(&nid).await {
+                        tracing::error!(nid = %nid, error = %e, "kill_session 失败");
+                    }
+                }
+                Ok(None) => {
+                    tracing::warn!(nid = %session_nid, "kill_session 目标会话不存在");
+                }
+                Err(e) => {
+                    tracing::error!(nid = %session_nid, error = %e, "kill_session 查询会话失败");
+                }
+            }
+        }
     }
 }
 
 // ── Logging ─────────────────────────────────────────────────
 
-fn init_logging(
-    log_dir: &std::path::Path,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+fn init_logging(log_dir: &std::path::Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::filter::EnvFilter;
     use tracing_subscriber::fmt;
     use tracing_subscriber::layer::SubscriberExt;
@@ -1077,8 +1155,7 @@ fn init_logging(
 
     std::fs::create_dir_all(log_dir)?;
 
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let stderr_layer = fmt::layer().with_target(false).with_filter(env_filter);
 

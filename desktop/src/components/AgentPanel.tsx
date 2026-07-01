@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { X, ChevronRight, ChevronDown, Radio, Wifi, WifiOff, AlertTriangle, Loader2, Monitor, Globe, Gift, ExternalLink, Smartphone, CheckSquare, Square } from "lucide-react";
+import { X, ChevronRight, ChevronDown, Radio, Wifi, WifiOff, AlertTriangle, Loader2, Monitor, Globe, Gift, ExternalLink, Smartphone, CheckSquare, Square, TerminalSquare } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { AgentSession, StatusIcon, AgentState, AgentStateName } from "../hooks/useAgent";
@@ -19,6 +19,7 @@ interface AgentPanelProps {
   onClose: () => void;
   onBind: () => void;
   onRedeem: () => void;
+  onOpenRemoteSession?: (session: AgentSession) => void;
   agent: AgentState;
 }
 
@@ -71,10 +72,12 @@ function SessionRow({
   session,
   checked,
   onCheck,
+  onOpen,
 }: {
   session: AgentSession;
   checked: boolean;
   onCheck: (nid: string) => void;
+  onOpen?: (session: AgentSession) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -120,6 +123,15 @@ function SessionRow({
             <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block" />
           )}
         </span>
+        {onOpen && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpen(session); }}
+            className="shrink-0 p-0.5 text-app-text-dim hover:text-app-accent transition-colors"
+            title="打开远程终端"
+          >
+            <TerminalSquare size={12} />
+          </button>
+        )}
       </div>
       {expanded && (
         <div className="ml-6 px-2 py-1 space-y-0.5 text-app-text-muted">
@@ -135,7 +147,7 @@ function SessionRow({
 
 // ── AgentPanel ────────────────────────────────────────────────
 
-export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps) {
+export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, agent }: AgentPanelProps) {
   const { agentStatus, sessions, isRunning, isBound, isBinding, isConnected, statusIcon: icon, isPolling, fetchSessions } = agent;
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sessionTab, setSessionTab] = useState<"local" | "remote">("local");
@@ -200,6 +212,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
     }
 
     let failCount = 0;
+    let shownSpecificError = false;
     for (const s of targets) {
       // Mark as processing
       setRemotingSessions((prev) => new Set(prev).add(s.nid));
@@ -209,17 +222,23 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
         failCount++;
         const errStr = String(e);
         if (errStr.includes("WSS_NOT_CONNECTED")) {
+          shownSpecificError = true;
           showError("Agent 未连接到云端，请先绑定设备"); break;
         }
         if (errStr.includes("REMOTE_LIMIT")) {
+          shownSpecificError = true;
           showError("已达到远程控制上限（10个），请先关闭其他会话的远程控制"); break;
         }
         if (errStr.includes("WSS_ACK_TIMEOUT")) {
+          shownSpecificError = true;
           showError("云端确认超时，请检查网络后重试"); break;
         }
         if (errStr.includes("WSS_ACK_ERROR")) {
+          shownSpecificError = true;
           showError("云端拒绝远程连接，请稍后重试"); break;
         }
+        shownSpecificError = true;
+        showError(`开启远程失败：${errStr}`);
         console.error("set_remote_enabled failed for", s.nid, e);
       } finally {
         // Remove from processing set
@@ -230,7 +249,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
         });
       }
     }
-    if (failCount > 0 && failCount === targets.length) {
+    if (failCount > 0 && failCount === targets.length && !shownSpecificError) {
       showError(`${failCount} 个会话开启失败`);
     }
     setSelectedLocalNids(new Set());
@@ -565,6 +584,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, agent }: AgentPanelProps
                                   session={s}
                                   checked={selectedRemoteNids.has(s.nid)}
                                   onCheck={handleCheckRemote}
+                                  onOpen={onOpenRemoteSession}
                                 />
                               ))}
                             </div>

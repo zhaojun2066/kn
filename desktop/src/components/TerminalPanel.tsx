@@ -78,6 +78,7 @@ export function TerminalPanel({
   const [showHistory, setShowHistory] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
+  const [bulkCloseTarget, setBulkCloseTarget] = useState<{ action: "others" | "right"; tabId: string } | null>(null);
   const [closingPanel, setClosingPanel] = useState(false);
   const [clearHistoryConfirm, setClearHistoryConfirm] = useState(false);
   const [deleteHistoryTarget, setDeleteHistoryTarget] = useState<string | null>(null);
@@ -125,6 +126,16 @@ export function TerminalPanel({
       } catch { /* clipboard may fail in some contexts */ }
     }
   };
+
+  const tabsToBulkClose = bulkCloseTarget
+    ? bulkCloseTarget.action === "others"
+      ? tabs.filter((tab) => tab.id !== bulkCloseTarget.tabId)
+      : tabs.slice(tabs.findIndex((tab) => tab.id === bulkCloseTarget.tabId) + 1)
+    : [];
+  const bulkCloseSessionCount = tabsToBulkClose.reduce(
+    (sum, tab) => sum + flattenPanes(tab.rootNode).length,
+    0
+  );
 
   // ── Terminal search state ──────────────────────────────
   const [showSearch, setShowSearch] = useState(false);
@@ -755,13 +766,13 @@ export function TerminalPanel({
             {
               label: "关闭其他",
               icon: <X size={13} />,
-              onClick: () => onCloseOthers(ctxMenu.tabId),
+              onClick: () => setBulkCloseTarget({ action: "others", tabId: ctxMenu.tabId }),
               disabled: tabs.length <= 1,
             },
             {
               label: "关闭右侧",
               icon: <Trash2 size={13} />,
-              onClick: () => onCloseToRight(ctxMenu.tabId),
+              onClick: () => setBulkCloseTarget({ action: "right", tabId: ctxMenu.tabId }),
               disabled: tabs.findIndex((t) => t.id === ctxMenu.tabId) >= tabs.length - 1,
             },
             {
@@ -812,12 +823,28 @@ export function TerminalPanel({
       <ConfirmDialog
         open={!!closingTabId}
         title="关闭终端"
-        message="确定要关闭此终端标签吗？未保存的输出将丢失。"
+        message="关闭此终端标签会终止对应进程，并丢失未保存的输出。确定要关闭吗？"
         confirmLabel="关闭"
         onConfirm={() => {
           if (closingTabId) { onCloseTab(closingTabId); setClosingTabId(null); }
         }}
         onCancel={() => setClosingTabId(null)}
+      />
+
+      <ConfirmDialog
+        open={!!bulkCloseTarget}
+        title={bulkCloseTarget?.action === "others" ? "关闭其他终端" : "关闭右侧终端"}
+        message={`将关闭 ${tabsToBulkClose.length} 个标签并终止 ${bulkCloseSessionCount} 个终端进程。确定要继续吗？`}
+        confirmLabel="关闭"
+        onConfirm={() => {
+          if (bulkCloseTarget?.action === "others") {
+            onCloseOthers(bulkCloseTarget.tabId);
+          } else if (bulkCloseTarget?.action === "right") {
+            onCloseToRight(bulkCloseTarget.tabId);
+          }
+          setBulkCloseTarget(null);
+        }}
+        onCancel={() => setBulkCloseTarget(null)}
       />
 
       <ConfirmDialog

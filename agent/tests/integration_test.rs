@@ -28,7 +28,6 @@ impl ChildGuard {
     fn new(child: Child) -> Self {
         Self(Some(child))
     }
-
 }
 
 impl Drop for ChildGuard {
@@ -72,8 +71,7 @@ impl Drop for TempDir {
 
 /// Helper to send a JSON-line request over Unix socket and read one response line.
 fn ipc_request(socket_path: &std::path::Path, request: &str) -> String {
-    let mut stream = UnixStream::connect(socket_path)
-        .expect("connect to IPC socket");
+    let mut stream = UnixStream::connect(socket_path).expect("connect to IPC socket");
     // Set read timeout to avoid hanging
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -96,7 +94,10 @@ fn ipc_request_json(socket_path: &std::path::Path, req: &serde_json::Value) -> s
     let req_str = req.to_string();
     let resp_str = ipc_request(socket_path, &req_str);
     serde_json::from_str(&resp_str).unwrap_or_else(|e| {
-        panic!("Failed to parse IPC response as JSON: {} — raw: {}", e, resp_str)
+        panic!(
+            "Failed to parse IPC response as JSON: {} — raw: {}",
+            e, resp_str
+        )
     })
 }
 
@@ -175,14 +176,26 @@ fn has_binary(name: &str) -> bool {
 fn test_ipc_status() {
     let dir = TempDir::new("ipc-status");
     let _agent = spawn_agent(&dir);
-    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10), "Agent socket did not appear");
+    assert!(
+        wait_for_ipc_socket(&dir.ipc_sock(), 10),
+        "Agent socket did not appear"
+    );
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "status", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "status", serde_json::json!({})),
+    );
     let result = assert_ok(&resp);
 
     assert!(result.get("state").is_some(), "Missing 'state' field");
-    assert!(result.get("crash_count").is_some(), "Missing 'crash_count' field");
-    assert!(result.get("safe_mode").is_some(), "Missing 'safe_mode' field");
+    assert!(
+        result.get("crash_count").is_some(),
+        "Missing 'crash_count' field"
+    );
+    assert!(
+        result.get("safe_mode").is_some(),
+        "Missing 'safe_mode' field"
+    );
     // Initial state should be "unbound" (no device_token in fresh KN_HOME)
     assert_eq!(result["state"].as_str().unwrap(), "unbound");
 }
@@ -193,10 +206,15 @@ fn test_ipc_sessions_empty() {
     let _agent = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "sessions", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "sessions", serde_json::json!({})),
+    );
     let result = assert_ok(&resp);
 
-    let sessions = result["sessions"].as_array().expect("sessions should be array");
+    let sessions = result["sessions"]
+        .as_array()
+        .expect("sessions should be array");
     assert!(sessions.is_empty());
     assert_eq!(result["count"].as_u64().unwrap(), 0);
 }
@@ -207,10 +225,16 @@ fn test_ipc_get_version() {
     let _agent = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "get_version", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "get_version", serde_json::json!({})),
+    );
     let result = assert_ok(&resp);
 
-    assert!(result["version"].as_str().unwrap().len() > 0, "Version should be non-empty");
+    assert!(
+        result["version"].as_str().unwrap().len() > 0,
+        "Version should be non-empty"
+    );
     assert_eq!(result["name"].as_str().unwrap(), "kn-agent");
 }
 
@@ -220,7 +244,10 @@ fn test_ipc_unknown_method() {
     let _agent = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "nonexistent_method", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "nonexistent_method", serde_json::json!({})),
+    );
     assert_err(&resp, "METHOD_NOT_FOUND");
 }
 
@@ -243,11 +270,17 @@ fn test_ipc_pause_resume() {
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
     // Pause from "unbound" state must be rejected — valid transition needs connected/idle/running
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "pause", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "pause", serde_json::json!({})),
+    );
     assert_err(&resp, "STATE_ERROR");
 
     // Resume must also be rejected from unbound
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("2", "resume", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("2", "resume", serde_json::json!({})),
+    );
     assert_err(&resp, "STATE_ERROR");
 }
 
@@ -278,10 +311,14 @@ fn test_ipc_new_session_bash() {
 
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("1", "new_session", serde_json::json!({
-            "tool": "bash",
-            "cwd": ".",
-        })),
+        &ipc_req(
+            "1",
+            "new_session",
+            serde_json::json!({
+                "tool": "bash",
+                "cwd": ".",
+            }),
+        ),
     );
     let result = assert_ok(&resp);
 
@@ -298,10 +335,14 @@ fn test_ipc_new_session_with_profile() {
 
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("1", "new_session", serde_json::json!({
-            "tool": "bash",
-            "profile": "test-profile",
-        })),
+        &ipc_req(
+            "1",
+            "new_session",
+            serde_json::json!({
+                "tool": "bash",
+                "profile": "test-profile",
+            }),
+        ),
     );
     let result = assert_ok(&resp);
 
@@ -316,10 +357,14 @@ fn test_ipc_new_session_invalid_dir() {
 
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("1", "new_session", serde_json::json!({
-            "tool": "bash",
-            "cwd": "/nonexistent/directory/xyz123",
-        })),
+        &ipc_req(
+            "1",
+            "new_session",
+            serde_json::json!({
+                "tool": "bash",
+                "cwd": "/nonexistent/directory/xyz123",
+            }),
+        ),
     );
     assert_err(&resp, "INVALID_PARAMS");
 }
@@ -371,7 +416,11 @@ fn test_ipc_resize() {
 
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("2", "resize", serde_json::json!({"nid": nid, "cols": 120, "rows": 40})),
+        &ipc_req(
+            "2",
+            "resize",
+            serde_json::json!({"nid": nid, "cols": 120, "rows": 40}),
+        ),
     );
     let result = assert_ok(&resp);
     assert_eq!(result["cols"].as_u64().unwrap(), 120);
@@ -404,7 +453,11 @@ fn test_ipc_ctrl_signals_valid_and_invalid() {
     // Invalid signal
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("3", "ctrl", serde_json::json!({"nid": nid, "signal": "ctrl_x"})),
+        &ipc_req(
+            "3",
+            "ctrl",
+            serde_json::json!({"nid": nid, "signal": "ctrl_x"}),
+        ),
     );
     assert_err(&resp, "INVALID_PARAMS");
 }
@@ -431,7 +484,10 @@ fn test_ipc_kill_session() {
     assert_ok(&resp);
 
     // Should be gone from session list (status = Ended)
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("3", "sessions", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("3", "sessions", serde_json::json!({})),
+    );
     let result = assert_ok(&resp);
     let sessions = result["sessions"].as_array().unwrap();
     // All sessions should be ended
@@ -451,7 +507,11 @@ fn test_ipc_multiple_sessions() {
     for i in 0..3 {
         let resp = ipc_request_json(
             &dir.ipc_sock(),
-            &ipc_req(&format!("{}", i + 1), "new_session", serde_json::json!({"tool": "bash"})),
+            &ipc_req(
+                &format!("{}", i + 1),
+                "new_session",
+                serde_json::json!({"tool": "bash"}),
+            ),
         );
         nids.push(assert_ok(&resp)["nid"].as_str().unwrap().to_string());
     }
@@ -459,7 +519,10 @@ fn test_ipc_multiple_sessions() {
     std::thread::sleep(Duration::from_millis(500));
 
     // List should show 3 sessions
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("4", "sessions", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("4", "sessions", serde_json::json!({})),
+    );
     let result = assert_ok(&resp);
     assert_eq!(result["count"].as_u64().unwrap(), 3);
 
@@ -482,7 +545,11 @@ fn test_ipc_not_found_input() {
 
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("1", "input", serde_json::json!({"nid": "s_nonexistent", "text": "hello"})),
+        &ipc_req(
+            "1",
+            "input",
+            serde_json::json!({"nid": "s_nonexistent", "text": "hello"}),
+        ),
     );
     assert_err(&resp, "NOT_FOUND");
 }
@@ -495,7 +562,11 @@ fn test_ipc_not_found_ctrl() {
 
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("1", "ctrl", serde_json::json!({"nid": "s_nonexistent", "signal": "ctrl_c"})),
+        &ipc_req(
+            "1",
+            "ctrl",
+            serde_json::json!({"nid": "s_nonexistent", "signal": "ctrl_c"}),
+        ),
     );
     assert_err(&resp, "NOT_FOUND");
 }
@@ -508,7 +579,11 @@ fn test_ipc_not_found_kill() {
 
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("1", "kill_session", serde_json::json!({"nid": "s_nonexistent"})),
+        &ipc_req(
+            "1",
+            "kill_session",
+            serde_json::json!({"nid": "s_nonexistent"}),
+        ),
     );
     assert_err(&resp, "NOT_FOUND");
 }
@@ -521,7 +596,11 @@ fn test_ipc_not_found_resize() {
 
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("1", "resize", serde_json::json!({"nid": "s_nonexistent", "cols": 80, "rows": 24})),
+        &ipc_req(
+            "1",
+            "resize",
+            serde_json::json!({"nid": "s_nonexistent", "cols": 80, "rows": 24}),
+        ),
     );
     assert_err(&resp, "NOT_FOUND");
 }
@@ -573,7 +652,11 @@ fn test_ipc_input_end_to_end() {
     // Send input via IPC
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("2", "input", serde_json::json!({"nid": nid, "text": "echo IPC_E2E_TEST\n"})),
+        &ipc_req(
+            "2",
+            "input",
+            serde_json::json!({"nid": nid, "text": "echo IPC_E2E_TEST\n"}),
+        ),
     );
     assert_ok(&resp);
 
@@ -581,10 +664,16 @@ fn test_ipc_input_end_to_end() {
     std::thread::sleep(Duration::from_secs(1));
 
     // Verify the session is still alive (didn't crash)
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("3", "sessions", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("3", "sessions", serde_json::json!({})),
+    );
     let result = assert_ok(&resp);
     let sessions = result["sessions"].as_array().unwrap();
-    assert!(!sessions.is_empty(), "Session should still exist after input");
+    assert!(
+        !sessions.is_empty(),
+        "Session should still exist after input"
+    );
 
     // Clean up
     ipc_request_json(
@@ -627,10 +716,20 @@ async fn start_pty_basic(tool: &str) -> (String, Arc<kn_agent::session::SessionM
     let merger = Arc::new(kn_agent::session::InputMerger::new());
 
     let nid = format!("s_test_{}", nanoid::nanoid!(8));
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     sessions
-        .create(nid.clone(), "test".into(), tool.to_string(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
+        .create(
+            nid.clone(),
+            "test".into(),
+            tool.to_string(),
+            None,
+            cwd.clone(),
+            kn_agent::session::SessionKind::Native,
+        )
         .await
         .expect("create session");
 
@@ -638,7 +737,8 @@ async fn start_pty_basic(tool: &str) -> (String, Arc<kn_agent::session::SessionM
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .clone().start_session(&nid, tool, None, &cwd, 80, 24, wss_tx, ipc_tx, merger, None)
+        .clone()
+        .start_session(&nid, tool, None, &cwd, 80, 24, wss_tx, ipc_tx, merger, None)
         .await
         .expect("start PTY session");
 
@@ -652,7 +752,10 @@ async fn start_pty_basic(tool: &str) -> (String, Arc<kn_agent::session::SessionM
 #[tokio::test]
 async fn test_pty_start_bash_session() {
     let (nid, sessions) = start_pty_basic("bash").await;
-    sessions.kill_session(&nid).await.expect("kill bash session");
+    sessions
+        .kill_session(&nid)
+        .await
+        .expect("kill bash session");
 }
 
 #[tokio::test]
@@ -663,7 +766,10 @@ async fn test_pty_start_claude_session() {
     }
 
     let (nid, sessions) = start_pty_basic("claude").await;
-    sessions.kill_session(&nid).await.expect("kill claude session");
+    sessions
+        .kill_session(&nid)
+        .await
+        .expect("kill claude session");
 }
 
 #[tokio::test]
@@ -674,7 +780,10 @@ async fn test_pty_start_codex_session() {
     }
 
     let (nid, sessions) = start_pty_basic("codex").await;
-    sessions.kill_session(&nid).await.expect("kill codex session");
+    sessions
+        .kill_session(&nid)
+        .await
+        .expect("kill codex session");
 }
 
 #[tokio::test]
@@ -684,10 +793,20 @@ async fn test_pty_input_output_roundtrip() {
     let merger = Arc::new(kn_agent::session::InputMerger::new());
 
     let nid = format!("s_echo_{}", nanoid::nanoid!(8));
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     sessions
-        .create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
+        .create(
+            nid.clone(),
+            "test".into(),
+            "bash".into(),
+            None,
+            cwd.clone(),
+            kn_agent::session::SessionKind::Native,
+        )
         .await
         .expect("create");
 
@@ -695,7 +814,19 @@ async fn test_pty_input_output_roundtrip() {
     let (ipc_tx, mut ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone(), None)
+        .clone()
+        .start_session(
+            &nid,
+            "bash",
+            None,
+            &cwd,
+            80,
+            24,
+            wss_tx,
+            ipc_tx,
+            merger.clone(),
+            None,
+        )
         .await
         .expect("start PTY");
 
@@ -704,11 +835,13 @@ async fn test_pty_input_output_roundtrip() {
 
     // Send a command through InputMerger
     let test_marker = format!("HELLO_KN_TEST_{}", nanoid::nanoid!(6));
-    merger.push(kn_agent::session::InputMessage {
-        session_id: nid.clone(),
-        text: format!("echo {}\n", test_marker),
-        source: "test".into(),
-    }).await;
+    merger
+        .push(kn_agent::session::InputMessage {
+            session_id: nid.clone(),
+            text: format!("echo {}\n", test_marker),
+            source: "test".into(),
+        })
+        .await;
 
     // Wait for the echo output
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -725,7 +858,11 @@ async fn test_pty_input_output_roundtrip() {
         }
     }
 
-    assert!(found, "Did not find echo output containing '{}'", test_marker);
+    assert!(
+        found,
+        "Did not find echo output containing '{}'",
+        test_marker
+    );
     sessions.kill_session(&nid).await.expect("kill");
 }
 
@@ -736,10 +873,20 @@ async fn test_pty_kill_session() {
     let merger = Arc::new(kn_agent::session::InputMerger::new());
 
     let nid = format!("s_kill_{}", nanoid::nanoid!(8));
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     sessions
-        .create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
+        .create(
+            nid.clone(),
+            "test".into(),
+            "bash".into(),
+            None,
+            cwd.clone(),
+            kn_agent::session::SessionKind::Native,
+        )
         .await
         .expect("create");
 
@@ -747,7 +894,10 @@ async fn test_pty_kill_session() {
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger, None)
+        .clone()
+        .start_session(
+            &nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger, None,
+        )
         .await
         .expect("start PTY");
 
@@ -773,10 +923,20 @@ async fn test_pty_resize_session() {
     let merger = Arc::new(kn_agent::session::InputMerger::new());
 
     let nid = format!("s_resize_{}", nanoid::nanoid!(8));
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     sessions
-        .create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
+        .create(
+            nid.clone(),
+            "test".into(),
+            "bash".into(),
+            None,
+            cwd.clone(),
+            kn_agent::session::SessionKind::Native,
+        )
         .await
         .expect("create");
 
@@ -784,7 +944,10 @@ async fn test_pty_resize_session() {
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     sessions
-        .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger, None)
+        .clone()
+        .start_session(
+            &nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger, None,
+        )
         .await
         .expect("start PTY");
 
@@ -805,7 +968,10 @@ async fn test_pty_multiple_concurrent_sessions() {
     let store = Box::new(kn_agent::session::MemorySessionStore::new());
     let sessions = Arc::new(kn_agent::session::SessionManager::new(store));
     let merger = Arc::new(kn_agent::session::InputMerger::new());
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     let mut nids = Vec::new();
     let mut cancels = Vec::new();
@@ -814,7 +980,14 @@ async fn test_pty_multiple_concurrent_sessions() {
     for _ in 0..2 {
         let nid = format!("s_concurrent_{}", nanoid::nanoid!(8));
         sessions
-            .create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native)
+            .create(
+                nid.clone(),
+                "test".into(),
+                "bash".into(),
+                None,
+                cwd.clone(),
+                kn_agent::session::SessionKind::Native,
+            )
             .await
             .expect("create");
 
@@ -823,7 +996,19 @@ async fn test_pty_multiple_concurrent_sessions() {
         let cancel = tokio_util::sync::CancellationToken::new();
 
         sessions
-            .clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone(), None)
+            .clone()
+            .start_session(
+                &nid,
+                "bash",
+                None,
+                &cwd,
+                80,
+                24,
+                wss_tx,
+                ipc_tx,
+                merger.clone(),
+                None,
+            )
             .await
             .expect("start PTY");
 
@@ -835,8 +1020,15 @@ async fn test_pty_multiple_concurrent_sessions() {
 
     // Both should exist and be running
     let list = sessions.list().await.expect("list");
-    let running_count = list.iter().filter(|s| s.status == kn_agent::session::SessionStatus::Running).count();
-    assert_eq!(running_count, 2, "Expected 2 running sessions, got {}", running_count);
+    let running_count = list
+        .iter()
+        .filter(|s| s.status == kn_agent::session::SessionStatus::Running)
+        .count();
+    assert_eq!(
+        running_count, 2,
+        "Expected 2 running sessions, got {}",
+        running_count
+    );
 
     // Kill both
     for nid in &nids {
@@ -871,7 +1063,11 @@ async fn register_test_user() -> (String, String) {
         .send()
         .await
         .expect("register test user");
-    assert!(resp.status().is_success(), "Register failed: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "Register failed: {}",
+        resp.status()
+    );
     (email, password)
 }
 
@@ -889,12 +1085,20 @@ async fn test_bind_init_flow() {
     let _agent = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "bind", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "bind", serde_json::json!({})),
+    );
     let result = assert_ok(&resp);
 
     assert_eq!(result["status"].as_str().unwrap(), "binding_started");
     let bind_code = result["bindCode"].as_str().unwrap();
-    assert_eq!(bind_code.len(), 6, "bindCode should be 6 chars, got: {}", bind_code);
+    assert_eq!(
+        bind_code.len(),
+        6,
+        "bindCode should be 6 chars, got: {}",
+        bind_code
+    );
     assert!(result["expiresIn"].as_u64().unwrap() > 0);
     assert!(!result["confirmUrl"].as_str().unwrap().is_empty());
 }
@@ -914,7 +1118,10 @@ async fn test_bind_device_token_persisted() {
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
     // Initiate bind
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "bind", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "bind", serde_json::json!({})),
+    );
     let result = assert_ok(&resp);
 
     // The bind polling runs in background. For a full test we'd need to
@@ -947,11 +1154,17 @@ async fn test_bind_status_after_bind() {
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
     // Bind
-    ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "bind", serde_json::json!({})));
+    ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "bind", serde_json::json!({})),
+    );
 
     // Check status — should be "binding" or "unbound" depending on timing
     std::thread::sleep(Duration::from_secs(1));
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("2", "status", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("2", "status", serde_json::json!({})),
+    );
     let state = assert_ok(&resp)["state"].as_str().unwrap().to_string();
     assert!(
         state == "binding" || state == "unbound" || state == "connected",
@@ -1019,13 +1232,20 @@ async fn test_redeem_invalid_code() {
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
     // First bind (creates device_token if poll succeeds in time)
-    let _resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "bind", serde_json::json!({})));
+    let _resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "bind", serde_json::json!({})),
+    );
     std::thread::sleep(Duration::from_secs(2));
 
     // Try redeeming a non-existent code
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("2", "redeem", serde_json::json!({"code": "KN-NONEXISTENT-CODE-1234"})),
+        &ipc_req(
+            "2",
+            "redeem",
+            serde_json::json!({"code": "KN-NONEXISTENT-CODE-1234"}),
+        ),
     );
     // Should fail with either CODE_NOT_FOUND or NOT_BOUND (if binding didn't complete)
     let err_code = resp["error"]["code"].as_str().unwrap_or("");
@@ -1047,11 +1267,7 @@ fn test_agent_with_token_goes_to_wss_path() {
     // Pre-create agent dir with a fake device_token — simulates previously-bound agent
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
-    std::fs::write(
-        agent_dir.join("device_token"),
-        "test-device-token-restart",
-    )
-    .unwrap();
+    std::fs::write(agent_dir.join("device_token"), "test-device-token-restart").unwrap();
 
     // Start agent — with a token present, it goes to the WSS path.
     // The IPC server now always starts (unconditionally, for Desktop status queries),
@@ -1082,7 +1298,11 @@ fn test_device_token_survives_restart() {
 
     // "Restart" — the token should still be on disk
     let after = std::fs::read_to_string(&token_path).unwrap();
-    assert_eq!(after.trim(), test_token, "device_token should survive across restarts");
+    assert_eq!(
+        after.trim(),
+        test_token,
+        "device_token should survive across restarts"
+    );
 }
 
 #[test]
@@ -1096,11 +1316,11 @@ fn test_agent_restart_without_token_stays_unbound() {
         "Agent 1 socket did not appear"
     );
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "status", serde_json::json!({})));
-    assert_eq!(
-        assert_ok(&resp)["state"].as_str().unwrap(),
-        "unbound"
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "status", serde_json::json!({})),
     );
+    assert_eq!(assert_ok(&resp)["state"].as_str().unwrap(), "unbound");
 
     // Kill agent and wait for process to fully exit
     drop(agent1);
@@ -1114,7 +1334,10 @@ fn test_agent_restart_without_token_stays_unbound() {
         "Agent 2 socket did not appear after restart"
     );
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("2", "status", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("2", "status", serde_json::json!({})),
+    );
     assert_eq!(
         assert_ok(&resp)["state"].as_str().unwrap(),
         "unbound",
@@ -1130,9 +1353,16 @@ fn test_crash_count_increments_across_restarts() {
     let agent1 = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("1", "status", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("1", "status", serde_json::json!({})),
+    );
     let count1 = assert_ok(&resp)["crash_count"].as_u64().unwrap();
-    assert!(count1 >= 1, "First start should have crash_count >= 1, got {}", count1);
+    assert!(
+        count1 >= 1,
+        "First start should have crash_count >= 1, got {}",
+        count1
+    );
 
     // Kill and wait for process to exit
     drop(agent1);
@@ -1143,7 +1373,10 @@ fn test_crash_count_increments_across_restarts() {
     let agent2 = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 15));
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("2", "status", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("2", "status", serde_json::json!({})),
+    );
     let count2 = assert_ok(&resp)["crash_count"].as_u64().unwrap();
     assert!(
         count2 > count1,
@@ -1161,7 +1394,10 @@ fn test_crash_count_increments_across_restarts() {
     let _agent3 = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
 
-    let resp = ipc_request_json(&dir.ipc_sock(), &ipc_req("3", "status", serde_json::json!({})));
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("3", "status", serde_json::json!({})),
+    );
     let count3 = assert_ok(&resp)["crash_count"].as_u64().unwrap();
     assert!(
         count3 > count2,
@@ -1184,10 +1420,15 @@ async fn test_pty_takeover_via_attach() {
 
     // 1. attach_pty creates the socket and sets up the I/O bridge
     let pty_sock_path = sessions.attach_pty(&nid).await.expect("attach_pty");
-    assert!(pty_sock_path.exists(), "pty.sock should exist at {:?}", pty_sock_path);
+    assert!(
+        pty_sock_path.exists(),
+        "pty.sock should exist at {:?}",
+        pty_sock_path
+    );
 
     // 2. Verify we can connect to it — accept returns quickly
-    let stream = UnixStream::connect(&pty_sock_path).await
+    let stream = UnixStream::connect(&pty_sock_path)
+        .await
         .expect("connect to pty.sock");
     let (mut reader, mut writer) = stream.into_split();
 
@@ -1205,10 +1446,15 @@ async fn test_pty_takeover_via_attach() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(500), reader.read(&mut buf)).await {
-            Ok(Ok(0)) => { eprintln!("pty.sock EOF (session ended)"); break; }
+            Ok(Ok(0)) => {
+                eprintln!("pty.sock EOF (session ended)");
+                break;
+            }
             Ok(Ok(n)) => {
                 output.extend_from_slice(&buf[..n]);
-                if String::from_utf8_lossy(&output).contains(&test_marker) { break; }
+                if String::from_utf8_lossy(&output).contains(&test_marker) {
+                    break;
+                }
             }
             _ => continue,
         }
@@ -1223,7 +1469,9 @@ async fn test_pty_takeover_via_attach() {
     assert!(
         has_marker || ended,
         "Expected marker '{}' or session-end, got ({} bytes): {}",
-        test_marker, output.len(), text
+        test_marker,
+        output.len(),
+        text
     );
 
     // 5. Clean up
@@ -1240,25 +1488,55 @@ async fn test_output_fanout_subscriber_receives_data() {
     let sessions = Arc::new(kn_agent::session::SessionManager::new(store));
     let merger = Arc::new(kn_agent::session::InputMerger::new());
     let nid = format!("s_sub_{}", nanoid::nanoid!(8));
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
-    sessions.create(nid.clone(), "test".into(), "bash".into(), None, cwd.clone(), kn_agent::session::SessionKind::Native).await.unwrap();
+    sessions
+        .create(
+            nid.clone(),
+            "test".into(),
+            "bash".into(),
+            None,
+            cwd.clone(),
+            kn_agent::session::SessionKind::Native,
+        )
+        .await
+        .unwrap();
 
     let (wss_tx, _wss_rx) = mpsc::unbounded_channel();
     let (ipc_tx, _ipc_rx) = mpsc::unbounded_channel::<String>();
 
     // Start PTY and get fanout (start_session consumes Arc<Self>)
-    let fanout = sessions.clone().start_session(&nid, "bash", None, &cwd, 80, 24, wss_tx, ipc_tx, merger.clone(), None).await.unwrap();
+    let fanout = sessions
+        .clone()
+        .start_session(
+            &nid,
+            "bash",
+            None,
+            &cwd,
+            80,
+            24,
+            wss_tx,
+            ipc_tx,
+            merger.clone(),
+            None,
+        )
+        .await
+        .unwrap();
 
     // Register subscriber
     let mut sub_rx = fanout.register_subscriber();
 
     // Send a command
-    merger.push(kn_agent::session::InputMessage {
-        session_id: nid.clone(),
-        text: "echo FANOUT_TEST\n".into(),
-        source: "test".into(),
-    }).await;
+    merger
+        .push(kn_agent::session::InputMessage {
+            session_id: nid.clone(),
+            text: "echo FANOUT_TEST\n".into(),
+            source: "test".into(),
+        })
+        .await;
 
     // Wait for output via subscriber
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);

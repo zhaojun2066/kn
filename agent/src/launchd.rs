@@ -95,8 +95,7 @@ pub async fn install(agent_path: &Path, log_dir: &Path) -> Result<()> {
     }
 
     let content = generate_plist_content(agent_path, log_dir);
-    std::fs::write(&plist, &content)
-        .map_err(|e| format!("写入 plist 失败: {}", e))?;
+    std::fs::write(&plist, &content).map_err(|e| format!("写入 plist 失败: {}", e))?;
 
     // 先卸载（如果已在运行中）
     if is_running().await {

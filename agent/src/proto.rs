@@ -87,16 +87,11 @@ pub enum AgentIncoming {
         rows: u16,
     },
     /// 云端错误通知（对齐 Java MessageTypes.ERROR_NOTIFY + sendError()）
-    ErrorNotify {
-        code: String,
-        message: String,
-    },
+    ErrorNotify { code: String, message: String },
     /// 配置文件列表确认
     ProfileListAck,
     /// 请求回放会话输出日志（iOS 恢复会话时发送）
-    ReplayOutput {
-        session_nid: String,
-    },
+    ReplayOutput { session_nid: String },
     /// WSS 对 session_created 的确认
     SessionCreatedAck {
         session_nid: String,
@@ -104,9 +99,9 @@ pub enum AgentIncoming {
         error: Option<String>,
     },
     /// iOS 恢复会话请求（cloud 已查 Redis，agent 做本地验证）
-    ResumeSession {
-        session_nid: String,
-    },
+    ResumeSession { session_nid: String },
+    /// iOS/Cloud 请求强制结束远程会话
+    KillSession { session_nid: String, reason: String },
     /// 未知消息类型
     Unknown {
         msg_type: String,
@@ -174,10 +169,7 @@ impl WsEnvelope {
                     .as_ref()
                     .ok_or_else(|| "input 缺少 data 字段".to_string())?;
                 // session 由 data.sessionId 标识，与 ctrl/resize/replay_output 一致。
-                let session_nid = data["sessionId"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
                 if session_nid.is_empty() {
                     return Err("input sessionId 为空".to_string());
                 }
@@ -228,10 +220,7 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "replay_output 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
                 if session_nid.is_empty() {
                     return Err("replay_output sessionId 为空".to_string());
                 }
@@ -242,10 +231,7 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "session_created_ack 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
                 if session_nid.is_empty() {
                     return Err("session_created_ack sessionId 为空".to_string());
                 }
@@ -262,14 +248,28 @@ impl WsEnvelope {
                     .data
                     .as_ref()
                     .ok_or_else(|| "resume_session 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
                 if session_nid.is_empty() {
                     return Err("resume_session sessionId 为空".to_string());
                 }
                 Ok(AgentIncoming::ResumeSession { session_nid })
+            }
+            "kill_session" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "kill_session 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("kill_session sessionId 为空".to_string());
+                }
+                Ok(AgentIncoming::KillSession {
+                    session_nid,
+                    reason: data["reason"]
+                        .as_str()
+                        .unwrap_or("user_closed_tab")
+                        .to_string(),
+                })
             }
             other => Ok(AgentIncoming::Unknown {
                 msg_type: other.to_string(),
@@ -464,19 +464,17 @@ impl From<&kn_common::profile::ProfileSummary> for ProfileInfo {
 #[derive(Debug, Clone)]
 pub enum OutgoingMessage {
     /// 会话结束通知（session/manager.rs → main loop → WSS）
-    SessionEnded {
-        session_nid: String,
-        reason: String,
-    },
+    SessionEnded { session_nid: String, reason: String },
 }
 
 impl OutgoingMessage {
     /// 序列化为 JSON 字符串（对齐 WsMessageBuilder 的 envelope 格式）。
     pub fn to_json(&self) -> String {
         match self {
-            Self::SessionEnded { session_nid, reason } => {
-                WsMessageBuilder::session_ended(session_nid, reason)
-            }
+            Self::SessionEnded {
+                session_nid,
+                reason,
+            } => WsMessageBuilder::session_ended(session_nid, reason),
         }
     }
 }
@@ -589,7 +587,11 @@ mod tests {
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
         let msg = env.parse().unwrap();
         match msg {
-            AgentIncoming::Resize { session_nid, cols, rows } => {
+            AgentIncoming::Resize {
+                session_nid,
+                cols,
+                rows,
+            } => {
                 assert_eq!(session_nid, "s_abc123def456");
                 assert_eq!(cols, 52);
                 assert_eq!(rows, 20);
@@ -628,6 +630,29 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_kill_session() {
+        let json = serde_json::json!({
+            "type": "kill_session",
+            "data": {
+                "sessionId": "s_abc",
+                "reason": "user_closed_tab"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::KillSession {
+                session_nid,
+                reason,
+            } => {
+                assert_eq!(session_nid, "s_abc");
+                assert_eq!(reason, "user_closed_tab");
+            }
+            _ => panic!("expected KillSession"),
+        }
+    }
+
+    #[test]
     fn test_outbound_ping() {
         let json = WsMessageBuilder::ping();
         assert!(json.contains("ping"));
@@ -635,7 +660,15 @@ mod tests {
 
     #[test]
     fn test_outbound_session_created() {
-        let json = WsMessageBuilder::session_created("s_abc123", "claude", "/home/user/proj", None, 80, 24, "ios");
+        let json = WsMessageBuilder::session_created(
+            "s_abc123",
+            "claude",
+            "/home/user/proj",
+            None,
+            80,
+            24,
+            "ios",
+        );
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "session_created");
         assert_eq!(parsed["data"]["sessionId"], "s_abc123");
@@ -644,6 +677,32 @@ mod tests {
         assert_eq!(parsed["data"]["cols"], 80);
         assert_eq!(parsed["data"]["rows"], 24);
         assert_eq!(parsed["data"]["source"], "ios");
+    }
+
+    #[test]
+    fn test_outbound_session_created_with_msg_id_uses_string_s_prefixed_session_id() {
+        let json = WsMessageBuilder::session_created_with_msg_id(
+            "s_abc123def456",
+            "claude",
+            "/home/user/proj",
+            Some("default"),
+            52,
+            18,
+            "ios",
+            Some("s_abc123def456-0"),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let session_id = &parsed["data"]["sessionId"];
+
+        assert_eq!(parsed["type"], "session_created");
+        assert!(
+            session_id.is_string(),
+            "sessionId must be string, got: {session_id:?}"
+        );
+        assert_eq!(session_id.as_str().unwrap(), "s_abc123def456");
+        assert!(session_id.as_str().unwrap().starts_with("s_"));
+        assert!(parsed["data"].get("to_session_id").is_none());
+        assert_eq!(parsed["data"]["msgId"], "s_abc123def456-0");
     }
 
     #[test]
@@ -662,7 +721,11 @@ mod tests {
         let msg = WsMessageBuilder::output("s_abc123", "hello");
         let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
         let tsid = &parsed["data"]["sessionId"];
-        assert!(tsid.is_string(), "sessionId must be a string, got: {:?}", tsid);
+        assert!(
+            tsid.is_string(),
+            "sessionId must be a string, got: {:?}",
+            tsid
+        );
         assert_eq!(tsid.as_str().unwrap(), "s_abc123");
     }
 

@@ -233,7 +233,9 @@ impl StateMachine {
 }
 
 fn crash_count_path() -> PathBuf {
-    kn_common::path::config_dir().join("agent").join("crash_count")
+    kn_common::path::config_dir()
+        .join("agent")
+        .join("crash_count")
 }
 
 /// 仅测试用：覆盖 crash count 路径。
@@ -271,7 +273,9 @@ mod tests {
         assert_eq!(m.current().await, AgentState::Stopped);
         m.transition(StateEvent::Start).await.unwrap();
         assert_eq!(m.current().await, AgentState::Starting);
-        m.transition(StateEvent::WsConnected { has_token: true }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
         assert_eq!(m.current().await, AgentState::Connected);
     }
 
@@ -279,7 +283,9 @@ mod tests {
     async fn test_startup_flow_without_token() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: false }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
         assert_eq!(m.current().await, AgentState::Unbound);
     }
 
@@ -287,7 +293,9 @@ mod tests {
     async fn test_bind_flow() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: false }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
         m.transition(StateEvent::BindInit).await.unwrap();
         assert_eq!(m.current().await, AgentState::Binding);
         m.transition(StateEvent::BindResult).await.unwrap();
@@ -298,7 +306,9 @@ mod tests {
     async fn test_bind_timeout() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: false }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
         m.transition(StateEvent::BindInit).await.unwrap();
         m.transition(StateEvent::BindTimeout).await.unwrap();
         assert_eq!(m.current().await, AgentState::Unbound);
@@ -308,7 +318,9 @@ mod tests {
     async fn test_session_flow() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: true }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
         m.transition(StateEvent::SessionStarted).await.unwrap();
         assert_eq!(m.current().await, AgentState::Running);
         m.transition(StateEvent::AllSessionsEnded).await.unwrap();
@@ -319,7 +331,9 @@ mod tests {
     async fn test_disconnect_reconnect() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: true }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
         m.transition(StateEvent::WsDisconnected).await.unwrap();
         assert_eq!(m.current().await, AgentState::Reconnecting);
         m.transition(StateEvent::WsReconnected).await.unwrap();
@@ -338,7 +352,9 @@ mod tests {
     async fn test_stop_from_any_state() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: true }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
         m.transition(StateEvent::Stop).await.unwrap();
         assert_eq!(m.current().await, AgentState::Stopped);
     }
@@ -393,10 +409,14 @@ mod tests {
     async fn test_auth_rejected_from_connected() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: true }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
         assert_eq!(m.current().await, AgentState::Connected);
         // Token 失效 → Unbound
-        m.transition(StateEvent::WsConnected { has_token: false }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
         assert_eq!(m.current().await, AgentState::Unbound);
     }
 
@@ -404,11 +424,15 @@ mod tests {
     async fn test_auth_rejected_from_reconnecting() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: true }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
         m.transition(StateEvent::WsDisconnected).await.unwrap();
         assert_eq!(m.current().await, AgentState::Reconnecting);
         // Token 失效 → Unbound
-        m.transition(StateEvent::WsConnected { has_token: false }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
         assert_eq!(m.current().await, AgentState::Unbound);
     }
 
@@ -416,11 +440,15 @@ mod tests {
     async fn test_auth_rejected_from_running() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: true }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
         m.transition(StateEvent::SessionStarted).await.unwrap();
         assert_eq!(m.current().await, AgentState::Running);
         // Token 失效 → Unbound
-        m.transition(StateEvent::WsConnected { has_token: false }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
         assert_eq!(m.current().await, AgentState::Unbound);
     }
 
@@ -428,12 +456,16 @@ mod tests {
     async fn test_auth_rejected_from_idle() {
         let m = sm(0);
         m.transition(StateEvent::Start).await.unwrap();
-        m.transition(StateEvent::WsConnected { has_token: true }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
         m.transition(StateEvent::SessionStarted).await.unwrap();
         m.transition(StateEvent::AllSessionsEnded).await.unwrap();
         assert_eq!(m.current().await, AgentState::Idle);
         // Token 失效 → Unbound
-        m.transition(StateEvent::WsConnected { has_token: false }).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
         assert_eq!(m.current().await, AgentState::Unbound);
     }
 }

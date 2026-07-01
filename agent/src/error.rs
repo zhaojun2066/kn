@@ -1,5 +1,5 @@
-use thiserror::Error;
 use kn_common::error::CommonError;
+use thiserror::Error;
 
 /// Agent 专用错误类型层级。
 #[derive(Error, Debug)]

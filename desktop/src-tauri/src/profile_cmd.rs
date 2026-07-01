@@ -9,7 +9,7 @@ use std::path::PathBuf;
 // Re-export everything from the common library
 pub use kn_common::profile::*;
 // Explicit imports for functions used in ensure_shell_rc (already covered by glob, kept for clarity)
-use kn_common::profile::{acquire_lock, release_lock, read_config, write_config_inner};
+use kn_common::profile::{acquire_lock, read_config, release_lock, write_config_inner};
 
 // ── Desktop-specific: intra-process lock wrapper ─────────────
 
@@ -23,12 +23,18 @@ pub fn write_config(config: &Config) -> Result<(), String> {
 // ── Desktop-specific: shell RC management ────────────────────
 
 // Embedded at build time from canonical sources in shell/ directory.
-const SHELL_RC: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/ai-profile.sh"));
-const COMPLETION_ZSH: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/completions/_ai"));
-const COMPLETION_BASH: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/completions/ai.bash"));
+const SHELL_RC: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../shell/ai-profile.sh"
+));
+const COMPLETION_ZSH: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../shell/completions/_ai"
+));
+const COMPLETION_BASH: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../shell/completions/ai.bash"
+));
 const HOOK_RECORDER: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../shell/hooks/record-usage.py"
@@ -51,8 +57,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         if let Ok(content) = fs::read_to_string(&dev_config) {
             if let Ok(dev_cfg) = serde_yaml::from_str::<Config>(&content) {
                 let _ = crate::with_write_lock(|| {
-                    let lock_path =
-                        kn_common::path::config_dir().join(".config.lock");
+                    let lock_path = kn_common::path::config_dir().join(".config.lock");
                     let lock_fh = match std::fs::OpenOptions::new()
                         .create(true)
                         .write(true)
@@ -99,8 +104,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         Err(_) => true,
     };
     if needs_write {
-        fs::write(&shell_rc_path, SHELL_RC)
-            .map_err(|e| format!("写入 shell-rc 失败: {}", e))?;
+        fs::write(&shell_rc_path, SHELL_RC).map_err(|e| format!("写入 shell-rc 失败: {}", e))?;
     }
 
     // Write shell completions to config dir
@@ -162,10 +166,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
             let new_bash = if bash_content.ends_with('\n') || bash_content.is_empty() {
                 format!("{}{}\n{}\n", bash_content, bash_marker, bash_source_line)
             } else {
-                format!(
-                    "{}\n{}\n{}\n",
-                    bash_content, bash_marker, bash_source_line
-                )
+                format!("{}\n{}\n{}\n", bash_content, bash_marker, bash_source_line)
             };
             fs::write(&bashrc, new_bash).ok();
         } else {
