@@ -44,4 +44,11 @@ describe("terminal tab close kill targets", () => {
     expect(targets.agentNids).toEqual([]);
     expect(targets.ptySessionIds).toEqual(["pty-local"]);
   });
+
+  it("kills both the local PTY and Relay agent record when closing a desktop Run tab", () => {
+    const targets = collectTerminalCloseKills(makeTab("pty-local", "s_relay"));
+
+    expect(targets.agentNids).toEqual(["s_relay"]);
+    expect(targets.ptySessionIds).toEqual(["pty-local"]);
+  });
 });

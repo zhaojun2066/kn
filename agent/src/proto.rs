@@ -16,10 +16,11 @@
 //! - 会话 (iOS→cloud→agent 转发): start_session, input, ctrl
 //! - 确认: profile_list_ack
 //! - 错误: error_notify (Java sendError 可向任意客户端发送)
+//! - 结束: kill_session
 //!
 //! 不在 agent 白名单/不需要 agent 关注的消息:
 //! - start_session_ack, ack (仅 mobile)
-//! - kill_session, agent_error (Java 代码中未实现)
+//! - agent_error (Java 代码中未实现)
 
 use serde::{Deserialize, Serialize};
 
@@ -491,17 +492,6 @@ pub struct ProjectInfoOut {
     pub default_profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-}
-
-impl From<&kn_common::project::ProjectInfo> for ProjectInfoOut {
-    fn from(p: &kn_common::project::ProjectInfo) -> Self {
-        Self {
-            name: p.name.clone(),
-            path: p.path.clone(),
-            default_profile: p.default_profile.clone(),
-            description: p.description.clone(),
-        }
-    }
 }
 
 // ── Tests ───────────────────────────────────────────────────

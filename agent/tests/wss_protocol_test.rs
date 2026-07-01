@@ -40,6 +40,10 @@ fn test_all_incoming_types_parse_without_panic() {
             r#"{"type":"resize","data":{"sessionId":"s_abc123","cols":48,"rows":18}}"#,
             "resize",
         ),
+        (
+            r#"{"type":"kill_session","data":{"sessionId":"s_abc123","reason":"user_closed_tab"}}"#,
+            "kill_session",
+        ),
         // Server → agent
         (
             r#"{"type":"error_notify","data":{"code":"ERR","message":"test"}}"#,
@@ -97,6 +101,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::ReplayOutput { .. } => "replay_output",
         AgentIncoming::SessionCreatedAck { .. } => "session_created_ack",
         AgentIncoming::ResumeSession { .. } => "resume_session",
+        AgentIncoming::KillSession { .. } => "kill_session",
         AgentIncoming::Unknown { .. } => "unknown",
     }
 }

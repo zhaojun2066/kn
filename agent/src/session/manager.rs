@@ -400,6 +400,42 @@ impl SessionManager {
         }
     }
 
+    /// Queue remote input for a desktop-owned Relay session.
+    pub async fn queue_relay_input(&self, nid: &str, text: String) -> Result<()> {
+        let session = self
+            .store
+            .get(nid)
+            .await?
+            .ok_or_else(|| AgentError::SessionNotFound(nid.to_string()))?;
+        if session.kind != SessionKind::Relay {
+            return Err(AgentError::Other(format!("session is not Relay: {}", nid)));
+        }
+        session.record_input(&text);
+        {
+            let mut queue = session
+                .relay_inputs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            queue.push((Utc::now().timestamp_millis(), text));
+        }
+        self.store.insert(session).await?;
+        Ok(())
+    }
+
+    /// Drain queued remote input for a desktop-owned Relay session.
+    pub async fn take_relay_inputs(&self, nid: &str) -> Result<Vec<String>> {
+        let session = self
+            .store
+            .get(nid)
+            .await?
+            .ok_or_else(|| AgentError::SessionNotFound(nid.to_string()))?;
+        let mut queue = session
+            .relay_inputs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Ok(queue.drain(..).map(|(_, text)| text).collect())
+    }
+
     /// 更新终端尺寸。
     pub async fn resize(&self, nid: &str, cols: u16, rows: u16) -> Result<()> {
         self.resize_pty(nid, cols, rows).await?;
@@ -848,7 +884,69 @@ mod tests {
         assert_eq!(session.rows, 20);
         assert_eq!(session.viewport_owner, ViewportOwner::Desktop);
     }
-}
 
-// 原 checkpoint 实现已删除。以下内容仅保留标记。
-// ── CLI Tool helpers ────────────────────────────────────────
+    #[tokio::test]
+    async fn relay_inputs_are_queued_for_desktop_polling() {
+        let manager = test_manager();
+        manager
+            .create(
+                "s_relay".into(),
+                "desktop".into(),
+                "claude".into(),
+                Some("work".into()),
+                "/tmp".into(),
+                SessionKind::Relay,
+            )
+            .await
+            .expect("create relay session");
+
+        manager
+            .queue_relay_input("s_relay", "hello from ios\n".into())
+            .await
+            .expect("queue input");
+
+        assert_eq!(
+            manager
+                .take_relay_inputs("s_relay")
+                .await
+                .expect("take inputs"),
+            vec!["hello from ios\n".to_string()],
+        );
+        assert!(
+            manager
+                .take_relay_inputs("s_relay")
+                .await
+                .expect("take inputs again")
+                .is_empty(),
+            "polling should drain queued relay input"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_session_can_be_marked_running_for_local_panel_visibility() {
+        let manager = test_manager();
+        manager
+            .create(
+                "s_relay_running".into(),
+                "desktop".into(),
+                "claude".into(),
+                Some("work".into()),
+                "/tmp".into(),
+                SessionKind::Relay,
+            )
+            .await
+            .expect("create relay session");
+
+        manager
+            .mark_running("s_relay_running")
+            .await
+            .expect("mark running");
+
+        let session = manager
+            .get("s_relay_running")
+            .await
+            .expect("get session")
+            .expect("session exists");
+        assert_eq!(session.status, SessionStatus::Running);
+    }
+}

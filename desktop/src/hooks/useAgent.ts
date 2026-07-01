@@ -88,6 +88,14 @@ export function useAgent() {
     }
   }, []);
 
+  useEffect(() => {
+    const refresh = () => {
+      fetchSessions();
+    };
+    window.addEventListener("kn-agent-sessions-changed", refresh);
+    return () => window.removeEventListener("kn-agent-sessions-changed", refresh);
+  }, [fetchSessions]);
+
   // Detect token revocation: state was connected/running/idle and becomes unbound
   useEffect(() => {
     const currentState = agentStatus?.state ?? null;

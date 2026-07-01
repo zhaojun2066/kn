@@ -1,5 +1,5 @@
-import type { PaneLeaf, PaneNode } from "../../lib/pane-types";
-import { findLeaf, replaceNode, createInitialLeaf } from "../../lib/pane-types";
+import type { PaneLeaf } from "../../lib/pane-types";
+import { findLeaf, createInitialLeaf } from "../../lib/pane-types";
 import type { TabSession } from "./types";
 
 let tabCounter = 1;

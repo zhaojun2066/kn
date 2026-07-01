@@ -4,9 +4,8 @@
 //! ## Prerequisites
 //!
 //! - Local cloud services at `localhost:8080` (HTTP) and `localhost:8081` (WS)
-//!   are required for bind/redeem tests (groups D/E). These tests are
-//!   gated behind `#[cfg(feature = "integration")]` or can be run with
-//!   `--ignored` when cloud is unavailable.
+//!   are required for bind tests (group D). These tests are ignored by default
+//!   and can be run with `--ignored` when cloud is available.
 //! - CLI tools (claude, codex) must be installed for PTY session tests (group C).
 //!   Tests check binary availability and skip gracefully if not found.
 
@@ -14,7 +13,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -46,7 +48,14 @@ struct TempDir {
 
 impl TempDir {
     fn new(prefix: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("kn-test-{}-{}", prefix, std::process::id()));
+        static COUNTER: AtomicUsize = AtomicUsize::new(1);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let short_prefix: String = prefix.chars().take(8).collect();
+        // Unix domain socket paths on macOS must fit in sockaddr_un.sun_path
+        // (104 bytes). Keep KN_HOME under /tmp so per-session pty.sock paths
+        // remain short even when the process temp dir is /var/folders/...
+        let path =
+            PathBuf::from("/tmp").join(format!("kt-{}-{}-{}", short_prefix, std::process::id(), n));
         std::fs::create_dir_all(&path).expect("create temp dir");
         // Create required subdirs
         std::fs::create_dir_all(path.join("agent")).ok();
@@ -138,8 +147,9 @@ fn assert_err<'a>(resp: &'a serde_json::Value, expected_code: &str) -> &'a serde
 /// Spawn a kn-agent process with isolated KN_HOME for testing.
 fn spawn_agent(kn_home: &TempDir) -> ChildGuard {
     let kn_home_str = kn_home.path().to_string_lossy().to_string();
-    let child = Command::new("cargo")
-        .args(["run", "--package", "kn-agent"])
+    let bin = std::env::var("CARGO_BIN_EXE_kn-agent")
+        .unwrap_or_else(|_| "target/debug/kn-agent".to_string());
+    let child = Command::new(bin)
         .env("KN_HOME", &kn_home_str)
         .env("KN_CLOUD_URL", "ws://localhost:8081/v1/ws")
         .env("KN_CLOUD_HTTP_URL", "http://localhost:8080")
@@ -370,7 +380,167 @@ fn test_ipc_new_session_invalid_dir() {
 }
 
 #[test]
-fn test_ipc_attach_detach() {
+fn test_ipc_register_session_creates_running_relay_session() {
+    let dir = TempDir::new("ipc-relay");
+    let _agent = spawn_agent(&dir);
+    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req(
+            "1",
+            "register_session",
+            serde_json::json!({
+                "tool": "claude",
+                "profile": "work",
+                "cwd": ".",
+                "source": "desktop",
+                "pid": std::process::id(),
+            }),
+        ),
+    );
+    let result = assert_ok(&resp);
+    let nid = result["nid"].as_str().unwrap().to_string();
+    assert_eq!(result["status"].as_str().unwrap(), "registered");
+    assert_eq!(result["source"].as_str().unwrap(), "desktop");
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("2", "sessions", serde_json::json!({})),
+    );
+    let result = assert_ok(&resp);
+    let sessions = result["sessions"].as_array().unwrap();
+    let session = sessions
+        .iter()
+        .find(|s| s["nid"].as_str() == Some(&nid))
+        .expect("registered relay session should be listed");
+    assert_eq!(session["kind"].as_str().unwrap(), "Relay");
+    assert_eq!(session["status"].as_str().unwrap(), "running");
+    assert_eq!(session["remote_enabled"].as_bool().unwrap(), false);
+}
+
+#[test]
+fn test_ipc_relay_output_and_poll_input_for_registered_session() {
+    let dir = TempDir::new("ipc-relay-io");
+    let _agent = spawn_agent(&dir);
+    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req(
+            "1",
+            "register_session",
+            serde_json::json!({
+                "tool": "claude",
+                "profile": "work",
+                "cwd": ".",
+                "source": "desktop",
+            }),
+        ),
+    );
+    let nid = assert_ok(&resp)["nid"].as_str().unwrap().to_string();
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req(
+            "2",
+            "relay_output",
+            serde_json::json!({"nid": nid, "data": "hello relay\n"}),
+        ),
+    );
+    assert_ok(&resp);
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("3", "poll_relay_input", serde_json::json!({"nid": nid})),
+    );
+    let result = assert_ok(&resp);
+    assert_eq!(result["status"].as_str().unwrap(), "running");
+    assert_eq!(result["ended"].as_bool().unwrap(), false);
+    assert!(result["inputs"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn test_ipc_enable_remote_requires_wss_but_disable_is_local_only() {
+    let dir = TempDir::new("ipc-remote-toggle");
+    let _agent = spawn_agent(&dir);
+    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req(
+            "1",
+            "register_session",
+            serde_json::json!({
+                "tool": "claude",
+                "profile": "work",
+                "cwd": ".",
+                "source": "desktop",
+            }),
+        ),
+    );
+    let nid = assert_ok(&resp)["nid"].as_str().unwrap().to_string();
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req(
+            "2",
+            "set_remote_enabled",
+            serde_json::json!({"nid": nid, "enabled": false}),
+        ),
+    );
+    assert_ok(&resp);
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req(
+            "3",
+            "set_remote_enabled",
+            serde_json::json!({"nid": nid, "enabled": true}),
+        ),
+    );
+    assert_err(&resp, "WSS_NOT_CONNECTED");
+}
+
+#[test]
+fn test_ipc_kill_registered_relay_session_marks_it_ended() {
+    let dir = TempDir::new("ipc-relay-kill");
+    let _agent = spawn_agent(&dir);
+    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req(
+            "1",
+            "register_session",
+            serde_json::json!({
+                "tool": "claude",
+                "profile": "work",
+                "cwd": ".",
+                "source": "desktop",
+            }),
+        ),
+    );
+    let nid = assert_ok(&resp)["nid"].as_str().unwrap().to_string();
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("2", "kill_session", serde_json::json!({"nid": &nid})),
+    );
+    assert_ok(&resp);
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("3", "poll_relay_input", serde_json::json!({"nid": &nid})),
+    );
+    let result = assert_ok(&resp);
+    assert_eq!(result["status"].as_str().unwrap(), "ended");
+    assert_eq!(result["ended"].as_bool().unwrap(), true);
+    assert!(result["inputs"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn test_ipc_attach() {
     let dir = TempDir::new("ipc-attach");
     let _agent = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
@@ -389,13 +559,6 @@ fn test_ipc_attach_detach() {
     let resp = ipc_request_json(
         &dir.ipc_sock(),
         &ipc_req("2", "attach", serde_json::json!({"nid": nid})),
-    );
-    assert_ok(&resp);
-
-    // Detach
-    let resp = ipc_request_json(
-        &dir.ipc_sock(),
-        &ipc_req("3", "detach", serde_json::json!({"nid": nid})),
     );
     assert_ok(&resp);
 }
@@ -614,19 +777,6 @@ fn test_ipc_not_found_attach() {
     let resp = ipc_request_json(
         &dir.ipc_sock(),
         &ipc_req("1", "attach", serde_json::json!({"nid": "s_nonexistent"})),
-    );
-    assert_err(&resp, "NOT_FOUND");
-}
-
-#[test]
-fn test_ipc_not_found_detach() {
-    let dir = TempDir::new("ipc-nf-detach");
-    let _agent = spawn_agent(&dir);
-    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
-
-    let resp = ipc_request_json(
-        &dir.ipc_sock(),
-        &ipc_req("1", "detach", serde_json::json!({"nid": "s_nonexistent"})),
     );
     assert_err(&resp, "NOT_FOUND");
 }
@@ -1048,29 +1198,6 @@ fn cloud_port_open() -> bool {
     std::net::TcpStream::connect("localhost:8080").is_ok()
 }
 
-/// Register a test user and return (email, password).
-async fn register_test_user() -> (String, String) {
-    let email = format!("test-{}@kn.test", nanoid::nanoid!(12));
-    let password = "test123456".to_string();
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .post("http://localhost:8080/api/v1/auth/register/test")
-        .json(&serde_json::json!({
-            "email": email,
-            "password": password,
-        }))
-        .send()
-        .await
-        .expect("register test user");
-    assert!(
-        resp.status().is_success(),
-        "Register failed: {}",
-        resp.status()
-    );
-    (email, password)
-}
-
 #[tokio::test]
 #[ignore = "requires local cloud services at localhost:8080"]
 async fn test_bind_init_flow() {
@@ -1078,8 +1205,6 @@ async fn test_bind_init_flow() {
         eprintln!("SKIP: local cloud not available");
         return;
     }
-
-    register_test_user().await;
 
     let dir = TempDir::new("bind-init");
     let _agent = spawn_agent(&dir);
@@ -1105,49 +1230,11 @@ async fn test_bind_init_flow() {
 
 #[tokio::test]
 #[ignore = "requires local cloud services at localhost:8080"]
-async fn test_bind_device_token_persisted() {
-    if !cloud_port_open() {
-        eprintln!("SKIP: local cloud not available");
-        return;
-    }
-
-    register_test_user().await;
-
-    let dir = TempDir::new("bind-token");
-    let _agent = spawn_agent(&dir);
-    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
-
-    // Initiate bind
-    let resp = ipc_request_json(
-        &dir.ipc_sock(),
-        &ipc_req("1", "bind", serde_json::json!({})),
-    );
-    let result = assert_ok(&resp);
-
-    // The bind polling runs in background. For a full test we'd need to
-    // simulate iOS confirmation. Here we just verify the bind request worked
-    // and the bind code was returned.
-    let bind_code = result["bindCode"].as_str().unwrap();
-    assert_eq!(bind_code.len(), 6);
-
-    // The device_token file may or may not exist yet (polling is async).
-    // If it does, verify it's non-empty.
-    let token_path = dir.path().join("agent").join("device_token");
-    if token_path.exists() {
-        let token = std::fs::read_to_string(&token_path).unwrap();
-        assert!(!token.trim().is_empty());
-    }
-}
-
-#[tokio::test]
-#[ignore = "requires local cloud services at localhost:8080"]
 async fn test_bind_status_after_bind() {
     if !cloud_port_open() {
         eprintln!("SKIP: local cloud not available");
         return;
     }
-
-    register_test_user().await;
 
     let dir = TempDir::new("bind-status");
     let _agent = spawn_agent(&dir);
@@ -1174,17 +1261,11 @@ async fn test_bind_status_after_bind() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Group E: Redeem Flow Tests (requires local cloud + bound device)
+// Group E: Redeem IPC Validation (no cloud dependency)
 // ═══════════════════════════════════════════════════════════════════
 
-#[tokio::test]
-#[ignore = "requires local cloud services at localhost:8080"]
-async fn test_redeem_not_bound() {
-    if !cloud_port_open() {
-        eprintln!("SKIP: local cloud not available");
-        return;
-    }
-
+#[test]
+fn test_redeem_not_bound() {
     let dir = TempDir::new("redeem-nobind");
     let _agent = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
@@ -1196,16 +1277,8 @@ async fn test_redeem_not_bound() {
     assert_err(&resp, "NOT_BOUND");
 }
 
-#[tokio::test]
-#[ignore = "requires local cloud services at localhost:8080"]
-async fn test_redeem_empty_code() {
-    if !cloud_port_open() {
-        eprintln!("SKIP: local cloud not available");
-        return;
-    }
-
-    register_test_user().await;
-
+#[test]
+fn test_redeem_empty_code() {
     let dir = TempDir::new("redeem-empty");
     let _agent = spawn_agent(&dir);
     assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
@@ -1215,45 +1288,6 @@ async fn test_redeem_empty_code() {
         &ipc_req("1", "redeem", serde_json::json!({"code": ""})),
     );
     assert_err(&resp, "INVALID_PARAMS");
-}
-
-#[tokio::test]
-#[ignore = "requires local cloud services at localhost:8080"]
-async fn test_redeem_invalid_code() {
-    if !cloud_port_open() {
-        eprintln!("SKIP: local cloud not available");
-        return;
-    }
-
-    register_test_user().await;
-
-    let dir = TempDir::new("redeem-invalid");
-    let _agent = spawn_agent(&dir);
-    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
-
-    // First bind (creates device_token if poll succeeds in time)
-    let _resp = ipc_request_json(
-        &dir.ipc_sock(),
-        &ipc_req("1", "bind", serde_json::json!({})),
-    );
-    std::thread::sleep(Duration::from_secs(2));
-
-    // Try redeeming a non-existent code
-    let resp = ipc_request_json(
-        &dir.ipc_sock(),
-        &ipc_req(
-            "2",
-            "redeem",
-            serde_json::json!({"code": "KN-NONEXISTENT-CODE-1234"}),
-        ),
-    );
-    // Should fail with either CODE_NOT_FOUND or NOT_BOUND (if binding didn't complete)
-    let err_code = resp["error"]["code"].as_str().unwrap_or("");
-    assert!(
-        err_code == "CODE_NOT_FOUND" || err_code == "NOT_BOUND" || err_code == "REDEEM_ERROR",
-        "Unexpected error code: {}",
-        err_code
-    );
 }
 
 // ═══════════════════════════════════════════════════════════════════

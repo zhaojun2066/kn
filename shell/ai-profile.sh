@@ -329,53 +329,6 @@ _ai_help() {
     echo "    ai tips                   Show model selection recommendations"
 }
 
-# ── Main ai() function ──
-# ── Agent IPC routing ──
-# Try to create session via kn-agent IPC. Returns 0 if agent accepted the request.
-_ai_agent_launch() {
-    local tool="$1"
-    local profile="$2"
-    local cwd="${3:-$(pwd)}"
-    local ipc_sock="$KN_DIR/agent/ipc.sock"
-
-    [ -S "$ipc_sock" ] || return 1
-
-    # 0. 状态检查 — 只在 agent 已连接 cloud 时接管终端
-    local state
-    state=$(echo '{"id":"0","method":"status"}' | \
-        socat - UNIX-CONNECT:"$ipc_sock" 2>/dev/null | \
-        sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
-    case "$state" in
-        connected|idle|running) ;;
-        *) return 1 ;;
-    esac
-
-    # 1. 创建 session
-    local resp nid
-    resp=$(echo "{\"id\":\"1\",\"method\":\"new_session\",\"params\":{\"tool\":\"$tool\",\"profile\":\"$profile\",\"cwd\":\"$cwd\"}}" | \
-        socat - UNIX-CONNECT:"$ipc_sock" 2>/dev/null)
-    nid=$(echo "$resp" | sed -n 's/.*"nid":"\([^"]*\)".*/\1/p')
-    [ -z "$nid" ] && return 1
-    echo "[kn] Session created: $nid" >&2
-
-    # 2. attach — 获取 pty.sock 路径
-    local pty_sock
-    pty_sock=$(echo "{\"id\":\"2\",\"method\":\"attach\",\"params\":{\"nid\":\"$nid\"}}" | \
-        socat - UNIX-CONNECT:"$ipc_sock" 2>/dev/null | \
-        sed -n 's/.*"pty_sock":"\([^"]*\)".*/\1/p')
-    [ -z "$pty_sock" ] && { echo "[kn] attach failed" >&2; return 1; }
-    echo "[kn] PTY proxy: $pty_sock" >&2
-
-    # 3. Ctrl+D / exit 时自动清理
-    trap "echo '{\"id\":\"9\",\"method\":\"kill_session\",\"params\":{\"nid\":\"$nid\"}}' | \
-        socat - UNIX-CONNECT:\"$ipc_sock\" 2>/dev/null" EXIT
-
-    # 4. 桥接本地终端 ↔ agent PTY（raw 模式，零磁盘 I/O）
-    socat -,raw,echo=0 UNIX-CONNECT:"$pty_sock"
-
-    return 0
-}
-
 # ── Direct launch (original logic) ──
 _ai_direct() {
     local cmd="${1:-}"
@@ -517,9 +470,7 @@ with open('$_kn_settings', 'w') as f:
 " 2>/dev/null
             fi
 
-            if _ai_agent_launch "$tool" "$profile" "$(pwd)"; then
-                :
-            elif [ -n "$profile" ]; then
+            if [ -n "$profile" ]; then
                 _ai_launch_with_profile "$tool" "$profile" "$@"
             else
                 _ai_direct "$cmd" "${@:2}"

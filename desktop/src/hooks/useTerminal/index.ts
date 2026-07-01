@@ -6,7 +6,8 @@
  *
  * @param panelId - "right" (profile run) or "bottom" (manual toggle).
  */
-import { useState, useRef, useCallback } from "react";
+import { useRef, useCallback, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { Terminal } from "@xterm/xterm";
 import type { AgentSession } from "../useAgent";
 import { useTerminalState } from "./useTerminalState";
@@ -19,6 +20,7 @@ import { useTabManagement } from "./useTabManagement";
 import { usePaneManagement } from "./usePaneManagement";
 import type { TerminalContext } from "./context";
 import { syncNativeAgentSessions } from "./agentSessionSync";
+import { findLeaf } from "../../lib/pane-types";
 
 export function useTerminal(panelId: string = "right") {
   const isBottom = panelId === "bottom";
@@ -45,6 +47,7 @@ export function useTerminal(panelId: string = "right") {
   const startupAgentSessionCutoffMsRef = useRef(Date.now());
   const didInitialAgentSessionSyncRef = useRef(false);
   const dismissedAgentNidsRef = useRef<Set<string>>(new Set());
+  const relayPollInFlightRef = useRef<Set<string>>(new Set());
   const errorCallbackRef = useRef<((msg: string) => void) | null>(null);
   const openingRef = useRef(false);
   const readyPromiseRefs = useRef<Map<string, {
@@ -132,6 +135,64 @@ export function useTerminal(panelId: string = "right") {
       state.setTabs((prev) => syncNativeAgentSessions(prev, visibleSessions));
     }
   }, [isBottom, state.setTabs]);
+
+  useEffect(() => {
+    if (isBottom) return;
+
+    const timer = window.setInterval(() => {
+      for (const tab of state.sessionsRef.current) {
+        if (!tab.agentNid || relayPollInFlightRef.current.has(tab.agentNid)) continue;
+
+        const leaf = findLeaf(tab.rootNode, tab.activePaneId);
+        if (!leaf?.ptyRunning || leaf.sessionId.startsWith("s_")) continue;
+
+        relayPollInFlightRef.current.add(tab.agentNid);
+        invoke<{
+          inputs?: string[];
+          ended?: boolean;
+          cols?: number;
+          rows?: number;
+          viewport_owner?: string;
+        }>("agent_ipc", {
+          method: "poll_relay_input",
+          params: { nid: tab.agentNid },
+        }).then((result) => {
+          if (result.ended) {
+            invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
+            state.setTabs((prev) => {
+              const next = prev.filter((t) => t.id !== tab.id);
+              if (next.length === 0) {
+                state.setIsOpen(false);
+                state.setActiveTabId("");
+              } else if (activeTabIdRef.current === tab.id) {
+                state.setActiveTabId(next[0].id);
+              }
+              return next;
+            });
+            return;
+          }
+
+          for (const input of result.inputs || []) {
+            invoke("write_pty", { sessionId: leaf.sessionId, data: input }).catch(() => {});
+          }
+
+          if (result.viewport_owner === "ios" && result.cols && result.rows) {
+            invoke("resize_pty", {
+              sessionId: leaf.sessionId,
+              cols: result.cols,
+              rows: result.rows,
+            }).catch(() => {});
+          }
+        }).finally(() => {
+          if (tab.agentNid) {
+            relayPollInFlightRef.current.delete(tab.agentNid);
+          }
+        });
+      }
+    }, 250);
+
+    return () => window.clearInterval(timer);
+  }, [isBottom, state.sessionsRef, state.setTabs, state.setIsOpen, state.setActiveTabId]);
 
   // ── Derived active tab ──
   const activeTab = state.tabs.find((t) => t.id === state.activeTabId) || state.tabs[0];

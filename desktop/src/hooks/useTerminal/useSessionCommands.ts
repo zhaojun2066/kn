@@ -6,7 +6,7 @@ import type { SessionRecord } from "./types";
 import { MAX_HISTORY, PTY_READY_SETTLE_MS, PTY_COMMAND_SETTLE_MS } from "./types";
 import { findLeaf, flattenPanes, replaceNode } from "../../lib/pane-types";
 import { syncActivePaneFields, newTab } from "./helpers";
-import { parseAiCmd, buildResumeCmd, buildResumeLastCmd, normalizeTool } from "./utils";
+import { parseAiCmd, buildResumeCmd, buildResumeLastCmd, getRunCommandPolicy, normalizeTool } from "./utils";
 import type { ProjectInfo } from "../../lib/types";
 import type { AgentSession } from "../useAgent";
 import { hasAgentSessionTab } from "./agentSessionSync";
@@ -23,7 +23,7 @@ export function useSessionCommands(
   splitPane: (tabId: string, direction: "horizontal" | "vertical", workDir?: string, paneId?: string) => Promise<string | undefined>,
   saveHistory: (records: SessionRecord[]) => void,
 ) {
-  const { sessionsRef, isBottom, setIsOpen, setTabs, setActiveTabId, setHistory, setUsageCounts, termRefs } = ctx;
+  const { sessionsRef, isBottom, setIsOpen, setTabs, setActiveTabId, setHistory, setUsageCounts } = ctx;
 
   async function attachAgentSession(nid: string): Promise<string> {
     let lastError: unknown = null;
@@ -73,6 +73,56 @@ export function useSessionCommands(
       return next;
     });
   }, [isBottom, saveHistory, setHistory, setUsageCounts]);
+
+  const registerRelaySession = useCallback(async (
+    tabId: string,
+    pane: PaneLeaf,
+    parsed: { tool: string; profile: string },
+    workDir: string,
+  ) => {
+    try {
+      const pid = ctx.childPidRef.current.get(pane.paneId) || 0;
+      const result = await invoke<{ nid?: string; created_at?: string }>("agent_ipc", {
+        method: "register_session",
+        params: {
+          tool: normalizeTool(parsed.tool),
+          profile: parsed.profile,
+          cwd: workDir,
+          source: "desktop",
+          pid,
+        },
+      });
+      if (!result?.nid) return;
+
+      const term = ctx.termRefs.current.get(pane.paneId);
+      if (term && term.cols > 0 && term.rows > 0) {
+        invoke("agent_ipc", {
+          method: "resize",
+          params: { nid: result.nid, cols: term.cols, rows: term.rows },
+        }).catch(() => {});
+      }
+
+      const relaySession: AgentSession = {
+        nid: result.nid,
+        kind: "Relay",
+        source: "desktop",
+        tool: normalizeTool(parsed.tool),
+        profile: parsed.profile,
+        cwd: workDir,
+        created_at: result.created_at || new Date().toISOString(),
+        status: "running",
+        remote_enabled: false,
+      };
+      ctx.agentSessionsRef.current = [relaySession, ...ctx.agentSessionsRef.current];
+
+      setTabs((prev) =>
+        prev.map((t) => (t.id === tabId ? { ...t, agentNid: result.nid } : t)),
+      );
+      window.dispatchEvent(new CustomEvent("kn-agent-sessions-changed"));
+    } catch {
+      // Agent may be stopped/unbound; local terminal startup should still work.
+    }
+  }, [ctx.agentSessionsRef, ctx.childPidRef, ctx.termRefs, setTabs]);
 
   const attachOrOpenAgentSession = useCallback(async (session: AgentSession, label?: string) => {
     ctx.dismissedAgentNidsRef.current.delete(session.nid);
@@ -141,6 +191,7 @@ export function useSessionCommands(
 
   const runInNewTab = useCallback(async (cmd: string, workDir: string, label?: string) => {
     try {
+      const policy = getRunCommandPolicy(cmd);
       const parsed = parseAiCmd(cmd);
       const tab = newTab(label || cmd.slice(0, 20), workDir);
       const activeLeaf = findLeaf(tab.rootNode, tab.activePaneId)!;
@@ -151,79 +202,6 @@ export function useSessionCommands(
 
       await waitForReady(activeLeaf.paneId);
       await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));
-
-      if (parsed) {
-        let createdNid: string | null = null;
-        try {
-          const term = ctx.termRefs.current.get(activeLeaf.paneId);
-          const cols = term?.cols ?? 100;
-          const rows = term?.rows ?? 30;
-          const created = await invoke<{ nid?: string }>("agent_ipc", {
-            method: "new_session",
-            params: {
-              tool: normalizeTool(parsed.tool),
-              profile: parsed.profile,
-              cwd: workDir,
-              cols,
-              rows,
-            },
-          });
-          if (!created.nid) throw new Error("agent new_session 未返回 nid");
-          createdNid = created.nid;
-
-          const remoteLeaf: PaneLeaf = { ...activeLeaf, sessionId: created.nid };
-          const createdSession: AgentSession = {
-            nid: created.nid,
-            kind: "Native",
-            source: "desktop",
-            tool: normalizeTool(parsed.tool),
-            profile: parsed.profile,
-            cwd: workDir,
-            created_at: new Date().toISOString(),
-            status: "running",
-            remote_enabled: false,
-          };
-          ctx.agentSessionsRef.current = [createdSession, ...ctx.agentSessionsRef.current];
-          setTabs((prev) =>
-            prev.map((t) => {
-              if (t.id !== tab.id) return t;
-              return syncActivePaneFields({
-                ...t,
-                agentNid: created.nid,
-                rootNode: replaceNode(t.rootNode, activeLeaf.paneId, remoteLeaf),
-              });
-            }),
-          );
-
-          const ptySock = await attachAgentSession(created.nid);
-
-          await attachAgentPty(remoteLeaf, ptySock);
-          setTabs((prev) =>
-            prev.map((t) => {
-              if (t.id !== tab.id) return t;
-              const leaf = findLeaf(t.rootNode, activeLeaf.paneId);
-              if (!leaf) return t;
-              const updatedLeaf: PaneLeaf = { ...leaf, ptyRunning: true };
-              return syncActivePaneFields({ ...t, rootNode: replaceNode(t.rootNode, activeLeaf.paneId, updatedLeaf) });
-            }),
-          );
-
-          saveCommandHistory(cmd, workDir, label, parsed);
-
-          return;
-        } catch (e) {
-          if (createdNid) {
-            invoke("agent_ipc", {
-              method: "kill_session",
-              params: { nid: createdNid },
-            }).catch(() => {});
-          }
-          termRefs.current.get(activeLeaf.paneId)?.writeln(`\r\n\x1b[31m[agent 会话启动失败: ${e}]\x1b[0m`);
-          setTabs((prev) => prev.filter((t) => t.id !== tab.id));
-          reportTerminalError("agent 会话启动失败", e);
-          return;
-        }
-      }
 
       await spawnPty(activeLeaf);
       setTabs((prev) =>
@@ -236,6 +214,10 @@ export function useSessionCommands(
 
       saveCommandHistory(cmd, workDir, label, parsed);
 
+      if (policy.registerRelay && parsed) {
+        registerRelaySession(tab.id, activeLeaf, parsed, workDir);
+      }
+
       await new Promise((r) => setTimeout(r, PTY_COMMAND_SETTLE_MS));
       invoke("write_pty", {
         sessionId: activeLeaf.sessionId,
@@ -245,8 +227,8 @@ export function useSessionCommands(
     } catch (e) {
       reportTerminalError("运行终端命令失败", e);
     }
-  }, [isOpen, isBottom, setIsOpen, setTabs, setActiveTabId, setHistory, setUsageCounts, saveHistory,
-      spawnPty, waitForReady, reportTerminalError, attachOrOpenAgentSession, saveCommandHistory, ctx.agentSessionsRef]);
+  }, [isOpen, setIsOpen, setTabs, setActiveTabId, spawnPty, waitForReady, reportTerminalError,
+      saveCommandHistory, registerRelaySession]);
 
   const runInTerminal = useCallback(async (cmd: string, workDir: string) => {
     await runInNewTab(cmd, workDir, cmd.slice(0, 30));

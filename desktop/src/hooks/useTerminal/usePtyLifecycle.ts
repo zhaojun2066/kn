@@ -2,8 +2,7 @@ import { useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { TerminalContext } from "./context";
 import type { PaneLeaf } from "../../lib/pane-types";
-import type { PtyEvent, TabSession } from "./types";
-// MIN_COLS, MIN_ROWS used in handleTerminalResize (useTerminalReady)
+import type { PtyEvent } from "./types";
 import { findLeaf, replaceNode } from "../../lib/pane-types";
 import { syncActivePaneFields } from "./helpers";
 
@@ -25,6 +24,16 @@ export function usePtyLifecycle(ctx: TerminalContext) {
         case "data": {
           const existing = writeBufRef.current.get(pane.paneId) || "";
           writeBufRef.current.set(pane.paneId, existing + msg.data);
+
+          const tabForPane = sessionsRef.current.find((t) =>
+            findLeaf(t.rootNode, pane.paneId) !== null,
+          );
+          if (tabForPane?.agentNid && !pane.sessionId.startsWith("s_")) {
+            invoke("agent_ipc", {
+              method: "relay_output",
+              params: { nid: tabForPane.agentNid, data: msg.data },
+            }).catch(() => {});
+          }
 
           if (!rafWriteRef.current.has(pane.paneId)) {
             const rafId = requestAnimationFrame(() => {
@@ -68,7 +77,7 @@ export function usePtyLifecycle(ctx: TerminalContext) {
 
           // Notify agent that local CLI sessions have ended. Remote-attached
           // sessions are only a desktop view onto an agent-owned PTY, so closing
-          // the pane must detach rather than kill the shared remote process.
+          // the pane must drop the local view rather than kill the shared remote process.
           if (agentNid && !isAgentAttached) {
             invoke("agent_ipc", { method: "kill_session", params: { nid: agentNid } }).catch(() => {});
           }

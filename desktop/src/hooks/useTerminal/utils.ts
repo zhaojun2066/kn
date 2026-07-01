@@ -10,6 +10,23 @@ export function parseAiCmd(cmd: string): { tool: string; profile: string } | nul
   return { tool: m[1], profile: m[2] };
 }
 
+export interface RunCommandPolicy {
+  execution: "local-pty";
+  registerRelay: boolean;
+  tool: string | null;
+  profile: string | null;
+}
+
+export function getRunCommandPolicy(cmd: string): RunCommandPolicy {
+  const parsed = parseAiCmd(cmd);
+  return {
+    execution: "local-pty",
+    registerRelay: parsed !== null,
+    tool: parsed?.tool ?? null,
+    profile: parsed?.profile ?? null,
+  };
+}
+
 export function buildResumeCmd(cmd: string): string | null {
   const parsed = parseAiCmd(cmd);
   if (!parsed) return null;

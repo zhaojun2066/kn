@@ -111,6 +111,24 @@ describe("useAgent", () => {
     expect(result.current.sessions[0].tool).toBe("claude");
   });
 
+  it("refreshes sessions when a local Relay registration event is dispatched", async () => {
+    mockInvoke.mockImplementation((_cmd: string, args: { method: string }) => {
+      if (args.method === "status") return Promise.resolve(mockStatus({ state: "connected" }));
+      if (args.method === "sessions") return Promise.resolve(mockSessions());
+      return Promise.reject(new Error("unknown"));
+    });
+
+    const { result } = renderHook(() => useAgent());
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("kn-agent-sessions-changed"));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.sessions).toHaveLength(1);
+    expect(mockInvoke).toHaveBeenCalledWith("agent_ipc", { method: "sessions" });
+  });
+
   // ── bindDevice ─────────────────────────────────────────────
 
   it("bindDevice success returns ok with bind metadata", async () => {

@@ -8,8 +8,8 @@ use clap::Parser;
 use kn_agent::{
     ack, bind, config, device, error::AgentError, ipc, proto, session, state, ws_client,
 };
-use kn_common::project::ProjectInfo;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -26,6 +26,15 @@ struct Cli {
 enum Command {
     /// 绑定设备到 kn iOS App
     Bind,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectInfo {
+    name: String,
+    path: String,
+    default_profile: Option<String>,
+    description: Option<String>,
 }
 
 // ── Project loading & watching ─────────────────────────────────
@@ -66,7 +75,15 @@ async fn send_project_list(
     >,
 ) {
     let projects = load_projects().await;
-    let info: Vec<proto::ProjectInfoOut> = projects.iter().map(|p| p.into()).collect();
+    let info: Vec<proto::ProjectInfoOut> = projects
+        .iter()
+        .map(|p| proto::ProjectInfoOut {
+            name: p.name.clone(),
+            path: p.path.clone(),
+            default_profile: p.default_profile.clone(),
+            description: p.description.clone(),
+        })
+        .collect();
     let msg = proto::WsMessageBuilder::project_list(&info);
     if let Some(tx) = outgoing.lock().await.as_ref() {
         let _ = tx.send(msg);
@@ -865,6 +882,13 @@ async fn handle_incoming(
 
                 match sessions.get(&session_nid).await {
                     Ok(Some(session_summary)) => {
+                        if !session_summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            tracing::warn!(nid = %session_nid, "忽略未开启远程的 /exit 输入");
+                            return;
+                        }
                         let nid = session_summary.nid;
                         let is_remote = session_summary
                             .remote_enabled
@@ -906,16 +930,31 @@ async fn handle_incoming(
                 // Normal input: route to PTY stdin
                 match sessions.get(&session_nid).await {
                     Ok(Some(session_summary)) => {
+                        if !session_summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            tracing::warn!(nid = %session_nid, "忽略未开启远程的 input");
+                            return;
+                        }
                         let nid = session_summary.nid.clone();
                         let text = content.clone();
-                        input_merger
-                            .push(session::InputMessage {
-                                session_id: nid.clone(),
-                                text,
-                                source: "ios".into(),
-                            })
-                            .await;
-                        tracing::info!(nid = %nid, "📱 [INPUT] 已推入 InputMerger 队列");
+                        if session_summary.kind == session::SessionKind::Relay {
+                            if let Err(e) = sessions.queue_relay_input(&nid, text).await {
+                                tracing::error!(nid = %nid, error = %e, "Relay input 入队失败");
+                            } else {
+                                tracing::info!(nid = %nid, "📱 [INPUT] 已推入 Relay 队列");
+                            }
+                        } else {
+                            input_merger
+                                .push(session::InputMessage {
+                                    session_id: nid.clone(),
+                                    text,
+                                    source: "ios".into(),
+                                })
+                                .await;
+                            tracing::info!(nid = %nid, "📱 [INPUT] 已推入 InputMerger 队列");
+                        }
                     }
                     Ok(None) => {
                         tracing::warn!(nid = %session_nid, "Input 目标会话不存在");
@@ -951,14 +990,28 @@ async fn handle_incoming(
 
             match sessions.get(&session_nid).await {
                 Ok(Some(session_summary)) => {
+                    if !session_summary
+                        .remote_enabled
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        tracing::warn!(nid = %session_nid, "忽略未开启远程的 ctrl");
+                        return;
+                    }
+                    let nid = session_summary.nid.clone();
                     let text = String::from_utf8_lossy(&byte).to_string();
-                    input_merger
-                        .push(session::InputMessage {
-                            session_id: session_summary.nid,
-                            text,
-                            source: "ios".into(),
-                        })
-                        .await;
+                    if session_summary.kind == session::SessionKind::Relay {
+                        if let Err(e) = sessions.queue_relay_input(&nid, text).await {
+                            tracing::error!(nid = %nid, error = %e, "Relay ctrl 入队失败");
+                        }
+                    } else {
+                        input_merger
+                            .push(session::InputMessage {
+                                session_id: nid,
+                                text,
+                                source: "ios".into(),
+                            })
+                            .await;
+                    }
                 }
                 Ok(None) => {
                     tracing::warn!(nid = %session_nid, "Ctrl 目标会话不存在");
@@ -982,6 +1035,13 @@ async fn handle_incoming(
 
             match sessions.get(&session_nid).await {
                 Ok(Some(session_summary)) => {
+                    if !session_summary
+                        .remote_enabled
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        tracing::warn!(nid = %session_nid, "忽略未开启远程的 resize");
+                        return;
+                    }
                     if let Err(e) = sessions
                         .resize_from_source(
                             &session_summary.nid,
@@ -1074,7 +1134,12 @@ async fn handle_incoming(
         proto::AgentIncoming::ResumeSession { session_nid } => {
             tracing::info!(nid = %session_nid, "收到 resume_session");
             match sessions.get(&session_nid).await {
-                Ok(Some(summary)) if summary.status != crate::session::SessionStatus::Ended => {
+                Ok(Some(summary))
+                    if summary.status != crate::session::SessionStatus::Ended
+                        && summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed) =>
+                {
                     // 会话存在且未结束 → 重发 session_created 恢复云端状态
                     let msg = proto::WsMessageBuilder::session_created(
                         &summary.nid,
@@ -1107,6 +1172,13 @@ async fn handle_incoming(
             tracing::info!(nid = %session_nid, reason = %reason, "收到 kill_session");
             match sessions.get(&session_nid).await {
                 Ok(Some(session_summary)) => {
+                    if !session_summary
+                        .remote_enabled
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        tracing::warn!(nid = %session_nid, "忽略未开启远程的 kill_session");
+                        return;
+                    }
                     let nid = session_summary.nid;
                     let is_remote = session_summary
                         .remote_enabled

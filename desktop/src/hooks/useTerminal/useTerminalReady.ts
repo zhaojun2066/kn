@@ -70,6 +70,13 @@ export function useTerminalReady(ctx: TerminalContext) {
       return;
     }
     invoke("resize_pty", { sessionId: leaf.sessionId, cols, rows }).catch(() => {});
+    const tabForPane = sessionsRef.current.find((tab) => findPaneInTabs([tab], paneId) !== null);
+    if (tabForPane?.agentNid) {
+      invoke("agent_ipc", {
+        method: "resize",
+        params: { nid: tabForPane.agentNid, cols, rows },
+      }).catch(() => {});
+    }
   }, [sessionsRef]);
 
   const attachTerminal = useCallback((paneId: string, term: Terminal) => {

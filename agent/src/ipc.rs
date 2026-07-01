@@ -20,13 +20,14 @@
 //! | resume             | —                                  | Resume agent                         |
 //! | new_session        | tool, profile?, cwd?, cols?, rows? | Create session + spawn PTY + CLI     |
 //! | attach             | nid                                | Create pty.sock, bridge PTY I/O      |
-//! | detach             | nid                                | Unsubscribe (预留, 未实现)            |
 //! | input              | nid, text                          | Write text to PTY stdin              |
 //! | ctrl               | nid, signal                        | Send ctrl_c/ctrl_d/ctrl_z to PTY     |
 //! | resize             | nid, cols, rows                    | Update terminal size                 |
 //! | kill_session       | nid                                | SIGKILL PTY + end session + notify cloud |
 //! | register_session   | tool, profile?, cwd, source?       | Register desktop PTY (Relay, no PTY spawn) |
-//! | get_output_history | nid, offset?, limit?               | Paginated output log (stub)          |
+//! | set_remote_enabled | nid, enabled                       | Toggle iOS visibility/control            |
+//! | relay_output       | nid, data                          | Forward desktop-owned PTY output         |
+//! | poll_relay_input   | nid                                | Drain queued iOS input for Relay session |
 //! | get_version        | —                                  | Return agent version                 |
 //! | redeem             | code                               | Redeem card code (requires binding)  |
 
@@ -290,14 +291,14 @@ impl IpcHandle {
             "resume" => self.handle_resume(req).await,
             "new_session" => self.handle_new_session(req).await,
             "attach" => self.handle_attach(req).await,
-            "detach" => self.handle_detach(req).await,
             "input" => self.handle_input(req).await,
             "ctrl" => self.handle_ctrl(req).await,
             "resize" => self.handle_resize(req).await,
             "kill_session" => self.handle_kill_session(req).await,
             "register_session" => self.handle_register_session(req).await,
+            "relay_output" => self.handle_relay_output(req).await,
+            "poll_relay_input" => self.handle_poll_relay_input(req).await,
             "set_remote_enabled" => self.handle_set_remote_enabled(req).await,
-            "get_output_history" => self.handle_get_output_history(req).await,
             "get_version" => self.handle_get_version(req).await,
             "redeem" => self.handle_redeem(req).await,
             "cancel_bind" => self.handle_cancel_bind(req).await,
@@ -686,20 +687,6 @@ impl IpcHandle {
         }
     }
 
-    /// `detach` — 取消订阅会话输出（预留，当前未实现）。
-    async fn handle_detach(&self, req: &IpcRequest) -> String {
-        let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
-            Some(n) => n,
-            None => return err_response(&req.id, "INVALID_PARAMS", "缺少 nid 参数"),
-        };
-        // 先校验会话存在性，再返回未实现
-        match self.sessions.get(nid).await {
-            Ok(Some(_)) => err_response(&req.id, "NOT_IMPLEMENTED", "detach 功能尚未实现"),
-            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
-            Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
-        }
-    }
-
     /// `input` — write text to session PTY stdin.
     async fn handle_input(&self, req: &IpcRequest) -> String {
         let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
@@ -924,6 +911,8 @@ impl IpcHandle {
             .await
         {
             Ok(session) => {
+                let _ = self.sessions.mark_running(&nid).await;
+
                 // Desktop PTY sessions should NOT have remote control enabled by default.
                 // The user must explicitly enable remote via the AgentPanel.
                 let _ = self.sessions.set_remote_enabled(&nid, false).await;
@@ -931,7 +920,9 @@ impl IpcHandle {
                 // 存储 PID（用于心跳检测 + agent 重启恢复）
                 if pid > 0 {
                     self.sessions.set_child_pid(&nid, pid).await;
-                    let _ = crate::session::persistence::write_session_record(&session, pid);
+                    if let Ok(Some(current)) = self.sessions.get(&nid).await {
+                        let _ = crate::session::persistence::write_session_record(&current, pid);
+                    }
                 }
 
                 // 本地会话不需要同步到云端，等用户开启远程时再发 session_created
@@ -968,22 +959,22 @@ impl IpcHandle {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        // ── 检查 WSS 连接 ──
-        let outgoing_tx = {
-            let guard = self.outgoing_tx_ref.lock().await;
-            match guard.as_ref() {
-                Some(tx) => tx.clone(),
-                None => {
-                    return err_response(
-                        &req.id,
-                        "WSS_NOT_CONNECTED",
-                        "Agent 未连接到云端，请先绑定设备",
-                    );
-                }
-            }
-        };
-
         if enabled {
+            // ── 检查 WSS 连接 ──
+            let outgoing_tx = {
+                let guard = self.outgoing_tx_ref.lock().await;
+                match guard.as_ref() {
+                    Some(tx) => tx.clone(),
+                    None => {
+                        return err_response(
+                            &req.id,
+                            "WSS_NOT_CONNECTED",
+                            "Agent 未连接到云端，请先绑定设备",
+                        );
+                    }
+                }
+            };
+
             // ── 开启远程 ──
             // 1. 复活已结束会话
             let _ = self.sessions.reactivate_if_ended(nid).await;
@@ -1048,9 +1039,12 @@ impl IpcHandle {
             }
         } else {
             // ── 关闭远程 ──
-            // fire-and-forget: 云端不返回 session_ended_ack，不等 ACK
-            let msg = crate::proto::WsMessageBuilder::session_ended(nid, "remote_disabled");
-            let _ = outgoing_tx.send(msg);
+            // fire-and-forget: 云端不返回 session_ended_ack，不等 ACK。
+            // 即使当前 WSS 不在线，也先关闭本地 remote_enabled，防止重连后再次暴露。
+            if let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref() {
+                let msg = crate::proto::WsMessageBuilder::session_ended(nid, "remote_disabled");
+                let _ = tx.send(msg);
+            }
             let _ = self.sessions.set_remote_enabled(nid, false).await;
             tracing::info!(nid = %nid, "远程已关闭（fire-and-forget）");
         }
@@ -1061,35 +1055,93 @@ impl IpcHandle {
         )
     }
 
-    /// `get_output_history` — paginated output log (stub: Phase 2 PTY integration).
-    async fn handle_get_output_history(&self, req: &IpcRequest) -> String {
+    /// `relay_output` — desktop-owned PTY output for a Relay session.
+    async fn handle_relay_output(&self, req: &IpcRequest) -> String {
         let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
             Some(n) => n,
             None => return err_response(&req.id, "INVALID_PARAMS", "缺少 nid 参数"),
         };
-        let offset = req
-            .params
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let limit = req
-            .params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(100);
+        let data = match req.params.get("data").and_then(|v| v.as_str()) {
+            Some(d) => d,
+            None => return err_response(&req.id, "INVALID_PARAMS", "缺少 data 参数"),
+        };
 
         match self.sessions.get(nid).await {
-            Ok(Some(_)) => ok_response(
+            Ok(Some(session)) => {
+                if session.kind != crate::session::SessionKind::Relay {
+                    return err_response(
+                        &req.id,
+                        "INVALID_PARAMS",
+                        "relay_output 仅支持 Relay 会话",
+                    );
+                }
+                session.record_output_snippet(data);
+                crate::session::OutputFanout::append_log_static(nid, data.as_bytes());
+
+                if session
+                    .remote_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    if let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref() {
+                        let _ = tx.send(crate::proto::WsMessageBuilder::output(nid, data));
+                    }
+                }
+                ok_response(&req.id, serde_json::json!({"ok": true, "nid": nid}))
+            }
+            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
+            Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
+        }
+    }
+
+    /// `poll_relay_input` — desktop polls remote input queued for a Relay session.
+    async fn handle_poll_relay_input(&self, req: &IpcRequest) -> String {
+        let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => return err_response(&req.id, "INVALID_PARAMS", "缺少 nid 参数"),
+        };
+
+        match self.sessions.get(nid).await {
+            Ok(Some(session)) => {
+                let status = match session.status {
+                    crate::session::SessionStatus::Created => "created",
+                    crate::session::SessionStatus::Running => "running",
+                    crate::session::SessionStatus::Ended => "ended",
+                };
+                let inputs = if session.kind == crate::session::SessionKind::Relay
+                    && session.status != crate::session::SessionStatus::Ended
+                {
+                    match self.sessions.take_relay_inputs(nid).await {
+                        Ok(items) => items,
+                        Err(e) => return err_response(&req.id, "INTERNAL", &e.to_string()),
+                    }
+                } else {
+                    Vec::new()
+                };
+
+                ok_response(
+                    &req.id,
+                    serde_json::json!({
+                        "ok": true,
+                        "nid": nid,
+                        "inputs": inputs,
+                        "status": status,
+                        "ended": session.status == crate::session::SessionStatus::Ended,
+                        "cols": session.cols,
+                        "rows": session.rows,
+                        "viewport_owner": session.viewport_owner.as_str(),
+                    }),
+                )
+            }
+            Ok(None) => ok_response(
                 &req.id,
                 serde_json::json!({
                     "ok": true,
-                    "entries": [],
-                    "total": 0,
-                    "offset": offset,
-                    "limit": limit,
+                    "nid": nid,
+                    "inputs": [],
+                    "status": "ended",
+                    "ended": true,
                 }),
             ),
-            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }
     }

@@ -5,12 +5,6 @@ import { syncActivePaneFields } from "./helpers";
 
 let syncedTabCounter = 1;
 
-export interface AgentSessionMatch {
-  tool: string;
-  profile: string | null;
-  cwd: string;
-}
-
 export function isRunningNativeSession(session: AgentSession): boolean {
   return session.kind === "Native" && session.status === "running";
 }
