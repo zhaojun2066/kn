@@ -36,6 +36,10 @@ fn backoff_delay(attempt: u32) -> Duration {
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 const PONG_TIMEOUT: Duration = Duration::from_secs(90);
 
+fn text_preview(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
 // ── Public API ──────────────────────────────────────────────
 
 /// 运行 WebSocket 连接循环，返回出站消息发送端。
@@ -237,7 +241,11 @@ async fn connect_and_run(
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::debug!("JSON 解析失败: {} — 原始: {}", e, &text[..text.len().min(200)]);
+                                    tracing::debug!(
+                                        "JSON 解析失败: {} — 原始: {}",
+                                        e,
+                                        text_preview(&text, 200)
+                                    );
                                 }
                             }
                         }
@@ -396,5 +404,14 @@ mod tests {
         let mut delays: Vec<u128> = (0..10).map(|_| backoff_delay(0).as_millis()).collect();
         delays.sort();
         assert!(delays[0] < delays[9] || delays[0] >= 750);
+    }
+
+    #[test]
+    fn test_text_preview_truncates_on_char_boundary() {
+        let text = format!("{}{}", "a".repeat(199), "中文结尾");
+        let preview = text_preview(&text, 200);
+
+        assert_eq!(preview.chars().count(), 200);
+        assert!(preview.ends_with('中'));
     }
 }

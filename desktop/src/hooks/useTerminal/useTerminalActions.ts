@@ -3,8 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { TerminalContext } from "./context";
 import { PTY_READY_SETTLE_MS } from "./types";
 import type { PaneLeaf } from "../../lib/pane-types";
-import { findLeaf, flattenPanes, replaceNode } from "../../lib/pane-types";
+import { findLeaf, replaceNode } from "../../lib/pane-types";
 import { syncActivePaneFields, newTab } from "./helpers";
+import { collectTerminalCloseKills, invokeTerminalCloseTargets } from "./useTabManagement";
 
 export function useTerminalActions(
   ctx: TerminalContext,
@@ -93,13 +94,9 @@ export function useTerminalActions(
     for (const [, id] of rafWriteRef.current) { cancelAnimationFrame(id); }
     rafWriteRef.current.clear();
 
-    // Kill all PTYs across all panes
+    // Close the panel using the same local-vs-remote lifecycle rules as tab close.
     for (const tab of currentTabs) {
-      for (const leaf of flattenPanes(tab.rootNode)) {
-        if (leaf.ptyRunning) {
-          invoke("kill_pty", { sessionId: leaf.sessionId }).catch(() => {});
-        }
-      }
+      invokeTerminalCloseTargets(collectTerminalCloseKills(tab));
     }
   }, [isBottom, setIsOpen, setTabs, setActiveTabId, sessionsRef, activeTabIdRef,
       writeBufRef, termRefs, rafWriteRef, ctx.readyPaneIdsRef, ctx.readyPromiseRefs]);

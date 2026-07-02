@@ -116,7 +116,18 @@ export function useSessionCommands(
       ctx.agentSessionsRef.current = [relaySession, ...ctx.agentSessionsRef.current];
 
       setTabs((prev) =>
-        prev.map((t) => (t.id === tabId ? { ...t, agentNid: result.nid } : t)),
+        prev.map((t) => {
+          if (t.id !== tabId) return t;
+          const leaf = findLeaf(t.rootNode, pane.paneId);
+          if (!leaf) return { ...t, agentNid: result.nid, agentRemoteEnabled: false };
+          const updatedLeaf: PaneLeaf = { ...leaf, agentNid: result.nid, agentRemoteEnabled: false };
+          return syncActivePaneFields({
+            ...t,
+            agentNid: result.nid,
+            agentRemoteEnabled: false,
+            rootNode: replaceNode(t.rootNode, pane.paneId, updatedLeaf),
+          });
+        }),
       );
       window.dispatchEvent(new CustomEvent("kn-agent-sessions-changed"));
     } catch {
@@ -143,12 +154,15 @@ export function useSessionCommands(
         sessionId: session.nid,
         name: label || `${session.tool} · 本地`,
         workDir: session.cwd,
+        agentNid: session.nid,
+        agentRemoteEnabled: session.remote_enabled,
       };
       const agentTab = syncActivePaneFields({
         ...tab,
         name: label || `${session.tool} · 本地`,
         workDir: session.cwd,
         agentNid: session.nid,
+        agentRemoteEnabled: session.remote_enabled,
         rootNode: replaceNode(tab.rootNode, activeLeaf.paneId, pane),
       });
       tabId = agentTab.id;

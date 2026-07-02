@@ -400,6 +400,11 @@ impl SessionManager {
         }
     }
 
+    /// 清理 desktop-owned Relay 的 PID 跟踪；Relay PTY 已由桌面侧结束。
+    pub async fn clear_child_pid(&self, nid: &str) {
+        self.child_pids.lock().await.remove(nid);
+    }
+
     /// Queue remote input for a desktop-owned Relay session.
     pub async fn queue_relay_input(&self, nid: &str, text: String) -> Result<()> {
         let session = self

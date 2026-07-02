@@ -19,8 +19,12 @@ import { useSessionHistory } from "./useSessionHistory";
 import { useTabManagement } from "./useTabManagement";
 import { usePaneManagement } from "./usePaneManagement";
 import type { TerminalContext } from "./context";
-import { syncNativeAgentSessions } from "./agentSessionSync";
-import { findLeaf } from "../../lib/pane-types";
+import {
+  filterInitialVisibleAgentSessions,
+  syncAgentSessionState,
+  syncNativeAgentSessions,
+} from "./agentSessionSync";
+import { findLeaf, flattenPanes } from "../../lib/pane-types";
 
 export function useTerminal(panelId: string = "right") {
   const isBottom = panelId === "bottom";
@@ -123,13 +127,15 @@ export function useTerminal(panelId: string = "right") {
 
   const syncAgentSessions = useCallback((sessions: AgentSession[]) => {
     agentSessionsRef.current = sessions;
+    if (!isBottom) {
+      state.setTabs((prev) => syncAgentSessionState(prev, sessions));
+    }
     if (!isBottom && !didInitialAgentSessionSyncRef.current && sessions.length > 0) {
-      const visibleSessions = sessions.filter((session) => {
-        const createdAt = Date.parse(session.created_at);
-        return Number.isFinite(createdAt) &&
-          createdAt <= startupAgentSessionCutoffMsRef.current &&
-          !dismissedAgentNidsRef.current.has(session.nid);
-      });
+      const visibleSessions = filterInitialVisibleAgentSessions(
+        sessions,
+        startupAgentSessionCutoffMsRef.current,
+        dismissedAgentNidsRef.current,
+      );
       if (visibleSessions.length === 0) return;
       didInitialAgentSessionSyncRef.current = true;
       state.setTabs((prev) => syncNativeAgentSessions(prev, visibleSessions));
@@ -143,7 +149,10 @@ export function useTerminal(panelId: string = "right") {
       for (const tab of state.sessionsRef.current) {
         if (!tab.agentNid || relayPollInFlightRef.current.has(tab.agentNid)) continue;
 
-        const leaf = findLeaf(tab.rootNode, tab.activePaneId);
+        const leaves = flattenPanes(tab.rootNode);
+        const leaf =
+          leaves.find((item) => item.agentNid === tab.agentNid) ??
+          (leaves.length === 1 ? findLeaf(tab.rootNode, tab.activePaneId) : null);
         if (!leaf?.ptyRunning || leaf.sessionId.startsWith("s_")) continue;
 
         relayPollInFlightRef.current.add(tab.agentNid);

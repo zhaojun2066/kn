@@ -3,8 +3,30 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import type { TerminalContext } from "./context";
 import type { PaneLeaf } from "../../lib/pane-types";
 import type { PtyEvent } from "./types";
-import { findLeaf, replaceNode } from "../../lib/pane-types";
+import { findLeaf, flattenPanes, replaceNode } from "../../lib/pane-types";
 import { syncActivePaneFields } from "./helpers";
+import type { TabSession } from "./types";
+
+export interface PtyExitAgentNotification {
+  method: "relay_exit";
+  params: {
+    nid: string;
+    reason: "process_exit";
+  };
+}
+
+export function getPtyExitAgentNotification(
+  tab: TabSession | undefined,
+  pane: PaneLeaf,
+): PtyExitAgentNotification | null {
+  if (!tab || pane.sessionId.startsWith("s_")) return null;
+  const agentNid = pane.agentNid ?? (flattenPanes(tab.rootNode).length === 1 ? tab.agentNid : undefined);
+  if (!agentNid) return null;
+  return {
+    method: "relay_exit",
+    params: { nid: agentNid, reason: "process_exit" },
+  };
+}
 
 export function usePtyLifecycle(ctx: TerminalContext) {
   const {
@@ -61,7 +83,7 @@ export function usePtyLifecycle(ctx: TerminalContext) {
           const tabForPane = sessionsRef.current.find((t) =>
             findLeaf(t.rootNode, pane.paneId) !== null,
           );
-          const agentNid = tabForPane?.agentNid;
+          const agentNotification = getPtyExitAgentNotification(tabForPane, pane);
 
           setTabs((prev) =>
             prev.map((tab) => {
@@ -75,11 +97,11 @@ export function usePtyLifecycle(ctx: TerminalContext) {
             }),
           );
 
-          // Notify agent that local CLI sessions have ended. Remote-attached
-          // sessions are only a desktop view onto an agent-owned PTY, so closing
-          // the pane must drop the local view rather than kill the shared remote process.
-          if (agentNid && !isAgentAttached) {
-            invoke("agent_ipc", { method: "kill_session", params: { nid: agentNid } }).catch(() => {});
+          if (agentNotification) {
+            invoke("agent_ipc", {
+              method: agentNotification.method,
+              params: agentNotification.params,
+            }).catch(() => {});
           }
           break;
         }

@@ -25,6 +25,7 @@
 //! | resize             | nid, cols, rows                    | Update terminal size                 |
 //! | kill_session       | nid                                | SIGKILL PTY + end session + notify cloud |
 //! | register_session   | tool, profile?, cwd, source?       | Register desktop PTY (Relay, no PTY spawn) |
+//! | relay_exit         | nid, reason?                       | Mark desktop-owned Relay PTY as ended     |
 //! | set_remote_enabled | nid, enabled                       | Toggle iOS visibility/control            |
 //! | relay_output       | nid, data                          | Forward desktop-owned PTY output         |
 //! | poll_relay_input   | nid                                | Drain queued iOS input for Relay session |
@@ -296,6 +297,7 @@ impl IpcHandle {
             "resize" => self.handle_resize(req).await,
             "kill_session" => self.handle_kill_session(req).await,
             "register_session" => self.handle_register_session(req).await,
+            "relay_exit" => self.handle_relay_exit(req).await,
             "relay_output" => self.handle_relay_output(req).await,
             "poll_relay_input" => self.handle_poll_relay_input(req).await,
             "set_remote_enabled" => self.handle_set_remote_enabled(req).await,
@@ -944,10 +946,52 @@ impl IpcHandle {
         }
     }
 
+    /// `relay_exit` — mark a desktop-owned Relay PTY as ended without killing a process.
+    async fn handle_relay_exit(&self, req: &IpcRequest) -> String {
+        let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => return err_response(&req.id, "INVALID_PARAMS", "缺少 nid 参数"),
+        };
+        let reason = req
+            .params
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("process_exit");
+
+        match self.sessions.get(nid).await {
+            Ok(Some(session)) => {
+                if session.kind != crate::session::SessionKind::Relay {
+                    return err_response(&req.id, "INVALID_PARAMS", "relay_exit 仅支持 Relay 会话");
+                }
+
+                let remote_was_enabled = session
+                    .remote_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed);
+
+                if let Ok(Some(msg)) = self.sessions.report_session_ended(nid, reason).await {
+                    if remote_was_enabled {
+                        if let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref() {
+                            let _ = tx.send(msg.to_json());
+                            tracing::info!(nid = %nid, reason = %reason, "Relay session_ended 已发送到 Cloud");
+                        }
+                    }
+                }
+                self.sessions.clear_child_pid(nid).await;
+
+                ok_response(
+                    &req.id,
+                    serde_json::json!({"ok": true, "nid": nid, "reason": reason}),
+                )
+            }
+            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
+            Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
+        }
+    }
+
     /// `set_remote_enabled` — enable/disable remote control for a session.
     ///
     /// 开启: 发 session_created → 等 ACK → 成功才设 remote_enabled=true
-    /// 关闭: 发 session_ended → 等 ACK → 成功才设 remote_enabled=false
+    /// 关闭: 发 session_ended(remote_disabled) → fire-and-forget → 立即设 remote_enabled=false
     async fn handle_set_remote_enabled(&self, req: &IpcRequest) -> String {
         let nid = match req.params.get("nid").and_then(|v| v.as_str()) {
             Some(n) => n,

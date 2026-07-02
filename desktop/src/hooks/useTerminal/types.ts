@@ -19,8 +19,11 @@ export interface TabSession {
   sessionId: string;
   ptyRunning: boolean;
   // Agent session NID — set after registering the CLI session with the agent.
-  // Used to notify agent/WSS when the tab is closed or PTY exits.
+  // Used to associate this tab with agent remote-management state.
   agentNid?: string;
+  // True only after the agent has ACKed remote enablement with cloud.
+  // Closing a remote-enabled tab detaches the view instead of killing the process.
+  agentRemoteEnabled?: boolean;
 }
 
 export interface SessionRecord {

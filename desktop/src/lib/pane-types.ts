@@ -17,6 +17,8 @@ export interface PaneLeaf {
   name: string;
   ptyRunning: boolean;
   workDir: string;
+  agentNid?: string;
+  agentRemoteEnabled?: boolean;
 }
 
 export interface PaneSplit {

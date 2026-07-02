@@ -540,6 +540,46 @@ fn test_ipc_kill_registered_relay_session_marks_it_ended() {
 }
 
 #[test]
+fn test_ipc_relay_exit_marks_registered_relay_ended_without_kill() {
+    let dir = TempDir::new("ipc-relay-exit");
+    let _agent = spawn_agent(&dir);
+    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req(
+            "1",
+            "register_session",
+            serde_json::json!({
+                "tool": "claude",
+                "profile": "work",
+                "cwd": ".",
+                "source": "desktop",
+            }),
+        ),
+    );
+    let nid = assert_ok(&resp)["nid"].as_str().unwrap().to_string();
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req(
+            "2",
+            "relay_exit",
+            serde_json::json!({"nid": &nid, "reason": "process_exit"}),
+        ),
+    );
+    assert_ok(&resp);
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("3", "poll_relay_input", serde_json::json!({"nid": &nid})),
+    );
+    let result = assert_ok(&resp);
+    assert_eq!(result["status"].as_str().unwrap(), "ended");
+    assert_eq!(result["ended"].as_bool().unwrap(), true);
+}
+
+#[test]
 fn test_ipc_attach() {
     let dir = TempDir::new("ipc-attach");
     let _agent = spawn_agent(&dir);

@@ -1078,20 +1078,21 @@ async fn handle_incoming(
                 "收到 replay_output 请求，读取本地输出日志"
             );
 
-            match session::OutputFanout::replay_log(&session_nid) {
-                Some(data) => {
+            let replay = session::OutputFanout::replay_log_result(&session_nid);
+            match replay.status {
+                "ok" => {
                     // 环形日志存储的是原始字节（包含 ANSI escape），直接转为 String
-                    let ansi_text = String::from_utf8_lossy(&data).into_owned();
-                    let parts = ansi_text.as_bytes().len();
                     tracing::info!(
                         nid = %session_nid,
-                        bytes = parts,
+                        bytes = replay.bytes,
                         "回放输出日志"
                     );
 
                     // 分块发送：每块最多 32KB，避免单条 WSS 消息过大
                     const CHUNK_SIZE: usize = 32 * 1024;
+                    let ansi_text = String::from_utf8_lossy(&replay.data).into_owned();
                     let mut offset = 0;
+                    let mut chunks = 0usize;
                     while offset < ansi_text.len() {
                         let end = std::cmp::min(offset + CHUNK_SIZE, ansi_text.len());
                         // 在 UTF-8 字符边界切割，避免截断多字节字符
@@ -1104,14 +1105,53 @@ async fn handle_incoming(
                         if let Some(tx) = outgoing.lock().await.as_ref() {
                             let _ = tx.send(msg);
                         }
+                        chunks += 1;
                         offset = chunk_end;
                     }
+                    let done = proto::WsMessageBuilder::replay_output_done(
+                        &session_nid,
+                        "ok",
+                        replay.bytes,
+                        chunks,
+                        None,
+                    );
+                    if let Some(tx) = outgoing.lock().await.as_ref() {
+                        let _ = tx.send(done);
+                    }
                 }
-                None => {
+                "empty" => {
                     tracing::warn!(
                         nid = %session_nid,
                         "replay_output: 未找到输出日志或日志为空"
                     );
+                    let done = proto::WsMessageBuilder::replay_output_done(
+                        &session_nid,
+                        "empty",
+                        0,
+                        0,
+                        None,
+                    );
+                    if let Some(tx) = outgoing.lock().await.as_ref() {
+                        let _ = tx.send(done);
+                    }
+                }
+                _ => {
+                    let message = replay.message.as_deref().unwrap_or("读取输出日志失败");
+                    tracing::warn!(
+                        nid = %session_nid,
+                        message = %message,
+                        "replay_output: 读取输出日志失败"
+                    );
+                    let done = proto::WsMessageBuilder::replay_output_done(
+                        &session_nid,
+                        "error",
+                        0,
+                        0,
+                        Some(message),
+                    );
+                    if let Some(tx) = outgoing.lock().await.as_ref() {
+                        let _ = tx.send(done);
+                    }
                 }
             }
         }

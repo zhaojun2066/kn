@@ -10,6 +10,7 @@ import { syncActivePaneFields, newSessionId } from "./helpers";
 import { PTY_READY_SETTLE_MS } from "./types";
 import type { SplitDirection, NavDirection } from "../../lib/pane-types";
 import { createInitialLeaf } from "../../lib/pane-types";
+import { collectPaneCloseKills, invokeTerminalCloseTargets } from "./useTabManagement";
 
 export function usePaneManagement(
   ctx: TerminalContext,
@@ -103,9 +104,7 @@ export function usePaneManagement(
     const targetLeaf = findLeaf(tab.rootNode, targetPaneId);
     if (!targetLeaf) return;
 
-    if (targetLeaf.ptyRunning) {
-      invoke("kill_pty", { sessionId: targetLeaf.sessionId }).catch(() => {});
-    }
+    invokeTerminalCloseTargets(collectPaneCloseKills(tab, targetLeaf.paneId));
     termRefs.current.delete(targetLeaf.paneId);
     writeBufRef.current.delete(targetLeaf.paneId);
     cleanupReadyWait(targetLeaf.paneId);

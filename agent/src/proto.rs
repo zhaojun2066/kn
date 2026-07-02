@@ -363,6 +363,27 @@ impl WsMessageBuilder {
         .to_string()
     }
 
+    /// 会话输出回放完成通知。Cloud 转发给 iOS，用于区分“无历史输出”和“仍在等待输出”。
+    pub fn replay_output_done(
+        session_nid: &str,
+        status: &str,
+        bytes: usize,
+        chunks: usize,
+        message: Option<&str>,
+    ) -> String {
+        serde_json::json!({
+            "type": "replay_output_done",
+            "data": {
+                "sessionId": session_nid,
+                "status": status,
+                "bytes": bytes,
+                "chunks": chunks,
+                "message": message
+            }
+        })
+        .to_string()
+    }
+
     /// 错误通知（Agent → Cloud → iOS）。
     pub fn error_notify(code: &str, message: &str) -> String {
         serde_json::json!({
@@ -703,6 +724,31 @@ mod tests {
         assert_eq!(parsed["data"]["sessionId"], "s_abc123");
         assert!(parsed["data"].get("to_session_id").is_none());
         assert_eq!(parsed["data"]["ansi_text"], "hello\x1b[0m");
+    }
+
+    #[test]
+    fn test_outbound_replay_output_done() {
+        let json = WsMessageBuilder::replay_output_done("s_abc123", "ok", 12345, 2, None);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "replay_output_done");
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["data"]["status"], "ok");
+        assert_eq!(parsed["data"]["bytes"], 12345);
+        assert_eq!(parsed["data"]["chunks"], 2);
+        assert!(parsed["data"]["message"].is_null());
+    }
+
+    #[test]
+    fn test_outbound_replay_output_done_with_message() {
+        let json =
+            WsMessageBuilder::replay_output_done("s_abc123", "error", 0, 0, Some("read failed"));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "replay_output_done");
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["data"]["status"], "error");
+        assert_eq!(parsed["data"]["bytes"], 0);
+        assert_eq!(parsed["data"]["chunks"], 0);
+        assert_eq!(parsed["data"]["message"], "read failed");
     }
 
     #[test]

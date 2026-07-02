@@ -1,45 +1,76 @@
 import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { TerminalContext } from "./context";
-import { flattenPanes } from "../../lib/pane-types";
+import { findLeaf, flattenPanes, type PaneLeaf } from "../../lib/pane-types";
 import type { TabSession } from "./types";
 import { newTab } from "./helpers";
 
 export interface TerminalCloseKillTargets {
   ptySessionIds: string[];
   agentNids: string[];
+  relayExitNids: string[];
 }
 
-export function collectTerminalCloseKills(tab: TabSession): TerminalCloseKillTargets {
+function emptyTargets(): TerminalCloseKillTargets {
+  return { ptySessionIds: [], agentNids: [], relayExitNids: [] };
+}
+
+function mergeTargets(targets: TerminalCloseKillTargets[]): TerminalCloseKillTargets {
   const ptySessionIds = new Set<string>();
   const agentNids = new Set<string>();
-
-  for (const leaf of flattenPanes(tab.rootNode)) {
-    if (leaf.sessionId.startsWith("s_")) {
-      agentNids.add(leaf.sessionId);
-    } else if (leaf.ptyRunning) {
-      ptySessionIds.add(leaf.sessionId);
-    }
+  const relayExitNids = new Set<string>();
+  for (const target of targets) {
+    target.ptySessionIds.forEach((id) => ptySessionIds.add(id));
+    target.agentNids.forEach((id) => agentNids.add(id));
+    target.relayExitNids.forEach((id) => relayExitNids.add(id));
   }
-
-  if (tab.agentNid) {
-    agentNids.add(tab.agentNid);
-  }
-
   return {
     ptySessionIds: Array.from(ptySessionIds),
     agentNids: Array.from(agentNids),
+    relayExitNids: Array.from(relayExitNids),
   };
 }
 
-function killTabProcesses(tab: TabSession): void {
-  const targets = collectTerminalCloseKills(tab);
+function collectLeafCloseKills(tab: TabSession, leaf: PaneLeaf): TerminalCloseKillTargets {
+  if (leaf.sessionId.startsWith("s_")) return emptyTargets();
+
+  const leafAgentNid = leaf.agentNid ?? (flattenPanes(tab.rootNode).length === 1 ? tab.agentNid : undefined);
+  const leafRemoteEnabled =
+    leaf.agentRemoteEnabled ??
+    (flattenPanes(tab.rootNode).length === 1 ? tab.agentRemoteEnabled : false);
+
+  if (leafRemoteEnabled) return emptyTargets();
+
+  const ptySessionIds = leaf.ptyRunning ? [leaf.sessionId] : [];
+  const relayExitNids = leafAgentNid ? [leafAgentNid] : [];
+  return { ptySessionIds, agentNids: [], relayExitNids };
+}
+
+export function collectPaneCloseKills(tab: TabSession, paneId: string): TerminalCloseKillTargets {
+  const leaf = findLeaf(tab.rootNode, paneId);
+  if (!leaf) return emptyTargets();
+  return collectLeafCloseKills(tab, leaf);
+}
+
+export function collectTerminalCloseKills(tab: TabSession): TerminalCloseKillTargets {
+  const leaves = flattenPanes(tab.rootNode);
+  return mergeTargets(leaves.map((leaf) => collectLeafCloseKills(tab, leaf)));
+}
+
+export function invokeTerminalCloseTargets(targets: TerminalCloseKillTargets): void {
   for (const sessionId of targets.ptySessionIds) {
     invoke("kill_pty", { sessionId }).catch(() => {});
   }
   for (const nid of targets.agentNids) {
     invoke("agent_ipc", { method: "kill_session", params: { nid } }).catch(() => {});
   }
+  for (const nid of targets.relayExitNids) {
+    invoke("agent_ipc", { method: "relay_exit", params: { nid, reason: "user_closed_tab" } }).catch(() => {});
+  }
+}
+
+function killTabProcesses(tab: TabSession): void {
+  invokeTerminalCloseTargets(collectTerminalCloseKills(tab));
 }
 
 export function useTabManagement(

@@ -188,8 +188,12 @@ pub fn run() {
 
             let _ = std::fs::create_dir_all(&agent_dir);
 
-            // ── Dev mode: always restart agent with latest debug binary ──
-            if cfg!(debug_assertions) {
+            // ── Dev mode: normally restart agent with latest debug binary ──
+            // Set KN_NO_AGENT_RESTART=true to skip all desktop-side agent management
+            // (dev.sh/dev-ui.sh manage the launchd agent before starting Tauri).
+            if cfg!(debug_assertions) && std::env::var("KN_NO_AGENT_RESTART").is_ok() {
+                eprintln!("[kn] dev: KN_NO_AGENT_RESTART=true, skipping desktop agent management");
+            } else if cfg!(debug_assertions) {
                 let debug_agent = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../target/debug/kn-agent");
 

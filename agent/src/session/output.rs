@@ -32,6 +32,14 @@ pub(crate) struct OutputFanoutInner {
     remote_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReplayLogResult {
+    pub status: &'static str,
+    pub data: Vec<u8>,
+    pub bytes: usize,
+    pub message: Option<String>,
+}
+
 /// 全局日志大小跟踪表（供 relay 模式的 `append_log_static` 使用）。
 /// key = session nid, value = 该 session 日志的当前字节数。
 static STATIC_LOG_SIZES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<AtomicU64>>>> =
@@ -325,6 +333,54 @@ impl OutputFanout {
         std::fs::read(&path).ok().filter(|d| !d.is_empty())
     }
 
+    pub fn replay_log_result(nid: &str) -> ReplayLogResult {
+        let path = kn_common::path::agent_dir()
+            .join("sessions")
+            .join(nid)
+            .join("output.log");
+        Self::replay_log_result_at_path(&path)
+    }
+
+    fn replay_log_result_at_path(path: &PathBuf) -> ReplayLogResult {
+        if path.is_dir() {
+            return ReplayLogResult {
+                status: "error",
+                data: Vec::new(),
+                bytes: 0,
+                message: Some("output log path is a directory".to_string()),
+            };
+        }
+        match std::fs::read(&path) {
+            Ok(data) if data.is_empty() => ReplayLogResult {
+                status: "empty",
+                data,
+                bytes: 0,
+                message: None,
+            },
+            Ok(data) => {
+                let bytes = data.len();
+                ReplayLogResult {
+                    status: "ok",
+                    data,
+                    bytes,
+                    message: None,
+                }
+            }
+            Err(_) if !path.exists() => ReplayLogResult {
+                status: "empty",
+                data: Vec::new(),
+                bytes: 0,
+                message: None,
+            },
+            Err(error) => ReplayLogResult {
+                status: "error",
+                data: Vec::new(),
+                bytes: 0,
+                message: Some(error.to_string()),
+            },
+        }
+    }
+
     /// 截掉日志文件头部，保留尾部 KEEP_TAIL 字节。
     fn trim_log_head(path: &PathBuf, log_size: &std::sync::atomic::AtomicU64) {
         let keep = OUTPUT_LOG_KEEP_TAIL as usize;
@@ -347,3 +403,85 @@ impl OutputFanout {
 }
 
 // ── SessionManager ──────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::OutputFanout;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn with_temp_log<R>(name: &str, f: impl FnOnce(std::path::PathBuf) -> R) -> R {
+        static COUNTER: AtomicUsize = AtomicUsize::new(1);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "kn-agent-output-test-{}-{}-{}",
+            std::process::id(),
+            name,
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root
+            .join("agent")
+            .join("sessions")
+            .join(name)
+            .join("output.log");
+        let result = f(path);
+        let _ = std::fs::remove_dir_all(&root);
+        result
+    }
+
+    #[test]
+    fn replay_log_result_reports_ok_for_existing_log() {
+        with_temp_log("s_ok", |path| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"hello").unwrap();
+
+            let result = OutputFanout::replay_log_result_at_path(&path);
+
+            assert_eq!(result.status, "ok");
+            assert_eq!(result.bytes, 5);
+            assert_eq!(result.data, b"hello");
+            assert_eq!(result.message, None);
+        });
+    }
+
+    #[test]
+    fn replay_log_result_reports_empty_for_missing_log() {
+        with_temp_log("s_missing", |path| {
+            let result = OutputFanout::replay_log_result_at_path(&path);
+
+            assert_eq!(result.status, "empty");
+            assert_eq!(result.bytes, 0);
+            assert!(result.data.is_empty());
+            assert_eq!(result.message, None);
+        });
+    }
+
+    #[test]
+    fn replay_log_result_reports_empty_for_empty_log() {
+        with_temp_log("s_empty", |path| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"").unwrap();
+
+            let result = OutputFanout::replay_log_result_at_path(&path);
+
+            assert_eq!(result.status, "empty");
+            assert_eq!(result.bytes, 0);
+            assert!(result.data.is_empty());
+            assert_eq!(result.message, None);
+        });
+    }
+
+    #[test]
+    fn replay_log_result_reports_error_for_unreadable_path() {
+        with_temp_log("s_error", |path| {
+            std::fs::create_dir_all(&path).unwrap();
+
+            let result = OutputFanout::replay_log_result_at_path(&path);
+
+            assert_eq!(result.status, "error");
+            assert_eq!(result.bytes, 0);
+            assert!(result.data.is_empty());
+            assert!(result.message.is_some());
+        });
+    }
+}

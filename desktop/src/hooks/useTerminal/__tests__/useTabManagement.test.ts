@@ -1,9 +1,9 @@
 /// <reference types="vitest" />
 import { describe, expect, it } from "vitest";
 import type { TabSession } from "../types";
-import { collectTerminalCloseKills } from "../useTabManagement";
+import { collectPaneCloseKills, collectTerminalCloseKills } from "../useTabManagement";
 
-function makeTab(sessionId: string, agentNid?: string): TabSession {
+function makeTab(sessionId: string, agentNid?: string, agentRemoteEnabled?: boolean): TabSession {
   return {
     id: `tab-${sessionId}`,
     name: "Claude",
@@ -21,21 +21,100 @@ function makeTab(sessionId: string, agentNid?: string): TabSession {
     sessionId,
     ptyRunning: true,
     agentNid,
+    agentRemoteEnabled,
+  };
+}
+
+function makeSplitTab(): TabSession {
+  const remoteLeaf = {
+    type: "leaf" as const,
+    paneId: "pane-remote",
+    sessionId: "s_remote",
+    name: "Remote",
+    ptyRunning: true,
+    workDir: "/tmp/project",
+  };
+  const localLeaf = {
+    type: "leaf" as const,
+    paneId: "pane-local",
+    sessionId: "pty-local",
+    name: "Local",
+    ptyRunning: true,
+    workDir: "/tmp/project",
+  };
+  return {
+    id: "tab-split",
+    name: "Split",
+    workDir: "/tmp/project",
+    rootNode: {
+      type: "split",
+      id: "split-1",
+      direction: "horizontal",
+      ratio: 0.5,
+      children: [remoteLeaf, localLeaf],
+    },
+    activePaneId: "pane-remote",
+    zoomedPaneId: null,
+    sessionId: "s_remote",
+    ptyRunning: true,
+    agentNid: "s_remote",
+    agentRemoteEnabled: true,
+  };
+}
+
+function makeRelaySplitTab(): TabSession {
+  const relayLeaf = {
+    type: "leaf" as const,
+    paneId: "pane-relay",
+    sessionId: "pty-relay",
+    name: "Relay",
+    ptyRunning: true,
+    workDir: "/tmp/project",
+    agentNid: "s_relay",
+    agentRemoteEnabled: true,
+  };
+  const localLeaf = {
+    type: "leaf" as const,
+    paneId: "pane-local",
+    sessionId: "pty-local",
+    name: "Local",
+    ptyRunning: true,
+    workDir: "/tmp/project",
+  };
+  return {
+    id: "tab-relay-split",
+    name: "Relay Split",
+    workDir: "/tmp/project",
+    rootNode: {
+      type: "split",
+      id: "split-relay",
+      direction: "horizontal",
+      ratio: 0.5,
+      children: [relayLeaf, localLeaf],
+    },
+    activePaneId: "pane-relay",
+    zoomedPaneId: null,
+    sessionId: "pty-relay",
+    ptyRunning: true,
+    agentNid: "s_relay",
+    agentRemoteEnabled: true,
   };
 }
 
 describe("terminal tab close kill targets", () => {
-  it("kills agent-owned s_ sessions instead of only dismissing the tab", () => {
+  it("detaches agent-owned s_ sessions instead of killing them", () => {
     const targets = collectTerminalCloseKills(makeTab("s_remote", "s_remote"));
 
-    expect(targets.agentNids).toEqual(["s_remote"]);
+    expect(targets.agentNids).toEqual([]);
     expect(targets.ptySessionIds).toEqual([]);
+    expect(targets.relayExitNids).toEqual([]);
   });
 
-  it("deduplicates agent kill targets from tab and pane ids", () => {
+  it("does not kill agent sessions even when tab and pane ids both reference the same nid", () => {
     const targets = collectTerminalCloseKills(makeTab("s_same", "s_same"));
 
-    expect(targets.agentNids).toEqual(["s_same"]);
+    expect(targets.agentNids).toEqual([]);
+    expect(targets.relayExitNids).toEqual([]);
   });
 
   it("kills plain local PTY panes through kill_pty", () => {
@@ -43,12 +122,56 @@ describe("terminal tab close kill targets", () => {
 
     expect(targets.agentNids).toEqual([]);
     expect(targets.ptySessionIds).toEqual(["pty-local"]);
+    expect(targets.relayExitNids).toEqual([]);
   });
 
-  it("kills both the local PTY and Relay agent record when closing a desktop Run tab", () => {
-    const targets = collectTerminalCloseKills(makeTab("pty-local", "s_relay"));
+  it("kills remote-disabled Relay/local PTY panes through local tab semantics", () => {
+    const targets = collectTerminalCloseKills(makeTab("pty-local", "s_relay", false));
 
-    expect(targets.agentNids).toEqual(["s_relay"]);
+    expect(targets.agentNids).toEqual([]);
     expect(targets.ptySessionIds).toEqual(["pty-local"]);
+    expect(targets.relayExitNids).toEqual(["s_relay"]);
+  });
+
+  it("detaches remote-enabled Relay tabs without killing the local PTY or agent session", () => {
+    const targets = collectTerminalCloseKills(makeTab("pty-local", "s_relay", true));
+
+    expect(targets.agentNids).toEqual([]);
+    expect(targets.ptySessionIds).toEqual([]);
+    expect(targets.relayExitNids).toEqual([]);
+  });
+
+  it("still kills local split panes when the same tab also contains a remote pane", () => {
+    const targets = collectTerminalCloseKills(makeSplitTab());
+
+    expect(targets.agentNids).toEqual([]);
+    expect(targets.ptySessionIds).toEqual(["pty-local"]);
+    expect(targets.relayExitNids).toEqual([]);
+  });
+
+  it("detaches a single remote pane without killing it", () => {
+    const tab = makeSplitTab();
+    const targets = collectPaneCloseKills(tab, "pane-remote");
+
+    expect(targets.agentNids).toEqual([]);
+    expect(targets.ptySessionIds).toEqual([]);
+    expect(targets.relayExitNids).toEqual([]);
+  });
+
+  it("kills a single local split pane next to a remote pane", () => {
+    const tab = makeSplitTab();
+    const targets = collectPaneCloseKills(tab, "pane-local");
+
+    expect(targets.agentNids).toEqual([]);
+    expect(targets.ptySessionIds).toEqual(["pty-local"]);
+    expect(targets.relayExitNids).toEqual([]);
+  });
+
+  it("detaches a remote-enabled Relay pane while killing a sibling local pane", () => {
+    const targets = collectTerminalCloseKills(makeRelaySplitTab());
+
+    expect(targets.agentNids).toEqual([]);
+    expect(targets.ptySessionIds).toEqual(["pty-local"]);
+    expect(targets.relayExitNids).toEqual([]);
   });
 });
