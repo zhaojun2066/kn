@@ -268,7 +268,7 @@ impl WsEnvelope {
                     session_nid,
                     reason: data["reason"]
                         .as_str()
-                        .unwrap_or("user_closed_tab")
+                        .unwrap_or("process_killed")
                         .to_string(),
                 })
             }
@@ -658,6 +658,28 @@ mod tests {
             } => {
                 assert_eq!(session_nid, "s_abc");
                 assert_eq!(reason, "user_closed_tab");
+            }
+            _ => panic!("expected KillSession"),
+        }
+    }
+
+    #[test]
+    fn test_parse_kill_session_defaults_to_process_killed() {
+        let json = serde_json::json!({
+            "type": "kill_session",
+            "data": {
+                "sessionId": "s_abc"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::KillSession {
+                session_nid,
+                reason,
+            } => {
+                assert_eq!(session_nid, "s_abc");
+                assert_eq!(reason, "process_killed");
             }
             _ => panic!("expected KillSession"),
         }

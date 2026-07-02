@@ -694,7 +694,7 @@ async fn handle_incoming(
                             if let Some(tx) = out.lock().await.as_ref() {
                                 match tx.send(msg) {
                                     Ok(_) => {
-                                        tracing::info!(len = len, "📤 [OUTPUT] 已转发到全局 WSS")
+                                        tracing::debug!(len = len, "📤 [OUTPUT] 已转发到全局 WSS")
                                     }
                                     Err(e) => {
                                         tracing::error!(len = len, error = %e, "📤 [OUTPUT] 转发失败")

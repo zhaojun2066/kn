@@ -23,6 +23,13 @@ interface AgentPanelProps {
   agent: AgentState;
 }
 
+export function buildKillSessionIpcArgs(session: AgentSession) {
+  return {
+    method: "kill_session",
+    params: { nid: session.nid, reason: "process_killed" },
+  };
+}
+
 // ── Status display mapping (dot color + icon + text) ──────────
 
 const statusLabel: Record<StatusIcon, string> = {
@@ -301,7 +308,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
     let failCount = 0;
     for (const s of targets) {
       try {
-        await invoke("agent_ipc", { method: "kill_session", params: { nid: s.nid } });
+        await invoke("agent_ipc", buildKillSessionIpcArgs(s));
       } catch (e) {
         failCount++;
         console.error("kill_session failed for", s.nid, e);

@@ -831,6 +831,11 @@ impl IpcHandle {
             Some(n) => n,
             None => return err_response(&req.id, "INVALID_PARAMS", "缺少 nid 参数"),
         };
+        let reason = req
+            .params
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("process_killed");
 
         match self.sessions.get(nid).await {
             Ok(Some(session)) => {
@@ -843,13 +848,13 @@ impl IpcHandle {
                         // Report session_ended — 只有开启了远程的会话才同步到云端
                         if let Ok(Some(msg)) = self
                             .sessions
-                            .report_session_ended(&nid, "user_closed_tab")
+                            .report_session_ended(&nid, reason)
                             .await
                         {
                             if remote_was_enabled {
                                 if let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref() {
                                     let _ = tx.send(msg.to_json());
-                                    tracing::info!(nid = %nid, "session_ended (user_closed_tab) 已发送到 Cloud");
+                                    tracing::info!(nid = %nid, reason = %reason, "session_ended 已发送到 Cloud");
                                 }
                             }
                         }
