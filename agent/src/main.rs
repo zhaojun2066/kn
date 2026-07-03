@@ -647,19 +647,34 @@ async fn handle_incoming(
             }
         }
         proto::AgentIncoming::StartSession {
-            tool,
             profile,
             cwd,
             from_user_id,
             cols,
             rows,
         } => {
+            let resolved_tool = match session::env::resolve_tool_from_profile(&profile) {
+                Ok(tool) => tool,
+                Err(err) => {
+                    tracing::warn!(
+                        profile = %profile,
+                        reason = err.reason(),
+                        user = from_user_id,
+                        "远程启动失败：profile 无法解析为可用 tool"
+                    );
+                    let msg = proto::WsMessageBuilder::session_start_failed(&profile, err.reason());
+                    if let Some(tx) = outgoing.lock().await.as_ref() {
+                        let _ = tx.send(msg);
+                    }
+                    return;
+                }
+            };
             // Agent 自行生成 sessionId，cloud 不再预分配
             let session_nid = format!("s_{}", nanoid::nanoid!(12));
             tracing::info!(
                 nid = %session_nid,
-                tool = %tool,
-                profile = ?profile,
+                tool = %resolved_tool,
+                profile = %profile,
                 user = from_user_id,
                 "收到远程启动会话请求"
             );
@@ -671,8 +686,8 @@ async fn handle_incoming(
                 .create(
                     session_nid.clone(),
                     "ios".to_string(),
-                    tool.clone(),
-                    profile.clone(),
+                    resolved_tool.clone(),
+                    Some(profile.clone()),
                     cwd_resolved.clone(),
                     crate::session::SessionKind::Native,
                 )
@@ -716,7 +731,7 @@ async fn handle_incoming(
                     let s = sessions.clone();
                     let m = input_merger.clone();
                     let nid = session_nid.clone();
-                    let t = tool.clone();
+                    let t = resolved_tool.clone();
                     let p = profile.clone();
                     let c = cwd_resolved.clone();
                     let remote_enabled = Some(session.remote_enabled.clone());
@@ -728,7 +743,7 @@ async fn handle_incoming(
                             .start_session(
                                 &nid,
                                 &t,
-                                p.as_deref(),
+                                Some(p.as_str()),
                                 &c,
                                 cols,
                                 rows,
@@ -746,6 +761,13 @@ async fn handle_incoming(
                                 tracing::error!(nid = %nid, error = %e, "WSS PTY session start failed — cleaning up orphaned session record");
                                 // 清理残留的 session 记录，防止变成永久僵尸会话
                                 let _ = s_cleanup.end(&nid).await;
+                                let failed = proto::WsMessageBuilder::session_start_failed(
+                                    &p,
+                                    "spawn_failed",
+                                );
+                                if let Some(tx) = out.lock().await.as_ref() {
+                                    let _ = tx.send(failed);
+                                }
                                 if let Ok(Some(msg)) =
                                     s_cleanup.report_session_ended(&nid, "start_failed").await
                                 {
@@ -763,7 +785,7 @@ async fn handle_incoming(
                     let ack_outgoing = outgoing.clone();
                     let ack_registry = ack_registry.clone();
                     let ack_nid = session_nid.clone();
-                    let ack_tool = tool.clone();
+                    let ack_tool = resolved_tool.clone();
                     let ack_cwd = cwd_resolved.clone();
                     let ack_profile = profile.clone();
                     let ack_cols = cols;
@@ -779,7 +801,7 @@ async fn handle_incoming(
                                 &ack_nid,
                                 &ack_tool,
                                 &ack_cwd,
-                                ack_profile.as_deref(),
+                                Some(ack_profile.as_str()),
                                 ack_cols,
                                 ack_rows,
                                 "ios",

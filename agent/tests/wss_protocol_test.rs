@@ -24,7 +24,7 @@ fn test_all_incoming_types_parse_without_panic() {
         ),
         // Session lifecycle (cloud forwards from iOS to agent)
         (
-            r#"{"type":"start_session","data":{"tool":"bash","fromUserId":1}}"#,
+            r#"{"type":"start_session","data":{"profile":"default","fromUserId":1}}"#,
             "start_session",
         ),
         // Message routing (cloud forwards from iOS to agent) — sessionId identifies the session
@@ -303,16 +303,12 @@ fn test_error_notify_with_minimal_data() {
 #[test]
 fn test_start_session_parsing_matches_java_forward_format() {
     // Java WsMessageFactory.startSessionForward builds:
-    // {"type":"start_session","ts":...,"sessionId":"s_nanoid",
-    //  "data":{"sessionId":"s_...","tool":"...","profile":"...",
-    //          "cwd":"...","fromUserId":...}}
+    // {"type":"start_session","ts":...,
+    //  "data":{"profile":"...","cwd":"...","fromUserId":...}}
     let json = serde_json::json!({
         "type": "start_session",
         "ts": 1234567890i64,
-        "sessionId": "s_abc123def456",
         "data": {
-            "sessionId": "s_abc123def456",
-            "tool": "claude",
             "profile": "work",
             "cwd": "/Users/test/project",
             "fromUserId": 100,
@@ -323,15 +319,13 @@ fn test_start_session_parsing_matches_java_forward_format() {
     let env: WsEnvelope = serde_json::from_value(json).unwrap();
     match env.parse().unwrap() {
         AgentIncoming::StartSession {
-            tool,
             profile,
             cwd,
             from_user_id,
             cols,
             rows,
         } => {
-            assert_eq!(tool, "claude");
-            assert_eq!(profile, Some("work".into()));
+            assert_eq!(profile, "work");
             assert_eq!(cwd, Some("/Users/test/project".into()));
             assert_eq!(from_user_id, 100);
             assert_eq!(cols, 48);
@@ -339,6 +333,20 @@ fn test_start_session_parsing_matches_java_forward_format() {
         }
         other => panic!("expected StartSession, got {:?}", other),
     }
+}
+
+#[test]
+fn test_start_session_requires_profile() {
+    let json = serde_json::json!({
+        "type": "start_session",
+        "data": {
+            "cwd": "/Users/test/project",
+            "fromUserId": 100
+        }
+    });
+    let env: WsEnvelope = serde_json::from_value(json).unwrap();
+    let err = env.parse().unwrap_err();
+    assert!(err.contains("profile"));
 }
 
 // ── input parsing (new protocol: sessionId in data) ────

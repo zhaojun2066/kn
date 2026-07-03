@@ -7,17 +7,50 @@ pub(crate) fn toml_string(s: &str) -> String {
     format!("\"{}\"", escaped)
 }
 
-/// 根据 tool 名称查找 CLI 二进制路径。
-pub fn resolve_tool_path(tool: &str) -> std::result::Result<String, String> {
-    let candidates: &[&str] = match tool {
+/// 根据 tool 名称返回允许查找的 CLI 二进制候选。
+pub fn tool_binary_candidates(tool: &str) -> std::result::Result<&'static [&'static str], String> {
+    let candidates = match tool {
         "claude" => &["claude"],
         "codex" => &["codex"],
-        "qoder" => &["qoder", "codex"],
-        "qoderclicn" => &["qoder", "codex"],
+        "qoder" => &["qoder"],
+        "qoderclicn" => &["qoderclicn"],
         "bash" => &["bash"],
         _ => return Err(format!("未知 tool: {}", tool)),
     };
+    Ok(candidates)
+}
+
+/// 根据 tool 名称查找 CLI 二进制路径。
+pub fn resolve_tool_path(tool: &str) -> std::result::Result<String, String> {
+    let candidates = tool_binary_candidates(tool)?;
     kn_common::path::find_binary(candidates).ok_or_else(|| format!("未找到 {} 二进制", tool))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileToolResolveError {
+    ProfileNotFound,
+    ProfileInvalid,
+    ToolNotFound,
+}
+
+impl ProfileToolResolveError {
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::ProfileNotFound => "profile_not_found",
+            Self::ProfileInvalid => "profile_invalid",
+            Self::ToolNotFound => "tool_not_found",
+        }
+    }
+}
+
+/// 远程启动时从 profile 配置解析真实 CLI tool。
+pub fn resolve_tool_from_profile(profile: &str) -> Result<String, ProfileToolResolveError> {
+    let env_output = kn_common::profile::get_env_cmd(profile)
+        .map_err(|_| ProfileToolResolveError::ProfileNotFound)?;
+    let tool = kn_common::profile::detect_cli_type(&env_output.env)
+        .ok_or(ProfileToolResolveError::ProfileInvalid)?;
+    resolve_tool_path(&tool).map_err(|_| ProfileToolResolveError::ToolNotFound)?;
+    Ok(tool)
 }
 
 pub(crate) struct ToolPrep {
@@ -94,6 +127,22 @@ pub(crate) fn prepare_tool_env(
             Ok(ToolPrep { extra_args: vec![] })
         }
         _ => Ok(ToolPrep { extra_args: vec![] }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_binary_candidates;
+
+    #[test]
+    fn qoder_tools_do_not_fallback_to_codex() {
+        assert_eq!(tool_binary_candidates("qoder").unwrap(), &["qoder"]);
+        assert_eq!(
+            tool_binary_candidates("qoderclicn").unwrap(),
+            &["qoderclicn"]
+        );
+        assert_eq!(tool_binary_candidates("codex").unwrap(), &["codex"]);
+        assert_eq!(tool_binary_candidates("claude").unwrap(), &["claude"]);
     }
 }
 

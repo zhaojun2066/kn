@@ -7,8 +7,8 @@
 //! 信封: {"type": "...", "ts": <epoch_ms>, "sessionId"?: "s_nanoid", "data": {...}}
 //! ```
 //!
-//! ## Agent 出站 (agent → cloud) — 7 种，对齐 Java ALLOWED_MESSAGES:
-//! - ping, session_created, session_ended, output, profile_list, project_list
+//! ## Agent 出站 (agent → cloud) — 对齐 Java ALLOWED_MESSAGES:
+//! - ping, session_created, session_start_failed, session_ended, output, profile_list, project_list
 //!
 //! ## Agent 入站 (cloud → agent):
 //! - 心跳: pong
@@ -56,10 +56,8 @@ pub enum AgentIncoming {
     /// 启动新会话（来自 iOS/Desktop 用户）
     /// sessionId 由 Agent 自行生成（"s_" + nanoid(12)），cloud 不再预分配。
     StartSession {
-        /// CLI 工具（claude/codex/qoder/bash）
-        tool: String,
         /// Profile 名称
-        profile: Option<String>,
+        profile: String,
         /// 工作目录
         cwd: Option<String>,
         /// 发起用户 ID
@@ -155,9 +153,14 @@ impl WsEnvelope {
                     .as_ref()
                     .ok_or_else(|| "start_session 缺少 data 字段".to_string())?;
                 // sessionId 由 Agent 自行生成，cloud 不再预分配
+                let profile = data["profile"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "start_session 缺少 profile 字段".to_string())?
+                    .to_string();
                 Ok(AgentIncoming::StartSession {
-                    tool: data["tool"].as_str().unwrap_or("bash").to_string(),
-                    profile: data["profile"].as_str().map(String::from),
+                    profile,
                     cwd: data["cwd"].as_str().map(String::from),
                     from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
                     cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
@@ -335,6 +338,18 @@ impl WsMessageBuilder {
         serde_json::json!({
             "type": "session_created",
             "data": data
+        })
+        .to_string()
+    }
+
+    /// 会话启动失败通知。Cloud 消费并映射成 iOS 稳定错误语义。
+    pub fn session_start_failed(profile: &str, reason: &str) -> String {
+        serde_json::json!({
+            "type": "session_start_failed",
+            "data": {
+                "profile": profile,
+                "reason": reason
+            }
         })
         .to_string()
     }
@@ -554,7 +569,6 @@ mod tests {
             "type": "start_session",
             "ts": 1234567890,
             "data": {
-                "tool": "claude",
                 "profile": "my-profile",
                 "cwd": "/Users/test/project",
                 "fromUserId": 100,
@@ -566,15 +580,13 @@ mod tests {
         let msg = env.parse().unwrap();
         match msg {
             AgentIncoming::StartSession {
-                tool,
                 profile,
                 cwd,
                 from_user_id,
                 cols,
                 rows,
             } => {
-                assert_eq!(tool, "claude");
-                assert_eq!(profile, Some("my-profile".into()));
+                assert_eq!(profile, "my-profile");
                 assert_eq!(cwd, Some("/Users/test/project".into()));
                 assert_eq!(from_user_id, 100);
                 assert_eq!(cols, 48);
