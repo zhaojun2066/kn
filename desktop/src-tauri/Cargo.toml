@@ -30,10 +30,5 @@ regex-lite.workspace = true
 [build-dependencies]
 tauri-build.workspace = true
 
-[profile.release]
-strip = true
-lto = true
-codegen-units = 1
-
 [lints.rust]
 warnings = "deny"

@@ -76,6 +76,10 @@ fn test_all_incoming_types_parse_without_panic() {
             r#"{"type":"change_file_diff","data":{"sessionId":"s_abc123","path":"Sources/App.swift"}}"#,
             "change_file_diff",
         ),
+        (
+            r#"{"type":"verify_changes","data":{"sessionId":"s_abc123","environment":"default","target":"all"}}"#,
+            "verify_changes",
+        ),
         // Forward compat
         (r#"{"type":"future_type","data":{}}"#, "unknown"),
     ];
@@ -112,6 +116,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::KillSession { .. } => "kill_session",
         AgentIncoming::ChangeSummary { .. } => "change_summary",
         AgentIncoming::ChangeFileDiff { .. } => "change_file_diff",
+        AgentIncoming::VerifyChanges { .. } => "verify_changes",
         AgentIncoming::Unknown { .. } => "unknown",
     }
 }

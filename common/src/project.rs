@@ -1,6 +1,7 @@
 //! Project types shared between Desktop and Agent.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -14,4 +15,43 @@ pub struct ProjectInfo {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     #[serde(default)]
     pub pinned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub verify: Option<ProjectVerifyConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectVerifyConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub default_environment: Option<String>,
+    #[serde(default)]
+    pub environments: BTreeMap<String, ProjectVerifyEnvironment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectVerifyEnvironment {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub build: Option<ProjectVerifyCommand>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub test: Option<ProjectVerifyCommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectVerifyCommand {
+    pub command: String,
+    #[serde(default = "default_verify_command_enabled")]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+}
+
+fn default_verify_command_enabled() -> bool {
+    true
 }

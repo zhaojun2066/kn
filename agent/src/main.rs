@@ -1222,6 +1222,54 @@ async fn handle_incoming(
                 let _ = tx.send(msg);
             }
         }
+        proto::AgentIncoming::VerifyChanges {
+            session_nid,
+            environment,
+            target,
+        } => {
+            tracing::info!(nid = %session_nid, environment = %environment, target = %target, "收到 verify_changes 请求");
+            let Some(target) = crate::session::verify_changes::VerifyTarget::parse(&target) else {
+                let data = crate::session::verify_changes::invalid_target_result(
+                    &session_nid,
+                    &environment,
+                );
+                let msg = proto::WsMessageBuilder::verify_changes_result(&session_nid, data);
+                if let Some(tx) = outgoing.lock().await.as_ref() {
+                    let _ = tx.send(msg);
+                }
+                return;
+            };
+            let data = match sessions.get(&session_nid).await {
+                Ok(Some(summary))
+                    if summary.status != crate::session::SessionStatus::Ended
+                        && summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    crate::session::verify_changes::verify(
+                        &session_nid,
+                        &summary.cwd,
+                        &environment,
+                        target,
+                    )
+                    .await
+                }
+                _ => serde_json::json!({
+                    "sessionId": session_nid,
+                    "runId": "",
+                    "status": "sessionNotFound",
+                    "environment": environment,
+                    "target": target.as_str(),
+                    "commandSource": "auto",
+                    "durationMs": 0,
+                    "stages": []
+                }),
+            };
+            let msg = proto::WsMessageBuilder::verify_changes_result(&session_nid, data);
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
         proto::AgentIncoming::Unknown { msg_type, .. } => {
             tracing::debug!("未知消息类型: {}", msg_type);
         }

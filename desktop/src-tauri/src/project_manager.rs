@@ -154,6 +154,7 @@ pub fn add_project(name: String, path: String) -> Result<(), String> {
         default_profile: None,
         description: None,
         pinned: false,
+        verify: None,
     });
     save_projects(&projects)
 }
@@ -1778,6 +1779,7 @@ mod tests {
             default_profile: Some("stale-global-default".to_string()),
             description: None,
             pinned: false,
+            verify: None,
         }];
         fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
 
@@ -1808,6 +1810,7 @@ mod tests {
             default_profile: None,
             description: None,
             pinned: false,
+            verify: None,
         }];
         fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
 

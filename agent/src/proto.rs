@@ -105,6 +105,12 @@ pub enum AgentIncoming {
     ChangeSummary { session_nid: String },
     /// iOS 请求当前 session cwd 内单个文件的 Git diff
     ChangeFileDiff { session_nid: String, path: String },
+    /// iOS 请求当前 session cwd 执行构建/测试验证
+    VerifyChanges {
+        session_nid: String,
+        environment: String,
+        target: String,
+    },
     /// 未知消息类型
     Unknown {
         msg_type: String,
@@ -305,6 +311,33 @@ impl WsEnvelope {
                 }
                 Ok(AgentIncoming::ChangeFileDiff { session_nid, path })
             }
+            "verify_changes" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "verify_changes 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("verify_changes sessionId 为空".to_string());
+                }
+                let environment = data["environment"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("default")
+                    .to_string();
+                let target = data["target"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("all")
+                    .to_string();
+                Ok(AgentIncoming::VerifyChanges {
+                    session_nid,
+                    environment,
+                    target,
+                })
+            }
             other => Ok(AgentIncoming::Unknown {
                 msg_type: other.to_string(),
                 raw: self.data.clone().unwrap_or(serde_json::Value::Null),
@@ -493,6 +526,15 @@ impl WsMessageBuilder {
         data["sessionId"] = serde_json::Value::String(session_nid.to_string());
         serde_json::json!({
             "type": "change_file_diff_result",
+            "data": data
+        })
+        .to_string()
+    }
+
+    pub fn verify_changes_result(session_nid: &str, mut data: serde_json::Value) -> String {
+        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
+        serde_json::json!({
+            "type": "verify_changes_result",
             "data": data
         })
         .to_string()
@@ -746,6 +788,32 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_verify_changes() {
+        let json = serde_json::json!({
+            "type": "verify_changes",
+            "data": {
+                "sessionId": "s_abc",
+                "environment": "ci",
+                "target": "build"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::VerifyChanges {
+                session_nid,
+                environment,
+                target,
+            } => {
+                assert_eq!(session_nid, "s_abc");
+                assert_eq!(environment, "ci");
+                assert_eq!(target, "build");
+            }
+            _ => panic!("expected VerifyChanges"),
+        }
+    }
+
+    #[test]
     fn test_outbound_ping() {
         let json = WsMessageBuilder::ping();
         assert!(json.contains("ping"));
@@ -806,6 +874,24 @@ mod tests {
         assert_eq!(parsed["data"]["sessionId"], "s_abc123");
         assert!(parsed["data"].get("to_session_id").is_none());
         assert_eq!(parsed["data"]["ansi_text"], "hello\x1b[0m");
+    }
+
+    #[test]
+    fn test_outbound_verify_changes_result() {
+        let json = WsMessageBuilder::verify_changes_result(
+            "s_abc123",
+            serde_json::json!({
+                "status": "passed",
+                "target": "all",
+                "stages": [
+                    { "name": "build", "status": "passed", "outputTail": "ok" }
+                ]
+            }),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "verify_changes_result");
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["data"]["stages"][0]["outputTail"], "ok");
     }
 
     #[test]

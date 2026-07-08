@@ -37,10 +37,5 @@ rand.workspace = true
 portable-pty.workspace = true
 notify = "6"
 
-[profile.release]
-strip = true
-lto = true
-codegen-units = 1
-
 [lints.rust]
 warnings = "deny"

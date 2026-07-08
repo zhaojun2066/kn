@@ -77,3 +77,10 @@ tempfile = "3"
 toml = "0.8"
 toml_edit = "0.22"
 regex-lite = "0.1.9"
+
+# Cargo only honors profile settings at the workspace root. Keep release
+# settings here so agent and desktop builds share the same production profile.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
