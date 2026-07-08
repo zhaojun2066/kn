@@ -1,21 +1,26 @@
 use kn_common::project::{ProjectInfo, ProjectVerifyCommand, ProjectVerifyConfig};
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_TEST_TIMEOUT_SECS: u64 = 600;
 const MAX_TIMEOUT_SECS: u64 = 900;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_LINES: usize = 200;
+const PROGRESS_OUTPUT_BYTES: usize = 8 * 1024;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(800);
 
-static RUNNING_SESSIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static RUNNING_SESSIONS: OnceLock<Mutex<HashMap<String, RunningRun>>> = OnceLock::new();
 static LOGIN_SHELL_PATH: OnceLock<Option<String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,29 +90,173 @@ struct VerifyPlan {
     test: Option<StagePlan>,
 }
 
+#[derive(Clone)]
+struct RunningRun {
+    run_id: String,
+    environment: String,
+    target: VerifyTarget,
+    command_source: String,
+    cancel: CancellationToken,
+    started: Instant,
+}
+
 struct RunningGuard {
     session_id: String,
+    run_id: String,
+    cancel: CancellationToken,
 }
 
 impl RunningGuard {
-    fn try_acquire(session_id: &str) -> Option<Self> {
-        let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()));
+    fn try_acquire(
+        session_id: &str,
+        run_id: &str,
+        environment: &str,
+        target: VerifyTarget,
+    ) -> Option<Self> {
+        let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.contains(session_id) {
+        if guard.contains_key(session_id) {
             return None;
         }
-        guard.insert(session_id.to_string());
+        let cancel = CancellationToken::new();
+        let started = Instant::now();
+        guard.insert(
+            session_id.to_string(),
+            RunningRun {
+                run_id: run_id.to_string(),
+                environment: environment.to_string(),
+                target,
+                command_source: "auto".to_string(),
+                cancel: cancel.clone(),
+                started,
+            },
+        );
         Some(Self {
             session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
+            cancel,
         })
     }
+
+    fn update_command_source(&self, command_source: &str) {
+        let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(run) = guard.get_mut(&self.session_id) {
+            if run.run_id == self.run_id {
+                run.command_source = command_source.to_string();
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ProgressReporter {
+    session_id: String,
+    run_id: String,
+    environment: String,
+    target: VerifyTarget,
+    command_source: String,
+    started: Instant,
+    tx: Option<mpsc::UnboundedSender<String>>,
+}
+
+impl ProgressReporter {
+    pub fn new(
+        session_id: &str,
+        run_id: &str,
+        environment: &str,
+        target: VerifyTarget,
+        command_source: &str,
+        tx: Option<mpsc::UnboundedSender<String>>,
+    ) -> Self {
+        Self::new_with_started(
+            session_id,
+            run_id,
+            environment,
+            target,
+            command_source,
+            tx,
+            Instant::now(),
+        )
+    }
+
+    pub fn new_with_started(
+        session_id: &str,
+        run_id: &str,
+        environment: &str,
+        target: VerifyTarget,
+        command_source: &str,
+        tx: Option<mpsc::UnboundedSender<String>>,
+        started: Instant,
+    ) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
+            environment: environment.to_string(),
+            target,
+            command_source: command_source.to_string(),
+            started,
+            tx,
+        }
+    }
+
+    pub fn send_cancelling(&self) {
+        self.send("cancelling", None, "", "");
+    }
+
+    fn send(&self, status: &str, stage: Option<StageName>, command: &str, output_tail: &str) {
+        let Some(tx) = self.tx.as_ref() else {
+            return;
+        };
+        let mut data = json!({
+            "sessionId": self.session_id,
+            "runId": self.run_id,
+            "environment": self.environment,
+            "target": self.target.as_str(),
+            "commandSource": self.command_source,
+            "status": status,
+            "elapsedMs": self.started.elapsed().as_millis() as u64,
+        });
+        if let Some(stage) = stage {
+            data["stage"] = serde_json::Value::String(stage.as_str().to_string());
+        }
+        if !command.is_empty() {
+            data["command"] = serde_json::Value::String(command.to_string());
+        }
+        if !output_tail.is_empty() {
+            data["outputTail"] = serde_json::Value::String(tail_string(output_tail));
+        }
+        let msg = crate::proto::WsMessageBuilder::verify_changes_progress(&self.session_id, data);
+        let _ = tx.send(msg);
+    }
+}
+
+pub fn cancel(session_id: &str, run_id: &str) -> Option<(String, VerifyTarget, String, Instant)> {
+    let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let guard = set.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(run) = guard.get(session_id) else {
+        return None;
+    };
+    if run.run_id != run_id {
+        return None;
+    }
+    run.cancel.cancel();
+    Some((
+        run.environment.clone(),
+        run.target,
+        run.command_source.clone(),
+        run.started,
+    ))
 }
 
 impl Drop for RunningGuard {
     fn drop(&mut self) {
-        let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()));
+        let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
-        guard.remove(&self.session_id);
+        if guard.get(&self.session_id).map(|run| run.run_id.as_str()) == Some(self.run_id.as_str())
+        {
+            guard.remove(&self.session_id);
+        }
     }
 }
 
@@ -116,8 +265,10 @@ pub async fn verify(
     cwd: &str,
     environment: &str,
     target: VerifyTarget,
+    tx: Option<mpsc::UnboundedSender<String>>,
 ) -> serde_json::Value {
-    let Some(_running) = RunningGuard::try_acquire(session_id) else {
+    let run_id = new_run_id();
+    let Some(running) = RunningGuard::try_acquire(session_id, &run_id, environment, target) else {
         return error_result(
             session_id,
             environment,
@@ -151,32 +302,55 @@ pub async fn verify(
 
     let started = Instant::now();
     let plan = load_manual_plan(&repo_root, environment).unwrap_or_else(|| auto_plan(&repo_root));
-    let run_id = new_run_id();
+    running.update_command_source(plan.command_source);
+    let reporter = ProgressReporter::new(
+        session_id,
+        &run_id,
+        environment,
+        target,
+        plan.command_source,
+        tx,
+    );
+    reporter.send("started", None, "", "");
     let mut stages = Vec::new();
 
     let status = match target {
         VerifyTarget::Build => match plan.build.as_ref() {
             Some(build) => {
-                let stage = run_stage(&repo_root, StageName::Build, build).await;
-                let passed = stage_status(&stage) == "passed";
+                let stage = run_stage(
+                    &repo_root,
+                    StageName::Build,
+                    build,
+                    &running.cancel,
+                    &reporter,
+                )
+                .await;
+                let stage_status = stage_status(&stage).to_string();
                 stages.push(stage);
-                if passed {
-                    "passed"
-                } else {
-                    "failed"
+                match stage_status.as_str() {
+                    "passed" => "passed",
+                    "cancelled" => "cancelled",
+                    _ => "failed",
                 }
             }
             None => return command_not_found(session_id, environment, target, plan.command_source),
         },
         VerifyTarget::Test => match plan.test.as_ref() {
             Some(test) => {
-                let stage = run_stage(&repo_root, StageName::Test, test).await;
-                let passed = stage_status(&stage) == "passed";
+                let stage = run_stage(
+                    &repo_root,
+                    StageName::Test,
+                    test,
+                    &running.cancel,
+                    &reporter,
+                )
+                .await;
+                let stage_status = stage_status(&stage).to_string();
                 stages.push(stage);
-                if passed {
-                    "passed"
-                } else {
-                    "failed"
+                match stage_status.as_str() {
+                    "passed" => "passed",
+                    "cancelled" => "cancelled",
+                    _ => "failed",
                 }
             }
             None => return command_not_found(session_id, environment, target, plan.command_source),
@@ -185,20 +359,37 @@ pub async fn verify(
             let Some(build) = plan.build.as_ref() else {
                 return command_not_found(session_id, environment, target, plan.command_source);
             };
-            let build_stage = run_stage(&repo_root, StageName::Build, build).await;
+            let build_stage = run_stage(
+                &repo_root,
+                StageName::Build,
+                build,
+                &running.cancel,
+                &reporter,
+            )
+            .await;
             let build_status = stage_status(&build_stage).to_string();
             stages.push(build_stage);
-            if build_status != "passed" {
+            if build_status == "cancelled" {
+                stages.push(skipped_stage(StageName::Test, "验证已取消，已跳过测试"));
+                "cancelled"
+            } else if build_status != "passed" {
                 stages.push(skipped_stage(StageName::Test, "构建失败，已跳过测试"));
                 "failed"
             } else if let Some(test) = plan.test.as_ref() {
-                let test_stage = run_stage(&repo_root, StageName::Test, test).await;
-                let test_passed = stage_status(&test_stage) == "passed";
+                let test_stage = run_stage(
+                    &repo_root,
+                    StageName::Test,
+                    test,
+                    &running.cancel,
+                    &reporter,
+                )
+                .await;
+                let test_status = stage_status(&test_stage).to_string();
                 stages.push(test_stage);
-                if test_passed {
-                    "passed"
-                } else {
-                    "failed"
+                match test_status.as_str() {
+                    "passed" => "passed",
+                    "cancelled" => "cancelled",
+                    _ => "failed",
                 }
             } else {
                 stages.push(skipped_stage(StageName::Test, "未配置测试命令，已跳过"));
@@ -206,6 +397,9 @@ pub async fn verify(
             }
         }
     };
+    if status == "cancelled" {
+        reporter.send("cancelled", None, "", "");
+    }
 
     json!({
         "sessionId": session_id,
@@ -462,11 +656,19 @@ fn cmd(parts: &[&str], timeout_secs: u64) -> CommandSpec {
     }
 }
 
-async fn run_stage(repo_root: &Path, name: StageName, plan: &StagePlan) -> serde_json::Value {
+async fn run_stage(
+    repo_root: &Path,
+    name: StageName,
+    plan: &StagePlan,
+    cancel: &CancellationToken,
+    reporter: &ProgressReporter,
+) -> serde_json::Value {
     let started = Instant::now();
-    let mut output = String::new();
+    let mut output = OutputTailBuffer::new();
+    let command_display = display_commands(&plan.commands);
+    reporter.send("stageStarted", Some(name), &command_display, "");
     for command in &plan.commands {
-        match run_command(repo_root, command).await {
+        match run_command(repo_root, command, cancel, reporter, name).await {
             CommandOutcome::Passed { output_tail } => {
                 output.push_str(&output_tail);
             }
@@ -475,47 +677,93 @@ async fn run_stage(repo_root: &Path, name: StageName, plan: &StagePlan) -> serde
                 output_tail,
             } => {
                 output.push_str(&output_tail);
-                return stage_result(
+                let result = stage_result(
                     name,
                     "failed",
-                    display_commands(&plan.commands),
+                    command_display.clone(),
                     exit_code,
                     started.elapsed(),
-                    &output,
+                    output.as_str(),
                 );
+                reporter.send(
+                    "stageFinished",
+                    Some(name),
+                    &command_display,
+                    output.as_str(),
+                );
+                return result;
             }
             CommandOutcome::Timeout { output_tail } => {
                 output.push_str(&output_tail);
-                return stage_result(
+                let result = stage_result(
                     name,
                     "timeout",
-                    display_commands(&plan.commands),
+                    command_display.clone(),
                     None,
                     started.elapsed(),
-                    &output,
+                    output.as_str(),
                 );
+                reporter.send(
+                    "stageFinished",
+                    Some(name),
+                    &command_display,
+                    output.as_str(),
+                );
+                return result;
             }
             CommandOutcome::Io { output_tail } => {
                 output.push_str(&output_tail);
-                return stage_result(
+                let result = stage_result(
                     name,
                     "commandNotFound",
-                    display_commands(&plan.commands),
+                    command_display.clone(),
                     None,
                     started.elapsed(),
-                    &output,
+                    output.as_str(),
                 );
+                reporter.send(
+                    "stageFinished",
+                    Some(name),
+                    &command_display,
+                    output.as_str(),
+                );
+                return result;
+            }
+            CommandOutcome::Cancelled { output_tail } => {
+                output.push_str(&output_tail);
+                let result = stage_result(
+                    name,
+                    "cancelled",
+                    command_display.clone(),
+                    None,
+                    started.elapsed(),
+                    output.as_str(),
+                );
+                reporter.send(
+                    "stageFinished",
+                    Some(name),
+                    &command_display,
+                    output.as_str(),
+                );
+                return result;
             }
         }
     }
-    stage_result(
+    let result = stage_result(
         name,
         "passed",
-        display_commands(&plan.commands),
+        command_display.clone(),
         Some(0),
         started.elapsed(),
-        &output,
-    )
+        output.as_str(),
+    );
+    reporter.send(
+        "stageFinished",
+        Some(name),
+        &command_display,
+        output.as_str(),
+    );
+    result
 }
 
 enum CommandOutcome {
@@ -532,9 +780,18 @@ enum CommandOutcome {
     Io {
         output_tail: String,
     },
+    Cancelled {
+        output_tail: String,
+    },
 }
 
-async fn run_command(repo_root: &Path, spec: &CommandSpec) -> CommandOutcome {
+async fn run_command(
+    repo_root: &Path,
+    spec: &CommandSpec,
+    cancel: &CancellationToken,
+    reporter: &ProgressReporter,
+    stage: StageName,
+) -> CommandOutcome {
     let Some(program) = spec.argv.first() else {
         return CommandOutcome::Io {
             output_tail: "空命令".to_string(),
@@ -552,32 +809,124 @@ async fn run_command(repo_root: &Path, spec: &CommandSpec) -> CommandOutcome {
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    match timeout(Duration::from_secs(spec.timeout_secs), command.output()).await {
-        Ok(Ok(output)) => {
-            let tail = tail_output(&output.stdout, &output.stderr);
-            if output.status.success() {
-                CommandOutcome::Passed { output_tail: tail }
-            } else {
-                CommandOutcome::Failed {
-                    exit_code: output.status.code(),
-                    output_tail: tail,
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return CommandOutcome::Io {
+                output_tail: if err.kind() == ErrorKind::NotFound {
+                    format!(
+                        "无法找到可执行命令 `{}`。Agent PATH={}",
+                        program, execution_path
+                    )
+                } else {
+                    format!("无法执行命令 `{}`: {}", spec.display, err)
+                },
+            };
+        }
+    };
+
+    let (output_tx, mut output_rx) = mpsc::channel::<Vec<u8>>(64);
+    if let Some(stdout) = child.stdout.take() {
+        spawn_output_reader(stdout, output_tx.clone());
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_output_reader(stderr, output_tx);
+    }
+
+    let started = Instant::now();
+    let deadline = tokio::time::sleep(Duration::from_secs(spec.timeout_secs));
+    tokio::pin!(deadline);
+    let mut progress_tick = tokio::time::interval(PROGRESS_INTERVAL);
+    let mut output = OutputTailBuffer::new();
+    let mut pending_bytes = 0usize;
+    let mut last_emit = Instant::now();
+    let mut output_closed = false;
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                output.push_str("\n验证已取消");
+                reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                return CommandOutcome::Cancelled {
+                    output_tail: output.into_string(),
+                };
+            }
+            _ = &mut deadline => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                output.push_str(&format!("\n命令超时：{}", spec.display));
+                reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                return CommandOutcome::Timeout {
+                    output_tail: output.into_string(),
+                };
+            }
+            maybe_chunk = output_rx.recv(), if !output_closed => {
+                if let Some(chunk) = maybe_chunk {
+                    let text = String::from_utf8_lossy(&chunk);
+                    output.push_str(&text);
+                    pending_bytes += chunk.len();
+                    if pending_bytes >= PROGRESS_OUTPUT_BYTES || last_emit.elapsed() >= PROGRESS_INTERVAL {
+                        reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                        pending_bytes = 0;
+                        last_emit = Instant::now();
+                    }
+                } else {
+                    output_closed = true;
                 }
             }
+            _ = progress_tick.tick() => {
+                if pending_bytes > 0 {
+                    reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                    pending_bytes = 0;
+                    last_emit = Instant::now();
+                }
+            }
+            status = child.wait() => {
+                while let Ok(chunk) = output_rx.try_recv() {
+                    let text = String::from_utf8_lossy(&chunk);
+                    output.push_str(&text);
+                }
+                if pending_bytes > 0 || started.elapsed() >= PROGRESS_INTERVAL {
+                    reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                }
+                let output_tail = output.into_string();
+                return match status {
+                    Ok(status) if status.success() => CommandOutcome::Passed {
+                        output_tail,
+                    },
+                    Ok(status) => CommandOutcome::Failed {
+                        exit_code: status.code(),
+                        output_tail,
+                    },
+                    Err(err) => CommandOutcome::Io {
+                        output_tail: format!("无法等待命令 `{}`: {}", spec.display, err),
+                    },
+                };
+            }
         }
-        Ok(Err(err)) => CommandOutcome::Io {
-            output_tail: if err.kind() == ErrorKind::NotFound {
-                format!(
-                    "无法找到可执行命令 `{}`。Agent PATH={}",
-                    program, execution_path
-                )
-            } else {
-                format!("无法执行命令 `{}`: {}", spec.display, err)
-            },
-        },
-        Err(_) => CommandOutcome::Timeout {
-            output_tail: format!("命令超时：{}", spec.display),
-        },
     }
+}
+
+fn spawn_output_reader<T>(mut reader: T, tx: mpsc::Sender<Vec<u8>>)
+where
+    T: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
 }
 
 fn execution_path() -> String {
@@ -865,11 +1214,36 @@ fn clamp_timeout(configured: Option<u64>, default_secs: u64) -> u64 {
         .clamp(1, MAX_TIMEOUT_SECS)
 }
 
-fn tail_output(stdout: &[u8], stderr: &[u8]) -> String {
-    let mut output = String::new();
-    output.push_str(&String::from_utf8_lossy(stdout));
-    output.push_str(&String::from_utf8_lossy(stderr));
-    tail_string(&output)
+struct OutputTailBuffer {
+    text: String,
+}
+
+impl OutputTailBuffer {
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+        }
+    }
+
+    fn push_str(&mut self, text: &str) {
+        self.text.push_str(text);
+        self.trim();
+    }
+
+    fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    fn into_string(self) -> String {
+        self.text
+    }
+
+    fn trim(&mut self) {
+        if self.text.len() <= MAX_OUTPUT_BYTES && self.text.lines().count() <= MAX_OUTPUT_LINES {
+            return;
+        }
+        self.text = tail_string(&self.text);
+    }
 }
 
 fn tail_string(text: &str) -> String {
@@ -1031,6 +1405,19 @@ mod tests {
 
         assert!(tail.len() <= MAX_OUTPUT_BYTES);
         assert!(tail.chars().all(|ch| ch == '好'));
+    }
+
+    #[test]
+    fn output_tail_buffer_keeps_only_bounded_tail() {
+        let mut buffer = OutputTailBuffer::new();
+        for index in 0..500 {
+            buffer.push_str(&format!("line-{index:03}-{}\n", "x".repeat(512)));
+        }
+
+        assert!(buffer.as_str().len() <= MAX_OUTPUT_BYTES);
+        assert!(buffer.as_str().lines().count() <= MAX_OUTPUT_LINES);
+        assert!(buffer.as_str().contains("line-499"));
+        assert!(!buffer.as_str().contains("line-000"));
     }
 
     #[test]

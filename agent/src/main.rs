@@ -1246,13 +1246,25 @@ async fn handle_incoming(
                             .remote_enabled
                             .load(std::sync::atomic::Ordering::Relaxed) =>
                 {
-                    crate::session::verify_changes::verify(
-                        &session_nid,
-                        &summary.cwd,
-                        &environment,
-                        target,
-                    )
-                    .await
+                    let cwd = summary.cwd.clone();
+                    let out = outgoing.clone();
+                    tokio::spawn(async move {
+                        let tx = out.lock().await.as_ref().cloned();
+                        let data = crate::session::verify_changes::verify(
+                            &session_nid,
+                            &cwd,
+                            &environment,
+                            target,
+                            tx.clone(),
+                        )
+                        .await;
+                        let msg =
+                            proto::WsMessageBuilder::verify_changes_result(&session_nid, data);
+                        if let Some(tx) = tx {
+                            let _ = tx.send(msg);
+                        }
+                    });
+                    return;
                 }
                 _ => serde_json::json!({
                     "sessionId": session_nid,
@@ -1268,6 +1280,29 @@ async fn handle_incoming(
             let msg = proto::WsMessageBuilder::verify_changes_result(&session_nid, data);
             if let Some(tx) = outgoing.lock().await.as_ref() {
                 let _ = tx.send(msg);
+            }
+        }
+        proto::AgentIncoming::CancelVerifyChanges {
+            session_nid,
+            run_id,
+        } => {
+            tracing::info!(nid = %session_nid, run_id = %run_id, "收到 cancel_verify_changes 请求");
+            if let Some((environment, target, command_source, started)) =
+                crate::session::verify_changes::cancel(&session_nid, &run_id)
+            {
+                if let Some(tx) = outgoing.lock().await.as_ref().cloned() {
+                    let reporter =
+                        crate::session::verify_changes::ProgressReporter::new_with_started(
+                            &session_nid,
+                            &run_id,
+                            &environment,
+                            target,
+                            &command_source,
+                            Some(tx),
+                            started,
+                        );
+                    reporter.send_cancelling();
+                }
             }
         }
         proto::AgentIncoming::Unknown { msg_type, .. } => {

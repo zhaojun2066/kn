@@ -80,6 +80,10 @@ fn test_all_incoming_types_parse_without_panic() {
             r#"{"type":"verify_changes","data":{"sessionId":"s_abc123","environment":"default","target":"all"}}"#,
             "verify_changes",
         ),
+        (
+            r#"{"type":"cancel_verify_changes","data":{"sessionId":"s_abc123","runId":"v_1"}}"#,
+            "cancel_verify_changes",
+        ),
         // Forward compat
         (r#"{"type":"future_type","data":{}}"#, "unknown"),
     ];
@@ -117,6 +121,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::ChangeSummary { .. } => "change_summary",
         AgentIncoming::ChangeFileDiff { .. } => "change_file_diff",
         AgentIncoming::VerifyChanges { .. } => "verify_changes",
+        AgentIncoming::CancelVerifyChanges { .. } => "cancel_verify_changes",
         AgentIncoming::Unknown { .. } => "unknown",
     }
 }

@@ -111,6 +111,8 @@ pub enum AgentIncoming {
         environment: String,
         target: String,
     },
+    /// iOS 请求取消当前 session 的构建/测试验证
+    CancelVerifyChanges { session_nid: String, run_id: String },
     /// 未知消息类型
     Unknown {
         msg_type: String,
@@ -338,6 +340,24 @@ impl WsEnvelope {
                     target,
                 })
             }
+            "cancel_verify_changes" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "cancel_verify_changes 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("cancel_verify_changes sessionId 为空".to_string());
+                }
+                let run_id = data["runId"].as_str().unwrap_or("").to_string();
+                if run_id.is_empty() {
+                    return Err("cancel_verify_changes runId 为空".to_string());
+                }
+                Ok(AgentIncoming::CancelVerifyChanges {
+                    session_nid,
+                    run_id,
+                })
+            }
             other => Ok(AgentIncoming::Unknown {
                 msg_type: other.to_string(),
                 raw: self.data.clone().unwrap_or(serde_json::Value::Null),
@@ -535,6 +555,15 @@ impl WsMessageBuilder {
         data["sessionId"] = serde_json::Value::String(session_nid.to_string());
         serde_json::json!({
             "type": "verify_changes_result",
+            "data": data
+        })
+        .to_string()
+    }
+
+    pub fn verify_changes_progress(session_nid: &str, mut data: serde_json::Value) -> String {
+        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
+        serde_json::json!({
+            "type": "verify_changes_progress",
             "data": data
         })
         .to_string()
