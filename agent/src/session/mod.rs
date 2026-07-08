@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub mod env;
+pub mod git_preview;
 pub mod input;
 mod manager;
 pub mod output;

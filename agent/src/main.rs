@@ -1177,6 +1177,51 @@ async fn handle_incoming(
                 }
             }
         }
+        proto::AgentIncoming::ChangeSummary { session_nid } => {
+            tracing::info!(nid = %session_nid, "收到 change_summary 请求");
+            let data = match sessions.get(&session_nid).await {
+                Ok(Some(summary))
+                    if summary.status != crate::session::SessionStatus::Ended
+                        && summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    crate::session::git_preview::summary(&session_nid, &summary.cwd).await
+                }
+                _ => serde_json::json!({
+                    "sessionId": session_nid,
+                    "status": "sessionNotFound",
+                    "files": []
+                }),
+            };
+            let msg = proto::WsMessageBuilder::change_summary_result(&session_nid, data);
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
+        proto::AgentIncoming::ChangeFileDiff { session_nid, path } => {
+            tracing::info!(nid = %session_nid, path = %path, "收到 change_file_diff 请求");
+            let data = match sessions.get(&session_nid).await {
+                Ok(Some(summary))
+                    if summary.status != crate::session::SessionStatus::Ended
+                        && summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    crate::session::git_preview::file_diff(&session_nid, &summary.cwd, &path).await
+                }
+                _ => serde_json::json!({
+                    "sessionId": session_nid,
+                    "path": path,
+                    "status": "sessionNotFound",
+                    "diffText": ""
+                }),
+            };
+            let msg = proto::WsMessageBuilder::change_file_diff_result(&session_nid, data);
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
         proto::AgentIncoming::Unknown { msg_type, .. } => {
             tracing::debug!("未知消息类型: {}", msg_type);
         }

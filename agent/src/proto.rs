@@ -101,6 +101,10 @@ pub enum AgentIncoming {
     ResumeSession { session_nid: String },
     /// iOS/Cloud 请求强制结束远程会话
     KillSession { session_nid: String, reason: String },
+    /// iOS 请求当前 session cwd 的 Git 变更摘要
+    ChangeSummary { session_nid: String },
+    /// iOS 请求当前 session cwd 内单个文件的 Git diff
+    ChangeFileDiff { session_nid: String, path: String },
     /// 未知消息类型
     Unknown {
         msg_type: String,
@@ -275,6 +279,32 @@ impl WsEnvelope {
                         .to_string(),
                 })
             }
+            "change_summary" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "change_summary 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("change_summary sessionId 为空".to_string());
+                }
+                Ok(AgentIncoming::ChangeSummary { session_nid })
+            }
+            "change_file_diff" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "change_file_diff 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("change_file_diff sessionId 为空".to_string());
+                }
+                let path = data["path"].as_str().unwrap_or("").to_string();
+                if path.is_empty() {
+                    return Err("change_file_diff path 为空".to_string());
+                }
+                Ok(AgentIncoming::ChangeFileDiff { session_nid, path })
+            }
             other => Ok(AgentIncoming::Unknown {
                 msg_type: other.to_string(),
                 raw: self.data.clone().unwrap_or(serde_json::Value::Null),
@@ -446,6 +476,24 @@ impl WsMessageBuilder {
             "data": {
                 "sessions": sessions
             }
+        })
+        .to_string()
+    }
+
+    pub fn change_summary_result(session_nid: &str, mut data: serde_json::Value) -> String {
+        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
+        serde_json::json!({
+            "type": "change_summary_result",
+            "data": data
+        })
+        .to_string()
+    }
+
+    pub fn change_file_diff_result(session_nid: &str, mut data: serde_json::Value) -> String {
+        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
+        serde_json::json!({
+            "type": "change_file_diff_result",
+            "data": data
         })
         .to_string()
     }

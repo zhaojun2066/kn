@@ -68,6 +68,14 @@ fn test_all_incoming_types_parse_without_panic() {
             r#"{"type":"resume_session","data":{"sessionId":"s_abc123"}}"#,
             "resume_session",
         ),
+        (
+            r#"{"type":"change_summary","data":{"sessionId":"s_abc123"}}"#,
+            "change_summary",
+        ),
+        (
+            r#"{"type":"change_file_diff","data":{"sessionId":"s_abc123","path":"Sources/App.swift"}}"#,
+            "change_file_diff",
+        ),
         // Forward compat
         (r#"{"type":"future_type","data":{}}"#, "unknown"),
     ];
@@ -102,6 +110,8 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::SessionCreatedAck { .. } => "session_created_ack",
         AgentIncoming::ResumeSession { .. } => "resume_session",
         AgentIncoming::KillSession { .. } => "kill_session",
+        AgentIncoming::ChangeSummary { .. } => "change_summary",
+        AgentIncoming::ChangeFileDiff { .. } => "change_file_diff",
         AgentIncoming::Unknown { .. } => "unknown",
     }
 }
