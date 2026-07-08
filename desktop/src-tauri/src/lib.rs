@@ -481,6 +481,8 @@ pub fn run() {
             project_manager::add_project,
             project_manager::remove_project,
             project_manager::update_project,
+            project_manager::update_project_verify_config,
+            project_manager::preview_project_verify_config,
             project_manager::toggle_pin_project,
             project_manager::get_project_stats,
             project_manager::get_project_overview,

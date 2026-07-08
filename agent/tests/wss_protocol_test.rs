@@ -81,6 +81,10 @@ fn test_all_incoming_types_parse_without_panic() {
             "verify_changes",
         ),
         (
+            r#"{"type":"verify_plan","data":{"sessionId":"s_abc123","environment":"default"}}"#,
+            "verify_plan",
+        ),
+        (
             r#"{"type":"cancel_verify_changes","data":{"sessionId":"s_abc123","runId":"v_1"}}"#,
             "cancel_verify_changes",
         ),
@@ -121,6 +125,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::ChangeSummary { .. } => "change_summary",
         AgentIncoming::ChangeFileDiff { .. } => "change_file_diff",
         AgentIncoming::VerifyChanges { .. } => "verify_changes",
+        AgentIncoming::VerifyPlan { .. } => "verify_plan",
         AgentIncoming::CancelVerifyChanges { .. } => "cancel_verify_changes",
         AgentIncoming::Unknown { .. } => "unknown",
     }

@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 // ── Types ──────────────────────────────────────────────────────
 
-pub use kn_common::project::ProjectInfo;
+pub use kn_common::project::{
+    ProjectInfo, ProjectVerifyCommand, ProjectVerifyConfig, ProjectVerifyEnvironment,
+};
 
 /// Lightweight session stats for a project (fast, no title extraction).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,6 +225,206 @@ pub fn update_project(
     }
     save_projects(&projects)?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn update_project_verify_config(
+    project_name: String,
+    verify: Option<ProjectVerifyConfig>,
+) -> Result<(), String> {
+    let mut projects = load_projects();
+    let idx = projects
+        .iter()
+        .position(|p| p.name == project_name)
+        .ok_or_else(|| format!("项目 '{}' 不存在", project_name))?;
+    projects[idx].verify = verify;
+    save_projects(&projects)
+}
+
+#[tauri::command]
+pub fn preview_project_verify_config(
+    project_name: String,
+) -> Result<Option<ProjectVerifyConfig>, String> {
+    let projects = load_projects();
+    let project = projects
+        .iter()
+        .find(|p| p.name == project_name)
+        .ok_or_else(|| format!("项目 '{}' 不存在", project_name))?;
+    Ok(project
+        .verify
+        .clone()
+        .or_else(|| auto_verify_config(Path::new(&project.path))))
+}
+
+fn auto_verify_config(project_path: &Path) -> Option<ProjectVerifyConfig> {
+    let root = nearest_project_root(project_path);
+    let environment = ProjectVerifyEnvironment {
+        build: auto_build_command(&root),
+        test: auto_test_command(&root),
+    };
+    if environment.build.is_none() && environment.test.is_none() {
+        return None;
+    }
+    Some(ProjectVerifyConfig {
+        default_environment: Some("default".to_string()),
+        environments: std::iter::once(("default".to_string(), environment)).collect(),
+    })
+}
+
+fn nearest_project_root(project_path: &Path) -> PathBuf {
+    let mut current = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
+    loop {
+        if has_project_marker(&current) {
+            return current;
+        }
+        if !current.pop() {
+            return project_path.to_path_buf();
+        }
+    }
+}
+
+fn has_project_marker(path: &Path) -> bool {
+    [
+        "package.json",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "go.mod",
+        "Cargo.toml",
+        "pyproject.toml",
+        "pytest.ini",
+        "requirements.txt",
+    ]
+    .iter()
+    .any(|marker| path.join(marker).exists())
+}
+
+fn auto_build_command(root: &Path) -> Option<ProjectVerifyCommand> {
+    if root.join("package.json").exists() {
+        let scripts = package_scripts(root);
+        let manager = package_manager(root);
+        let mut commands = Vec::new();
+        if scripts.contains_key("typecheck") {
+            commands.push(package_run_command(&manager, "typecheck"));
+        }
+        if scripts.contains_key("build") {
+            commands.push(package_run_command(&manager, "build"));
+        }
+        return verify_command(commands.join(" && "), 300);
+    }
+    if root.join("pom.xml").exists() {
+        return verify_command("mvn -q -DskipTests compile".to_string(), 300);
+    }
+    if root.join("build.gradle").exists() || root.join("build.gradle.kts").exists() {
+        let gradle = if root.join("gradlew").exists() {
+            "./gradlew"
+        } else {
+            "gradle"
+        };
+        return verify_command(format!("{gradle} classes testClasses -x test"), 300);
+    }
+    if root.join("go.mod").exists() {
+        return verify_command("go test ./... -run '^$'".to_string(), 300);
+    }
+    if root.join("Cargo.toml").exists() {
+        return verify_command("cargo check".to_string(), 300);
+    }
+    if root.join("pyproject.toml").exists()
+        || root.join("pytest.ini").exists()
+        || root.join("requirements.txt").exists()
+    {
+        return verify_command("python -m compileall .".to_string(), 300);
+    }
+    None
+}
+
+fn auto_test_command(root: &Path) -> Option<ProjectVerifyCommand> {
+    if root.join("package.json").exists() {
+        let scripts = package_scripts(root);
+        let script = scripts.get("test").map(String::as_str).unwrap_or("");
+        if is_valid_test_script(script) {
+            return verify_command(package_run_command(&package_manager(root), "test"), 600);
+        }
+        return None;
+    }
+    if root.join("pom.xml").exists() {
+        return verify_command("mvn -q test".to_string(), 600);
+    }
+    if root.join("build.gradle").exists() || root.join("build.gradle.kts").exists() {
+        let gradle = if root.join("gradlew").exists() {
+            "./gradlew"
+        } else {
+            "gradle"
+        };
+        return verify_command(format!("{gradle} test"), 600);
+    }
+    if root.join("go.mod").exists() {
+        return verify_command("go test ./...".to_string(), 600);
+    }
+    if root.join("Cargo.toml").exists() {
+        return verify_command("cargo test".to_string(), 600);
+    }
+    if root.join("pyproject.toml").exists()
+        || root.join("pytest.ini").exists()
+        || root.join("requirements.txt").exists()
+    {
+        return verify_command("python -m pytest".to_string(), 600);
+    }
+    None
+}
+
+fn verify_command(command: String, timeout_seconds: u64) -> Option<ProjectVerifyCommand> {
+    if command.trim().is_empty() {
+        return None;
+    }
+    Some(ProjectVerifyCommand {
+        command,
+        enabled: true,
+        timeout_seconds: Some(timeout_seconds),
+    })
+}
+
+fn package_scripts(root: &Path) -> std::collections::HashMap<String, String> {
+    let text = fs::read_to_string(root.join("package.json")).unwrap_or_default();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    json.get("scripts")
+        .and_then(|v| v.as_object())
+        .map(|scripts| {
+            scripts
+                .iter()
+                .filter_map(|(key, value)| {
+                    value
+                        .as_str()
+                        .map(|script| (key.clone(), script.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn package_manager(root: &Path) -> String {
+    if root.join("pnpm-lock.yaml").exists() {
+        "pnpm".to_string()
+    } else if root.join("yarn.lock").exists() {
+        "yarn".to_string()
+    } else {
+        "npm".to_string()
+    }
+}
+
+fn package_run_command(manager: &str, script: &str) -> String {
+    if manager == "yarn" {
+        format!("yarn {script}")
+    } else {
+        format!("{manager} run {script}")
+    }
+}
+
+fn is_valid_test_script(script: &str) -> bool {
+    let normalized = script.trim().to_ascii_lowercase();
+    !normalized.is_empty() && !normalized.contains("no test specified")
 }
 
 #[tauri::command]
@@ -1750,6 +1952,7 @@ pub async fn get_project_overview(project_path: String) -> Result<ProjectOvervie
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn temp_config_setup() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let guard = crate::TEST_ENV_LOCK.lock().unwrap();
@@ -1824,6 +2027,146 @@ mod tests {
         );
 
         assert!(result.is_err());
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn update_project_verify_config_writes_and_clears_verify_only() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "demo".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: Some("profile-a".to_string()),
+            description: Some("desc".to_string()),
+            pinned: true,
+            verify: None,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let mut environments = BTreeMap::new();
+        environments.insert(
+            "default".to_string(),
+            kn_common::project::ProjectVerifyEnvironment {
+                build: Some(kn_common::project::ProjectVerifyCommand {
+                    command: "cargo check".to_string(),
+                    enabled: true,
+                    timeout_seconds: Some(300),
+                }),
+                test: Some(kn_common::project::ProjectVerifyCommand {
+                    command: "cargo test".to_string(),
+                    enabled: false,
+                    timeout_seconds: Some(600),
+                }),
+            },
+        );
+        let verify = ProjectVerifyConfig {
+            default_environment: Some("default".to_string()),
+            environments,
+        };
+
+        update_project_verify_config("demo".to_string(), Some(verify)).unwrap();
+        let saved = load_projects();
+
+        assert_eq!(saved[0].default_profile.as_deref(), Some("profile-a"));
+        assert_eq!(saved[0].description.as_deref(), Some("desc"));
+        assert!(saved[0].pinned);
+        assert_eq!(
+            saved[0].verify.as_ref().unwrap().environments["default"]
+                .build
+                .as_ref()
+                .unwrap()
+                .command,
+            "cargo check"
+        );
+
+        update_project_verify_config("demo".to_string(), None).unwrap();
+        assert!(load_projects()[0].verify.is_none());
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn preview_project_verify_config_detects_auto_commands() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "demo".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+            verify: None,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let verify = preview_project_verify_config("demo".to_string())
+            .unwrap()
+            .unwrap();
+        let env = &verify.environments["default"];
+
+        assert_eq!(env.build.as_ref().unwrap().command, "cargo check");
+        assert_eq!(env.test.as_ref().unwrap().command, "cargo test");
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn preview_project_verify_config_prefers_manual_config() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let mut environments = BTreeMap::new();
+        environments.insert(
+            "default".to_string(),
+            ProjectVerifyEnvironment {
+                build: Some(ProjectVerifyCommand {
+                    command: "cargo check --workspace".to_string(),
+                    enabled: true,
+                    timeout_seconds: Some(500),
+                }),
+                test: None,
+            },
+        );
+        let projects = vec![ProjectInfo {
+            name: "demo".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+            verify: Some(ProjectVerifyConfig {
+                default_environment: Some("default".to_string()),
+                environments,
+            }),
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let verify = preview_project_verify_config("demo".to_string())
+            .unwrap()
+            .unwrap();
+        let env = &verify.environments["default"];
+
+        assert_eq!(
+            env.build.as_ref().unwrap().command,
+            "cargo check --workspace"
+        );
+        assert!(env.test.is_none());
 
         cleanup_config(dir);
     }

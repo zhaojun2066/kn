@@ -90,6 +90,14 @@ struct VerifyPlan {
     test: Option<StagePlan>,
 }
 
+struct ResolvedVerifyPlan {
+    plan: VerifyPlan,
+    environment: String,
+    available_environments: Vec<String>,
+    detected_languages: Vec<String>,
+    manual_config: Option<ProjectVerifyConfig>,
+}
+
 #[derive(Clone)]
 struct RunningRun {
     run_id: String,
@@ -138,11 +146,12 @@ impl RunningGuard {
         })
     }
 
-    fn update_command_source(&self, command_source: &str) {
+    fn update_plan_context(&self, environment: &str, command_source: &str) {
         let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(run) = guard.get_mut(&self.session_id) {
             if run.run_id == self.run_id {
+                run.environment = environment.to_string();
                 run.command_source = command_source.to_string();
             }
         }
@@ -287,7 +296,7 @@ pub async fn verify(
                 target,
                 "notGitRepo",
                 "当前目录不是 Git 仓库",
-            )
+            );
         }
         Err(_) => {
             return error_result(
@@ -296,17 +305,19 @@ pub async fn verify(
                 target,
                 "error",
                 "无法检查 Git 仓库",
-            )
+            );
         }
     };
 
+    let verify_root = nearest_project_root(cwd, &repo_root);
     let started = Instant::now();
-    let plan = load_manual_plan(&repo_root, environment).unwrap_or_else(|| auto_plan(&repo_root));
-    running.update_command_source(plan.command_source);
+    let resolved = resolve_verify_plan(&verify_root, environment);
+    let plan = resolved.plan;
+    running.update_plan_context(&resolved.environment, plan.command_source);
     let reporter = ProgressReporter::new(
         session_id,
         &run_id,
-        environment,
+        &resolved.environment,
         target,
         plan.command_source,
         tx,
@@ -318,7 +329,7 @@ pub async fn verify(
         VerifyTarget::Build => match plan.build.as_ref() {
             Some(build) => {
                 let stage = run_stage(
-                    &repo_root,
+                    &verify_root,
                     StageName::Build,
                     build,
                     &running.cancel,
@@ -333,12 +344,19 @@ pub async fn verify(
                     _ => "failed",
                 }
             }
-            None => return command_not_found(session_id, environment, target, plan.command_source),
+            None => {
+                return command_not_found(
+                    session_id,
+                    &resolved.environment,
+                    target,
+                    plan.command_source,
+                );
+            }
         },
         VerifyTarget::Test => match plan.test.as_ref() {
             Some(test) => {
                 let stage = run_stage(
-                    &repo_root,
+                    &verify_root,
                     StageName::Test,
                     test,
                     &running.cancel,
@@ -353,14 +371,26 @@ pub async fn verify(
                     _ => "failed",
                 }
             }
-            None => return command_not_found(session_id, environment, target, plan.command_source),
+            None => {
+                return command_not_found(
+                    session_id,
+                    &resolved.environment,
+                    target,
+                    plan.command_source,
+                );
+            }
         },
         VerifyTarget::All => {
             let Some(build) = plan.build.as_ref() else {
-                return command_not_found(session_id, environment, target, plan.command_source);
+                return command_not_found(
+                    session_id,
+                    &resolved.environment,
+                    target,
+                    plan.command_source,
+                );
             };
             let build_stage = run_stage(
-                &repo_root,
+                &verify_root,
                 StageName::Build,
                 build,
                 &running.cancel,
@@ -377,7 +407,7 @@ pub async fn verify(
                 "failed"
             } else if let Some(test) = plan.test.as_ref() {
                 let test_stage = run_stage(
-                    &repo_root,
+                    &verify_root,
                     StageName::Test,
                     test,
                     &running.cancel,
@@ -405,11 +435,78 @@ pub async fn verify(
         "sessionId": session_id,
         "runId": run_id,
         "status": status,
-        "environment": environment,
+        "environment": resolved.environment,
         "target": target.as_str(),
         "commandSource": plan.command_source,
         "durationMs": started.elapsed().as_millis() as u64,
         "stages": stages
+    })
+}
+
+pub async fn preview(session_id: &str, cwd: &str, environment: &str) -> serde_json::Value {
+    let repo_root = match repo_root(cwd).await {
+        Ok(root) => root,
+        Err(VerifyError::NotGitRepo) => {
+            return json!({
+                "sessionId": session_id,
+                "status": "notGitRepo",
+                "cwd": cwd,
+                "environment": environment,
+                "availableEnvironments": [],
+                "commandSource": "auto",
+                "detectedLanguages": [],
+                "message": "当前目录不是 Git 仓库"
+            });
+        }
+        Err(_) => {
+            return json!({
+                "sessionId": session_id,
+                "status": "error",
+                "cwd": cwd,
+                "environment": environment,
+                "availableEnvironments": [],
+                "commandSource": "auto",
+                "detectedLanguages": [],
+                "message": "无法检查 Git 仓库"
+            });
+        }
+    };
+
+    let verify_root = nearest_project_root(cwd, &repo_root);
+    let resolved = resolve_verify_plan(&verify_root, environment);
+    let build = preview_stage(
+        StageName::Build,
+        resolved.plan.build.as_ref(),
+        resolved
+            .manual_config
+            .as_ref()
+            .and_then(|config| manual_environment(config, &resolved.environment))
+            .and_then(|env| env.build.as_ref()),
+        resolved.plan.command_source,
+    );
+    let test = preview_stage(
+        StageName::Test,
+        resolved.plan.test.as_ref(),
+        resolved
+            .manual_config
+            .as_ref()
+            .and_then(|config| manual_environment(config, &resolved.environment))
+            .and_then(|env| env.test.as_ref()),
+        resolved.plan.command_source,
+    );
+
+    json!({
+        "sessionId": session_id,
+        "status": "ok",
+        "cwd": cwd,
+        "repoRoot": repo_root.to_string_lossy(),
+        "projectRoot": verify_root.to_string_lossy(),
+        "environment": resolved.environment,
+        "availableEnvironments": resolved.available_environments,
+        "commandSource": resolved.plan.command_source,
+        "detectedLanguages": resolved.detected_languages,
+        "build": build,
+        "test": test
     })
 }
 
@@ -427,23 +524,66 @@ pub fn invalid_target_result(session_id: &str, environment: &str) -> serde_json:
     })
 }
 
-fn load_manual_plan(repo_root: &Path, environment: &str) -> Option<VerifyPlan> {
-    let config = load_project_verify_config(repo_root)?;
-    manual_plan_from_config(&config, environment)
+fn resolve_verify_plan(repo_root: &Path, environment: &str) -> ResolvedVerifyPlan {
+    let manual_config = load_project_verify_config(repo_root);
+    if let Some(config) = manual_config.clone() {
+        if let Some((environment, plan)) =
+            manual_plan_from_config_with_environment(&config, environment)
+        {
+            return ResolvedVerifyPlan {
+                plan,
+                environment,
+                available_environments: config.environments.keys().cloned().collect(),
+                detected_languages: detected_languages(repo_root),
+                manual_config: Some(config),
+            };
+        }
+    }
+
+    ResolvedVerifyPlan {
+        plan: auto_plan(repo_root),
+        environment: environment.to_string(),
+        available_environments: vec!["default".to_string()],
+        detected_languages: detected_languages(repo_root),
+        manual_config: None,
+    }
 }
 
 fn manual_plan_from_config(config: &ProjectVerifyConfig, environment: &str) -> Option<VerifyPlan> {
+    manual_plan_from_config_with_environment(config, environment).map(|(_, plan)| plan)
+}
+
+fn manual_plan_from_config_with_environment(
+    config: &ProjectVerifyConfig,
+    environment: &str,
+) -> Option<(String, VerifyPlan)> {
     let env_name = if config.environments.contains_key(environment) {
         environment
+    } else if let Some(default_environment) = config.default_environment.as_deref() {
+        if config.environments.contains_key(default_environment) {
+            default_environment
+        } else {
+            "default"
+        }
     } else {
-        config.default_environment.as_deref().unwrap_or("default")
+        "default"
     };
     let env = config.environments.get(env_name)?;
-    Some(VerifyPlan {
-        command_source: "manual",
-        build: manual_stage(StageName::Build, env.build.as_ref()),
-        test: manual_stage(StageName::Test, env.test.as_ref()),
-    })
+    Some((
+        env_name.to_string(),
+        VerifyPlan {
+            command_source: "manual",
+            build: manual_stage(StageName::Build, env.build.as_ref()),
+            test: manual_stage(StageName::Test, env.test.as_ref()),
+        },
+    ))
+}
+
+fn manual_environment<'a>(
+    config: &'a ProjectVerifyConfig,
+    environment: &str,
+) -> Option<&'a kn_common::project::ProjectVerifyEnvironment> {
+    config.environments.get(environment)
 }
 
 fn manual_stage(stage: StageName, command: Option<&ProjectVerifyCommand>) -> Option<StagePlan> {
@@ -461,22 +601,166 @@ fn manual_stage(stage: StageName, command: Option<&ProjectVerifyCommand>) -> Opt
     })
 }
 
+fn preview_stage(
+    stage: StageName,
+    resolved: Option<&StagePlan>,
+    manual_command: Option<&ProjectVerifyCommand>,
+    command_source: &str,
+) -> serde_json::Value {
+    if command_source == "manual" {
+        let Some(command) = manual_command else {
+            return json!({
+                "available": false,
+                "enabled": false,
+                "source": "manual",
+                "timeoutSeconds": stage.default_timeout_secs(),
+                "message": if stage == StageName::Build { "未配置构建命令" } else { "未配置测试命令" }
+            });
+        };
+        if !command.enabled {
+            return json!({
+                "available": true,
+                "enabled": false,
+                "command": command.command,
+                "timeoutSeconds": clamp_timeout(command.timeout_seconds, stage.default_timeout_secs()),
+                "source": "manual",
+                "message": if stage == StageName::Build { "构建已在桌面端配置为禁用" } else { "测试已在桌面端配置为禁用" }
+            });
+        }
+        return match parse_manual_command(&command.command) {
+            Ok(_) => json!({
+                "available": true,
+                "enabled": true,
+                "command": command.command,
+                "timeoutSeconds": clamp_timeout(command.timeout_seconds, stage.default_timeout_secs()),
+                "source": "manual"
+            }),
+            Err(err) => json!({
+                "available": false,
+                "enabled": true,
+                "command": command.command,
+                "timeoutSeconds": clamp_timeout(command.timeout_seconds, stage.default_timeout_secs()),
+                "source": "manual",
+                "message": format!("命令配置不可用：{err}")
+            }),
+        };
+    }
+
+    let Some(stage_plan) = resolved else {
+        return json!({
+            "available": false,
+            "enabled": false,
+            "source": "auto",
+            "timeoutSeconds": stage.default_timeout_secs(),
+            "message": if stage == StageName::Build { "未自动识别到构建命令" } else { "未自动识别到测试命令" }
+        });
+    };
+
+    json!({
+        "available": true,
+        "enabled": true,
+        "command": display_commands(&stage_plan.commands),
+        "timeoutSeconds": stage_plan
+            .commands
+            .iter()
+            .map(|command| command.timeout_secs)
+            .max()
+            .unwrap_or_else(|| stage.default_timeout_secs()),
+        "source": "auto"
+    })
+}
+
 fn load_project_verify_config(repo_root: &Path) -> Option<ProjectVerifyConfig> {
     let path = kn_common::path::config_dir().join("projects.json");
     let text = std::fs::read_to_string(path).ok()?;
     let projects: Vec<ProjectInfo> = serde_json::from_str(&text).ok()?;
-    let repo = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf());
-    projects.into_iter().find_map(|project| {
-        let project_path = PathBuf::from(project.path);
-        let canonical = project_path.canonicalize().unwrap_or(project_path);
-        if repo == canonical || repo.starts_with(&canonical) || canonical.starts_with(&repo) {
-            project.verify
-        } else {
-            None
+    find_project_verify_config(projects, repo_root)
+}
+
+fn find_project_verify_config(
+    projects: Vec<ProjectInfo>,
+    context_root: &Path,
+) -> Option<ProjectVerifyConfig> {
+    let context = canonical_path(context_root);
+    projects
+        .into_iter()
+        .filter_map(|project| {
+            let verify = project.verify?;
+            let project_path = PathBuf::from(project.path);
+            let canonical = canonical_path(&project_path);
+            if context == canonical || context.starts_with(&canonical) {
+                Some((canonical.components().count(), verify))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, verify)| verify)
+}
+
+fn canonical_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn nearest_project_root(cwd: &str, repo_root: &Path) -> PathBuf {
+    let repo = canonical_path(repo_root);
+    let mut current = canonical_path(Path::new(cwd));
+    if !current.starts_with(&repo) {
+        return repo;
+    }
+    loop {
+        if has_project_marker(&current) {
+            return current;
         }
-    })
+        if current == repo {
+            return repo;
+        }
+        if !current.pop() {
+            return repo;
+        }
+    }
+}
+
+fn has_project_marker(path: &Path) -> bool {
+    [
+        "package.json",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "go.mod",
+        "Cargo.toml",
+        "pyproject.toml",
+        "pytest.ini",
+        "requirements.txt",
+    ]
+    .iter()
+    .any(|marker| path.join(marker).exists())
+}
+
+fn detected_languages(repo_root: &Path) -> Vec<String> {
+    let mut languages = Vec::new();
+    if repo_root.join("package.json").exists() {
+        languages.push("node".to_string());
+    }
+    if repo_root.join("pom.xml").exists()
+        || repo_root.join("build.gradle").exists()
+        || repo_root.join("build.gradle.kts").exists()
+    {
+        languages.push("java".to_string());
+    }
+    if repo_root.join("go.mod").exists() {
+        languages.push("go".to_string());
+    }
+    if repo_root.join("Cargo.toml").exists() {
+        languages.push("rust".to_string());
+    }
+    if repo_root.join("pyproject.toml").exists()
+        || repo_root.join("pytest.ini").exists()
+        || repo_root.join("requirements.txt").exists()
+    {
+        languages.push("python".to_string());
+    }
+    languages
 }
 
 fn auto_plan(repo_root: &Path) -> VerifyPlan {
@@ -1348,7 +1632,9 @@ mod tests {
             environments,
         };
 
-        let plan = manual_plan_from_config(&config, "default").unwrap();
+        let plan = manual_plan_from_config_with_environment(&config, "default")
+            .unwrap()
+            .1;
 
         assert_eq!(plan.command_source, "manual");
         assert_eq!(
@@ -1356,6 +1642,140 @@ mod tests {
             "mvn -q -DskipTests compile"
         );
         assert!(plan.test.is_none());
+    }
+
+    #[test]
+    fn manual_config_falls_back_to_default_environment() {
+        let mut environments = BTreeMap::new();
+        environments.insert(
+            "ci".to_string(),
+            kn_common::project::ProjectVerifyEnvironment {
+                build: Some(ProjectVerifyCommand {
+                    command: "cargo check".to_string(),
+                    enabled: true,
+                    timeout_seconds: Some(300),
+                }),
+                test: None,
+            },
+        );
+        let config = ProjectVerifyConfig {
+            default_environment: Some("ci".to_string()),
+            environments,
+        };
+
+        let (environment, plan) =
+            manual_plan_from_config_with_environment(&config, "missing").unwrap();
+
+        assert_eq!(environment, "ci");
+        assert_eq!(plan.command_source, "manual");
+        assert_eq!(plan.build.unwrap().commands[0].display, "cargo check");
+    }
+
+    #[test]
+    fn manual_config_falls_back_to_default_when_default_environment_is_missing() {
+        let mut environments = BTreeMap::new();
+        environments.insert(
+            "default".to_string(),
+            kn_common::project::ProjectVerifyEnvironment {
+                build: Some(ProjectVerifyCommand {
+                    command: "mvn -q -DskipTests compile".to_string(),
+                    enabled: true,
+                    timeout_seconds: None,
+                }),
+                test: None,
+            },
+        );
+        let config = ProjectVerifyConfig {
+            default_environment: Some("missing".to_string()),
+            environments,
+        };
+
+        let (environment, plan) = manual_plan_from_config_with_environment(&config, "ci").unwrap();
+
+        assert_eq!(environment, "default");
+        assert_eq!(
+            plan.build.unwrap().commands[0].display,
+            "mvn -q -DskipTests compile"
+        );
+    }
+
+    #[test]
+    fn project_verify_config_uses_longest_ancestor_and_never_child_for_parent() {
+        let dir = unique_temp_dir("project-config-match");
+        let repo = dir.join("repo");
+        let java = repo.join("java");
+        let agent = repo.join("agent");
+        fs::create_dir_all(&java).unwrap();
+        fs::create_dir_all(&agent).unwrap();
+
+        let parent_config = verify_config("cargo check", "cargo test");
+        let java_config = verify_config("mvn -q -DskipTests compile", "mvn -q test");
+        let projects = vec![
+            project_info("repo", &repo, Some(parent_config.clone())),
+            project_info("java", &java, Some(java_config.clone())),
+        ];
+
+        let parent_match = find_project_verify_config(projects.clone(), &repo).unwrap();
+        assert_eq!(parent_match, parent_config);
+
+        let child_match = find_project_verify_config(projects.clone(), &java).unwrap();
+        assert_eq!(child_match, java_config);
+
+        let sibling_match = find_project_verify_config(projects, &agent).unwrap();
+        assert_eq!(sibling_match, parent_config);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn nearest_project_root_prefers_cwd_project_inside_monorepo() {
+        let dir = unique_temp_dir("nearest-project-root");
+        let repo = dir.join("repo");
+        let site = repo.join("site");
+        let nested = site.join("src");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(repo.join("Cargo.toml"), "[workspace]\nmembers=[]\n").unwrap();
+        fs::write(
+            site.join("package.json"),
+            r#"{"scripts":{"build":"vite build"}}"#,
+        )
+        .unwrap();
+
+        let root = nearest_project_root(&nested.to_string_lossy(), &repo);
+        assert_eq!(root, site.canonicalize().unwrap());
+        let plan = auto_plan(&root);
+
+        assert_eq!(plan.build.unwrap().commands[0].display, "npm run build");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_stage_reports_disabled_and_invalid_manual_commands() {
+        let disabled = ProjectVerifyCommand {
+            command: "cargo test".to_string(),
+            enabled: false,
+            timeout_seconds: None,
+        };
+        let disabled_preview = preview_stage(StageName::Test, None, Some(&disabled), "manual");
+
+        assert_eq!(disabled_preview["available"], true);
+        assert_eq!(disabled_preview["enabled"], false);
+        assert_eq!(disabled_preview["message"], "测试已在桌面端配置为禁用");
+
+        let invalid = ProjectVerifyCommand {
+            command: "cargo test && rm -rf target".to_string(),
+            enabled: true,
+            timeout_seconds: Some(600),
+        };
+        let invalid_preview = preview_stage(StageName::Test, None, Some(&invalid), "manual");
+
+        assert_eq!(invalid_preview["available"], false);
+        assert_eq!(invalid_preview["enabled"], true);
+        assert!(invalid_preview["message"]
+            .as_str()
+            .unwrap()
+            .contains("命令配置不可用"));
     }
 
     #[test]
@@ -1427,6 +1847,40 @@ mod tests {
         assert_eq!(result["status"], "error");
         assert_eq!(result["target"], "all");
         assert_eq!(result["message"], "验证目标不支持");
+    }
+
+    fn project_info(name: &str, path: &Path, verify: Option<ProjectVerifyConfig>) -> ProjectInfo {
+        ProjectInfo {
+            name: name.to_string(),
+            path: path.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+            verify,
+        }
+    }
+
+    fn verify_config(build: &str, test: &str) -> ProjectVerifyConfig {
+        let mut environments = BTreeMap::new();
+        environments.insert(
+            "default".to_string(),
+            kn_common::project::ProjectVerifyEnvironment {
+                build: Some(ProjectVerifyCommand {
+                    command: build.to_string(),
+                    enabled: true,
+                    timeout_seconds: None,
+                }),
+                test: Some(ProjectVerifyCommand {
+                    command: test.to_string(),
+                    enabled: true,
+                    timeout_seconds: None,
+                }),
+            },
+        );
+        ProjectVerifyConfig {
+            default_environment: Some("default".to_string()),
+            environments,
+        }
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

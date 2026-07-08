@@ -137,6 +137,8 @@ export function App() {
     loadProjects,
     removeProject,
     updateProject,
+    updateVerifyConfig,
+    previewVerifyConfig,
     statsMap,
     setDescription,
     togglePin,
@@ -1742,6 +1744,15 @@ export function App() {
                     addToast("error", `设置项目默认 Profile 失败: ${e}`);
                   }
                 }}
+                onUpdateVerifyConfig={async (verify) => {
+                  try {
+                    await updateVerifyConfig(activeProject.name, verify);
+                    addToast("success", verify ? "验证配置已保存" : "已恢复自动识别");
+                  } catch (e) {
+                    addToast("error", `保存验证配置失败: ${e}`);
+                  }
+                }}
+                onPreviewVerifyConfig={previewVerifyConfig}
                 onScanSessions={(path) => sessionScanner.scanSessions(path)}
                 onResumeSession={handleResumeSession}
                 addToast={addToast}

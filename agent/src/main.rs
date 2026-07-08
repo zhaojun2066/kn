@@ -1282,6 +1282,40 @@ async fn handle_incoming(
                 let _ = tx.send(msg);
             }
         }
+        proto::AgentIncoming::VerifyPlan {
+            session_nid,
+            environment,
+        } => {
+            tracing::info!(nid = %session_nid, environment = %environment, "收到 verify_plan 请求");
+            let data = match sessions.get(&session_nid).await {
+                Ok(Some(summary))
+                    if summary.status != crate::session::SessionStatus::Ended
+                        && summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    crate::session::verify_changes::preview(
+                        &session_nid,
+                        &summary.cwd,
+                        &environment,
+                    )
+                    .await
+                }
+                _ => serde_json::json!({
+                    "sessionId": session_nid,
+                    "status": "sessionNotFound",
+                    "environment": environment,
+                    "commandSource": "auto",
+                    "availableEnvironments": [],
+                    "detectedLanguages": [],
+                    "message": "终端不存在或已结束"
+                }),
+            };
+            let msg = proto::WsMessageBuilder::verify_plan_result(&session_nid, data);
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
         proto::AgentIncoming::CancelVerifyChanges {
             session_nid,
             run_id,

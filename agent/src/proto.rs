@@ -9,6 +9,7 @@
 //!
 //! ## Agent 出站 (agent → cloud) — 对齐 Java ALLOWED_MESSAGES:
 //! - ping, session_created, session_start_failed, session_ended, output, profile_list, project_list
+//! - change_summary_result, change_file_diff_result, verify_plan_result, verify_changes_result, verify_changes_progress
 //!
 //! ## Agent 入站 (cloud → agent):
 //! - 心跳: pong
@@ -17,6 +18,7 @@
 //! - 确认: profile_list_ack
 //! - 错误: error_notify (Java sendError 可向任意客户端发送)
 //! - 结束: kill_session
+//! - 变更/验证: change_summary, change_file_diff, verify_plan, verify_changes, cancel_verify_changes
 //!
 //! 不在 agent 白名单/不需要 agent 关注的消息:
 //! - start_session_ack, ack (仅 mobile)
@@ -110,6 +112,11 @@ pub enum AgentIncoming {
         session_nid: String,
         environment: String,
         target: String,
+    },
+    /// iOS 请求预览当前 session cwd 的构建/测试验证计划
+    VerifyPlan {
+        session_nid: String,
+        environment: String,
     },
     /// iOS 请求取消当前 session 的构建/测试验证
     CancelVerifyChanges { session_nid: String, run_id: String },
@@ -340,6 +347,26 @@ impl WsEnvelope {
                     target,
                 })
             }
+            "verify_plan" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "verify_plan 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("verify_plan sessionId 为空".to_string());
+                }
+                let environment = data["environment"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("default")
+                    .to_string();
+                Ok(AgentIncoming::VerifyPlan {
+                    session_nid,
+                    environment,
+                })
+            }
             "cancel_verify_changes" => {
                 let data = self
                     .data
@@ -564,6 +591,15 @@ impl WsMessageBuilder {
         data["sessionId"] = serde_json::Value::String(session_nid.to_string());
         serde_json::json!({
             "type": "verify_changes_progress",
+            "data": data
+        })
+        .to_string()
+    }
+
+    pub fn verify_plan_result(session_nid: &str, mut data: serde_json::Value) -> String {
+        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
+        serde_json::json!({
+            "type": "verify_plan_result",
             "data": data
         })
         .to_string()
@@ -843,6 +879,29 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_verify_plan() {
+        let json = serde_json::json!({
+            "type": "verify_plan",
+            "data": {
+                "sessionId": "s_abc",
+                "environment": "default"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::VerifyPlan {
+                session_nid,
+                environment,
+            } => {
+                assert_eq!(session_nid, "s_abc");
+                assert_eq!(environment, "default");
+            }
+            _ => panic!("expected VerifyPlan"),
+        }
+    }
+
+    #[test]
     fn test_outbound_ping() {
         let json = WsMessageBuilder::ping();
         assert!(json.contains("ping"));
@@ -921,6 +980,24 @@ mod tests {
         assert_eq!(parsed["type"], "verify_changes_result");
         assert_eq!(parsed["data"]["sessionId"], "s_abc123");
         assert_eq!(parsed["data"]["stages"][0]["outputTail"], "ok");
+    }
+
+    #[test]
+    fn test_outbound_verify_plan_result() {
+        let json = WsMessageBuilder::verify_plan_result(
+            "s_abc123",
+            serde_json::json!({
+                "status": "ok",
+                "environment": "default",
+                "commandSource": "manual",
+                "build": { "available": true, "enabled": true, "command": "cargo check" }
+            }),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "verify_plan_result");
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["data"]["commandSource"], "manual");
+        assert_eq!(parsed["data"]["build"]["command"], "cargo check");
     }
 
     #[test]

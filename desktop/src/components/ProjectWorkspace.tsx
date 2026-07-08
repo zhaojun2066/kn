@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ProjectInfo, SessionInfo, ProfileSummary, ProjectOverviewData } from "../lib/types";
+import type { ProjectInfo, SessionInfo, ProfileSummary, ProjectOverviewData, ProjectVerifyConfig } from "../lib/types";
 import { ProjectOverview } from "./ProjectOverview";
 import { SessionList } from "./SessionList";
 import { FileTree, type FileTreeNode } from "./FileTree";
@@ -46,6 +46,8 @@ interface ProjectWorkspaceProps {
   onRunProfile: (profileName: string, cliType: string) => void;
   onSplitProfile?: (profileName: string, cliType: string) => void;
   onSetDefaultProfile: (profileName: string) => void | Promise<void>;
+  onUpdateVerifyConfig?: (verify: ProjectVerifyConfig | null) => void | Promise<void>;
+  onPreviewVerifyConfig?: (projectName: string) => Promise<ProjectVerifyConfig | null>;
   onScanSessions: (projectPath: string) => void;
   onResumeSession: (session: SessionInfo) => void;
   // Toast integration for resource operations
@@ -107,6 +109,8 @@ export function ProjectWorkspace({
   onRunProfile,
   onSplitProfile,
   onSetDefaultProfile,
+  onUpdateVerifyConfig,
+  onPreviewVerifyConfig,
   onScanSessions,
   onResumeSession,
   addToast,
@@ -1209,6 +1213,8 @@ export function ProjectWorkspace({
           onRunProfile={onRunProfile}
           onSplitProfile={onSplitProfile}
           onSetDefaultProfile={onSetDefaultProfile}
+          onUpdateVerifyConfig={onUpdateVerifyConfig ?? (async () => {})}
+          onPreviewVerifyConfig={onPreviewVerifyConfig ?? (async () => null)}
         />
       )}
       {activeTab === "sessions" && (

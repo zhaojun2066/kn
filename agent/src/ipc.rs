@@ -846,10 +846,8 @@ impl IpcHandle {
                 match self.sessions.kill_session(&nid).await {
                     Ok(()) => {
                         // Report session_ended — 只有开启了远程的会话才同步到云端
-                        if let Ok(Some(msg)) = self
-                            .sessions
-                            .report_session_ended(&nid, reason)
-                            .await
+                        if let Ok(Some(msg)) =
+                            self.sessions.report_session_ended(&nid, reason).await
                         {
                             if remote_was_enabled {
                                 if let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref() {
