@@ -1,6 +1,6 @@
 use kn_common::project::{ProjectInfo, ProjectVerifyCommand, ProjectVerifyConfig};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -213,11 +213,34 @@ impl ProgressReporter {
         self.send("cancelling", None, "", "");
     }
 
-    fn send(&self, status: &str, stage: Option<StageName>, command: &str, output_tail: &str) {
+    fn send_chunk(
+        &self,
+        status: &str,
+        stage: StageName,
+        command: &str,
+        chunk: &ProgressOutputChunk,
+    ) {
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
-        let mut data = json!({
+        if chunk.text.is_empty() {
+            return;
+        }
+        let mut data = self.base_data(status);
+        data["stage"] = serde_json::Value::String(stage.as_str().to_string());
+        if !command.is_empty() {
+            data["command"] = serde_json::Value::String(command.to_string());
+        }
+        data["outputTail"] = serde_json::Value::String(chunk.text.clone());
+        data["outputStartLine"] = serde_json::Value::Number(chunk.start_line.into());
+        data["outputEndLine"] = serde_json::Value::Number(chunk.end_line.into());
+        data["outputTruncated"] = serde_json::Value::Bool(chunk.truncated);
+        let msg = crate::proto::WsMessageBuilder::verify_changes_progress(&self.session_id, data);
+        let _ = tx.send(msg);
+    }
+
+    fn base_data(&self, status: &str) -> serde_json::Value {
+        json!({
             "sessionId": self.session_id,
             "runId": self.run_id,
             "environment": self.environment,
@@ -225,7 +248,14 @@ impl ProgressReporter {
             "commandSource": self.command_source,
             "status": status,
             "elapsedMs": self.started.elapsed().as_millis() as u64,
-        });
+        })
+    }
+
+    fn send(&self, status: &str, stage: Option<StageName>, command: &str, output_tail: &str) {
+        let Some(tx) = self.tx.as_ref() else {
+            return;
+        };
+        let mut data = self.base_data(status);
         if let Some(stage) = stage {
             data["stage"] = serde_json::Value::String(stage.as_str().to_string());
         }
@@ -949,10 +979,20 @@ async fn run_stage(
 ) -> serde_json::Value {
     let started = Instant::now();
     let mut output = OutputTailBuffer::new();
+    let mut progress_output = ProgressOutputBuffer::new();
     let command_display = display_commands(&plan.commands);
     reporter.send("stageStarted", Some(name), &command_display, "");
     for command in &plan.commands {
-        match run_command(repo_root, command, cancel, reporter, name).await {
+        match run_command(
+            repo_root,
+            command,
+            cancel,
+            reporter,
+            name,
+            &mut progress_output,
+        )
+        .await
+        {
             CommandOutcome::Passed { output_tail } => {
                 output.push_str(&output_tail);
             }
@@ -969,12 +1009,7 @@ async fn run_stage(
                     started.elapsed(),
                     output.as_str(),
                 );
-                reporter.send(
-                    "stageFinished",
-                    Some(name),
-                    &command_display,
-                    output.as_str(),
-                );
+                reporter.send("stageFinished", Some(name), &command_display, "");
                 return result;
             }
             CommandOutcome::Timeout { output_tail } => {
@@ -987,12 +1022,7 @@ async fn run_stage(
                     started.elapsed(),
                     output.as_str(),
                 );
-                reporter.send(
-                    "stageFinished",
-                    Some(name),
-                    &command_display,
-                    output.as_str(),
-                );
+                reporter.send("stageFinished", Some(name), &command_display, "");
                 return result;
             }
             CommandOutcome::Io { output_tail } => {
@@ -1005,12 +1035,7 @@ async fn run_stage(
                     started.elapsed(),
                     output.as_str(),
                 );
-                reporter.send(
-                    "stageFinished",
-                    Some(name),
-                    &command_display,
-                    output.as_str(),
-                );
+                reporter.send("stageFinished", Some(name), &command_display, "");
                 return result;
             }
             CommandOutcome::Cancelled { output_tail } => {
@@ -1023,12 +1048,7 @@ async fn run_stage(
                     started.elapsed(),
                     output.as_str(),
                 );
-                reporter.send(
-                    "stageFinished",
-                    Some(name),
-                    &command_display,
-                    output.as_str(),
-                );
+                reporter.send("stageFinished", Some(name), &command_display, "");
                 return result;
             }
         }
@@ -1041,12 +1061,7 @@ async fn run_stage(
         started.elapsed(),
         output.as_str(),
     );
-    reporter.send(
-        "stageFinished",
-        Some(name),
-        &command_display,
-        output.as_str(),
-    );
+    reporter.send("stageFinished", Some(name), &command_display, "");
     result
 }
 
@@ -1075,6 +1090,7 @@ async fn run_command(
     cancel: &CancellationToken,
     reporter: &ProgressReporter,
     stage: StageName,
+    progress_output: &mut ProgressOutputBuffer,
 ) -> CommandOutcome {
     let Some(program) = spec.argv.first() else {
         return CommandOutcome::Io {
@@ -1096,15 +1112,18 @@ async fn run_command(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(err) => {
+            let message = if err.kind() == ErrorKind::NotFound {
+                format!(
+                    "无法找到可执行命令 `{}`。Agent PATH={}",
+                    program, execution_path
+                )
+            } else {
+                format!("无法执行命令 `{}`: {}", spec.display, err)
+            };
+            progress_output.push_str(&message);
+            emit_progress_output(reporter, stage, &spec.display, progress_output);
             return CommandOutcome::Io {
-                output_tail: if err.kind() == ErrorKind::NotFound {
-                    format!(
-                        "无法找到可执行命令 `{}`。Agent PATH={}",
-                        program, execution_path
-                    )
-                } else {
-                    format!("无法执行命令 `{}`: {}", spec.display, err)
-                },
+                output_tail: message,
             };
         }
     };
@@ -1131,8 +1150,10 @@ async fn run_command(
             _ = cancel.cancelled() => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
+                drain_output(&mut output_rx, &mut output, progress_output).await;
                 output.push_str("\n验证已取消");
-                reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                progress_output.push_str("\n验证已取消");
+                emit_progress_output(reporter, stage, &spec.display, progress_output);
                 return CommandOutcome::Cancelled {
                     output_tail: output.into_string(),
                 };
@@ -1140,8 +1161,10 @@ async fn run_command(
             _ = &mut deadline => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
+                drain_output(&mut output_rx, &mut output, progress_output).await;
                 output.push_str(&format!("\n命令超时：{}", spec.display));
-                reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                progress_output.push_str(&format!("\n命令超时：{}", spec.display));
+                emit_progress_output(reporter, stage, &spec.display, progress_output);
                 return CommandOutcome::Timeout {
                     output_tail: output.into_string(),
                 };
@@ -1150,9 +1173,10 @@ async fn run_command(
                 if let Some(chunk) = maybe_chunk {
                     let text = String::from_utf8_lossy(&chunk);
                     output.push_str(&text);
+                    progress_output.push_str(&text);
                     pending_bytes += chunk.len();
                     if pending_bytes >= PROGRESS_OUTPUT_BYTES || last_emit.elapsed() >= PROGRESS_INTERVAL {
-                        reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                        emit_progress_output(reporter, stage, &spec.display, progress_output);
                         pending_bytes = 0;
                         last_emit = Instant::now();
                     }
@@ -1162,18 +1186,15 @@ async fn run_command(
             }
             _ = progress_tick.tick() => {
                 if pending_bytes > 0 {
-                    reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                    emit_progress_output(reporter, stage, &spec.display, progress_output);
                     pending_bytes = 0;
                     last_emit = Instant::now();
                 }
             }
             status = child.wait() => {
-                while let Ok(chunk) = output_rx.try_recv() {
-                    let text = String::from_utf8_lossy(&chunk);
-                    output.push_str(&text);
-                }
-                if pending_bytes > 0 || started.elapsed() >= PROGRESS_INTERVAL {
-                    reporter.send("stageOutput", Some(stage), &spec.display, output.as_str());
+                drain_output(&mut output_rx, &mut output, progress_output).await;
+                if pending_bytes > 0 || started.elapsed() >= PROGRESS_INTERVAL || progress_output.has_pending() {
+                    emit_progress_output(reporter, stage, &spec.display, progress_output);
                 }
                 let output_tail = output.into_string();
                 return match status {
@@ -1190,6 +1211,18 @@ async fn run_command(
                 };
             }
         }
+    }
+}
+
+async fn drain_output(
+    output_rx: &mut mpsc::Receiver<Vec<u8>>,
+    output: &mut OutputTailBuffer,
+    progress_output: &mut ProgressOutputBuffer,
+) {
+    while let Some(chunk) = output_rx.recv().await {
+        let text = String::from_utf8_lossy(&chunk);
+        output.push_str(&text);
+        progress_output.push_str(&text);
     }
 }
 
@@ -1211,6 +1244,19 @@ where
             }
         }
     });
+}
+
+fn emit_progress_output(
+    reporter: &ProgressReporter,
+    stage: StageName,
+    command: &str,
+    output: &mut ProgressOutputBuffer,
+) {
+    if !output.has_pending() {
+        return;
+    }
+    let chunk = output.take_pending_chunk();
+    reporter.send_chunk("stageOutput", stage, command, &chunk);
 }
 
 fn execution_path() -> String {
@@ -1530,6 +1576,119 @@ impl OutputTailBuffer {
     }
 }
 
+struct ProgressOutputChunk {
+    text: String,
+    start_line: u64,
+    end_line: u64,
+    truncated: bool,
+}
+
+struct ProgressOutputBuffer {
+    pending_lines: BTreeMap<u64, String>,
+    current_line: u64,
+    current_line_text: String,
+    pending_truncated: bool,
+}
+
+impl ProgressOutputBuffer {
+    fn new() -> Self {
+        Self {
+            pending_lines: BTreeMap::new(),
+            current_line: 1,
+            current_line_text: String::new(),
+            pending_truncated: false,
+        }
+    }
+
+    fn push_str(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.current_line_text.push(ch);
+            if trim_to_last_bytes(&mut self.current_line_text, PROGRESS_OUTPUT_BYTES) {
+                self.pending_truncated = true;
+            }
+            if ch == '\n' {
+                self.pending_lines
+                    .insert(self.current_line, self.current_line_text.clone());
+                self.current_line += 1;
+                self.current_line_text.clear();
+            }
+        }
+        if !self.current_line_text.is_empty() {
+            self.pending_lines
+                .insert(self.current_line, self.current_line_text.clone());
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.pending_lines.is_empty()
+    }
+
+    fn take_pending_chunk(&mut self) -> ProgressOutputChunk {
+        if self.pending_lines.is_empty() {
+            return ProgressOutputChunk {
+                text: String::new(),
+                start_line: 0,
+                end_line: 0,
+                truncated: false,
+            };
+        }
+
+        let mut selected = Vec::new();
+        let mut bytes = 0usize;
+        let mut truncated = self.pending_truncated;
+        for (line, text) in self.pending_lines.iter().rev() {
+            let would_exceed = bytes + text.len() > PROGRESS_OUTPUT_BYTES;
+            if !selected.is_empty() && (would_exceed || selected.len() >= MAX_OUTPUT_LINES) {
+                truncated = true;
+                break;
+            }
+            selected.push((*line, text.clone()));
+            bytes += text.len();
+            if would_exceed {
+                truncated = true;
+                break;
+            }
+        }
+        selected.reverse();
+
+        let start_line = selected.first().map(|(line, _)| *line).unwrap_or(0);
+        let end_line = selected.last().map(|(line, _)| *line).unwrap_or(0);
+        let mut text = selected
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<String>();
+        if text.len() > PROGRESS_OUTPUT_BYTES {
+            let mut start = text.len() - PROGRESS_OUTPUT_BYTES;
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            text = text[start..].to_string();
+            truncated = true;
+        }
+
+        self.pending_lines.clear();
+        self.pending_truncated = false;
+        ProgressOutputChunk {
+            text,
+            start_line,
+            end_line,
+            truncated,
+        }
+    }
+}
+
+fn trim_to_last_bytes(text: &mut String, max_bytes: usize) -> bool {
+    if text.len() <= max_bytes {
+        return false;
+    }
+    let mut start = text.len() - max_bytes;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text.drain(..start);
+    true
+}
+
 fn tail_string(text: &str) -> String {
     let mut lines = text
         .lines()
@@ -1838,6 +1997,134 @@ mod tests {
         assert!(buffer.as_str().lines().count() <= MAX_OUTPUT_LINES);
         assert!(buffer.as_str().contains("line-499"));
         assert!(!buffer.as_str().contains("line-000"));
+    }
+
+    #[test]
+    fn progress_output_buffer_emits_positioned_incremental_lines() {
+        let mut buffer = ProgressOutputBuffer::new();
+        buffer.push_str("line 1\nline 2\n");
+        let first = buffer.take_pending_chunk();
+
+        assert_eq!(first.text, "line 1\nline 2\n");
+        assert_eq!(first.start_line, 1);
+        assert_eq!(first.end_line, 2);
+        assert!(!first.truncated);
+
+        buffer.push_str("line 3\nline 4\n");
+        let second = buffer.take_pending_chunk();
+
+        assert_eq!(second.text, "line 3\nline 4\n");
+        assert_eq!(second.start_line, 3);
+        assert_eq!(second.end_line, 4);
+        assert!(!second.truncated);
+    }
+
+    #[test]
+    fn progress_output_buffer_replaces_growing_unfinished_line() {
+        let mut buffer = ProgressOutputBuffer::new();
+        buffer.push_str("compiling");
+        let first = buffer.take_pending_chunk();
+
+        assert_eq!(first.text, "compiling");
+        assert_eq!(first.start_line, 1);
+        assert_eq!(first.end_line, 1);
+
+        buffer.push_str(" crate");
+        let second = buffer.take_pending_chunk();
+
+        assert_eq!(second.text, "compiling crate");
+        assert_eq!(second.start_line, 1);
+        assert_eq!(second.end_line, 1);
+    }
+
+    #[test]
+    fn progress_output_buffer_marks_large_chunk_truncated() {
+        let mut buffer = ProgressOutputBuffer::new();
+        for index in 0..500 {
+            buffer.push_str(&format!("line-{index:03}-{}\n", "x".repeat(512)));
+        }
+        let chunk = buffer.take_pending_chunk();
+
+        assert!(chunk.truncated);
+        assert!(chunk.start_line > 1);
+        assert_eq!(chunk.end_line, 500);
+        assert!(chunk.text.contains("line-499"));
+        assert!(!chunk.text.contains("line-000"));
+    }
+
+    #[test]
+    fn progress_output_buffer_bounds_unfinished_long_line() {
+        let mut buffer = ProgressOutputBuffer::new();
+        buffer.push_str(&"x".repeat(PROGRESS_OUTPUT_BYTES * 3));
+
+        assert!(buffer.current_line_text.len() <= PROGRESS_OUTPUT_BYTES);
+        assert!(buffer
+            .pending_lines
+            .get(&1)
+            .map(|line| line.len() <= PROGRESS_OUTPUT_BYTES)
+            .unwrap_or(false));
+        let chunk = buffer.take_pending_chunk();
+
+        assert!(chunk.truncated);
+        assert_eq!(chunk.start_line, 1);
+        assert_eq!(chunk.end_line, 1);
+        assert!(chunk.text.len() <= PROGRESS_OUTPUT_BYTES);
+
+        buffer.push_str("done");
+        let updated = buffer.take_pending_chunk();
+
+        assert!(updated.truncated);
+        assert_eq!(updated.start_line, 1);
+        assert_eq!(updated.end_line, 1);
+        assert!(updated.text.ends_with("done"));
+        assert!(updated.text.len() <= PROGRESS_OUTPUT_BYTES);
+    }
+
+    #[tokio::test]
+    async fn run_command_flushes_short_output_before_stage_finished() {
+        let dir = unique_temp_dir("short-output-progress");
+        fs::create_dir_all(&dir).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reporter = ProgressReporter::new(
+            "s_1",
+            "v_1",
+            "default",
+            VerifyTarget::Build,
+            "auto",
+            Some(tx),
+        );
+        let spec = cmd(&["/bin/sh", "-c", "printf short-output"], 5);
+        let mut progress_output = ProgressOutputBuffer::new();
+
+        let outcome = run_command(
+            &dir,
+            &spec,
+            &CancellationToken::new(),
+            &reporter,
+            StageName::Build,
+            &mut progress_output,
+        )
+        .await;
+
+        match outcome {
+            CommandOutcome::Passed { output_tail } => assert_eq!(output_tail, "short-output"),
+            _ => panic!("expected command to pass"),
+        }
+        let mut saw_output = false;
+        while let Ok(message) = rx.try_recv() {
+            if message.contains("\"type\":\"verify_changes_progress\"")
+                && message.contains("\"status\":\"stageOutput\"")
+                && message.contains("short-output")
+                && message.contains("\"outputStartLine\":1")
+                && message.contains("\"outputEndLine\":1")
+            {
+                saw_output = true;
+                break;
+            }
+        }
+
+        assert!(saw_output);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
