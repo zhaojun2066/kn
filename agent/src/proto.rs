@@ -120,6 +120,26 @@ pub enum AgentIncoming {
     },
     /// iOS 请求取消当前 session 的构建/测试验证
     CancelVerifyChanges { session_nid: String, run_id: String },
+    /// iOS 查询当前 session 是否有正在执行的构建/测试验证
+    VerifyStatus { session_nid: String },
+    /// iOS 按行号读取验证日志窗口
+    VerifyLogWindow {
+        session_nid: String,
+        run_id: String,
+        stage: String,
+        center_line: usize,
+        before: usize,
+        after: usize,
+    },
+    /// iOS 请求提取验证日志错误集合
+    VerifyLogIssues {
+        session_nid: String,
+        run_id: String,
+        stages: Vec<String>,
+        rules_version: String,
+        matchers: Vec<serde_json::Value>,
+        limit: usize,
+    },
     /// 未知消息类型
     Unknown {
         msg_type: String,
@@ -385,6 +405,75 @@ impl WsEnvelope {
                     run_id,
                 })
             }
+            "verify_status" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "verify_status 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("verify_status sessionId 为空".to_string());
+                }
+                Ok(AgentIncoming::VerifyStatus { session_nid })
+            }
+            "verify_log_window" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "verify_log_window 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                let run_id = data["runId"].as_str().unwrap_or("").to_string();
+                let stage = data["stage"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("verify_log_window sessionId 为空".to_string());
+                }
+                if run_id.is_empty() {
+                    return Err("verify_log_window runId 为空".to_string());
+                }
+                if stage.is_empty() {
+                    return Err("verify_log_window stage 为空".to_string());
+                }
+                Ok(AgentIncoming::VerifyLogWindow {
+                    session_nid,
+                    run_id,
+                    stage,
+                    center_line: data["centerLine"].as_u64().unwrap_or(1) as usize,
+                    before: data["before"].as_u64().unwrap_or(100) as usize,
+                    after: data["after"].as_u64().unwrap_or(100) as usize,
+                })
+            }
+            "verify_log_issues" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "verify_log_issues 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                let run_id = data["runId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("verify_log_issues sessionId 为空".to_string());
+                }
+                if run_id.is_empty() {
+                    return Err("verify_log_issues runId 为空".to_string());
+                }
+                let stages = data["stages"]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let matchers = data["matchers"].as_array().cloned().unwrap_or_default();
+                Ok(AgentIncoming::VerifyLogIssues {
+                    session_nid,
+                    run_id,
+                    stages,
+                    rules_version: data["rulesVersion"].as_str().unwrap_or("").to_string(),
+                    matchers,
+                    limit: data["limit"].as_u64().unwrap_or(300) as usize,
+                })
+            }
             other => Ok(AgentIncoming::Unknown {
                 msg_type: other.to_string(),
                 raw: self.data.clone().unwrap_or(serde_json::Value::Null),
@@ -600,6 +689,33 @@ impl WsMessageBuilder {
         data["sessionId"] = serde_json::Value::String(session_nid.to_string());
         serde_json::json!({
             "type": "verify_plan_result",
+            "data": data
+        })
+        .to_string()
+    }
+
+    pub fn verify_status_result(session_nid: &str, mut data: serde_json::Value) -> String {
+        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
+        serde_json::json!({
+            "type": "verify_status_result",
+            "data": data
+        })
+        .to_string()
+    }
+
+    pub fn verify_log_window_result(session_nid: &str, mut data: serde_json::Value) -> String {
+        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
+        serde_json::json!({
+            "type": "verify_log_window_result",
+            "data": data
+        })
+        .to_string()
+    }
+
+    pub fn verify_log_issues_result(session_nid: &str, mut data: serde_json::Value) -> String {
+        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
+        serde_json::json!({
+            "type": "verify_log_issues_result",
             "data": data
         })
         .to_string()

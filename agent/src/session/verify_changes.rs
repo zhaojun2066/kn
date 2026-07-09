@@ -1,10 +1,12 @@
 use kn_common::project::{ProjectInfo, ProjectVerifyCommand, ProjectVerifyConfig};
+use regex_lite::Regex;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
-use std::io::ErrorKind;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -19,8 +21,17 @@ const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_LINES: usize = 200;
 const PROGRESS_OUTPUT_BYTES: usize = 8 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(800);
+const VERIFY_RUN_LOG_TTL_SECS: u64 = 30 * 60;
+const VERIFY_RUN_LOG_MAX_BYTES: u64 = 200 * 1024 * 1024;
+const VERIFY_LOG_WINDOW_MAX_CONTEXT: usize = 300;
+const VERIFY_LOG_ISSUE_MAX_MATCHERS: usize = 80;
+const VERIFY_LOG_ISSUE_MAX_PATTERN_LEN: usize = 300;
+const VERIFY_LOG_ISSUE_MAX_LIMIT: usize = 300;
 
 static RUNNING_SESSIONS: OnceLock<Mutex<HashMap<String, RunningRun>>> = OnceLock::new();
+static VERIFY_RUN_LOGS: OnceLock<Mutex<HashMap<String, Arc<Mutex<VerifyRunLog>>>>> =
+    OnceLock::new();
+static VERIFY_RUN_DISK_CLEANUP: OnceLock<()> = OnceLock::new();
 static LOGIN_SHELL_PATH: OnceLock<Option<String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,13 +61,13 @@ impl VerifyTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StageName {
+pub enum StageName {
     Build,
     Test,
 }
 
 impl StageName {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Build => "build",
             Self::Test => "test",
@@ -99,6 +110,329 @@ struct ResolvedVerifyPlan {
 }
 
 #[derive(Clone)]
+struct VerifyRunLogStageSnapshot {
+    stage: StageName,
+    command: String,
+    line_count: usize,
+    byte_count: u64,
+    tail_text: String,
+    tail_start_line: usize,
+    tail_end_line: usize,
+    truncated: bool,
+}
+
+#[derive(Clone)]
+struct VerifyLogIssueScanTarget {
+    stage: StageName,
+    path: PathBuf,
+    line_count: usize,
+}
+
+struct VerifyRunLog {
+    session_id: String,
+    run_id: String,
+    dir: PathBuf,
+    created_at: Instant,
+    expires_at: Option<Instant>,
+    build: Option<StageLogFile>,
+    test: Option<StageLogFile>,
+}
+
+impl VerifyRunLog {
+    fn create(session_id: &str, run_id: &str) -> Self {
+        ensure_verify_run_disk_cleanup_once();
+        let dir = verify_runs_dir().join(run_id);
+        let _ = std::fs::create_dir_all(&dir);
+        let meta = json!({
+            "sessionId": session_id,
+            "runId": run_id,
+            "createdAt": unix_millis(),
+        });
+        let _ = std::fs::write(
+            dir.join("meta.json"),
+            serde_json::to_vec_pretty(&meta).unwrap_or_default(),
+        );
+        Self {
+            session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
+            dir,
+            created_at: Instant::now(),
+            expires_at: None,
+            build: None,
+            test: None,
+        }
+    }
+
+    fn append(&mut self, stage: StageName, command: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let dir = self.dir.clone();
+        let log = self.stage_mut(stage, command, &dir);
+        log.append(text);
+    }
+
+    fn mark_finished(&mut self) {
+        self.expires_at = Some(Instant::now() + Duration::from_secs(VERIFY_RUN_LOG_TTL_SECS));
+    }
+
+    fn is_expired(&self) -> bool {
+        self.expires_at
+            .map(|expires_at| Instant::now() >= expires_at)
+            .unwrap_or(false)
+    }
+
+    fn snapshot(&self) -> Vec<VerifyRunLogStageSnapshot> {
+        [self.build.as_ref(), self.test.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(StageLogFile::snapshot)
+            .collect()
+    }
+
+    fn window(
+        &self,
+        stage: StageName,
+        center_line: usize,
+        before: usize,
+        after: usize,
+    ) -> serde_json::Value {
+        let Some(log) = self.stage_ref(stage) else {
+            return verify_log_window_error(
+                &self.session_id,
+                &self.run_id,
+                stage,
+                "stageNotFound",
+                "阶段日志不存在",
+            );
+        };
+        log.window(&self.session_id, &self.run_id, center_line, before, after)
+    }
+
+    fn stage_ref(&self, stage: StageName) -> Option<&StageLogFile> {
+        match stage {
+            StageName::Build => self.build.as_ref(),
+            StageName::Test => self.test.as_ref(),
+        }
+    }
+
+    fn stage_mut(&mut self, stage: StageName, command: &str, dir: &Path) -> &mut StageLogFile {
+        let slot = match stage {
+            StageName::Build => &mut self.build,
+            StageName::Test => &mut self.test,
+        };
+        slot.get_or_insert_with(|| StageLogFile::create(stage, command, dir))
+    }
+
+    fn issue_scan_targets(&self, stages: &[StageName]) -> Vec<VerifyLogIssueScanTarget> {
+        stages
+            .iter()
+            .filter_map(|stage| {
+                let log = self.stage_ref(*stage)?;
+                Some(VerifyLogIssueScanTarget {
+                    stage: *stage,
+                    path: log.path.clone(),
+                    line_count: log.line_count(),
+                })
+            })
+            .collect()
+    }
+}
+
+struct StageLogFile {
+    stage: StageName,
+    command: String,
+    path: PathBuf,
+    file: Option<File>,
+    line_starts: Vec<u64>,
+    byte_count: u64,
+    ends_with_newline: bool,
+    truncated: bool,
+}
+
+impl StageLogFile {
+    fn create(stage: StageName, command: &str, dir: &Path) -> Self {
+        let path = dir.join(format!("{}.log", stage.as_str()));
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(&path)
+            .ok();
+        Self {
+            stage,
+            command: command.to_string(),
+            path,
+            file,
+            line_starts: vec![0],
+            byte_count: 0,
+            ends_with_newline: false,
+            truncated: false,
+        }
+    }
+
+    fn append(&mut self, text: &str) {
+        if self.truncated || text.is_empty() {
+            return;
+        }
+        let remaining = VERIFY_RUN_LOG_MAX_BYTES.saturating_sub(self.byte_count);
+        if remaining == 0 {
+            self.truncated = true;
+            return;
+        }
+        let bytes = text.as_bytes();
+        let write_len = if bytes.len() as u64 > remaining {
+            self.truncated = true;
+            utf8_boundary_len(text, remaining as usize)
+        } else {
+            bytes.len()
+        };
+        if write_len == 0 {
+            return;
+        }
+        let slice = &text[..write_len];
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.write_all(slice.as_bytes());
+            let _ = file.flush();
+        }
+        for (index, byte) in slice.as_bytes().iter().enumerate() {
+            if *byte == b'\n' {
+                self.line_starts.push(self.byte_count + index as u64 + 1);
+            }
+        }
+        self.byte_count += write_len as u64;
+        self.ends_with_newline = slice.as_bytes().last() == Some(&b'\n');
+    }
+
+    fn line_count(&self) -> usize {
+        if self.byte_count == 0 {
+            return 0;
+        }
+        let possible = self.line_starts.len();
+        if self.ends_with_newline {
+            possible.saturating_sub(1)
+        } else {
+            possible
+        }
+    }
+
+    fn snapshot(&self) -> VerifyRunLogStageSnapshot {
+        let line_count = self.line_count();
+        let tail_start = line_count.saturating_sub(MAX_OUTPUT_LINES).max(1);
+        let tail = self.read_lines(tail_start, line_count);
+        VerifyRunLogStageSnapshot {
+            stage: self.stage,
+            command: self.command.clone(),
+            line_count,
+            byte_count: self.byte_count,
+            tail_text: tail,
+            tail_start_line: if line_count == 0 { 0 } else { tail_start },
+            tail_end_line: line_count,
+            truncated: self.truncated,
+        }
+    }
+
+    fn window(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        center_line: usize,
+        before: usize,
+        after: usize,
+    ) -> serde_json::Value {
+        let line_count = self.line_count();
+        if line_count == 0 {
+            return json!({
+                "sessionId": session_id,
+                "runId": run_id,
+                "stage": self.stage.as_str(),
+                "status": "ok",
+                "startLine": 0,
+                "endLine": 0,
+                "centerLine": center_line,
+                "lines": [],
+                "hasEarlier": false,
+                "hasLater": false,
+            });
+        }
+        let before = before.min(VERIFY_LOG_WINDOW_MAX_CONTEXT);
+        let after = after.min(VERIFY_LOG_WINDOW_MAX_CONTEXT);
+        let center = center_line.clamp(1, line_count);
+        let start = center.saturating_sub(before).max(1);
+        let end = (center + after).min(line_count);
+        let lines = self.read_line_entries(start, end);
+        json!({
+            "sessionId": session_id,
+            "runId": run_id,
+            "stage": self.stage.as_str(),
+            "status": "ok",
+            "startLine": start,
+            "endLine": end,
+            "centerLine": center,
+            "lines": lines,
+            "hasEarlier": start > 1,
+            "hasLater": end < line_count,
+        })
+    }
+
+    fn read_line_entries(&self, start_line: usize, end_line: usize) -> Vec<serde_json::Value> {
+        let text = self.read_lines(start_line, end_line);
+        text.split('\n')
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let line_number = start_line + index;
+                if line_number > end_line
+                    || (line_number == end_line && line.is_empty() && text.ends_with('\n'))
+                {
+                    return None;
+                }
+                Some(json!({
+                    "lineNumber": line_number,
+                    "text": line,
+                }))
+            })
+            .collect()
+    }
+
+    fn read_lines(&self, start_line: usize, end_line: usize) -> String {
+        if start_line == 0 || end_line < start_line {
+            return String::new();
+        }
+        let Some(start_offset) = self.line_starts.get(start_line - 1).copied() else {
+            return String::new();
+        };
+        let end_offset = self
+            .line_starts
+            .get(end_line)
+            .copied()
+            .unwrap_or(self.byte_count);
+        if end_offset <= start_offset {
+            return String::new();
+        }
+        let mut file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(_) => return String::new(),
+        };
+        if file.seek(SeekFrom::Start(start_offset)).is_err() {
+            return String::new();
+        }
+        let mut buf = vec![0; (end_offset - start_offset) as usize];
+        if file.read_exact(&mut buf).is_err() {
+            return String::new();
+        }
+        String::from_utf8_lossy(&buf).to_string()
+    }
+}
+
+struct VerifyLogMatcher {
+    rule_id: String,
+    level: String,
+    regex: Regex,
+    context_before: usize,
+    context_after: usize,
+}
+
+#[derive(Clone)]
 struct RunningRun {
     run_id: String,
     environment: String,
@@ -106,6 +440,10 @@ struct RunningRun {
     command_source: String,
     cancel: CancellationToken,
     started: Instant,
+    current_stage: Option<StageName>,
+    current_status: String,
+    current_command: String,
+    log: Arc<Mutex<VerifyRunLog>>,
 }
 
 struct RunningGuard {
@@ -128,6 +466,8 @@ impl RunningGuard {
         }
         let cancel = CancellationToken::new();
         let started = Instant::now();
+        let log = Arc::new(Mutex::new(VerifyRunLog::create(session_id, run_id)));
+        register_run_log(log.clone());
         guard.insert(
             session_id.to_string(),
             RunningRun {
@@ -137,6 +477,10 @@ impl RunningGuard {
                 command_source: "auto".to_string(),
                 cancel: cancel.clone(),
                 started,
+                current_stage: None,
+                current_status: "started".to_string(),
+                current_command: String::new(),
+                log,
             },
         );
         Some(Self {
@@ -155,6 +499,14 @@ impl RunningGuard {
                 run.command_source = command_source.to_string();
             }
         }
+    }
+
+    fn log(&self) -> Option<Arc<Mutex<VerifyRunLog>>> {
+        let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+        let guard = set.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .get(&self.session_id)
+            .and_then(|run| (run.run_id == self.run_id).then(|| run.log.clone()))
     }
 }
 
@@ -220,6 +572,7 @@ impl ProgressReporter {
         command: &str,
         chunk: &ProgressOutputChunk,
     ) {
+        update_running_status(&self.session_id, &self.run_id, status, Some(stage), command);
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
@@ -252,6 +605,7 @@ impl ProgressReporter {
     }
 
     fn send(&self, status: &str, stage: Option<StageName>, command: &str, output_tail: &str) {
+        update_running_status(&self.session_id, &self.run_id, status, stage, command);
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
@@ -288,12 +642,42 @@ pub fn cancel(session_id: &str, run_id: &str) -> Option<(String, VerifyTarget, S
     ))
 }
 
+fn update_running_status(
+    session_id: &str,
+    run_id: &str,
+    status: &str,
+    stage: Option<StageName>,
+    command: &str,
+) {
+    let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(run) = guard.get_mut(session_id) else {
+        return;
+    };
+    if run.run_id != run_id {
+        return;
+    }
+    run.current_status = status.to_string();
+    if let Some(stage) = stage {
+        run.current_stage = Some(stage);
+    }
+    if !command.is_empty() {
+        run.current_command = command.to_string();
+    }
+}
+
 impl Drop for RunningGuard {
     fn drop(&mut self) {
         let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
         if guard.get(&self.session_id).map(|run| run.run_id.as_str()) == Some(self.run_id.as_str())
         {
+            if let Some(run) = guard.get(&self.session_id) {
+                run.log
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .mark_finished();
+            }
             guard.remove(&self.session_id);
         }
     }
@@ -364,6 +748,7 @@ pub async fn verify(
                     build,
                     &running.cancel,
                     &reporter,
+                    running.log(),
                 )
                 .await;
                 let stage_status = stage_status(&stage).to_string();
@@ -391,6 +776,7 @@ pub async fn verify(
                     test,
                     &running.cancel,
                     &reporter,
+                    running.log(),
                 )
                 .await;
                 let stage_status = stage_status(&stage).to_string();
@@ -425,6 +811,7 @@ pub async fn verify(
                 build,
                 &running.cancel,
                 &reporter,
+                running.log(),
             )
             .await;
             let build_status = stage_status(&build_stage).to_string();
@@ -442,6 +829,7 @@ pub async fn verify(
                     test,
                     &running.cancel,
                     &reporter,
+                    running.log(),
                 )
                 .await;
                 let test_status = stage_status(&test_stage).to_string();
@@ -459,6 +847,11 @@ pub async fn verify(
     };
     if status == "cancelled" {
         reporter.send("cancelled", None, "", "");
+    }
+    if let Some(log) = running.log() {
+        log.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mark_finished();
     }
 
     json!({
@@ -552,6 +945,204 @@ pub fn invalid_target_result(session_id: &str, environment: &str) -> serde_json:
         "message": "验证目标不支持",
         "stages": []
     })
+}
+
+pub fn status(session_id: &str) -> serde_json::Value {
+    ensure_verify_run_disk_cleanup_once();
+    cleanup_expired_run_logs();
+    let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let guard = set.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(run) = guard.get(session_id) else {
+        return json!({
+            "sessionId": session_id,
+            "status": "idle",
+        });
+    };
+    let stages = run
+        .log
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .snapshot()
+        .into_iter()
+        .map(|stage| {
+            json!({
+                "stage": stage.stage.as_str(),
+                "command": stage.command,
+                "lineCount": stage.line_count,
+                "byteCount": stage.byte_count,
+                "tailText": stage.tail_text,
+                "tailStartLine": stage.tail_start_line,
+                "tailEndLine": stage.tail_end_line,
+                "truncated": stage.truncated,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "sessionId": session_id,
+        "status": "running",
+        "runId": run.run_id,
+        "environment": run.environment,
+        "target": run.target.as_str(),
+        "commandSource": run.command_source,
+        "elapsedMs": run.started.elapsed().as_millis() as u64,
+        "currentStage": run.current_stage.map(StageName::as_str),
+        "currentStatus": run.current_status,
+        "currentCommand": run.current_command,
+        "stages": stages,
+    })
+}
+
+pub fn log_window(
+    session_id: &str,
+    run_id: &str,
+    stage: StageName,
+    center_line: usize,
+    before: usize,
+    after: usize,
+) -> serde_json::Value {
+    let Some(log) = get_run_log(session_id, run_id) else {
+        return verify_log_window_error(
+            session_id,
+            run_id,
+            stage,
+            "runNotFound",
+            "验证记录不存在或日志已过期",
+        );
+    };
+    let result =
+        log.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .window(stage, center_line, before, after);
+    result
+}
+
+pub fn log_issues(
+    session_id: &str,
+    run_id: &str,
+    stages: Vec<StageName>,
+    rules_version: &str,
+    matcher_values: &[serde_json::Value],
+    limit: usize,
+) -> serde_json::Value {
+    let Some(log) = get_run_log(session_id, run_id) else {
+        return json!({
+            "sessionId": session_id,
+            "runId": run_id,
+            "status": "runNotFound",
+            "rulesVersion": rules_version,
+            "issues": [],
+            "truncated": false,
+            "message": "验证记录不存在或日志已过期",
+        });
+    };
+    let matchers = match parse_issue_matchers(matcher_values) {
+        Ok(matchers) => matchers,
+        Err(message) => {
+            return json!({
+                "sessionId": session_id,
+                "runId": run_id,
+                "status": "invalidMatcher",
+                "rulesVersion": rules_version,
+                "issues": [],
+                "truncated": false,
+                "message": message,
+            });
+        }
+    };
+    let limit = limit.clamp(1, VERIFY_LOG_ISSUE_MAX_LIMIT);
+    let targets = log
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .issue_scan_targets(&stages);
+
+    let mut issues = Vec::new();
+    let mut truncated = false;
+    for target in targets {
+        let mut found = scan_log_issues(&target, &matchers, limit.saturating_sub(issues.len()));
+        issues.append(&mut found);
+        if issues.len() >= limit {
+            truncated = true;
+            break;
+        }
+    }
+
+    json!({
+        "sessionId": session_id,
+        "runId": run_id,
+        "status": "ok",
+        "rulesVersion": rules_version,
+        "issues": issues,
+        "truncated": truncated,
+    })
+}
+
+fn scan_log_issues(
+    target: &VerifyLogIssueScanTarget,
+    matchers: &[VerifyLogMatcher],
+    limit: usize,
+) -> Vec<serde_json::Value> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let file = match File::open(&target.path) {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+    let mut issues = Vec::new();
+    for (index, line_result) in BufReader::new(file).lines().enumerate() {
+        if index >= target.line_count {
+            break;
+        }
+        let Ok(line) = line_result else { break };
+        for matcher in matchers {
+            if matcher.regex.is_match(&line) {
+                let line_number = index + 1;
+                issues.push(json!({
+                    "issueId": format!("{}-{}-{}", target.stage.as_str(), line_number, matcher.rule_id),
+                    "stage": target.stage.as_str(),
+                    "lineNumber": line_number,
+                    "level": matcher.level,
+                    "ruleId": matcher.rule_id,
+                    "preview": line,
+                    "contextStartLine": line_number.saturating_sub(matcher.context_before).max(1),
+                    "contextEndLine": (line_number + matcher.context_after).min(target.line_count),
+                }));
+                break;
+            }
+        }
+        if issues.len() >= limit {
+            break;
+        }
+    }
+    issues
+}
+
+fn parse_issue_matchers(values: &[serde_json::Value]) -> Result<Vec<VerifyLogMatcher>, String> {
+    if values.len() > VERIFY_LOG_ISSUE_MAX_MATCHERS {
+        return Err("日志规则数量过多".to_string());
+    }
+    let mut matchers = Vec::new();
+    for value in values {
+        let rule_id = value["ruleId"].as_str().unwrap_or("").trim();
+        let level = value["level"].as_str().unwrap_or("error").trim();
+        let pattern = value["pattern"].as_str().unwrap_or("");
+        if rule_id.is_empty()
+            || pattern.is_empty()
+            || pattern.len() > VERIFY_LOG_ISSUE_MAX_PATTERN_LEN
+        {
+            return Err("日志规则不可用".to_string());
+        }
+        let regex = Regex::new(pattern).map_err(|_| "日志规则不可用".to_string())?;
+        matchers.push(VerifyLogMatcher {
+            rule_id: rule_id.to_string(),
+            level: level.to_string(),
+            regex,
+            context_before: value["contextBefore"].as_u64().unwrap_or(0).min(300) as usize,
+            context_after: value["contextAfter"].as_u64().unwrap_or(0).min(300) as usize,
+        });
+    }
+    Ok(matchers)
 }
 
 fn resolve_verify_plan(repo_root: &Path, environment: &str) -> ResolvedVerifyPlan {
@@ -976,6 +1567,7 @@ async fn run_stage(
     plan: &StagePlan,
     cancel: &CancellationToken,
     reporter: &ProgressReporter,
+    run_log: Option<Arc<Mutex<VerifyRunLog>>>,
 ) -> serde_json::Value {
     let started = Instant::now();
     let mut output = OutputTailBuffer::new();
@@ -990,6 +1582,7 @@ async fn run_stage(
             reporter,
             name,
             &mut progress_output,
+            run_log.as_ref(),
         )
         .await
         {
@@ -1091,6 +1684,7 @@ async fn run_command(
     reporter: &ProgressReporter,
     stage: StageName,
     progress_output: &mut ProgressOutputBuffer,
+    run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
 ) -> CommandOutcome {
     let Some(program) = spec.argv.first() else {
         return CommandOutcome::Io {
@@ -1121,6 +1715,7 @@ async fn run_command(
                 format!("无法执行命令 `{}`: {}", spec.display, err)
             };
             progress_output.push_str(&message);
+            append_run_log(run_log, stage, &spec.display, &message);
             emit_progress_output(reporter, stage, &spec.display, progress_output);
             return CommandOutcome::Io {
                 output_tail: message,
@@ -1150,9 +1745,10 @@ async fn run_command(
             _ = cancel.cancelled() => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                drain_output(&mut output_rx, &mut output, progress_output).await;
+                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display).await;
                 output.push_str("\n验证已取消");
                 progress_output.push_str("\n验证已取消");
+                append_run_log(run_log, stage, &spec.display, "\n验证已取消");
                 emit_progress_output(reporter, stage, &spec.display, progress_output);
                 return CommandOutcome::Cancelled {
                     output_tail: output.into_string(),
@@ -1161,9 +1757,11 @@ async fn run_command(
             _ = &mut deadline => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                drain_output(&mut output_rx, &mut output, progress_output).await;
-                output.push_str(&format!("\n命令超时：{}", spec.display));
-                progress_output.push_str(&format!("\n命令超时：{}", spec.display));
+                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display).await;
+                let timeout_message = format!("\n命令超时：{}", spec.display);
+                output.push_str(&timeout_message);
+                progress_output.push_str(&timeout_message);
+                append_run_log(run_log, stage, &spec.display, &timeout_message);
                 emit_progress_output(reporter, stage, &spec.display, progress_output);
                 return CommandOutcome::Timeout {
                     output_tail: output.into_string(),
@@ -1174,6 +1772,7 @@ async fn run_command(
                     let text = String::from_utf8_lossy(&chunk);
                     output.push_str(&text);
                     progress_output.push_str(&text);
+                    append_run_log(run_log, stage, &spec.display, &text);
                     pending_bytes += chunk.len();
                     if pending_bytes >= PROGRESS_OUTPUT_BYTES || last_emit.elapsed() >= PROGRESS_INTERVAL {
                         emit_progress_output(reporter, stage, &spec.display, progress_output);
@@ -1192,7 +1791,7 @@ async fn run_command(
                 }
             }
             status = child.wait() => {
-                drain_output(&mut output_rx, &mut output, progress_output).await;
+                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display).await;
                 if pending_bytes > 0 || started.elapsed() >= PROGRESS_INTERVAL || progress_output.has_pending() {
                     emit_progress_output(reporter, stage, &spec.display, progress_output);
                 }
@@ -1218,12 +1817,29 @@ async fn drain_output(
     output_rx: &mut mpsc::Receiver<Vec<u8>>,
     output: &mut OutputTailBuffer,
     progress_output: &mut ProgressOutputBuffer,
+    run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
+    stage: StageName,
+    command: &str,
 ) {
     while let Some(chunk) = output_rx.recv().await {
         let text = String::from_utf8_lossy(&chunk);
         output.push_str(&text);
         progress_output.push_str(&text);
+        append_run_log(run_log, stage, command, &text);
     }
+}
+
+fn append_run_log(
+    run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
+    stage: StageName,
+    command: &str,
+    text: &str,
+) {
+    let Some(run_log) = run_log else {
+        return;
+    };
+    let mut guard = run_log.lock().unwrap_or_else(|e| e.into_inner());
+    guard.append(stage, command, text);
 }
 
 fn spawn_output_reader<T>(mut reader: T, tx: mpsc::Sender<Vec<u8>>)
@@ -1715,6 +2331,147 @@ fn new_run_id() -> String {
     format!("v_{nanos}")
 }
 
+fn unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn verify_runs_dir() -> PathBuf {
+    kn_common::path::config_dir().join("verify-runs")
+}
+
+fn ensure_verify_run_disk_cleanup_once() {
+    VERIFY_RUN_DISK_CLEANUP.get_or_init(cleanup_expired_verify_run_dirs);
+}
+
+fn cleanup_expired_verify_run_dirs() {
+    let dir = verify_runs_dir();
+    let Some(cutoff) = SystemTime::now().checked_sub(Duration::from_secs(VERIFY_RUN_LOG_TTL_SECS))
+    else {
+        return;
+    };
+    cleanup_expired_verify_run_dirs_in(&dir, &active_verify_run_dirs(), cutoff);
+}
+
+fn active_verify_run_dirs() -> Vec<PathBuf> {
+    VERIFY_RUN_LOGS
+        .get()
+        .map(|logs| {
+            logs.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .map(|log| log.lock().unwrap_or_else(|e| e.into_inner()).dir.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn cleanup_expired_verify_run_dirs_in(dir: &Path, active_dirs: &[PathBuf], cutoff: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if active_dirs.iter().any(|active| active == &path) {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(SystemTime::now());
+        if modified < cutoff {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn utf8_boundary_len(text: &str, max_bytes: usize) -> usize {
+    let mut len = max_bytes.min(text.len());
+    while len > 0 && !text.is_char_boundary(len) {
+        len -= 1;
+    }
+    len
+}
+
+fn register_run_log(log: Arc<Mutex<VerifyRunLog>>) {
+    let run_id = log.lock().unwrap_or_else(|e| e.into_inner()).run_id.clone();
+    let map = VERIFY_RUN_LOGS.get_or_init(|| Mutex::new(HashMap::new()));
+    map.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(run_id, log);
+}
+
+fn get_run_log(session_id: &str, run_id: &str) -> Option<Arc<Mutex<VerifyRunLog>>> {
+    ensure_verify_run_disk_cleanup_once();
+    cleanup_expired_run_logs();
+    let map = VERIFY_RUN_LOGS.get_or_init(|| Mutex::new(HashMap::new()));
+    let log = map
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run_id)
+        .cloned()?;
+    let guard = log.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.session_id == session_id && !guard.is_expired() {
+        drop(guard);
+        Some(log)
+    } else {
+        None
+    }
+}
+
+fn cleanup_expired_run_logs() {
+    let map = VERIFY_RUN_LOGS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    let expired = guard
+        .iter()
+        .filter_map(|(run_id, log)| {
+            let log_guard = log.lock().unwrap_or_else(|e| e.into_inner());
+            log_guard
+                .is_expired()
+                .then(|| (run_id.clone(), log_guard.dir.clone()))
+        })
+        .collect::<Vec<_>>();
+    for (run_id, dir) in expired {
+        guard.remove(&run_id);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+pub fn parse_stage_name(value: &str) -> Option<StageName> {
+    match value {
+        "build" => Some(StageName::Build),
+        "test" => Some(StageName::Test),
+        _ => None,
+    }
+}
+
+fn verify_log_window_error(
+    session_id: &str,
+    run_id: &str,
+    stage: StageName,
+    status: &str,
+    message: &str,
+) -> serde_json::Value {
+    json!({
+        "sessionId": session_id,
+        "runId": run_id,
+        "stage": stage.as_str(),
+        "status": status,
+        "startLine": 0,
+        "endLine": 0,
+        "centerLine": 0,
+        "lines": [],
+        "hasEarlier": false,
+        "hasLater": false,
+        "message": message,
+    })
+}
+
 #[derive(Debug)]
 enum VerifyError {
     NotGitRepo,
@@ -2000,6 +2757,25 @@ mod tests {
     }
 
     #[test]
+    fn disk_cleanup_keeps_active_verify_run_dirs() {
+        let dir = unique_temp_dir("verify-run-cleanup");
+        let active = dir.join("active-run");
+        let inactive = dir.join("inactive-run");
+        fs::create_dir_all(&active).unwrap();
+        fs::create_dir_all(&inactive).unwrap();
+
+        cleanup_expired_verify_run_dirs_in(
+            &dir,
+            std::slice::from_ref(&active),
+            SystemTime::now() + Duration::from_secs(1),
+        );
+
+        assert!(active.exists());
+        assert!(!inactive.exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn progress_output_buffer_emits_positioned_incremental_lines() {
         let mut buffer = ProgressOutputBuffer::new();
         buffer.push_str("line 1\nline 2\n");
@@ -2103,6 +2879,7 @@ mod tests {
             &reporter,
             StageName::Build,
             &mut progress_output,
+            None,
         )
         .await;
 

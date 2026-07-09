@@ -127,6 +127,9 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::VerifyChanges { .. } => "verify_changes",
         AgentIncoming::VerifyPlan { .. } => "verify_plan",
         AgentIncoming::CancelVerifyChanges { .. } => "cancel_verify_changes",
+        AgentIncoming::VerifyStatus { .. } => "verify_status",
+        AgentIncoming::VerifyLogWindow { .. } => "verify_log_window",
+        AgentIncoming::VerifyLogIssues { .. } => "verify_log_issues",
         AgentIncoming::Unknown { .. } => "unknown",
     }
 }

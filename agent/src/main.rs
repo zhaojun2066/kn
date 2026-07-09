@@ -1339,6 +1339,137 @@ async fn handle_incoming(
                 }
             }
         }
+        proto::AgentIncoming::VerifyStatus { session_nid } => {
+            tracing::info!(nid = %session_nid, "收到 verify_status 请求");
+            let data = match sessions.get(&session_nid).await {
+                Ok(Some(summary))
+                    if summary.status != crate::session::SessionStatus::Ended
+                        && summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    crate::session::verify_changes::status(&session_nid)
+                }
+                _ => serde_json::json!({
+                    "sessionId": session_nid,
+                    "status": "sessionNotFound",
+                    "message": "终端不存在或已结束"
+                }),
+            };
+            let msg = proto::WsMessageBuilder::verify_status_result(&session_nid, data);
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
+        proto::AgentIncoming::VerifyLogWindow {
+            session_nid,
+            run_id,
+            stage,
+            center_line,
+            before,
+            after,
+        } => {
+            tracing::info!(nid = %session_nid, run_id = %run_id, stage = %stage, "收到 verify_log_window 请求");
+            let stage_name = crate::session::verify_changes::parse_stage_name(&stage);
+            let data = match (sessions.get(&session_nid).await, stage_name) {
+                (Ok(Some(summary)), Some(stage_name))
+                    if summary.status != crate::session::SessionStatus::Ended
+                        && summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    crate::session::verify_changes::log_window(
+                        &session_nid,
+                        &run_id,
+                        stage_name,
+                        center_line,
+                        before,
+                        after,
+                    )
+                }
+                (_, Some(stage_name)) => serde_json::json!({
+                    "sessionId": session_nid,
+                    "runId": run_id,
+                    "stage": stage_name.as_str(),
+                    "status": "sessionNotFound",
+                    "startLine": 0,
+                    "endLine": 0,
+                    "centerLine": center_line,
+                    "lines": [],
+                    "hasEarlier": false,
+                    "hasLater": false,
+                    "message": "终端不存在或已结束"
+                }),
+                (_, None) => serde_json::json!({
+                    "sessionId": session_nid,
+                    "runId": run_id,
+                    "stage": stage,
+                    "status": "stageNotFound",
+                    "startLine": 0,
+                    "endLine": 0,
+                    "centerLine": center_line,
+                    "lines": [],
+                    "hasEarlier": false,
+                    "hasLater": false,
+                    "message": "阶段日志不存在"
+                }),
+            };
+            let msg = proto::WsMessageBuilder::verify_log_window_result(&session_nid, data);
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
+        proto::AgentIncoming::VerifyLogIssues {
+            session_nid,
+            run_id,
+            stages,
+            rules_version,
+            matchers,
+            limit,
+        } => {
+            tracing::info!(nid = %session_nid, run_id = %run_id, "收到 verify_log_issues 请求");
+            let stage_names = stages
+                .iter()
+                .filter_map(|stage| crate::session::verify_changes::parse_stage_name(stage))
+                .collect::<Vec<_>>();
+            let data = match sessions.get(&session_nid).await {
+                Ok(Some(summary))
+                    if summary.status != crate::session::SessionStatus::Ended
+                        && summary
+                            .remote_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    crate::session::verify_changes::log_issues(
+                        &session_nid,
+                        &run_id,
+                        if stage_names.is_empty() {
+                            vec![
+                                crate::session::verify_changes::StageName::Build,
+                                crate::session::verify_changes::StageName::Test,
+                            ]
+                        } else {
+                            stage_names
+                        },
+                        &rules_version,
+                        &matchers,
+                        limit,
+                    )
+                }
+                _ => serde_json::json!({
+                    "sessionId": session_nid,
+                    "runId": run_id,
+                    "status": "sessionNotFound",
+                    "rulesVersion": rules_version,
+                    "issues": [],
+                    "truncated": false,
+                    "message": "终端不存在或已结束"
+                }),
+            };
+            let msg = proto::WsMessageBuilder::verify_log_issues_result(&session_nid, data);
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
         proto::AgentIncoming::Unknown { msg_type, .. } => {
             tracing::debug!("未知消息类型: {}", msg_type);
         }
