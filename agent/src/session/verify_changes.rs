@@ -519,6 +519,8 @@ pub struct ProgressReporter {
     command_source: String,
     started: Instant,
     tx: Option<mpsc::UnboundedSender<String>>,
+    project_device_id: Option<u64>,
+    project_path: Option<String>,
 }
 
 impl ProgressReporter {
@@ -541,6 +543,22 @@ impl ProgressReporter {
         )
     }
 
+    pub fn new_project(
+        project_key: &str,
+        device_id: u64,
+        project_path: &str,
+        run_id: &str,
+        environment: &str,
+        target: VerifyTarget,
+        command_source: &str,
+        tx: Option<mpsc::UnboundedSender<String>>,
+    ) -> Self {
+        let mut reporter = Self::new(project_key, run_id, environment, target, command_source, tx);
+        reporter.project_device_id = Some(device_id);
+        reporter.project_path = Some(project_path.to_string());
+        reporter
+    }
+
     pub fn new_with_started(
         session_id: &str,
         run_id: &str,
@@ -558,7 +576,34 @@ impl ProgressReporter {
             command_source: command_source.to_string(),
             started,
             tx,
+            project_device_id: None,
+            project_path: None,
         }
+    }
+
+    pub fn new_project_with_started(
+        project_key: &str,
+        device_id: u64,
+        project_path: &str,
+        run_id: &str,
+        environment: &str,
+        target: VerifyTarget,
+        command_source: &str,
+        tx: Option<mpsc::UnboundedSender<String>>,
+        started: Instant,
+    ) -> Self {
+        let mut reporter = Self::new_with_started(
+            project_key,
+            run_id,
+            environment,
+            target,
+            command_source,
+            tx,
+            started,
+        );
+        reporter.project_device_id = Some(device_id);
+        reporter.project_path = Some(project_path.to_string());
+        reporter
     }
 
     pub fn send_cancelling(&self) {
@@ -588,7 +633,7 @@ impl ProgressReporter {
         data["outputStartLine"] = serde_json::Value::Number(chunk.start_line.into());
         data["outputEndLine"] = serde_json::Value::Number(chunk.end_line.into());
         data["outputTruncated"] = serde_json::Value::Bool(chunk.truncated);
-        let msg = crate::proto::WsMessageBuilder::verify_changes_progress(&self.session_id, data);
+        let msg = self.progress_message(data);
         let _ = tx.send(msg);
     }
 
@@ -619,8 +664,20 @@ impl ProgressReporter {
         if !output_tail.is_empty() {
             data["outputTail"] = serde_json::Value::String(tail_string(output_tail));
         }
-        let msg = crate::proto::WsMessageBuilder::verify_changes_progress(&self.session_id, data);
+        let msg = self.progress_message(data);
         let _ = tx.send(msg);
+    }
+
+    fn progress_message(&self, data: serde_json::Value) -> String {
+        let device_id = self.project_device_id.unwrap_or(0);
+        let project_path = self.project_path.as_deref().unwrap_or("");
+        crate::proto::WsMessageBuilder::project_result(
+            "project_verify_changes_progress",
+            &self.session_id,
+            device_id,
+            project_path,
+            data,
+        )
     }
 }
 
@@ -689,6 +746,7 @@ pub async fn verify(
     environment: &str,
     target: VerifyTarget,
     tx: Option<mpsc::UnboundedSender<String>>,
+    project_scope: (u64, String),
 ) -> serde_json::Value {
     let run_id = new_run_id();
     let Some(running) = RunningGuard::try_acquire(session_id, &run_id, environment, target) else {
@@ -728,8 +786,11 @@ pub async fn verify(
     let resolved = resolve_verify_plan(&verify_root, environment);
     let plan = resolved.plan;
     running.update_plan_context(&resolved.environment, plan.command_source);
-    let reporter = ProgressReporter::new(
+    let (device_id, project_path) = project_scope;
+    let reporter = ProgressReporter::new_project(
         session_id,
+        device_id,
+        &project_path,
         &run_id,
         &resolved.environment,
         target,
@@ -2861,8 +2922,10 @@ mod tests {
         let dir = unique_temp_dir("short-output-progress");
         fs::create_dir_all(&dir).unwrap();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let reporter = ProgressReporter::new(
-            "s_1",
+        let reporter = ProgressReporter::new_project(
+            "42:/repo",
+            42,
+            "/repo",
             "v_1",
             "default",
             VerifyTarget::Build,
@@ -2889,7 +2952,7 @@ mod tests {
         }
         let mut saw_output = false;
         while let Ok(message) = rx.try_recv() {
-            if message.contains("\"type\":\"verify_changes_progress\"")
+            if message.contains("\"type\":\"project_verify_changes_progress\"")
                 && message.contains("\"status\":\"stageOutput\"")
                 && message.contains("short-output")
                 && message.contains("\"outputStartLine\":1")

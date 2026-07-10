@@ -9,7 +9,8 @@
 //!
 //! ## Agent 出站 (agent → cloud) — 对齐 Java ALLOWED_MESSAGES:
 //! - ping, session_created, session_start_failed, session_ended, output, profile_list, project_list
-//! - change_summary_result, change_file_diff_result, verify_plan_result, verify_changes_result, verify_changes_progress
+//! - project_change_summary_result, project_change_file_diff_result, project_verify_plan_result
+//! - project_verify_changes_result, project_verify_changes_progress
 //!
 //! ## Agent 入站 (cloud → agent):
 //! - 心跳: pong
@@ -18,7 +19,7 @@
 //! - 确认: profile_list_ack
 //! - 错误: error_notify (Java sendError 可向任意客户端发送)
 //! - 结束: kill_session
-//! - 变更/验证: change_summary, change_file_diff, verify_plan, verify_changes, cancel_verify_changes
+//! - 项目工作台: project_change_summary, project_change_file_diff, project_verify_plan, project_verify_changes
 //!
 //! 不在 agent 白名单/不需要 agent 关注的消息:
 //! - start_session_ack, ack (仅 mobile)
@@ -103,37 +104,55 @@ pub enum AgentIncoming {
     ResumeSession { session_nid: String },
     /// iOS/Cloud 请求强制结束远程会话
     KillSession { session_nid: String, reason: String },
-    /// iOS 请求当前 session cwd 的 Git 变更摘要
-    ChangeSummary { session_nid: String },
-    /// iOS 请求当前 session cwd 内单个文件的 Git diff
-    ChangeFileDiff { session_nid: String, path: String },
-    /// iOS 请求当前 session cwd 执行构建/测试验证
-    VerifyChanges {
-        session_nid: String,
+    ProjectChangeSummary {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+    },
+    ProjectChangeFileDiff {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        path: String,
+    },
+    ProjectVerifyPlan {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        environment: String,
+    },
+    ProjectVerifyChanges {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
         environment: String,
         target: String,
     },
-    /// iOS 请求预览当前 session cwd 的构建/测试验证计划
-    VerifyPlan {
-        session_nid: String,
-        environment: String,
+    ProjectCancelVerify {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        run_id: String,
     },
-    /// iOS 请求取消当前 session 的构建/测试验证
-    CancelVerifyChanges { session_nid: String, run_id: String },
-    /// iOS 查询当前 session 是否有正在执行的构建/测试验证
-    VerifyStatus { session_nid: String },
-    /// iOS 按行号读取验证日志窗口
-    VerifyLogWindow {
-        session_nid: String,
+    ProjectVerifyStatus {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+    },
+    ProjectVerifyLogWindow {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
         run_id: String,
         stage: String,
         center_line: usize,
         before: usize,
         after: usize,
     },
-    /// iOS 请求提取验证日志错误集合
-    VerifyLogIssues {
-        session_nid: String,
+    ProjectVerifyLogIssues {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
         run_id: String,
         stages: Vec<String>,
         rules_version: String,
@@ -145,6 +164,25 @@ pub enum AgentIncoming {
         msg_type: String,
         raw: serde_json::Value,
     },
+}
+
+fn parse_project_scope(
+    data: &serde_json::Value,
+    msg_type: &str,
+) -> Result<(String, u64, String), String> {
+    let project_key = data["projectKey"].as_str().unwrap_or("").to_string();
+    if project_key.is_empty() {
+        return Err(format!("{msg_type} projectKey 为空"));
+    }
+    let device_id = data["deviceId"].as_u64().unwrap_or(0);
+    if device_id == 0 {
+        return Err(format!("{msg_type} deviceId 为空"));
+    }
+    let project_path = data["projectPath"].as_str().unwrap_or("").to_string();
+    if project_path.is_empty() {
+        return Err(format!("{msg_type} projectPath 为空"));
+    }
+    Ok((project_key, device_id, project_path))
 }
 
 impl WsEnvelope {
@@ -314,127 +352,119 @@ impl WsEnvelope {
                         .to_string(),
                 })
             }
-            "change_summary" => {
+            "project_change_summary" => {
                 let data = self
                     .data
                     .as_ref()
-                    .ok_or_else(|| "change_summary 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
-                if session_nid.is_empty() {
-                    return Err("change_summary sessionId 为空".to_string());
-                }
-                Ok(AgentIncoming::ChangeSummary { session_nid })
+                    .ok_or_else(|| "project_change_summary 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_change_summary")?;
+                Ok(AgentIncoming::ProjectChangeSummary {
+                    project_key,
+                    device_id,
+                    project_path,
+                })
             }
-            "change_file_diff" => {
+            "project_change_file_diff" => {
                 let data = self
                     .data
                     .as_ref()
-                    .ok_or_else(|| "change_file_diff 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
-                if session_nid.is_empty() {
-                    return Err("change_file_diff sessionId 为空".to_string());
-                }
+                    .ok_or_else(|| "project_change_file_diff 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_change_file_diff")?;
                 let path = data["path"].as_str().unwrap_or("").to_string();
                 if path.is_empty() {
-                    return Err("change_file_diff path 为空".to_string());
+                    return Err("project_change_file_diff path 为空".to_string());
                 }
-                Ok(AgentIncoming::ChangeFileDiff { session_nid, path })
-            }
-            "verify_changes" => {
-                let data = self
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| "verify_changes 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
-                if session_nid.is_empty() {
-                    return Err("verify_changes sessionId 为空".to_string());
-                }
-                let environment = data["environment"]
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("default")
-                    .to_string();
-                let target = data["target"]
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("all")
-                    .to_string();
-                Ok(AgentIncoming::VerifyChanges {
-                    session_nid,
-                    environment,
-                    target,
+                Ok(AgentIncoming::ProjectChangeFileDiff {
+                    project_key,
+                    device_id,
+                    project_path,
+                    path,
                 })
             }
-            "verify_plan" => {
+            "project_verify_plan" => {
                 let data = self
                     .data
                     .as_ref()
-                    .ok_or_else(|| "verify_plan 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
-                if session_nid.is_empty() {
-                    return Err("verify_plan sessionId 为空".to_string());
-                }
-                let environment = data["environment"]
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("default")
-                    .to_string();
-                Ok(AgentIncoming::VerifyPlan {
-                    session_nid,
-                    environment,
+                    .ok_or_else(|| "project_verify_plan 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_plan")?;
+                Ok(AgentIncoming::ProjectVerifyPlan {
+                    project_key,
+                    device_id,
+                    project_path,
+                    environment: data["environment"]
+                        .as_str()
+                        .unwrap_or("default")
+                        .to_string(),
                 })
             }
-            "cancel_verify_changes" => {
+            "project_verify_changes" => {
                 let data = self
                     .data
                     .as_ref()
-                    .ok_or_else(|| "cancel_verify_changes 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
-                if session_nid.is_empty() {
-                    return Err("cancel_verify_changes sessionId 为空".to_string());
-                }
+                    .ok_or_else(|| "project_verify_changes 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_changes")?;
+                Ok(AgentIncoming::ProjectVerifyChanges {
+                    project_key,
+                    device_id,
+                    project_path,
+                    environment: data["environment"]
+                        .as_str()
+                        .unwrap_or("default")
+                        .to_string(),
+                    target: data["target"].as_str().unwrap_or("all").to_string(),
+                })
+            }
+            "project_cancel_verify" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_cancel_verify 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_cancel_verify")?;
                 let run_id = data["runId"].as_str().unwrap_or("").to_string();
                 if run_id.is_empty() {
-                    return Err("cancel_verify_changes runId 为空".to_string());
+                    return Err("project_cancel_verify runId 为空".to_string());
                 }
-                Ok(AgentIncoming::CancelVerifyChanges {
-                    session_nid,
+                Ok(AgentIncoming::ProjectCancelVerify {
+                    project_key,
+                    device_id,
+                    project_path,
                     run_id,
                 })
             }
-            "verify_status" => {
+            "project_verify_status" => {
                 let data = self
                     .data
                     .as_ref()
-                    .ok_or_else(|| "verify_status 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
-                if session_nid.is_empty() {
-                    return Err("verify_status sessionId 为空".to_string());
-                }
-                Ok(AgentIncoming::VerifyStatus { session_nid })
+                    .ok_or_else(|| "project_verify_status 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_status")?;
+                Ok(AgentIncoming::ProjectVerifyStatus {
+                    project_key,
+                    device_id,
+                    project_path,
+                })
             }
-            "verify_log_window" => {
+            "project_verify_log_window" => {
                 let data = self
                     .data
                     .as_ref()
-                    .ok_or_else(|| "verify_log_window 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                    .ok_or_else(|| "project_verify_log_window 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_log_window")?;
                 let run_id = data["runId"].as_str().unwrap_or("").to_string();
                 let stage = data["stage"].as_str().unwrap_or("").to_string();
-                if session_nid.is_empty() {
-                    return Err("verify_log_window sessionId 为空".to_string());
+                if run_id.is_empty() || stage.is_empty() {
+                    return Err("project_verify_log_window runId/stage 为空".to_string());
                 }
-                if run_id.is_empty() {
-                    return Err("verify_log_window runId 为空".to_string());
-                }
-                if stage.is_empty() {
-                    return Err("verify_log_window stage 为空".to_string());
-                }
-                Ok(AgentIncoming::VerifyLogWindow {
-                    session_nid,
+                Ok(AgentIncoming::ProjectVerifyLogWindow {
+                    project_key,
+                    device_id,
+                    project_path,
                     run_id,
                     stage,
                     center_line: data["centerLine"].as_u64().unwrap_or(1) as usize,
@@ -442,18 +472,16 @@ impl WsEnvelope {
                     after: data["after"].as_u64().unwrap_or(100) as usize,
                 })
             }
-            "verify_log_issues" => {
+            "project_verify_log_issues" => {
                 let data = self
                     .data
                     .as_ref()
-                    .ok_or_else(|| "verify_log_issues 缺少 data 字段".to_string())?;
-                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                    .ok_or_else(|| "project_verify_log_issues 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_log_issues")?;
                 let run_id = data["runId"].as_str().unwrap_or("").to_string();
-                if session_nid.is_empty() {
-                    return Err("verify_log_issues sessionId 为空".to_string());
-                }
                 if run_id.is_empty() {
-                    return Err("verify_log_issues runId 为空".to_string());
+                    return Err("project_verify_log_issues runId 为空".to_string());
                 }
                 let stages = data["stages"]
                     .as_array()
@@ -461,16 +489,17 @@ impl WsEnvelope {
                         values
                             .iter()
                             .filter_map(|value| value.as_str().map(str::to_string))
-                            .collect::<Vec<_>>()
+                            .collect()
                     })
                     .unwrap_or_default();
-                let matchers = data["matchers"].as_array().cloned().unwrap_or_default();
-                Ok(AgentIncoming::VerifyLogIssues {
-                    session_nid,
+                Ok(AgentIncoming::ProjectVerifyLogIssues {
+                    project_key,
+                    device_id,
+                    project_path,
                     run_id,
                     stages,
                     rules_version: data["rulesVersion"].as_str().unwrap_or("").to_string(),
-                    matchers,
+                    matchers: data["matchers"].as_array().cloned().unwrap_or_default(),
                     limit: data["limit"].as_u64().unwrap_or(300) as usize,
                 })
             }
@@ -649,73 +678,18 @@ impl WsMessageBuilder {
         .to_string()
     }
 
-    pub fn change_summary_result(session_nid: &str, mut data: serde_json::Value) -> String {
-        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
+    pub fn project_result(
+        msg_type: &str,
+        project_key: &str,
+        device_id: u64,
+        project_path: &str,
+        mut data: serde_json::Value,
+    ) -> String {
+        data["projectKey"] = serde_json::Value::String(project_key.to_string());
+        data["deviceId"] = serde_json::Value::Number(device_id.into());
+        data["projectPath"] = serde_json::Value::String(project_path.to_string());
         serde_json::json!({
-            "type": "change_summary_result",
-            "data": data
-        })
-        .to_string()
-    }
-
-    pub fn change_file_diff_result(session_nid: &str, mut data: serde_json::Value) -> String {
-        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
-        serde_json::json!({
-            "type": "change_file_diff_result",
-            "data": data
-        })
-        .to_string()
-    }
-
-    pub fn verify_changes_result(session_nid: &str, mut data: serde_json::Value) -> String {
-        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
-        serde_json::json!({
-            "type": "verify_changes_result",
-            "data": data
-        })
-        .to_string()
-    }
-
-    pub fn verify_changes_progress(session_nid: &str, mut data: serde_json::Value) -> String {
-        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
-        serde_json::json!({
-            "type": "verify_changes_progress",
-            "data": data
-        })
-        .to_string()
-    }
-
-    pub fn verify_plan_result(session_nid: &str, mut data: serde_json::Value) -> String {
-        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
-        serde_json::json!({
-            "type": "verify_plan_result",
-            "data": data
-        })
-        .to_string()
-    }
-
-    pub fn verify_status_result(session_nid: &str, mut data: serde_json::Value) -> String {
-        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
-        serde_json::json!({
-            "type": "verify_status_result",
-            "data": data
-        })
-        .to_string()
-    }
-
-    pub fn verify_log_window_result(session_nid: &str, mut data: serde_json::Value) -> String {
-        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
-        serde_json::json!({
-            "type": "verify_log_window_result",
-            "data": data
-        })
-        .to_string()
-    }
-
-    pub fn verify_log_issues_result(session_nid: &str, mut data: serde_json::Value) -> String {
-        data["sessionId"] = serde_json::Value::String(session_nid.to_string());
-        serde_json::json!({
-            "type": "verify_log_issues_result",
+            "type": msg_type,
             "data": data
         })
         .to_string()
@@ -969,11 +943,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_verify_changes() {
+    fn test_parse_project_verify_changes() {
         let json = serde_json::json!({
-            "type": "verify_changes",
+            "type": "project_verify_changes",
             "data": {
-                "sessionId": "s_abc",
+                "projectKey": "42:/repo",
+                "deviceId": 42,
+                "projectPath": "/repo",
                 "environment": "ci",
                 "target": "build"
             }
@@ -981,39 +957,49 @@ mod tests {
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
         let msg = env.parse().unwrap();
         match msg {
-            AgentIncoming::VerifyChanges {
-                session_nid,
+            AgentIncoming::ProjectVerifyChanges {
+                project_key,
+                device_id,
+                project_path,
                 environment,
                 target,
             } => {
-                assert_eq!(session_nid, "s_abc");
+                assert_eq!(project_key, "42:/repo");
+                assert_eq!(device_id, 42);
+                assert_eq!(project_path, "/repo");
                 assert_eq!(environment, "ci");
                 assert_eq!(target, "build");
             }
-            _ => panic!("expected VerifyChanges"),
+            _ => panic!("expected ProjectVerifyChanges"),
         }
     }
 
     #[test]
-    fn test_parse_verify_plan() {
+    fn test_parse_project_verify_plan() {
         let json = serde_json::json!({
-            "type": "verify_plan",
+            "type": "project_verify_plan",
             "data": {
-                "sessionId": "s_abc",
+                "projectKey": "42:/repo",
+                "deviceId": 42,
+                "projectPath": "/repo",
                 "environment": "default"
             }
         });
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
         let msg = env.parse().unwrap();
         match msg {
-            AgentIncoming::VerifyPlan {
-                session_nid,
+            AgentIncoming::ProjectVerifyPlan {
+                project_key,
+                device_id,
+                project_path,
                 environment,
             } => {
-                assert_eq!(session_nid, "s_abc");
+                assert_eq!(project_key, "42:/repo");
+                assert_eq!(device_id, 42);
+                assert_eq!(project_path, "/repo");
                 assert_eq!(environment, "default");
             }
-            _ => panic!("expected VerifyPlan"),
+            _ => panic!("expected ProjectVerifyPlan"),
         }
     }
 
@@ -1081,9 +1067,12 @@ mod tests {
     }
 
     #[test]
-    fn test_outbound_verify_changes_result() {
-        let json = WsMessageBuilder::verify_changes_result(
-            "s_abc123",
+    fn test_outbound_project_verify_changes_result() {
+        let json = WsMessageBuilder::project_result(
+            "project_verify_changes_result",
+            "42:/repo",
+            42,
+            "/repo",
             serde_json::json!({
                 "status": "passed",
                 "target": "all",
@@ -1093,15 +1082,20 @@ mod tests {
             }),
         );
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["type"], "verify_changes_result");
-        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["type"], "project_verify_changes_result");
+        assert_eq!(parsed["data"]["projectKey"], "42:/repo");
+        assert_eq!(parsed["data"]["deviceId"], 42);
+        assert_eq!(parsed["data"]["projectPath"], "/repo");
         assert_eq!(parsed["data"]["stages"][0]["outputTail"], "ok");
     }
 
     #[test]
-    fn test_outbound_verify_plan_result() {
-        let json = WsMessageBuilder::verify_plan_result(
-            "s_abc123",
+    fn test_outbound_project_verify_plan_result() {
+        let json = WsMessageBuilder::project_result(
+            "project_verify_plan_result",
+            "42:/repo",
+            42,
+            "/repo",
             serde_json::json!({
                 "status": "ok",
                 "environment": "default",
@@ -1110,8 +1104,10 @@ mod tests {
             }),
         );
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["type"], "verify_plan_result");
-        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["type"], "project_verify_plan_result");
+        assert_eq!(parsed["data"]["projectKey"], "42:/repo");
+        assert_eq!(parsed["data"]["deviceId"], 42);
+        assert_eq!(parsed["data"]["projectPath"], "/repo");
         assert_eq!(parsed["data"]["commandSource"], "manual");
         assert_eq!(parsed["data"]["build"]["command"], "cargo check");
     }
