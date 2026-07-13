@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 pub mod env;
 pub mod git_preview;
+pub mod git_delivery;
+pub mod pr_delivery;
 pub mod input;
 mod manager;
 pub mod output;

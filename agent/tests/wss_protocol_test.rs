@@ -88,6 +88,26 @@ fn test_all_incoming_types_parse_without_panic() {
             r#"{"type":"project_cancel_verify","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo","runId":"v_1"}}"#,
             "project_cancel_verify",
         ),
+        (
+            r#"{"type":"project_git_status","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo"}}"#,
+            "project_git_status",
+        ),
+        (
+            r#"{"type":"project_git_commit","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo","message":"Fix login","paths":["Sources/App.swift"]}}"#,
+            "project_git_commit",
+        ),
+        (
+            r#"{"type":"project_git_push","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo"}}"#,
+            "project_git_push",
+        ),
+        (
+            r#"{"type":"project_pr_status","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo"}}"#,
+            "project_pr_status",
+        ),
+        (
+            r#"{"type":"project_pr_create","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo","base":"main","title":"Fix login","body":"Summary"}}"#,
+            "project_pr_create",
+        ),
         // Forward compat
         (r#"{"type":"future_type","data":{}}"#, "unknown"),
     ];
@@ -130,6 +150,11 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::ProjectVerifyStatus { .. } => "project_verify_status",
         AgentIncoming::ProjectVerifyLogWindow { .. } => "project_verify_log_window",
         AgentIncoming::ProjectVerifyLogIssues { .. } => "project_verify_log_issues",
+        AgentIncoming::ProjectGitStatus { .. } => "project_git_status",
+        AgentIncoming::ProjectGitCommit { .. } => "project_git_commit",
+        AgentIncoming::ProjectGitPush { .. } => "project_git_push",
+        AgentIncoming::ProjectPrStatus { .. } => "project_pr_status",
+        AgentIncoming::ProjectPrCreate { .. } => "project_pr_create",
         AgentIncoming::Unknown { .. } => "unknown",
     }
 }

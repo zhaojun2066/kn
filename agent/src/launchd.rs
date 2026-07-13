@@ -52,6 +52,8 @@ pub fn generate_plist_content(agent_path: &Path, log_dir: &Path) -> String {
     <string>{stderr}</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>RUST_LOG</key>
         <string>info</string>
     </dict>
