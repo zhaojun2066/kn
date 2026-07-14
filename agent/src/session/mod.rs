@@ -7,13 +7,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub mod env;
-pub mod git_preview;
 pub mod git_delivery;
-pub mod pr_delivery;
+pub mod git_preview;
 pub mod input;
 mod manager;
 pub mod output;
 pub mod persistence;
+pub mod pr_delivery;
 pub mod store;
 pub mod types;
 pub mod verify_changes;

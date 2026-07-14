@@ -105,6 +105,10 @@ fn test_all_incoming_types_parse_without_panic() {
             "project_pr_status",
         ),
         (
+            r#"{"type":"project_pr_details","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo"}}"#,
+            "project_pr_details",
+        ),
+        (
             r#"{"type":"project_pr_create","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo","base":"main","title":"Fix login","body":"Summary"}}"#,
             "project_pr_create",
         ),
@@ -154,6 +158,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::ProjectGitCommit { .. } => "project_git_commit",
         AgentIncoming::ProjectGitPush { .. } => "project_git_push",
         AgentIncoming::ProjectPrStatus { .. } => "project_pr_status",
+        AgentIncoming::ProjectPrDetails { .. } => "project_pr_details",
         AgentIncoming::ProjectPrCreate { .. } => "project_pr_create",
         AgentIncoming::Unknown { .. } => "unknown",
     }

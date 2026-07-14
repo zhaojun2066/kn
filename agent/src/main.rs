@@ -1250,8 +1250,16 @@ async fn handle_incoming(
             } else {
                 serde_json::json!({"status": "pathDenied", "files": [], "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result("project_git_status_result", &project_key, device_id, &project_path, data);
-            if let Some(tx) = outgoing.lock().await.as_ref() { let _ = tx.send(msg); }
+            let msg = proto::WsMessageBuilder::project_result(
+                "project_git_status_result",
+                &project_key,
+                device_id,
+                &project_path,
+                data,
+            );
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
         }
         proto::AgentIncoming::ProjectGitCommit {
             project_key: _project_key,
@@ -1262,12 +1270,21 @@ async fn handle_incoming(
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if is_registered_project_path(&project_path).await {
-                crate::session::git_delivery::commit(&project_key, &project_path, &message, &paths).await
+                crate::session::git_delivery::commit(&project_key, &project_path, &message, &paths)
+                    .await
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result("project_git_commit_result", &project_key, device_id, &project_path, data);
-            if let Some(tx) = outgoing.lock().await.as_ref() { let _ = tx.send(msg); }
+            let msg = proto::WsMessageBuilder::project_result(
+                "project_git_commit_result",
+                &project_key,
+                device_id,
+                &project_path,
+                data,
+            );
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
         }
         proto::AgentIncoming::ProjectGitPush {
             project_key: _project_key,
@@ -1290,8 +1307,16 @@ async fn handle_incoming(
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result("project_git_push_result", &project_key, device_id, &project_path, data);
-            if let Some(tx) = outgoing.lock().await.as_ref() { let _ = tx.send(msg); }
+            let msg = proto::WsMessageBuilder::project_result(
+                "project_git_push_result",
+                &project_key,
+                device_id,
+                &project_path,
+                data,
+            );
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
         }
         proto::AgentIncoming::ProjectPrStatus {
             project_key: _project_key,
@@ -1304,8 +1329,38 @@ async fn handle_incoming(
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result("project_pr_status_result", &project_key, device_id, &project_path, data);
-            if let Some(tx) = outgoing.lock().await.as_ref() { let _ = tx.send(msg); }
+            let msg = proto::WsMessageBuilder::project_result(
+                "project_pr_status_result",
+                &project_key,
+                device_id,
+                &project_path,
+                data,
+            );
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
+        }
+        proto::AgentIncoming::ProjectPrDetails {
+            project_key: _project_key,
+            device_id,
+            project_path,
+        } => {
+            let project_key = canonical_project_key(device_id, &project_path);
+            let data = if is_registered_project_path(&project_path).await {
+                crate::session::pr_delivery::details(&project_key, &project_path).await
+            } else {
+                serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
+            };
+            let msg = proto::WsMessageBuilder::project_result(
+                "project_pr_details_result",
+                &project_key,
+                device_id,
+                &project_path,
+                data,
+            );
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
         }
         proto::AgentIncoming::ProjectPrCreate {
             project_key: _project_key,
@@ -1317,12 +1372,27 @@ async fn handle_incoming(
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if is_registered_project_path(&project_path).await {
-                crate::session::pr_delivery::create(&project_key, &project_path, &base, &title, &body).await
+                crate::session::pr_delivery::create(
+                    &project_key,
+                    &project_path,
+                    &base,
+                    &title,
+                    &body,
+                )
+                .await
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result("project_pr_create_result", &project_key, device_id, &project_path, data);
-            if let Some(tx) = outgoing.lock().await.as_ref() { let _ = tx.send(msg); }
+            let msg = proto::WsMessageBuilder::project_result(
+                "project_pr_create_result",
+                &project_key,
+                device_id,
+                &project_path,
+                data,
+            );
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(msg);
+            }
         }
         proto::AgentIncoming::ProjectVerifyPlan {
             project_key: _project_key,

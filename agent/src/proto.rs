@@ -137,6 +137,11 @@ pub enum AgentIncoming {
         device_id: u64,
         project_path: String,
     },
+    ProjectPrDetails {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+    },
     ProjectPrCreate {
         project_key: String,
         device_id: u64,
@@ -414,34 +419,114 @@ impl WsEnvelope {
                 })
             }
             "project_git_status" => {
-                let data = self.data.as_ref().ok_or_else(|| "project_git_status 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) = parse_project_scope(data, "project_git_status")?;
-                Ok(AgentIncoming::ProjectGitStatus { project_key, device_id, project_path })
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_git_status 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_git_status")?;
+                Ok(AgentIncoming::ProjectGitStatus {
+                    project_key,
+                    device_id,
+                    project_path,
+                })
             }
             "project_git_commit" => {
-                let data = self.data.as_ref().ok_or_else(|| "project_git_commit 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) = parse_project_scope(data, "project_git_commit")?;
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_git_commit 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_git_commit")?;
                 let message = data["message"].as_str().unwrap_or("").to_string();
-                let paths = data["paths"].as_array().map(|values| values.iter().filter_map(|value| value.as_str().map(str::to_string)).collect()).unwrap_or_default();
-                Ok(AgentIncoming::ProjectGitCommit { project_key, device_id, project_path, message, paths })
+                let paths = data["paths"]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(AgentIncoming::ProjectGitCommit {
+                    project_key,
+                    device_id,
+                    project_path,
+                    message,
+                    paths,
+                })
             }
             "project_git_push" => {
-                let data = self.data.as_ref().ok_or_else(|| "project_git_push 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) = parse_project_scope(data, "project_git_push")?;
-                Ok(AgentIncoming::ProjectGitPush { project_key, device_id, project_path })
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_git_push 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_git_push")?;
+                Ok(AgentIncoming::ProjectGitPush {
+                    project_key,
+                    device_id,
+                    project_path,
+                })
             }
             "project_pr_status" => {
-                let data = self.data.as_ref().ok_or_else(|| "project_pr_status 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) = parse_project_scope(data, "project_pr_status")?;
-                Ok(AgentIncoming::ProjectPrStatus { project_key, device_id, project_path })
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_pr_status 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_pr_status")?;
+                Ok(AgentIncoming::ProjectPrStatus {
+                    project_key,
+                    device_id,
+                    project_path,
+                })
+            }
+            "project_pr_details" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_pr_details 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_pr_details")?;
+                Ok(AgentIncoming::ProjectPrDetails {
+                    project_key,
+                    device_id,
+                    project_path,
+                })
             }
             "project_pr_create" => {
-                let data = self.data.as_ref().ok_or_else(|| "project_pr_create 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) = parse_project_scope(data, "project_pr_create")?;
-                let base = data.get("base").and_then(|value| value.as_str()).filter(|value| !value.trim().is_empty()).ok_or_else(|| "project_pr_create 缺少 base 字段".to_string())?.to_string();
-                let title = data.get("title").and_then(|value| value.as_str()).filter(|value| !value.trim().is_empty()).ok_or_else(|| "project_pr_create 缺少 title 字段".to_string())?.to_string();
-                let body = data.get("body").and_then(|value| value.as_str()).unwrap_or_default().to_string();
-                Ok(AgentIncoming::ProjectPrCreate { project_key, device_id, project_path, base, title, body })
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_pr_create 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_pr_create")?;
+                let base = data
+                    .get("base")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "project_pr_create 缺少 base 字段".to_string())?
+                    .to_string();
+                let title = data
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "project_pr_create 缺少 title 字段".to_string())?
+                    .to_string();
+                let body = data
+                    .get("body")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(AgentIncoming::ProjectPrCreate {
+                    project_key,
+                    device_id,
+                    project_path,
+                    base,
+                    title,
+                    body,
+                })
             }
             "project_verify_plan" => {
                 let data = self

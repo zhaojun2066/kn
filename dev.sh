@@ -76,6 +76,8 @@ cat > "$PLIST_PATH" <<EOF
     <string>$LOG_DIR/stderr.log</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>RUST_LOG</key>
         <string>info</string>
         <key>KN_CLOUD_URL</key>
