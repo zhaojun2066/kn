@@ -330,7 +330,13 @@ pub fn run() {
                         std::thread::sleep(std::time::Duration::from_millis(500));
                     }
 
-                    if !plist_path.exists() {
+                    // Existing installations may predate the PATH entry required for
+                    // package-manager-installed tools such as gh. Rewrite only when
+                    // the plist is absent or lacks that environment setting.
+                    let plist_needs_path_migration = std::fs::read_to_string(&plist_path)
+                        .map(|content| !content.contains("<key>PATH</key>"))
+                        .unwrap_or(true);
+                    if plist_needs_path_migration {
                         let _ = std::fs::create_dir_all(&log_dir);
                         let plist_content = format!(
                             r#"<?xml version="1.0" encoding="UTF-8"?>

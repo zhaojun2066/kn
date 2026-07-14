@@ -88,10 +88,37 @@ async fn known_bases(cwd: &str, remote: &str) -> Vec<String> {
 
 async fn suggested_base(cwd: &str, branch: &str, remote: &str, bases: &[String]) -> Option<String> {
     let configured = git_output(cwd, &["config", "--get", &format!("branch.{branch}.gh-merge-base")]).await.ok().map(|value| value.trim().to_string());
-    if let Some(base) = configured.filter(|base| bases.contains(base)) { return Some(base); }
-    let default = git_output(cwd, &["symbolic-ref", "--quiet", "--short", &format!("refs/remotes/{remote}/HEAD")]).await.ok()?;
-    let base = default.trim().strip_prefix(&format!("{remote}/"))?.to_string();
-    bases.contains(&base).then_some(base)
+    let local_default = git_output(cwd, &["symbolic-ref", "--quiet", "--short", &format!("refs/remotes/{remote}/HEAD")])
+        .await
+        .ok()
+        .and_then(|value| value.trim().strip_prefix(&format!("{remote}/")).map(str::to_string));
+    let github_default = if local_default.is_none() {
+        github_default_base(cwd).await
+    } else {
+        None
+    };
+    select_suggested_base(configured.as_deref(), local_default.as_deref(), github_default.as_deref(), bases)
+}
+
+async fn github_default_base(cwd: &str) -> Option<String> {
+    gh_output(cwd, &["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"])
+        .await
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|branch| valid_branch(branch))
+}
+
+fn select_suggested_base(
+    configured: Option<&str>,
+    local_default: Option<&str>,
+    github_default: Option<&str>,
+    bases: &[String],
+) -> Option<String> {
+    [configured, local_default, github_default]
+        .into_iter()
+        .flatten()
+        .find(|base| bases.iter().any(|known| known == base))
+        .map(str::to_string)
 }
 
 async fn existing_pr(cwd: &str, branch: &str) -> Option<Value> {
@@ -136,5 +163,15 @@ mod tests {
     #[test]
     fn pr_number_uses_the_last_url_component() {
         assert_eq!(pr_number("https://github.com/owner/repo/pull/42"), Some(42));
+    }
+
+    #[test]
+    fn suggested_base_falls_back_to_github_default_when_local_head_is_missing() {
+        let bases = vec!["codex-action-center-v1".to_string(), "main".to_string()];
+
+        assert_eq!(
+            select_suggested_base(None, None, Some("main"), &bases),
+            Some("main".to_string())
+        );
     }
 }
