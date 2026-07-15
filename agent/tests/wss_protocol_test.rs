@@ -112,6 +112,10 @@ fn test_all_incoming_types_parse_without_panic() {
             r#"{"type":"project_pr_create","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo","base":"main","title":"Fix login","body":"Summary"}}"#,
             "project_pr_create",
         ),
+        (
+            r#"{"type":"project_delivery_ack","data":{"requestId":"req-delivery-1"}}"#,
+            "project_delivery_ack",
+        ),
         // Forward compat
         (r#"{"type":"future_type","data":{}}"#, "unknown"),
     ];
@@ -132,9 +136,155 @@ fn test_all_incoming_types_parse_without_panic() {
     }
 }
 
+#[test]
+fn delivery_requests_parse_camel_case_request_id() {
+    let cases = [
+        ("project_git_status", serde_json::json!({})),
+        (
+            "project_git_commit",
+            serde_json::json!({"message": "fix", "paths": ["README.md"]}),
+        ),
+        ("project_git_push", serde_json::json!({})),
+        ("project_pr_status", serde_json::json!({})),
+        ("project_pr_details", serde_json::json!({})),
+        (
+            "project_pr_create",
+            serde_json::json!({"base": "main", "title": "fix", "body": ""}),
+        ),
+    ];
+
+    for (message_type, extra_data) in cases {
+        let mut data = serde_json::json!({
+            "projectKey": "42:/repo",
+            "deviceId": 42,
+            "projectPath": "/repo",
+            "requestId": "req_delivery_42"
+        });
+        data.as_object_mut()
+            .expect("object data")
+            .extend(extra_data.as_object().expect("object extra").clone());
+        let envelope: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": message_type,
+            "data": data
+        }))
+        .expect("parse envelope");
+
+        assert_eq!(
+            delivery_request_id(&envelope.parse().expect("parse request")),
+            Some("req_delivery_42")
+        );
+    }
+}
+
+#[test]
+fn delivery_result_and_progress_preserve_request_id() {
+    for message_type in ["project_git_push_progress", "project_pr_create_result"] {
+        let message = WsMessageBuilder::project_delivery_result(
+            message_type,
+            "42:/repo",
+            42,
+            "/repo",
+            Some("req_delivery_42"),
+            serde_json::json!({"status": "ok"}),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&message).expect("valid json");
+
+        assert_eq!(parsed["type"], message_type);
+        assert_eq!(parsed["data"]["requestId"], "req_delivery_42");
+    }
+}
+
+#[test]
+fn read_only_project_requests_parse_camel_case_request_id() {
+    for (message_type, extra_data) in [
+        ("project_change_summary", serde_json::json!({})),
+        (
+            "project_verify_plan",
+            serde_json::json!({"environment": "default"}),
+        ),
+        ("project_verify_status", serde_json::json!({})),
+    ] {
+        let mut data = serde_json::json!({
+            "projectKey": "42:/repo",
+            "deviceId": 42,
+            "projectPath": "/repo",
+            "requestId": "req_read_only_42"
+        });
+        data.as_object_mut()
+            .expect("object data")
+            .extend(extra_data.as_object().expect("object extra").clone());
+        let envelope: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": message_type,
+            "data": data
+        }))
+        .expect("parse envelope");
+
+        assert_eq!(
+            read_only_project_request_id(&envelope.parse().expect("parse request")),
+            Some("req_read_only_42")
+        );
+    }
+}
+
+#[test]
+fn read_only_project_results_preserve_request_id() {
+    for message_type in [
+        "project_change_summary_result",
+        "project_verify_plan_result",
+        "project_verify_status_result",
+    ] {
+        let message = WsMessageBuilder::project_delivery_result(
+            message_type,
+            "42:/repo",
+            42,
+            "/repo",
+            Some("req_read_only_42"),
+            serde_json::json!({"status": "ok"}),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&message).expect("valid json");
+
+        assert_eq!(parsed["data"]["requestId"], "req_read_only_42");
+    }
+}
+
+#[test]
+fn delivery_ack_requires_and_preserves_request_id() {
+    let envelope: WsEnvelope = serde_json::from_str(
+        r#"{"type":"project_delivery_ack","data":{"requestId":"req-delivery-1"}}"#,
+    )
+    .expect("parse envelope");
+
+    assert!(matches!(
+        envelope.parse().expect("parse acknowledgement"),
+        AgentIncoming::ProjectDeliveryAck { request_id } if request_id == "req-delivery-1"
+    ));
+}
+
+fn delivery_request_id(message: &AgentIncoming) -> Option<&str> {
+    match message {
+        AgentIncoming::ProjectGitStatus { request_id, .. }
+        | AgentIncoming::ProjectGitCommit { request_id, .. }
+        | AgentIncoming::ProjectGitPush { request_id, .. }
+        | AgentIncoming::ProjectPrStatus { request_id, .. }
+        | AgentIncoming::ProjectPrDetails { request_id, .. }
+        | AgentIncoming::ProjectPrCreate { request_id, .. } => request_id.as_deref(),
+        other => panic!("expected delivery request, got {other:?}"),
+    }
+}
+
+fn read_only_project_request_id(message: &AgentIncoming) -> Option<&str> {
+    match message {
+        AgentIncoming::ProjectChangeSummary { request_id, .. }
+        | AgentIncoming::ProjectVerifyPlan { request_id, .. }
+        | AgentIncoming::ProjectVerifyStatus { request_id, .. } => request_id.as_deref(),
+        other => panic!("expected read-only project request, got {other:?}"),
+    }
+}
+
 fn variant_name(msg: &AgentIncoming) -> &'static str {
     match msg {
         AgentIncoming::Pong { .. } => "pong",
+        AgentIncoming::ProjectDeliveryAck { .. } => "project_delivery_ack",
         AgentIncoming::Connected { .. } => "connected",
         AgentIncoming::StartSession { .. } => "start_session",
         AgentIncoming::Input { .. } => "input",

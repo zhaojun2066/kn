@@ -10,7 +10,9 @@ use kn_agent::{
 };
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -68,15 +70,226 @@ async fn load_projects() -> Vec<ProjectInfo> {
     })
 }
 
+async fn registered_project_path(project_path: &str) -> Option<String> {
+    let registered = load_projects()
+        .await
+        .into_iter()
+        .map(|project| std::path::PathBuf::from(project.path));
+    canonical_registered_project_path(registered, project_path)
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn canonical_registered_project_path(
+    registered_paths: impl IntoIterator<Item = std::path::PathBuf>,
+    project_path: &str,
+) -> Option<std::path::PathBuf> {
+    let requested = canonical_project_path(std::path::PathBuf::from(project_path));
+    registered_paths
+        .into_iter()
+        .map(canonical_project_path)
+        .find(|candidate| candidate == &requested)
+}
+
+fn canonical_project_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
 async fn is_registered_project_path(project_path: &str) -> bool {
-    let requested = std::path::PathBuf::from(project_path)
-        .canonicalize()
-        .unwrap_or_else(|_| std::path::PathBuf::from(project_path));
-    load_projects().await.into_iter().any(|project| {
-        let raw = std::path::PathBuf::from(project.path);
-        let candidate = raw.canonicalize().unwrap_or(raw);
-        candidate == requested
-    })
+    registered_project_path(project_path).await.is_some()
+}
+
+const DELIVERY_OUTBOX_CAPACITY: usize = 128;
+const DELIVERY_SEND_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+const DELIVERY_SEND_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+const DELIVERY_ACK_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
+struct DeliveryOutbox {
+    messages: tokio::sync::Mutex<VecDeque<String>>,
+    capacity: usize,
+    store: Option<Arc<kn_agent::delivery_outbox_store::DeliveryOutboxStore>>,
+}
+
+impl DeliveryOutbox {
+    fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0, "delivery outbox capacity must be positive");
+        Self {
+            messages: tokio::sync::Mutex::new(VecDeque::with_capacity(capacity)),
+            capacity,
+            store: None,
+        }
+    }
+
+    async fn enqueue(&self, message: String) {
+        if let (Some(store), Some(request_id)) = (&self.store, delivery_request_id(&message)) {
+            if let Err(error) = store.enqueue(&request_id, &message, self.capacity) {
+                tracing::warn!(%error, "写入交付 outbox SQLite 失败");
+            }
+        }
+        let mut messages = self.messages.lock().await;
+        if let Some(request_id) = delivery_request_id(&message) {
+            messages.retain(|queued| delivery_request_id(queued).as_deref() != Some(&request_id));
+        }
+        if messages.len() == self.capacity {
+            messages.pop_front();
+            tracing::warn!(
+                capacity = self.capacity,
+                "项目交付结果 outbox 已满，丢弃最早结果"
+            );
+        }
+        messages.push_back(message);
+    }
+
+    async fn take_front(&self) -> Option<String> {
+        self.messages.lock().await.front().cloned()
+    }
+
+    async fn len(&self) -> usize {
+        self.messages.lock().await.len()
+    }
+
+    async fn acknowledge(&self, request_id: &str) -> bool {
+        if let Some(store) = &self.store {
+            if let Err(error) = store.acknowledge(request_id) {
+                tracing::warn!(%error, %request_id, "确认交付 outbox SQLite 失败");
+                return false;
+            }
+        }
+        let mut messages = self.messages.lock().await;
+        let before = messages.len();
+        messages.retain(|message| delivery_request_id(message).as_deref() != Some(request_id));
+        before != messages.len()
+    }
+}
+
+fn delivery_request_id(message: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(message)
+        .ok()?
+        .get("data")?
+        .get("requestId")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+impl Default for DeliveryOutbox {
+    fn default() -> Self {
+        let mut outbox = Self::with_capacity(DELIVERY_OUTBOX_CAPACITY);
+        let path = kn_agent::delivery_outbox_store::DeliveryOutboxStore::default_path(
+            &kn_common::path::config_dir(),
+        );
+        match kn_agent::delivery_outbox_store::DeliveryOutboxStore::open(path) {
+            Ok(store) => {
+                if let Ok(pending) = store.pending() {
+                    outbox.messages = tokio::sync::Mutex::new(pending.into());
+                }
+                outbox.store = Some(Arc::new(store));
+            }
+            Err(error) => tracing::warn!(%error, "打开交付 outbox SQLite 失败"),
+        }
+        outbox
+    }
+}
+
+enum DeliverySendAttempt {
+    Sent,
+    NoSender(String),
+    SenderClosed(String),
+}
+
+async fn try_send_project_delivery_message(
+    outgoing: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    message: String,
+) -> DeliverySendAttempt {
+    let sender = outgoing.lock().await.as_ref().cloned();
+    match sender {
+        Some(sender) => match sender.send(message) {
+            Ok(()) => DeliverySendAttempt::Sent,
+            Err(error) => DeliverySendAttempt::SenderClosed(error.0),
+        },
+        None => DeliverySendAttempt::NoSender(message),
+    }
+}
+
+async fn send_project_delivery_message(
+    outgoing: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    message: String,
+    message_type: &'static str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + DELIVERY_SEND_RETRY_TIMEOUT;
+    let mut message = message;
+    let mut failed_sends = 0;
+
+    loop {
+        match try_send_project_delivery_message(outgoing, message).await {
+            DeliverySendAttempt::Sent => return Ok(()),
+            DeliverySendAttempt::NoSender(unsent) => {
+                message = unsent;
+                tracing::debug!(message_type, "项目交付消息等待 WSS 通道恢复");
+            }
+            DeliverySendAttempt::SenderClosed(unsent) => {
+                message = unsent;
+                failed_sends += 1;
+                tracing::warn!(
+                    message_type,
+                    failed_sends,
+                    "项目交付消息发送失败，等待 WSS 通道更新"
+                );
+                if failed_sends >= 2 {
+                    tracing::warn!(message_type, "项目交付消息两次发送失败，停止重试");
+                    return Err(message);
+                }
+            }
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            tracing::warn!(message_type, "项目交付消息等待 WSS 通道超时");
+            return Err(message);
+        }
+        tokio::time::sleep((deadline - now).min(DELIVERY_SEND_RETRY_INTERVAL)).await;
+    }
+}
+
+async fn send_project_delivery_result(
+    outgoing: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    outbox: &DeliveryOutbox,
+    message: String,
+    _message_type: &'static str,
+) {
+    outbox.enqueue(message).await;
+    flush_delivery_outbox(outbox, outgoing).await;
+}
+
+async fn flush_delivery_outbox(
+    outbox: &DeliveryOutbox,
+    outgoing: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+) {
+    if let Some(message) = outbox.take_front().await {
+        match try_send_project_delivery_message(outgoing, message).await {
+            DeliverySendAttempt::Sent => {}
+            DeliverySendAttempt::NoSender(_) => {
+                tracing::debug!("项目交付 outbox 等待 WSS 通道恢复");
+                return;
+            }
+            DeliverySendAttempt::SenderClosed(_) => {
+                tracing::warn!("项目交付 outbox 刷新失败，保留未发送结果");
+                return;
+            }
+        }
+    }
+}
+
+async fn delivery_outbox_retry_loop(
+    outbox: Arc<DeliveryOutbox>,
+    outgoing: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    retry_interval: Duration,
+    shutdown: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return,
+            _ = tokio::time::sleep(retry_interval) => flush_delivery_outbox(&outbox, &outgoing).await,
+        }
+    }
 }
 
 fn canonical_project_key(device_id: u64, project_path: &str) -> String {
@@ -237,7 +450,16 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     // ── 8. 检查 device_token ──
-    let token = device::load_device_token();
+    // A device token is not WSS-eligible until Cloud has acknowledged the
+    // activation marker. This prevents a crash between local token persistence
+    // and bind-activate from connecting an unregistered device.
+    let activation_pending = device::wss_is_blocked_by_pending_activation();
+    let token = if activation_pending {
+        tracing::info!("检测到待激活绑定，WSS 将在 Cloud 确认后启动");
+        None
+    } else {
+        device::load_device_token()
+    };
     let has_token = token.as_ref().map_or(false, |t| !t.is_empty());
 
     // ── 9. 创建共享的会话管理器和输入合并器 ──
@@ -265,6 +487,26 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // ── ACK 注册表（session_created → session_created_ack 关联） ──
     let ack_registry = Arc::new(ack::AckRegistry::new());
+
+    // Git/PR 操作会执行受限的外部命令。每个项目串行执行，但绝不能阻塞
+    // WSS 入站循环，否则终端输入和心跳会在 push 或 gh 查询期间排队。
+    let project_delivery_gate =
+        Arc::new(kn_agent::project_delivery::ProjectOperationGate::default());
+    let delivery_outbox = Arc::new(DeliveryOutbox::default());
+    {
+        let outbox = delivery_outbox.clone();
+        let outgoing = outgoing_tx_ref.clone();
+        let retry_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            delivery_outbox_retry_loop(
+                outbox,
+                outgoing,
+                DELIVERY_ACK_RETRY_INTERVAL,
+                retry_shutdown,
+            )
+            .await;
+        });
+    }
 
     // IPC 服务器独立于 WSS 连接运行。即使云端不可达（如 dev 模式下
     // kn-cloud 未启动），桌面应用仍能通过 Unix socket 查询 Agent 状态。
@@ -345,6 +587,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
+                if device::wss_is_blocked_by_pending_activation() {
+                    tracing::info!("WSS 触发被待激活绑定门控，等待本地收尾完成");
+                    continue;
+                }
                 let t = match device::load_device_token() {
                     Some(tok) if !tok.is_empty() => tok,
                     _ => {
@@ -355,15 +601,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
                 tracing::info!("正在启动 WSS 连接...");
 
-                // 确保状态正确（绑定完成时可能已经是 Connected）
-                let current = state_machine.current().await;
-                if current != state::AgentState::Connected
-                    && current != state::AgentState::Reconnecting
-                {
-                    let _ = state_machine
-                        .transition(state::StateEvent::WsConnected { has_token: true })
-                        .await;
-                }
+                // Do not announce Connected before the actual WebSocket
+                // handshake.  `ws_client::connect_and_run` performs that
+                // transition only after Cloud accepts the socket.
 
                 // 创建入站消息通道
                 let (incoming_tx, rx) = mpsc::unbounded_channel::<proto::AgentIncoming>();
@@ -420,14 +660,40 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
             } => {
                 if let Some(m) = msg {
-                    handle_incoming(
-                        m,
-                        state_machine.clone(),
-                        outgoing_tx_ref.clone(),
-                        sessions.clone(),
-                        input_merger.clone(),
-                        ack_registry.clone(),
-                    ).await;
+                    let state = state_machine.clone();
+                    let outgoing = outgoing_tx_ref.clone();
+                    let session_manager = sessions.clone();
+                    let input = input_merger.clone();
+                    let acknowledgements = ack_registry.clone();
+                    let delivery_gate = project_delivery_gate.clone();
+                    let outbox = delivery_outbox.clone();
+                    if is_project_delivery_operation(&m) {
+                        tokio::spawn(async move {
+                            handle_incoming(
+                                m,
+                                state,
+                                outgoing,
+                                session_manager,
+                                input,
+                                acknowledgements,
+                                delivery_gate,
+                                outbox,
+                            )
+                            .await;
+                        });
+                    } else {
+                        handle_incoming(
+                            m,
+                            state,
+                            outgoing,
+                            session_manager,
+                            input,
+                            acknowledgements,
+                            delivery_gate,
+                            outbox,
+                        )
+                        .await;
+                    }
                 }
             }
 
@@ -563,6 +829,18 @@ async fn cli_heartbeat_loop(
     }
 }
 
+fn is_project_delivery_operation(message: &proto::AgentIncoming) -> bool {
+    matches!(
+        message,
+        proto::AgentIncoming::ProjectGitStatus { .. }
+            | proto::AgentIncoming::ProjectGitCommit { .. }
+            | proto::AgentIncoming::ProjectGitPush { .. }
+            | proto::AgentIncoming::ProjectPrStatus { .. }
+            | proto::AgentIncoming::ProjectPrDetails { .. }
+            | proto::AgentIncoming::ProjectPrCreate { .. }
+    )
+}
+
 async fn handle_incoming(
     msg: proto::AgentIncoming,
     state: Arc<state::StateMachine>,
@@ -570,9 +848,16 @@ async fn handle_incoming(
     sessions: Arc<session::SessionManager>,
     input_merger: Arc<session::InputMerger>,
     ack_registry: Arc<ack::AckRegistry>, // Phase 3 开始使用
+    project_delivery_gate: Arc<kn_agent::project_delivery::ProjectOperationGate>,
+    delivery_outbox: Arc<DeliveryOutbox>,
 ) {
     match msg {
         proto::AgentIncoming::Pong { .. } => {}
+        proto::AgentIncoming::ProjectDeliveryAck { request_id } => {
+            if delivery_outbox.acknowledge(&request_id).await {
+                flush_delivery_outbox(&delivery_outbox, &outgoing).await;
+            }
+        }
         proto::AgentIncoming::Connected {
             ws_session_id,
             protocol_version,
@@ -583,6 +868,11 @@ async fn handle_incoming(
                 ws_session_id,
                 protocol_version.unwrap_or(1)
             );
+            let outbox = delivery_outbox.clone();
+            let reconnect_outgoing = outgoing.clone();
+            tokio::spawn(async move {
+                flush_delivery_outbox(&outbox, &reconnect_outgoing).await;
+            });
             // 上报 profile 列表
             if let Ok(profiles) = kn_common::profile::list_profiles_cmd() {
                 let info: Vec<proto::ProfileInfo> =
@@ -1196,6 +1486,7 @@ async fn handle_incoming(
             project_key: _project_key,
             device_id,
             project_path,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             tracing::info!(project_key = %project_key, "收到 project_change_summary 请求");
@@ -1204,11 +1495,12 @@ async fn handle_incoming(
             } else {
                 serde_json::json!({"projectKey": &project_key, "status": "pathDenied", "files": [], "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_change_summary_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
             if let Some(tx) = outgoing.lock().await.as_ref() {
@@ -1243,23 +1535,27 @@ async fn handle_incoming(
             project_key: _project_key,
             device_id,
             project_path,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
-            let data = if is_registered_project_path(&project_path).await {
-                crate::session::git_delivery::status(&project_key, &project_path).await
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let _operation = project_delivery_gate.lock(&operation_project_key).await;
+                crate::session::git_delivery::status(&project_key, &registered_path).await
             } else {
                 serde_json::json!({"status": "pathDenied", "files": [], "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_git_status_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
-            if let Some(tx) = outgoing.lock().await.as_ref() {
-                let _ = tx.send(msg);
-            }
+            // 只读状态可以由 iOS 安全重试；不要占用写操作的可靠结果 outbox。
+            let _ =
+                send_project_delivery_message(&outgoing, msg, "project_git_status_result").await;
         }
         proto::AgentIncoming::ProjectGitCommit {
             project_key: _project_key,
@@ -1267,100 +1563,141 @@ async fn handle_incoming(
             project_path,
             message,
             paths,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
-            let data = if is_registered_project_path(&project_path).await {
-                crate::session::git_delivery::commit(&project_key, &project_path, &message, &paths)
-                    .await
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let _operation = project_delivery_gate.lock(&operation_project_key).await;
+                crate::session::git_delivery::commit(
+                    &project_key,
+                    &registered_path,
+                    &message,
+                    &paths,
+                )
+                .await
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_git_commit_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
-            if let Some(tx) = outgoing.lock().await.as_ref() {
-                let _ = tx.send(msg);
-            }
+            send_project_delivery_result(
+                &outgoing,
+                &delivery_outbox,
+                msg,
+                "project_git_commit_result",
+            )
+            .await;
         }
         proto::AgentIncoming::ProjectGitPush {
             project_key: _project_key,
             device_id,
             project_path,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
-            let progress_tx = outgoing.lock().await.as_ref().cloned();
-            let data = if is_registered_project_path(&project_path).await {
-                crate::session::git_delivery::push(&project_key, &project_path, |message| {
-                    let progress = proto::WsMessageBuilder::project_result(
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let _operation = project_delivery_gate.lock(&operation_project_key).await;
+                let progress_outgoing = outgoing.clone();
+                let progress_project_key = project_key.clone();
+                let progress_project_path = project_path.clone();
+                let progress_request_id = request_id.clone();
+                crate::session::git_delivery::push(&project_key, &registered_path, move |message| {
+                    let progress = proto::WsMessageBuilder::project_delivery_result(
                         "project_git_push_progress",
-                        &project_key,
+                        &progress_project_key,
                         device_id,
-                        &project_path,
+                        &progress_project_path,
+                        progress_request_id.as_deref(),
                         serde_json::json!({"status": "running", "stage": "pushing", "message": message}),
                     );
-                    if let Some(tx) = progress_tx.as_ref() { let _ = tx.send(progress); }
-                }).await
+                    let outgoing = progress_outgoing.clone();
+                    tokio::spawn(async move {
+                        let _ = send_project_delivery_message(
+                            &outgoing,
+                            progress,
+                            "project_git_push_progress",
+                        )
+                        .await;
+                    });
+                })
+                .await
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_git_push_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
-            if let Some(tx) = outgoing.lock().await.as_ref() {
-                let _ = tx.send(msg);
-            }
+            send_project_delivery_result(
+                &outgoing,
+                &delivery_outbox,
+                msg,
+                "project_git_push_result",
+            )
+            .await;
         }
         proto::AgentIncoming::ProjectPrStatus {
             project_key: _project_key,
             device_id,
             project_path,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
-            let data = if is_registered_project_path(&project_path).await {
-                crate::session::pr_delivery::status(&project_key, &project_path).await
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let _operation = project_delivery_gate.lock(&operation_project_key).await;
+                crate::session::pr_delivery::status(&project_key, &registered_path).await
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_pr_status_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
-            if let Some(tx) = outgoing.lock().await.as_ref() {
-                let _ = tx.send(msg);
-            }
+            // 只读状态可以由 iOS 安全重试；不要占用写操作的可靠结果 outbox。
+            let _ = send_project_delivery_message(&outgoing, msg, "project_pr_status_result").await;
         }
         proto::AgentIncoming::ProjectPrDetails {
             project_key: _project_key,
             device_id,
             project_path,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
-            let data = if is_registered_project_path(&project_path).await {
-                crate::session::pr_delivery::details(&project_key, &project_path).await
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let _operation = project_delivery_gate.lock(&operation_project_key).await;
+                crate::session::pr_delivery::details(&project_key, &registered_path).await
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_pr_details_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
-            if let Some(tx) = outgoing.lock().await.as_ref() {
-                let _ = tx.send(msg);
-            }
+            // 只读状态可以由 iOS 安全重试；不要占用写操作的可靠结果 outbox。
+            let _ =
+                send_project_delivery_message(&outgoing, msg, "project_pr_details_result").await;
         }
         proto::AgentIncoming::ProjectPrCreate {
             project_key: _project_key,
@@ -1369,12 +1706,15 @@ async fn handle_incoming(
             base,
             title,
             body,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
-            let data = if is_registered_project_path(&project_path).await {
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let _operation = project_delivery_gate.lock(&operation_project_key).await;
                 crate::session::pr_delivery::create(
                     &project_key,
-                    &project_path,
+                    &registered_path,
                     &base,
                     &title,
                     &body,
@@ -1383,22 +1723,28 @@ async fn handle_incoming(
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_pr_create_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
-            if let Some(tx) = outgoing.lock().await.as_ref() {
-                let _ = tx.send(msg);
-            }
+            send_project_delivery_result(
+                &outgoing,
+                &delivery_outbox,
+                msg,
+                "project_pr_create_result",
+            )
+            .await;
         }
         proto::AgentIncoming::ProjectVerifyPlan {
             project_key: _project_key,
             device_id,
             project_path,
             environment,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             tracing::info!(project_key = %project_key, environment = %environment, "收到 project_verify_plan 请求");
@@ -1416,11 +1762,12 @@ async fn handle_incoming(
                     "message": "项目未登记"
                 })
             };
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_verify_plan_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
             if let Some(tx) = outgoing.lock().await.as_ref() {
@@ -1533,14 +1880,16 @@ async fn handle_incoming(
             project_key: _project_key,
             device_id,
             project_path,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = crate::session::verify_changes::status(&project_key);
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_verify_status_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
             if let Some(tx) = outgoing.lock().await.as_ref() {
@@ -1733,6 +2082,204 @@ async fn handle_incoming(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn delivery_outbox_flushes_completed_result_when_sender_returns() {
+        let outbox = DeliveryOutbox::with_capacity(2);
+        outbox
+            .enqueue("{\"data\":{\"requestId\":\"req-one\"}}".to_string())
+            .await;
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let outgoing = Arc::new(tokio::sync::Mutex::new(Some(sender)));
+
+        flush_delivery_outbox(&outbox, &outgoing).await;
+
+        assert_eq!(
+            receiver.recv().await,
+            Some("{\"data\":{\"requestId\":\"req-one\"}}".to_string())
+        );
+        assert_eq!(outbox.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn delivery_acknowledgement_sends_the_next_pending_result() {
+        let outbox = Arc::new(DeliveryOutbox::with_capacity(2));
+        let first = "{\"data\":{\"requestId\":\"req-one\"}}".to_string();
+        let second = "{\"data\":{\"requestId\":\"req-two\"}}".to_string();
+        outbox.enqueue(first.clone()).await;
+        outbox.enqueue(second.clone()).await;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let outgoing = Arc::new(tokio::sync::Mutex::new(Some(sender)));
+        flush_delivery_outbox(&outbox, &outgoing).await;
+        assert_eq!(receiver.recv().await, Some(first));
+
+        handle_incoming(
+            proto::AgentIncoming::ProjectDeliveryAck {
+                request_id: "req-one".to_string(),
+            },
+            Arc::new(state::StateMachine::new(0)),
+            outgoing,
+            Arc::new(session::SessionManager::new(Box::new(
+                session::MemorySessionStore::new(),
+            ))),
+            Arc::new(session::InputMerger::new()),
+            Arc::new(ack::AckRegistry::new()),
+            Arc::new(kn_agent::project_delivery::ProjectOperationGate::default()),
+            outbox,
+        )
+        .await;
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await,
+            Ok(Some(second))
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_outbox_retries_an_unacknowledged_result_while_connected() {
+        let outbox = Arc::new(DeliveryOutbox::with_capacity(2));
+        let message = "{\"data\":{\"requestId\":\"req-retry\"}}".to_string();
+        outbox.enqueue(message.clone()).await;
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let outgoing = Arc::new(tokio::sync::Mutex::new(Some(sender)));
+        let shutdown = CancellationToken::new();
+
+        let retry_task = tokio::spawn(delivery_outbox_retry_loop(
+            outbox,
+            outgoing,
+            Duration::from_millis(10),
+            shutdown.clone(),
+        ));
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await,
+            Ok(Some(message))
+        );
+        shutdown.cancel();
+        retry_task.await.expect("retry loop exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn delivery_outbox_keeps_completed_result_after_flush_send_failure() {
+        let outbox = DeliveryOutbox::with_capacity(2);
+        outbox.enqueue("result-one".to_string()).await;
+        let (sender, receiver) = mpsc::unbounded_channel::<String>();
+        drop(receiver);
+        let outgoing = Arc::new(tokio::sync::Mutex::new(Some(sender)));
+
+        flush_delivery_outbox(&outbox, &outgoing).await;
+
+        assert_eq!(outbox.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn delivery_outbox_discards_oldest_when_bounded_capacity_is_reached() {
+        let outbox = DeliveryOutbox::with_capacity(2);
+        outbox
+            .enqueue("{\"data\":{\"requestId\":\"first\"}}".to_string())
+            .await;
+        outbox
+            .enqueue("{\"data\":{\"requestId\":\"second\"}}".to_string())
+            .await;
+        outbox
+            .enqueue("{\"data\":{\"requestId\":\"third\"}}".to_string())
+            .await;
+
+        assert_eq!(
+            outbox.take_front().await,
+            Some("{\"data\":{\"requestId\":\"second\"}}".to_string())
+        );
+        assert!(outbox.acknowledge("second").await);
+        assert_eq!(
+            outbox.take_front().await,
+            Some("{\"data\":{\"requestId\":\"third\"}}".to_string())
+        );
+    }
+
+    #[test]
+    fn delivery_dispatch_backgrounds_all_git_and_pr_operations_only() {
+        let deliveries = [
+            proto::AgentIncoming::ProjectGitStatus {
+                project_key: "42:/repo".to_string(),
+                device_id: 42,
+                project_path: "/repo".to_string(),
+                request_id: None,
+            },
+            proto::AgentIncoming::ProjectGitCommit {
+                project_key: "42:/repo".to_string(),
+                device_id: 42,
+                project_path: "/repo".to_string(),
+                message: "commit".to_string(),
+                paths: vec!["README.md".to_string()],
+                request_id: None,
+            },
+            proto::AgentIncoming::ProjectGitPush {
+                project_key: "42:/repo".to_string(),
+                device_id: 42,
+                project_path: "/repo".to_string(),
+                request_id: None,
+            },
+            proto::AgentIncoming::ProjectPrStatus {
+                project_key: "42:/repo".to_string(),
+                device_id: 42,
+                project_path: "/repo".to_string(),
+                request_id: None,
+            },
+            proto::AgentIncoming::ProjectPrDetails {
+                project_key: "42:/repo".to_string(),
+                device_id: 42,
+                project_path: "/repo".to_string(),
+                request_id: None,
+            },
+            proto::AgentIncoming::ProjectPrCreate {
+                project_key: "42:/repo".to_string(),
+                device_id: 42,
+                project_path: "/repo".to_string(),
+                base: "main".to_string(),
+                title: "Create PR".to_string(),
+                body: String::new(),
+                request_id: None,
+            },
+        ];
+
+        assert!(deliveries.iter().all(is_project_delivery_operation));
+        assert!(!is_project_delivery_operation(
+            &proto::AgentIncoming::Input {
+                session_nid: "s_test".to_string(),
+                seq: 1,
+                content: "keep terminal responsive".to_string(),
+                from_user_id: 1,
+            }
+        ));
+    }
+
+    #[test]
+    fn registered_project_path_canonicalizes_aliases_before_locking() {
+        let project = tempfile::tempdir().expect("temporary project");
+        let registered = project
+            .path()
+            .canonicalize()
+            .expect("canonical project path");
+        let alias = project.path().join(".");
+
+        let canonical = canonical_registered_project_path(
+            vec![registered.clone()],
+            alias.to_str().expect("utf8 alias"),
+        )
+        .expect("registered alias should be recognized");
+
+        assert_eq!(canonical, registered);
+        assert_eq!(
+            canonical_project_key(42, canonical.to_str().expect("utf8 canonical path")),
+            canonical_project_key(42, registered.to_str().expect("utf8 registered path"))
+        );
     }
 }
 

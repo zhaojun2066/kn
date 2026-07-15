@@ -37,6 +37,7 @@ rand.workspace = true
 portable-pty.workspace = true
 notify = "6"
 regex-lite.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile.workspace = true

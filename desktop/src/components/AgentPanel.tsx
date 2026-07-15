@@ -9,6 +9,7 @@ const stateLabelCn: Record<AgentStateName, string> = {
   starting: "启动中",
   unbound: "未绑定",
   binding: "绑定中",
+  bound_offline: "已绑定，等待上线",
   connected: "已连接",
   idle: "空闲",
   running: "运行中",

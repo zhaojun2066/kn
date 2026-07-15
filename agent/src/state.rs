@@ -17,6 +17,10 @@ pub enum AgentState {
     Starting,
     Unbound,
     Binding,
+    /// Formal Cloud device exists but the WSS handshake has not succeeded.
+    /// This is intentionally distinct from `Connected` so Desktop never
+    /// claims the computer is online before the socket is authenticated.
+    BoundOffline,
     Connected,
     Idle,
     Running,
@@ -30,6 +34,7 @@ impl AgentState {
             Self::Starting => "starting",
             Self::Unbound => "unbound",
             Self::Binding => "binding",
+            Self::BoundOffline => "bound_offline",
             Self::Connected => "connected",
             Self::Idle => "idle",
             Self::Running => "running",
@@ -129,16 +134,18 @@ impl StateMachine {
             (Unbound, BindInit) => Ok(Binding),
             (Binding, BindInit) => Ok(Binding), // 幂等：已在绑定中
             (Binding, BindInitOk) => Ok(Binding), // 保持 Binding，等待结果
-            (Binding, BindResult) => Ok(Connected),
+            (Binding, BindResult) => Ok(BoundOffline),
             (Binding, BindTimeout) => Ok(Unbound),
 
             // 会话管理
+            (BoundOffline, WsConnected { has_token: true }) => Ok(Connected),
             (Connected, SessionStarted) => Ok(Running),
             (Running, SessionStarted) => Ok(Running), // 已运行，保持
             (Running, AllSessionsEnded) => Ok(Idle),
             (Idle, SessionStarted) => Ok(Running),
 
             // 连接管理
+            (BoundOffline, WsDisconnected) => Ok(BoundOffline),
             (Connected, WsDisconnected) => Ok(Reconnecting),
             (Running, WsDisconnected) => Ok(Reconnecting),
             (Idle, WsDisconnected) => Ok(Reconnecting),
@@ -154,6 +161,7 @@ impl StateMachine {
 
             // Token 失效/AUTH_REJECTED：回到未绑定状态
             // 从任何活跃/重连状态回到 Unbound（需重新绑定）
+            (BoundOffline, WsConnected { has_token: false }) => Ok(Unbound),
             (Connected, WsConnected { has_token: false }) => Ok(Unbound),
             (Running, WsConnected { has_token: false }) => Ok(Unbound),
             (Idle, WsConnected { has_token: false }) => Ok(Unbound),
@@ -299,6 +307,22 @@ mod tests {
         m.transition(StateEvent::BindInit).await.unwrap();
         assert_eq!(m.current().await, AgentState::Binding);
         m.transition(StateEvent::BindResult).await.unwrap();
+        assert_eq!(m.current().await, AgentState::BoundOffline);
+    }
+
+    #[tokio::test]
+    async fn bind_result_is_bound_offline_until_wss_handshake_succeeds() {
+        let m = sm(0);
+        m.transition(StateEvent::Start).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
+        m.transition(StateEvent::BindInit).await.unwrap();
+        m.transition(StateEvent::BindResult).await.unwrap();
+        assert_eq!(m.current().await, AgentState::BoundOffline);
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
         assert_eq!(m.current().await, AgentState::Connected);
     }
 

@@ -33,16 +33,20 @@ pub async fn status(project_key: &str, cwd: &str) -> Value {
     if !gh_authenticated(cwd).await {
         return error(project_key, "ghNotAuthenticated");
     }
+    // A branch can already have an open PR even when this checkout lacks
+    // origin/HEAD (for example, a shallow clone that only fetched the head).
+    // Discover that PR before deriving a default base, otherwise the delivery
+    // UI loses an existing PR merely because it cannot suggest a new target.
+    let existing = existing_pr(cwd, branch).await;
     let bases = known_bases(cwd, remote).await;
     let suggested_base = suggested_base(cwd, branch, remote, &bases).await;
-    let Some(suggested_base) = suggested_base else {
+    if suggested_base.is_none() && existing.is_none() {
         return error(project_key, "noBaseBranch");
-    };
+    }
     let is_pushed = git["upstream"]
         .as_str()
         .is_some_and(|upstream| upstream == format!("{remote}/{branch}"))
         && head_matches_upstream(cwd).await;
-    let existing = existing_pr(cwd, branch).await;
     json!({
         "projectKey": project_key,
         "status": "ok",
@@ -52,7 +56,7 @@ pub async fn status(project_key: &str, cwd: &str) -> Value {
         "baseBranches": bases,
         "isPushed": is_pushed,
         "existingPullRequest": existing,
-        "canCreate": branch != suggested_base && existing.is_none()
+        "canCreate": suggested_base.as_deref().is_some_and(|base| branch != base) && existing.is_none()
     })
 }
 
@@ -477,6 +481,91 @@ fn error(project_key: &str, status: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command as StdCommand;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    static PATH_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn run_git(cwd: &std::path::Path, args: &[&str]) {
+        let output = StdCommand::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .output()
+            .expect("git should start");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn initialized_repo() -> TempDir {
+        let repo = tempfile::tempdir().expect("temporary repo");
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+        run_git(repo.path(), &["config", "user.name", "kn test"]);
+        run_git(repo.path(), &["branch", "-M", "feature/delivery"]);
+        std::fs::write(repo.path().join("README.md"), "initial\n").expect("write initial file");
+        run_git(repo.path(), &["add", "README.md"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+        run_git(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/kn.git",
+            ],
+        );
+        repo
+    }
+
+    struct PathGuard(Option<std::ffi::OsString>);
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            if let Some(path) = self.0.take() {
+                std::env::set_var("PATH", path);
+            } else {
+                std::env::remove_var("PATH");
+            }
+        }
+    }
+
+    fn install_fake_gh(dir: &std::path::Path) -> PathGuard {
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            r#"#!/bin/sh
+case "$1:$2" in
+  --version:*) echo "gh version 2.0" ;;
+  auth:status) exit 0 ;;
+  pr:list) printf '[{"number":42,"url":"https://github.com/example/kn/pull/42","baseRefName":"main","title":"Existing PR","isDraft":false,"reviewDecision":"","mergeStateStatus":"CLEAN","statusCheckRollup":[],"updatedAt":"2026-07-14T00:00:00Z"}]' ;;
+  repo:view) printf '\n' ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .expect("write fake gh");
+        let mut permissions = std::fs::metadata(&gh)
+            .expect("read fake gh metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&gh, permissions).expect("make fake gh executable");
+
+        let previous = std::env::var_os("PATH");
+        let mut paths = vec![dir.to_path_buf()];
+        if let Some(old) = &previous {
+            paths.extend(std::env::split_paths(old));
+        }
+        let joined = std::env::join_paths(paths).expect("join PATH");
+        std::env::set_var("PATH", joined);
+        PathGuard(previous)
+    }
 
     #[test]
     fn branch_validation_rejects_git_revision_syntax() {
@@ -586,5 +675,20 @@ mod tests {
     fn status_query_does_not_request_review_bodies() {
         assert!(!PR_SUMMARY_FIELDS.split(',').any(|field| field == "reviews"));
         assert!(PR_DETAIL_FIELDS.split(',').any(|field| field == "reviews"));
+    }
+
+    #[tokio::test]
+    async fn status_returns_existing_pr_when_no_base_branch_is_known() {
+        let _path_lock = PATH_MUTEX.lock().expect("lock PATH for fake gh");
+        let repo = initialized_repo();
+        let fake_bin = tempfile::tempdir().expect("fake gh directory");
+        let _path = install_fake_gh(fake_bin.path());
+
+        let result = status("device:/repo", repo.path().to_str().expect("utf8 repo")).await;
+
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["existingPullRequest"]["number"], 42);
+        assert_eq!(result["suggestedBase"], serde_json::Value::Null);
+        assert_eq!(result["canCreate"], false);
     }
 }

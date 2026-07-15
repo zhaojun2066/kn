@@ -15,7 +15,9 @@
 //! |--------------------|------------------------------------|--------------------------------------|
 //! | status             | —                                  | Agent state, crash_count, safe_mode  |
 //! | sessions           | —                                  | List all sessions                    |
-//! | bind               | —                                  | Trigger device binding               |
+//! | bind / bindStartOrResume | —                             | Create or resume device binding      |
+//! | bindingStatus      | —                                  | Read durable binding progress        |
+//! | bindCancel         | —                                  | Explicitly cancel device binding     |
 //! | pause              | —                                  | Pause agent                          |
 //! | resume             | —                                  | Resume agent                         |
 //! | new_session        | tool, profile?, cwd?, cols?, rows? | Create session + spawn PTY + CLI     |
@@ -35,6 +37,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -45,6 +48,30 @@ use crate::ack::AckRegistry;
 use crate::error::{AgentError, Result};
 use crate::session::{InputMerger, InputMessage, SessionManager, SessionSummary, ViewportOwner};
 use crate::state::{StateEvent, StateMachine};
+
+/// The durable bind worker has one local owner.  In particular, a user may
+/// cancel while we are still waiting for phone approval, but once a provisional
+/// token has been received the operation is deliberately non-cancellable: the
+/// Cloud may already have committed its matching formal device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindPhase {
+    WaitingPhone,
+    SavingCredential,
+    Activating,
+    Finalizing,
+}
+
+impl BindPhase {
+    fn can_cancel(self) -> bool {
+        matches!(self, Self::WaitingPhone)
+    }
+}
+
+struct BindingWorker {
+    cancel: CancellationToken,
+    generation: u64,
+    phase: BindPhase,
+}
 
 // ── IPC wire helpers ──────────────────────────────────────────
 
@@ -104,7 +131,7 @@ pub struct IpcServer {
     /// CancellationToken + generation for in-progress bind polling.
     /// Stored together so stale cancel requests (from old dialogs) can't
     /// cancel the new bind's token.
-    bind_cancel: Arc<Mutex<Option<(CancellationToken, u64)>>>,
+    bind_cancel: Arc<Mutex<Option<BindingWorker>>>,
     /// Generation counter: incremented on each new bind, prevents stale
     /// background tasks from corrupting state after a cancel+rebind cycle.
     bind_generation: Arc<AtomicU64>,
@@ -175,6 +202,35 @@ impl IpcServer {
 
         tracing::info!("IPC 服务器已启动: {}", self.socket_path.display());
 
+        // A dialog is only a view. Restore the durable binding worker after an
+        // Agent restart so a phone confirmation is never stranded in Redis.
+        let recovery = self.clone_refs();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if let Some(activation) = crate::device::load_pending_activation() {
+                // Never discard an activation marker merely because its Redis
+                // TTL elapsed.  bind-activate is idempotent against MySQL and
+                // is the only safe way to learn whether the response was lost
+                // after the formal device committed.
+                if recovery.transition_to_binding().await.is_ok() {
+                    recovery
+                        .start_binding_poll(pending_for_activation(&activation))
+                        .await;
+                }
+                return;
+            }
+            let Some(pending) = crate::device::load_pending_binding() else {
+                return;
+            };
+            if binding_expired(&pending) {
+                let _ = crate::device::clear_pending_binding();
+                return;
+            }
+            if recovery.transition_to_binding().await.is_ok() {
+                recovery.start_binding_poll(pending).await;
+            }
+        });
+
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
@@ -235,11 +291,85 @@ struct IpcHandle {
     hostname: String,
     purchase_url: String,
     input_merger: Arc<InputMerger>,
-    bind_cancel: Arc<Mutex<Option<(CancellationToken, u64)>>>,
+    bind_cancel: Arc<Mutex<Option<BindingWorker>>>,
     bind_generation: Arc<AtomicU64>,
     wss_trigger: mpsc::UnboundedSender<()>,
     outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
     ack_registry: Arc<AckRegistry>,
+}
+
+fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or(u64::MAX)
+}
+
+fn remaining_secs(expires_at_ms: u64) -> u64 {
+    let now = unix_now_ms();
+    expires_at_ms.saturating_sub(now).saturating_add(999) / 1_000
+}
+
+fn binding_expired_at(expires_at_ms: u64) -> bool {
+    expires_at_ms <= unix_now_ms()
+}
+
+fn binding_expired(pending: &crate::device::PendingBinding) -> bool {
+    binding_expired_at(pending.pairing_expires_at_ms)
+}
+
+fn pending_for_activation(
+    activation: &crate::device::PendingActivation,
+) -> crate::device::PendingBinding {
+    crate::device::PendingBinding {
+        pairing_id: activation.pairing_id.clone(),
+        // These fields are never exposed or polled when an activation marker
+        // exists; they merely let the single recovery worker retain its common
+        // input type after a crash between Cloud commit and local cleanup.
+        approval_code: String::new(),
+        poll_secret: activation.poll_secret.clone(),
+        confirm_url: String::new(),
+        qr_expires_at_ms: 0,
+        pairing_expires_at_ms: activation.pairing_expires_at_ms,
+    }
+}
+
+fn binding_status_json() -> serde_json::Value {
+    if let Some(activation) = crate::device::load_pending_activation() {
+        return serde_json::json!({
+            "state": "activationUncertain",
+            "pairingId": activation.pairing_id,
+            "message": "电脑正在确认正式绑定，暂时不能取消",
+        });
+    }
+    let Some(pending) = crate::device::load_pending_binding() else {
+        return serde_json::json!({"state": "idle"});
+    };
+    if binding_expired(&pending) {
+        return serde_json::json!({
+            "state": "expired",
+            "pairingId": pending.pairing_id,
+        });
+    }
+    serde_json::json!({
+        "state": "waitingAgent",
+        "pairingId": pending.pairing_id,
+        "bindCode": pending.approval_code,
+        "confirmUrl": pending.confirm_url,
+        "expiresIn": remaining_secs(pending.qr_expires_at_ms),
+        "pairingExpiresIn": remaining_secs(pending.pairing_expires_at_ms),
+    })
+}
+
+fn bind_init_error(req: &IpcRequest, error: AgentError) -> String {
+    tracing::warn!("bind-init 失败: {}", error);
+    let message = if error.to_string().contains("connect") || error.to_string().contains("timeout")
+    {
+        "绑定服务不可用，请检查网络连接后重试"
+    } else {
+        "绑定失败，请稍后重试"
+    };
+    err_response(&req.id, "BIND_ERROR", message)
 }
 
 impl IpcHandle {
@@ -287,7 +417,8 @@ impl IpcHandle {
         match req.method.as_str() {
             "status" => self.handle_status(req).await,
             "sessions" => self.handle_sessions(req).await,
-            "bind" => self.handle_bind(req).await,
+            "bind" | "bindStartOrResume" => self.handle_bind(req).await,
+            "bindingStatus" => self.handle_binding_status(req).await,
             "pause" => self.handle_pause(req).await,
             "resume" => self.handle_resume(req).await,
             "new_session" => self.handle_new_session(req).await,
@@ -303,7 +434,7 @@ impl IpcHandle {
             "set_remote_enabled" => self.handle_set_remote_enabled(req).await,
             "get_version" => self.handle_get_version(req).await,
             "redeem" => self.handle_redeem(req).await,
-            "cancel_bind" => self.handle_cancel_bind(req).await,
+            "cancel_bind" | "bindCancel" => self.handle_cancel_bind(req).await,
             _ => err_response(
                 &req.id,
                 "METHOD_NOT_FOUND",
@@ -318,6 +449,7 @@ impl IpcHandle {
     /// hostname, and purchase_url.
     async fn handle_status(&self, req: &IpcRequest) -> String {
         let state = self.state.current().await;
+        let binding = binding_status_json();
         ok_response(
             &req.id,
             serde_json::json!({
@@ -327,8 +459,14 @@ impl IpcHandle {
                 "uptime_secs": self.state.uptime_secs(),
                 "hostname": self.hostname,
                 "purchase_url": self.purchase_url,
+                "binding": binding,
             }),
         )
+    }
+
+    /// `bindingStatus` — durable status for a pairing which can survive the Desktop dialog.
+    async fn handle_binding_status(&self, req: &IpcRequest) -> String {
+        ok_response(&req.id, binding_status_json())
     }
 
     /// `sessions` — list all sessions.
@@ -348,95 +486,279 @@ impl IpcHandle {
         }
     }
 
-    /// `bind` — 两步绑定：先获取绑定码返回给 Desktop，再后台轮询。
+    /// `bind` / `bindStartOrResume` — 创建或恢复双确认绑定。
     async fn handle_bind(&self, req: &IpcRequest) -> String {
         // Validate config BEFORE transitioning state (B3: prevent stuck Binding)
         if self.bind_http_url.is_empty() {
             return err_response(&req.id, "CONFIG_ERROR", "bind_http_url 未配置");
         }
 
-        // Transition to Binding state
-        if let Err(e) = self.state.transition(StateEvent::BindInit).await {
+        // A durable pending pairing always wins over a new request. This protects the
+        // user from consuming another QR code when they merely closed/reopened Desktop.
+        let pending = if let Some(activation) = crate::device::load_pending_activation() {
+            // A durable marker always wins, even after its original pairing
+            // expiry.  We must probe Cloud's idempotent activation path before
+            // considering rollback or issuing another QR code.
+            pending_for_activation(&activation)
+        } else {
+            match crate::device::load_pending_binding() {
+                Some(pending) if !binding_expired(&pending) => pending,
+                Some(_) => {
+                    let _ = crate::device::clear_pending_binding();
+                    match crate::device::bind_init(&self.bind_http_url, &self.machine_id).await {
+                        Ok(pending) => {
+                            if let Err(e) = crate::device::save_pending_binding(&pending) {
+                                let _ =
+                                    crate::device::bind_cancel(&self.bind_http_url, &pending).await;
+                                return err_response(
+                                    &req.id,
+                                    "LOCAL_STORAGE_ERROR",
+                                    &e.to_string(),
+                                );
+                            }
+                            pending
+                        }
+                        Err(e) => return bind_init_error(req, e),
+                    }
+                }
+                None => match crate::device::bind_init(&self.bind_http_url, &self.machine_id).await
+                {
+                    Ok(pending) => {
+                        if let Err(e) = crate::device::save_pending_binding(&pending) {
+                            let _ = crate::device::bind_cancel(&self.bind_http_url, &pending).await;
+                            return err_response(&req.id, "LOCAL_STORAGE_ERROR", &e.to_string());
+                        }
+                        pending
+                    }
+                    Err(e) => return bind_init_error(req, e),
+                },
+            }
+        };
+
+        if let Err(e) = self.transition_to_binding().await {
             return err_response(&req.id, "STATE_ERROR", &e.to_string());
         }
+        self.start_binding_poll(pending.clone()).await;
 
-        // Step 1: 同步获取绑定码
-        let (bind_code, expires_in, confirm_url) =
-            match crate::device::bind_init(&self.bind_http_url, &self.machine_id).await {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!("bind_init 失败: {}", e);
-                    let _ = self.state.transition(StateEvent::BindTimeout).await;
-                    let msg =
-                        if e.to_string().contains("connect") || e.to_string().contains("timeout") {
-                            "绑定服务不可用，请检查网络连接后重试"
-                        } else {
-                            "绑定失败，请稍后重试"
-                        };
-                    return err_response(&req.id, "BIND_ERROR", msg);
-                }
-            };
-
-        // Step 2: 后台轮询绑定结果（B2: generation guard 防止旧任务污染新绑定的状态）
-        let state = self.state.clone();
-        let bind_url = self.bind_http_url.clone();
-        let bind_cancel = CancellationToken::new();
-        let poll_code = bind_code.clone();
-        // Bump generation — any previous task will see a stale generation and skip state transitions
-        let generation = self.bind_generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let bind_gen = self.bind_generation.clone();
-        let wss_trigger = self.wss_trigger.clone();
-
-        // Store (cancel token, generation) so stale cancel requests can't kill new binds
-        {
-            let mut guard = self.bind_cancel.lock().await;
-            // Cancel any previous pending bind
-            if let Some((old_token, _old_gen)) = guard.take() {
-                old_token.cancel();
-            }
-            *guard = Some((bind_cancel.clone(), generation));
-        }
-
-        tokio::spawn(async move {
-            match crate::device::bind_poll(&bind_url, &poll_code, expires_in, bind_cancel).await {
-                Ok(token) => {
-                    // Only apply if this is still the latest bind
-                    if bind_gen.load(Ordering::Relaxed) != generation {
-                        tracing::info!("IPC 绑定结果已过期（有新绑定发起），忽略");
-                        return;
-                    }
-                    tracing::info!("IPC 绑定成功");
-                    if let Err(e) = crate::device::save_device_token(&token) {
-                        tracing::error!("保存 device_token 失败: {}", e);
-                    } else {
-                        tracing::info!("device_token 已持久化到磁盘");
-                    }
-                    let _ = state.transition(StateEvent::BindResult).await;
-                    // 通知主循环启动 WSS 连接
-                    let _ = wss_trigger.send(());
-                }
-                Err(e) => {
-                    // Only apply timeout if this is still the latest bind
-                    if bind_gen.load(Ordering::Relaxed) != generation {
-                        tracing::info!("IPC 绑定超时结果已过期（有新绑定发起），忽略");
-                        return;
-                    }
-                    tracing::error!("绑定轮询失败: {}", e);
-                    let _ = state.transition(StateEvent::BindTimeout).await;
-                }
-            }
-        });
-
-        // 返回绑定码和确认 URL 给 Desktop（Desktop 生成 QR 码展示）
+        let qr_expires_in = remaining_secs(pending.qr_expires_at_ms);
         ok_response(
             &req.id,
             serde_json::json!({
                 "status": "binding_started",
-                "bindCode": bind_code,
-                "expiresIn": expires_in,
-                "confirmUrl": confirm_url
+                "pairingId": pending.pairing_id,
+                "bindCode": pending.approval_code,
+                "expiresIn": qr_expires_in,
+                "pairingExpiresIn": remaining_secs(pending.pairing_expires_at_ms),
+                "confirmUrl": pending.confirm_url,
             }),
         )
+    }
+
+    /// Start exactly one background worker for a durable pairing.
+    async fn start_binding_poll(&self, pending: crate::device::PendingBinding) {
+        {
+            let guard = self.bind_cancel.lock().await;
+            if guard.is_some() {
+                return;
+            }
+        }
+        let state = self.state.clone();
+        let bind_url = self.bind_http_url.clone();
+        let machine_id = self.machine_id.clone();
+        let bind_cancel = CancellationToken::new();
+        let generation = self.bind_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let bind_gen = self.bind_generation.clone();
+        let wss_trigger = self.wss_trigger.clone();
+        let bind_cancel_ref = self.bind_cancel.clone();
+        let initial_phase = match crate::device::load_pending_activation() {
+            Some(activation) if activation.pairing_id == pending.pairing_id => {
+                BindPhase::Activating
+            }
+            _ => BindPhase::WaitingPhone,
+        };
+        {
+            let mut guard = self.bind_cancel.lock().await;
+            if guard.is_some() {
+                return;
+            }
+            *guard = Some(BindingWorker {
+                cancel: bind_cancel.clone(),
+                generation,
+                phase: initial_phase,
+            });
+        }
+        tokio::spawn(async move {
+            let activation = match crate::device::load_pending_activation() {
+                Some(existing) if existing.pairing_id == pending.pairing_id => existing,
+                _ => {
+                    let token = match crate::device::bind_poll(
+                        &bind_url,
+                        &pending,
+                        bind_cancel.clone(),
+                    )
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            if bind_gen.load(Ordering::Relaxed) == generation {
+                                tracing::warn!(pairing_id = %pending.pairing_id, "绑定轮询停止: {}", e);
+                                if !matches!(e, AgentError::Shutdown) {
+                                    let _ = crate::device::clear_pending_binding();
+                                }
+                                let _ = state.transition(StateEvent::BindTimeout).await;
+                                let mut guard = bind_cancel_ref.lock().await;
+                                if guard.as_ref().map(|worker| worker.generation)
+                                    == Some(generation)
+                                {
+                                    *guard = None;
+                                }
+                            }
+                            return;
+                        }
+                    };
+                    if bind_gen.load(Ordering::Relaxed) != generation {
+                        return;
+                    }
+                    // This is the cancellation boundary.  Once we own a
+                    // provisional token, cancellation must not race marker
+                    // persistence or a possibly committed Cloud activate.
+                    {
+                        let mut guard = bind_cancel_ref.lock().await;
+                        let Some(worker) = guard.as_mut() else {
+                            return;
+                        };
+                        if worker.generation != generation || !worker.phase.can_cancel() {
+                            return;
+                        }
+                        worker.phase = BindPhase::SavingCredential;
+                    }
+                    crate::device::PendingActivation {
+                        pairing_id: pending.pairing_id.clone(),
+                        poll_secret: pending.poll_secret.clone(),
+                        machine_id,
+                        device_token: token,
+                        previous_device_token: crate::device::load_device_token(),
+                        pairing_expires_at_ms: pending.pairing_expires_at_ms,
+                    }
+                }
+            };
+            let mut activated = false;
+            // Once this marker exists WSS is hard-blocked.  Do not use the
+            // pairing expiry as a rollback signal: Cloud's idempotent endpoint
+            // first checks MySQL for the same machine/token, so it safely
+            // resolves a lost success response even after Redis has expired.
+            loop {
+                if bind_gen.load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                if !activated {
+                    let saved = crate::device::save_pending_activation(&activation)
+                        .and_then(|_| crate::device::save_device_token(&activation.device_token));
+                    if let Err(e) = saved {
+                        tracing::error!("无法安全保存绑定凭证，将重试: {}", e);
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        continue;
+                    }
+                    {
+                        let mut guard = bind_cancel_ref.lock().await;
+                        if let Some(worker) = guard
+                            .as_mut()
+                            .filter(|worker| worker.generation == generation)
+                        {
+                            worker.phase = BindPhase::Activating;
+                        } else {
+                            return;
+                        }
+                    }
+                    match crate::device::bind_activate(&bind_url, &activation).await {
+                        Ok(_) => {
+                            activated = true;
+                            let mut guard = bind_cancel_ref.lock().await;
+                            if let Some(worker) = guard
+                                .as_mut()
+                                .filter(|worker| worker.generation == generation)
+                            {
+                                worker.phase = BindPhase::Finalizing;
+                            }
+                        }
+                        Err(e) if crate::device::is_terminal_bind_activation_error(&e) => {
+                            // Cloud's terminal response is only accepted after
+                            // its idempotent MySQL lookup.  It therefore proves
+                            // this provisional token was not activated.
+                            tracing::warn!("设备激活被 Cloud 拒绝，不再重试: {}", e);
+                            let _ = crate::device::rollback_unactivated_token(&activation);
+                            let _ = crate::device::clear_pending_activation();
+                            let _ = crate::device::clear_pending_binding();
+                            let _ = state.transition(StateEvent::BindTimeout).await;
+                            let mut guard = bind_cancel_ref.lock().await;
+                            if guard.as_ref().map(|worker| worker.generation) == Some(generation) {
+                                *guard = None;
+                            }
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::warn!("设备激活结果不确定，将保留本地标记重试: {}", e);
+                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                            continue;
+                        }
+                    }
+                }
+
+                // Both cleanup files are part of the activation protocol.  A
+                // failure leaves the activation marker in place and therefore
+                // keeps WSS blocked until the exact recovery can complete.
+                if let Err(e) = crate::device::clear_pending_binding() {
+                    tracing::error!(
+                        "Cloud 已激活设备，但 pending binding 清理失败，将收尾重试: {}",
+                        e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    continue;
+                }
+                if let Err(e) = crate::device::clear_pending_activation() {
+                    tracing::error!(
+                        "Cloud 已激活设备，但 activation marker 清理失败，将收尾重试: {}",
+                        e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    continue;
+                }
+                let _ = state.transition(StateEvent::BindResult).await;
+                let _ = wss_trigger.send(());
+                let mut guard = bind_cancel_ref.lock().await;
+                if guard.as_ref().map(|worker| worker.generation) == Some(generation) {
+                    *guard = None;
+                }
+                return;
+            }
+        });
+    }
+
+    /// Main finishes its startup state transition asynchronously. Wait briefly
+    /// for `Unbound` rather than launching a durable worker from `Starting`,
+    /// which would make a later BindResult transition invalid.
+    async fn transition_to_binding(&self) -> Result<()> {
+        for _ in 0..20 {
+            match self.state.current().await {
+                crate::state::AgentState::Unbound | crate::state::AgentState::Binding => {
+                    self.state.transition(StateEvent::BindInit).await?;
+                    return Ok(());
+                }
+                crate::state::AgentState::Starting => {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                state => {
+                    return Err(AgentError::StateTransition {
+                        from: state.name().to_owned(),
+                        event: "BindInit".into(),
+                    });
+                }
+            }
+        }
+        Err(AgentError::StateTransition {
+            from: "starting".into(),
+            event: "BindInit".into(),
+        })
     }
 
     /// `cancel_bind` — cancel an in-progress device binding.
@@ -447,18 +769,45 @@ impl IpcHandle {
     async fn handle_cancel_bind(&self, req: &IpcRequest) -> String {
         let current_gen = self.bind_generation.load(Ordering::Relaxed);
         let mut guard = self.bind_cancel.lock().await;
-        if let Some((token, gen)) = guard.take() {
+        if let Some(worker) = guard.as_ref() {
+            if !worker.phase.can_cancel() || crate::device::load_pending_activation().is_some() {
+                return ok_response(
+                    &req.id,
+                    serde_json::json!({
+                        "status": "activation_uncertain",
+                        "message": "电脑正在确认正式绑定，暂时不能取消"
+                    }),
+                );
+            }
+        }
+        if let Some(worker) = guard.take() {
             // R1: Only cancel if this is still the latest bind (stale cancel from old dialog)
-            if gen != current_gen {
+            if worker.generation != current_gen {
                 tracing::info!(
                     "取消绑定请求已过期 (gen={}, current={})，忽略",
-                    gen,
+                    worker.generation,
                     current_gen
                 );
                 return ok_response(&req.id, serde_json::json!({"status": "stale_cancel"}));
             }
-            token.cancel();
-            tracing::info!("绑定轮询已取消");
+            worker.cancel.cancel();
+            let pending_to_cancel = crate::device::load_pending_binding();
+            drop(guard);
+            if let Some(pending) = pending_to_cancel {
+                if let Err(e) = crate::device::bind_cancel(&self.bind_http_url, &pending).await {
+                    tracing::warn!("Cloud 绑定取消未确认，将等待 Redis TTL: {}", e);
+                }
+            }
+            // The phase lock proves no marker exists at this point.  Never
+            // delete one here: a worker that has reached credential saving is
+            // activation-uncertain and must finish its idempotent recovery.
+            // The Cloud request awaited above.  If a new dialog started in
+            // that interval, its generation owns the durable files and state.
+            if self.bind_generation.load(Ordering::Relaxed) == current_gen {
+                let _ = crate::device::clear_pending_binding();
+                let _ = self.state.transition(StateEvent::BindTimeout).await;
+            }
+            tracing::info!("绑定申请已显式取消");
             ok_response(&req.id, serde_json::json!({"status": "cancelled"}))
         } else {
             ok_response(&req.id, serde_json::json!({"status": "no_active_bind"}))
@@ -1371,5 +1720,13 @@ mod tests {
         assert_eq!(0x03u8, b'\x03'); // ctrl_c
         assert_eq!(0x04u8, b'\x04'); // ctrl_d
         assert_eq!(0x1au8, b'\x1a'); // ctrl_z
+    }
+
+    #[test]
+    fn binding_phase_allows_cancel_only_before_credential_persistence() {
+        assert!(BindPhase::WaitingPhone.can_cancel());
+        assert!(!BindPhase::SavingCredential.can_cancel());
+        assert!(!BindPhase::Activating.can_cancel());
+        assert!(!BindPhase::Finalizing.can_cancel());
     }
 }

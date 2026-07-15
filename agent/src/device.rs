@@ -7,9 +7,10 @@
 //! 4. 收到 device_token → 原子保存到 ~/.kn/agent/device_token (0600)
 
 use crate::error::{AgentError, Result};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
 // ── Shared HTTP client ─────────────────────────────────────
@@ -56,15 +57,31 @@ impl<T> CloudEnvelope<T> {
     }
 }
 
+/// Translate Cloud's stable business codes into recovery semantics.  Bind
+/// activation is special: a transport/server failure is ambiguous and must
+/// retain the local marker, whereas a rejected authorization/limit request is
+/// safe to stop after the caller has made its idempotent final probe.
+fn classify_bind_activation_error(code: i32, message: impl Into<String>) -> AgentError {
+    let message = message.into();
+    match code {
+        // Common client errors plus all pairing/device business rejections are
+        // final for this exact pairing/token.  429 and 5xx remain retryable.
+        400 | 401 | 403 | 404 | 2001..=2006 | 3001 => AgentError::BindActivationTerminal(message),
+        _ => AgentError::BindActivationRetryable(message),
+    }
+}
+
 // ── API 响应类型（camelCase，与 Cloud Java records 对齐）───
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BindInitData {
-    bind_code: String,
-    expires_in: u64,
-    #[serde(default)]
+    pairing_id: String,
+    approval_code: String,
+    poll_secret: String,
     confirm_url: String,
+    qr_expires_in: u64,
+    pairing_expires_in: u64,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -74,6 +91,39 @@ struct BindResultData {
     device_token: Option<String>,
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    device_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingBinding {
+    pub pairing_id: String,
+    pub approval_code: String,
+    pub poll_secret: String,
+    pub confirm_url: String,
+    pub qr_expires_at_ms: u64,
+    pub pairing_expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingActivation {
+    pub pairing_id: String,
+    pub poll_secret: String,
+    pub machine_id: String,
+    pub device_token: String,
+    /// Token that existed before this unactivated pairing overwrote the normal
+    /// token file. It is restored if activation can never complete.
+    #[serde(default)]
+    pub previous_device_token: Option<String>,
+    pub pairing_expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindActivation {
+    pub status: String,
+    pub device_id: Option<u64>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -85,10 +135,8 @@ struct RedeemResponseData {
 
 // ── Public API ──────────────────────────────────────────────
 
-/// 第一步：向云端请求绑定码。返回 `(bind_code, expires_in_secs, confirm_url)`。
-///
-/// POST /api/v1/device/bind-init
-pub async fn bind_init(http_url: &str, machine_id: &str) -> Result<(String, u64, String)> {
+/// 向云端创建待 Agent 确认的配对申请。凭证只在 Agent 本机落盘后才可激活。
+pub async fn bind_init(http_url: &str, machine_id: &str) -> Result<PendingBinding> {
     tracing::info!("正在初始化设备绑定...");
     let envelope: CloudEnvelope<BindInitData> = http()
         .post(format!("{}/api/v1/device/bind-init", http_url))
@@ -103,79 +151,164 @@ pub async fn bind_init(http_url: &str, machine_id: &str) -> Result<(String, u64,
         .map_err(|e| AgentError::Http(e))?;
 
     let data = envelope.into_data()?;
-    let bind_code = data.bind_code;
-    let expires_in = data.expires_in.min(300); // 最多 5 分钟
-    let confirm_url = data.confirm_url;
+    let now_ms = now_ms()?;
+    let pending = PendingBinding {
+        pairing_id: data.pairing_id,
+        approval_code: data.approval_code,
+        poll_secret: data.poll_secret,
+        confirm_url: data.confirm_url,
+        qr_expires_at_ms: now_ms.saturating_add(data.qr_expires_in.saturating_mul(1_000)),
+        pairing_expires_at_ms: now_ms.saturating_add(data.pairing_expires_in.saturating_mul(1_000)),
+    };
     tracing::info!(
-        "绑定码: {} ({} 秒内有效), confirmUrl: {}",
-        bind_code,
-        expires_in,
-        confirm_url,
+        pairing_id = %pending.pairing_id,
+        qr_expires_in_secs = data.qr_expires_in,
+        "已创建待确认设备绑定申请"
     );
-
-    Ok((bind_code, expires_in, confirm_url))
+    Ok(pending)
 }
 
-/// 第二步：轮询绑定结果，返回 device_token。
-///
-/// GET /api/v1/device/bind-result?code=xxx（每 2s，最多 expires_in 秒）
+/// 轮询手机确认后的临时凭证。二维码过期不会终止轮询；配对申请到期才会结束。
 pub async fn bind_poll(
     http_url: &str,
-    bind_code: &str,
-    expires_in: u64,
+    pending: &PendingBinding,
     shutdown: CancellationToken,
 ) -> Result<String> {
-    let poll_interval = Duration::from_secs(2);
-    let poll_timeout = Duration::from_secs(expires_in);
-
-    let result = tokio::time::timeout(poll_timeout, async {
-        let mut interval = tokio::time::interval(poll_interval);
-        // 跳过第一个立即触发
-        interval.tick().await;
-
-        loop {
-            tokio::select! {
-                _ = shutdown.cancelled() => {
-                    return Err(AgentError::Shutdown);
-                }
-                _ = interval.tick() => {
-                    match http()
-                        .get(format!("{}/api/v1/device/bind-result", http_url))
-                        .query(&[("code", &bind_code)])
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            if resp.status().is_success() {
-                                match resp.json::<CloudEnvelope<BindResultData>>().await {
-                                    Ok(envelope) => {
-                                        if let Ok(data) = envelope.into_data() {
-                                            if let Some(token) = data.device_token {
-                                                if !token.is_empty() {
-                                                    tracing::info!("绑定成功！收到 device_token");
-                                                    return Ok(token);
-                                                }
-                                            }
-                                            // status = "pending" — 继续等待
-                                        }
-                                    }
-                                    Err(_) => continue,
-                                }
-                            }
-                        }
-                        Err(_) => continue,
-                    }
-                }
-            }
+    let mut waited = Duration::ZERO;
+    loop {
+        if now_ms()? >= pending.pairing_expires_at_ms {
+            return Err(AgentError::Timeout("绑定申请已过期".into()));
         }
-    })
-    .await;
-
-    match result {
-        Ok(Ok(token)) => Ok(token),
-        Ok(Err(e)) => Err(e),
-        Err(_elapsed) => Err(AgentError::Timeout("绑定超时".into())),
+        let interval = if waited < Duration::from_secs(300) {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_secs(30)
+        };
+        tokio::select! {
+            _ = shutdown.cancelled() => return Err(AgentError::Shutdown),
+            _ = tokio::time::sleep(interval) => {}
+        }
+        waited = waited.saturating_add(interval);
+        let response = http()
+            .get(format!("{}/api/v1/device/bind-result", http_url))
+            .query(&[
+                ("pairingId", pending.pairing_id.as_str()),
+                ("pollSecret", pending.poll_secret.as_str()),
+            ])
+            .send()
+            .await;
+        let Ok(response) = response else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(envelope) = response.json::<CloudEnvelope<BindResultData>>().await else {
+            continue;
+        };
+        let Ok(data) = envelope.into_data() else {
+            continue;
+        };
+        if let Some(token) = data.device_token.filter(|token| !token.is_empty()) {
+            tracing::info!(pairing_id = %pending.pairing_id, "手机已授权设备绑定，收到待激活凭证");
+            return Ok(token);
+        }
+        match data.status.as_deref() {
+            Some("rejected") | Some("cancelled") | Some("expired") => {
+                return Err(AgentError::Protocol(format!(
+                    "绑定申请已{}",
+                    data.status.unwrap_or_default()
+                )));
+            }
+            _ => {}
+        }
     }
+}
+
+/// Agent 在本地凭证完成原子持久化后，才能调用此接口创建正式设备。
+pub async fn bind_activate(
+    http_url: &str,
+    activation: &PendingActivation,
+) -> Result<BindActivation> {
+    let response = http()
+        .post(format!("{}/api/v1/device/bind-activate", http_url))
+        .json(&serde_json::json!({
+            "pairingId": activation.pairing_id,
+            "pollSecret": activation.poll_secret,
+            "deviceToken": activation.device_token,
+            "machineId": activation.machine_id,
+        }))
+        .send()
+        .await
+        .map_err(|error| AgentError::BindActivationRetryable(error.to_string()))?;
+    let http_status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| AgentError::BindActivationRetryable(error.to_string()))?;
+    let envelope: CloudEnvelope<BindResultData> = serde_json::from_slice(&body).map_err(|_| {
+        AgentError::BindActivationRetryable(format!(
+            "绑定服务返回了无法识别的响应 (HTTP {})",
+            http_status.as_u16()
+        ))
+    })?;
+    if envelope.code != 0 {
+        return Err(classify_bind_activation_error(
+            envelope.code,
+            envelope
+                .message
+                .filter(|message| !message.is_empty())
+                .unwrap_or_else(|| format!("云端错误 code={}", envelope.code)),
+        ));
+    }
+    let data = envelope
+        .data
+        .ok_or_else(|| AgentError::BindActivationRetryable("云端激活响应缺少 data".into()))?;
+    match data.status.as_deref() {
+        Some("active") => Ok(BindActivation {
+            status: "active".into(),
+            device_id: data.device_id,
+        }),
+        Some("rejected") | Some("cancelled") | Some("expired") => Err(
+            AgentError::BindActivationTerminal(data.status.unwrap_or_default()),
+        ),
+        Some(status) => Err(AgentError::BindActivationRetryable(format!(
+            "绑定激活状态尚未完成: {status}"
+        ))),
+        None => Err(AgentError::BindActivationRetryable(
+            "绑定激活响应缺少 status".into(),
+        )),
+    }
+}
+
+pub fn is_terminal_bind_activation_error(error: &AgentError) -> bool {
+    matches!(error, AgentError::BindActivationTerminal(_))
+}
+
+/// 显式取消待确认申请。关闭桌面弹窗不会调用它。
+pub async fn bind_cancel(http_url: &str, pending: &PendingBinding) -> Result<()> {
+    let envelope: CloudEnvelope<serde_json::Value> = http()
+        .post(format!("{}/api/v1/device/bind-cancel", http_url))
+        .json(&serde_json::json!({
+            "pairingId": pending.pairing_id,
+            "pollSecret": pending.poll_secret,
+        }))
+        .send()
+        .await
+        .map_err(AgentError::Http)?
+        .error_for_status()
+        .map_err(AgentError::Http)?
+        .json()
+        .await
+        .map_err(AgentError::Http)?;
+    if envelope.code != 0 {
+        return Err(AgentError::Protocol(
+            envelope
+                .message
+                .unwrap_or_else(|| "Cloud 拒绝取消绑定".into()),
+        ));
+    }
+    Ok(())
 }
 
 /// 执行完整设备绑定流程（bind_init → bind_poll → save）。返回 device_token。
@@ -188,9 +321,22 @@ pub async fn bind_device(
     machine_id: &str,
     shutdown: CancellationToken,
 ) -> Result<String> {
-    let (bind_code, expires_in, _confirm_url) = bind_init(http_url, machine_id).await?;
-    let token = bind_poll(http_url, &bind_code, expires_in, shutdown).await?;
+    let pending = bind_init(http_url, machine_id).await?;
+    save_pending_binding(&pending)?;
+    let token = bind_poll(http_url, &pending, shutdown).await?;
+    let activation = PendingActivation {
+        pairing_id: pending.pairing_id,
+        poll_secret: pending.poll_secret,
+        machine_id: machine_id.to_owned(),
+        device_token: token.clone(),
+        previous_device_token: load_device_token(),
+        pairing_expires_at_ms: pending.pairing_expires_at_ms,
+    };
+    save_pending_activation(&activation)?;
     save_device_token(&token)?;
+    bind_activate(http_url, &activation).await?;
+    clear_pending_activation()?;
+    clear_pending_binding()?;
     Ok(token)
 }
 
@@ -269,35 +415,140 @@ fn device_token_path() -> PathBuf {
         .join("device_token")
 }
 
-/// 原子保存 device_token（tmp → fsync → rename，权限 0600）。
-pub(crate) fn save_device_token(token: &str) -> Result<()> {
-    let path = device_token_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| AgentError::Io(e))?;
+pub(crate) fn pending_binding_path() -> PathBuf {
+    kn_common::path::config_dir()
+        .join("agent")
+        .join("pending_binding.json")
+}
+
+pub(crate) fn pending_activation_path() -> PathBuf {
+    kn_common::path::config_dir()
+        .join("agent")
+        .join("pending_activation.json")
+}
+
+pub fn load_pending_binding() -> Option<PendingBinding> {
+    read_secure_json(&pending_binding_path())
+}
+
+pub fn save_pending_binding(pending: &PendingBinding) -> Result<()> {
+    write_secure_json(&pending_binding_path(), pending)
+}
+
+pub fn clear_pending_binding() -> Result<()> {
+    clear_secure_file(&pending_binding_path())
+}
+
+pub fn load_pending_activation() -> Option<PendingActivation> {
+    read_secure_json(&pending_activation_path())
+}
+
+pub fn save_pending_activation(pending: &PendingActivation) -> Result<()> {
+    write_secure_json(&pending_activation_path(), pending)
+}
+
+pub fn clear_pending_activation() -> Result<()> {
+    clear_secure_file(&pending_activation_path())
+}
+
+/// Undo the local token promotion only when it belongs to an unactivated pairing.
+/// An existing formal token is restored verbatim; a new token is removed by exact
+/// value match so a concurrently replaced token is never deleted.
+pub fn rollback_unactivated_token(activation: &PendingActivation) -> Result<()> {
+    if let Some(previous) = activation.previous_device_token.as_deref() {
+        return save_device_token(previous);
     }
+    let path = device_token_path();
+    let current = std::fs::read_to_string(&path).ok();
+    if current.as_deref().map(str::trim) != Some(activation.device_token.as_str()) {
+        return Ok(());
+    }
+    let deleting = path.with_extension("unactivated");
+    std::fs::rename(&path, &deleting).map_err(AgentError::Io)?;
+    std::fs::remove_file(&deleting).map_err(AgentError::Io)?;
+    sync_parent_directory(&path)
+}
 
+/// The WSS lifecycle must never use a token that has not been activated by Cloud.
+pub fn wss_is_blocked_by_pending_activation() -> bool {
+    pending_activation_path().exists()
+}
+
+fn read_secure_json<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Option<T> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+fn write_secure_json<T: serde::Serialize>(path: &PathBuf, value: &T) -> Result<()> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|e| AgentError::Protocol(format!("绑定状态序列化失败: {e}")))?;
+    write_secure_atomic(path, &bytes)
+}
+
+fn clear_secure_file(path: &PathBuf) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            sync_parent_directory(path)?;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(AgentError::Io(e)),
+    }
+}
+
+fn write_secure_atomic(path: &PathBuf, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AgentError::Protocol("绑定状态缺少父目录".into()))?;
+    std::fs::create_dir_all(parent).map_err(AgentError::Io)?;
     let tmp = path.with_extension("tmp");
-
-    // 写入临时文件
-    std::fs::write(&tmp, token).map_err(|e| AgentError::Io(e))?;
-
-    // 设置权限 0600
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&tmp)
+        .map_err(AgentError::Io)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).ok();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(AgentError::Io)?;
     }
-
-    // fsync
-    if let Ok(f) = std::fs::File::open(&tmp) {
-        let _ = f.sync_all();
-    }
-
-    // 原子 rename。失败时清理临时文件（敏感凭据不应残留）
-    if let Err(e) = std::fs::rename(&tmp, &path) {
+    file.write_all(bytes).map_err(AgentError::Io)?;
+    file.sync_all().map_err(AgentError::Io)?;
+    drop(file);
+    if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(AgentError::Io(e));
     }
+    sync_parent_directory(path)
+}
+
+fn sync_parent_directory(path: &PathBuf) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| AgentError::Protocol("绑定状态缺少父目录".into()))?;
+        std::fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(AgentError::Io)?;
+    }
+    Ok(())
+}
+
+fn now_ms() -> Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .map_err(|e| AgentError::Protocol(format!("系统时间异常: {e}")))
+}
+
+/// 原子保存 device_token（tmp → fsync → rename，权限 0600）。
+pub(crate) fn save_device_token(token: &str) -> Result<()> {
+    let path = device_token_path();
+    write_secure_atomic(&path, token.as_bytes())?;
 
     tracing::info!("device_token 已保存到 {}", path.display());
     Ok(())
@@ -430,5 +681,80 @@ pub(crate) mod tests {
 
         restore_kn_home(prev);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pending_binding_round_trips_without_exposing_the_poll_secret_in_the_filename() {
+        let _guard = KN_HOME_MUTEX.lock().unwrap();
+        let prev = save_kn_home();
+        let dir =
+            std::env::temp_dir().join(format!("kn-test-pending-binding-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("KN_HOME", dir.to_str().unwrap());
+
+        let pending = PendingBinding {
+            pairing_id: "pair_123".into(),
+            approval_code: "123456".into(),
+            poll_secret: "secret-not-in-a-path".into(),
+            confirm_url: "https://example.test/confirm".into(),
+            qr_expires_at_ms: 100,
+            pairing_expires_at_ms: 200,
+        };
+        save_pending_binding(&pending).unwrap();
+
+        assert_eq!(load_pending_binding().unwrap(), pending);
+        assert!(!pending_binding_path()
+            .display()
+            .to_string()
+            .contains(&pending.poll_secret));
+
+        restore_kn_home(prev);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pending_activation_keeps_token_until_activation_is_acknowledged() {
+        let _guard = KN_HOME_MUTEX.lock().unwrap();
+        let prev = save_kn_home();
+        let dir =
+            std::env::temp_dir().join(format!("kn-test-pending-activation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("KN_HOME", dir.to_str().unwrap());
+
+        let activation = PendingActivation {
+            pairing_id: "pair_123".into(),
+            poll_secret: "poll-secret".into(),
+            machine_id: "machine_123".into(),
+            device_token: "device-token".into(),
+            previous_device_token: None,
+            pairing_expires_at_ms: 200,
+        };
+        save_pending_activation(&activation).unwrap();
+        assert!(wss_is_blocked_by_pending_activation());
+        assert_eq!(load_pending_activation().unwrap(), activation);
+
+        clear_pending_activation().unwrap();
+        assert!(!wss_is_blocked_by_pending_activation());
+
+        restore_kn_home(prev);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn activation_business_errors_distinguish_terminal_from_retryable() {
+        assert!(matches!(
+            classify_bind_activation_error(2002, "设备数已达上限"),
+            AgentError::BindActivationTerminal(_)
+        ));
+        assert!(matches!(
+            classify_bind_activation_error(2005, "设备指纹不匹配"),
+            AgentError::BindActivationTerminal(_)
+        ));
+        assert!(matches!(
+            classify_bind_activation_error(500, "服务暂不可用"),
+            AgentError::BindActivationRetryable(_)
+        ));
     }
 }

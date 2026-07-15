@@ -213,6 +213,7 @@ describe("useAgent", () => {
 
   it.each([
     ["connected", true],
+    ["bound_offline", true],
     ["idle", true],
     ["running", true],
     ["reconnecting", true],
@@ -260,7 +261,7 @@ describe("useAgent", () => {
 
   // ── cancelBind ──────────────────────────────────────────────
 
-  it("cancelBind calls agent_ipc with cancel_bind method", async () => {
+  it("cancelBind calls the explicit bindCancel IPC method", async () => {
     mockInvoke.mockResolvedValue({ status: "cancelled" });
 
     const { result } = renderHook(() => useAgent());
@@ -269,7 +270,7 @@ describe("useAgent", () => {
       await result.current.cancelBind();
     });
 
-    expect(mockInvoke).toHaveBeenCalledWith("agent_ipc", { method: "cancel_bind" });
+    expect(mockInvoke).toHaveBeenCalledWith("agent_ipc", { method: "bindCancel" });
   });
 
   it("cancelBind does not throw on failure", async () => {

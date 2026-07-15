@@ -13,6 +13,17 @@ pub enum AgentError {
     #[error("协议错误: {0}")]
     Protocol(String),
 
+    /// Cloud has definitively rejected a pending bind activation. Retrying the
+    /// exact request cannot make it succeed (for example the device limit or
+    /// a machine/token mismatch), so the local recovery worker must stop.
+    #[error("绑定激活被拒绝: {0}")]
+    BindActivationTerminal(String),
+
+    /// Cloud or the network did not give a final activation result. The
+    /// pending marker must be preserved and the idempotent request retried.
+    #[error("绑定激活待重试: {0}")]
+    BindActivationRetryable(String),
+
     #[error("HTTP 错误: {0}")]
     Http(#[from] reqwest::Error),
 

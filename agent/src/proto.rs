@@ -50,6 +50,8 @@ pub struct WsEnvelope {
 pub enum AgentIncoming {
     /// 心跳响应
     Pong { ts: i64 },
+    /// Cloud 已完成对移动端的交付，Agent 可删除本地待确认结果。
+    ProjectDeliveryAck { request_id: String },
     /// WSS 连接确认
     Connected {
         ws_session_id: String,
@@ -108,6 +110,7 @@ pub enum AgentIncoming {
         project_key: String,
         device_id: u64,
         project_path: String,
+        request_id: Option<String>,
     },
     ProjectChangeFileDiff {
         project_key: String,
@@ -119,6 +122,7 @@ pub enum AgentIncoming {
         project_key: String,
         device_id: u64,
         project_path: String,
+        request_id: Option<String>,
     },
     ProjectGitCommit {
         project_key: String,
@@ -126,21 +130,25 @@ pub enum AgentIncoming {
         project_path: String,
         message: String,
         paths: Vec<String>,
+        request_id: Option<String>,
     },
     ProjectGitPush {
         project_key: String,
         device_id: u64,
         project_path: String,
+        request_id: Option<String>,
     },
     ProjectPrStatus {
         project_key: String,
         device_id: u64,
         project_path: String,
+        request_id: Option<String>,
     },
     ProjectPrDetails {
         project_key: String,
         device_id: u64,
         project_path: String,
+        request_id: Option<String>,
     },
     ProjectPrCreate {
         project_key: String,
@@ -149,12 +157,14 @@ pub enum AgentIncoming {
         base: String,
         title: String,
         body: String,
+        request_id: Option<String>,
     },
     ProjectVerifyPlan {
         project_key: String,
         device_id: u64,
         project_path: String,
         environment: String,
+        request_id: Option<String>,
     },
     ProjectVerifyChanges {
         project_key: String,
@@ -173,6 +183,7 @@ pub enum AgentIncoming {
         project_key: String,
         device_id: u64,
         project_path: String,
+        request_id: Option<String>,
     },
     ProjectVerifyLogWindow {
         project_key: String,
@@ -220,6 +231,13 @@ fn parse_project_scope(
     Ok((project_key, device_id, project_path))
 }
 
+fn parse_delivery_request_id(data: &serde_json::Value) -> Option<String> {
+    data.get("requestId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
 impl WsEnvelope {
     /// 将原始信封解析为类型化的 AgentIncoming。
     pub fn parse(&self) -> Result<AgentIncoming, String> {
@@ -258,6 +276,21 @@ impl WsEnvelope {
                     node_id,
                     protocol_version,
                 })
+            }
+            "project_delivery_ack" => {
+                let request_id = self
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("requestId"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if request_id.is_empty() {
+                    Err("project_delivery_ack 缺少 requestId".to_string())
+                } else {
+                    Ok(AgentIncoming::ProjectDeliveryAck { request_id })
+                }
             }
             "start_session" => {
                 let data = self
@@ -398,6 +431,7 @@ impl WsEnvelope {
                     project_key,
                     device_id,
                     project_path,
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_change_file_diff" => {
@@ -429,6 +463,7 @@ impl WsEnvelope {
                     project_key,
                     device_id,
                     project_path,
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_git_commit" => {
@@ -454,6 +489,7 @@ impl WsEnvelope {
                     project_path,
                     message,
                     paths,
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_git_push" => {
@@ -467,6 +503,7 @@ impl WsEnvelope {
                     project_key,
                     device_id,
                     project_path,
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_pr_status" => {
@@ -480,6 +517,7 @@ impl WsEnvelope {
                     project_key,
                     device_id,
                     project_path,
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_pr_details" => {
@@ -493,6 +531,7 @@ impl WsEnvelope {
                     project_key,
                     device_id,
                     project_path,
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_pr_create" => {
@@ -526,6 +565,7 @@ impl WsEnvelope {
                     base,
                     title,
                     body,
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_verify_plan" => {
@@ -543,6 +583,7 @@ impl WsEnvelope {
                         .as_str()
                         .unwrap_or("default")
                         .to_string(),
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_verify_changes" => {
@@ -592,6 +633,7 @@ impl WsEnvelope {
                     project_key,
                     device_id,
                     project_path,
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_verify_log_window" => {
@@ -838,6 +880,21 @@ impl WsMessageBuilder {
             "data": data
         })
         .to_string()
+    }
+
+    /// 交付 Git/PR 请求的结果。requestId 仅在请求携带时回传，保证旧客户端兼容。
+    pub fn project_delivery_result(
+        msg_type: &str,
+        project_key: &str,
+        device_id: u64,
+        project_path: &str,
+        request_id: Option<&str>,
+        mut data: serde_json::Value,
+    ) -> String {
+        if let Some(request_id) = request_id {
+            data["requestId"] = serde_json::Value::String(request_id.to_string());
+        }
+        Self::project_result(msg_type, project_key, device_id, project_path, data)
     }
 }
 
@@ -1161,6 +1218,7 @@ mod tests {
                 device_id,
                 project_path,
                 environment,
+                ..
             } => {
                 assert_eq!(project_key, "42:/repo");
                 assert_eq!(device_id, 42);

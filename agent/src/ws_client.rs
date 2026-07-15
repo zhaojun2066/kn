@@ -197,8 +197,12 @@ async fn connect_and_run(
 
     tracing::info!("WSS 已连接");
 
-    // 重连成功后切回 Connected 状态（解决重连后前端一直显示"重新连接中"）
-    if state.current().await == AgentState::Reconnecting {
+    // Only the completed WebSocket handshake is allowed to announce online.
+    // A newly activated formal device remains BoundOffline until this point.
+    if matches!(
+        state.current().await,
+        AgentState::Reconnecting | AgentState::BoundOffline
+    ) {
         let _ = state
             .transition(StateEvent::WsConnected { has_token: true })
             .await;

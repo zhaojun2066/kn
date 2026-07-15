@@ -69,7 +69,7 @@ describe("BindDialog", () => {
     expect(cancelBind).not.toHaveBeenCalled();
 
     unmount();
-    await waitFor(() => expect(cancelBind).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(cancelBind).not.toHaveBeenCalled());
   });
 
   it("renders binding spinner initially", async () => {
@@ -141,6 +141,39 @@ describe("BindDialog", () => {
     await waitFor(() => {
       expect(screen.getByText("绑定成功")).toBeTruthy();
     }, { timeout: 3000 });
+  });
+
+  it("keeps a formally bound but offline device in the connecting state", async () => {
+    const bindDevice = vi.fn().mockResolvedValue({
+      ok: true,
+      bindCode: "ABC123",
+      expiresIn: 120,
+      confirmUrl: "https://shark.kim/bind",
+    });
+    const { rerender } = render(
+      <BindDialog onClose={vi.fn()} agent={mockAgentState({ bindDevice, fetchStatus: vi.fn() })} />,
+    );
+
+    await waitFor(() => expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy());
+    rerender(
+      <BindDialog
+        onClose={vi.fn()}
+        agent={mockAgentState({
+          bindDevice: vi.fn(),
+          fetchStatus: vi.fn(),
+          agentStatus: { state: "bound_offline", crash_count: 0, safe_mode: false },
+          isRunning: true,
+          isBound: true,
+          isConnected: false,
+          statusIcon: "reconnecting",
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("正式绑定完成，正在连接")).toBeTruthy();
+      expect(screen.queryByText("绑定成功")).toBeNull();
+    });
   });
 
   it("shows error on bind failure", async () => {
@@ -329,7 +362,7 @@ describe("BindDialog with fake timers", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("shows timeout after 300 seconds with no status change", async () => {
+  it("keeps the Agent pairing alive after the QR code expires", async () => {
     const bindDevice = vi.fn().mockResolvedValue({
       ok: true,
       bindCode: "ABC123",
@@ -351,7 +384,30 @@ describe("BindDialog with fake timers", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("绑定超时")).toBeTruthy();
+      expect(screen.getByText("二维码已过期")).toBeTruthy();
+      expect(screen.getByText("取消本次绑定")).toBeTruthy();
+    });
+  });
+
+  it("cancels the expired pairing before requesting a fresh QR code", async () => {
+    const bindDevice = vi.fn()
+      .mockResolvedValueOnce({ ok: true, bindCode: "OLD001", expiresIn: 1, confirmUrl: "https://shark.kim/bind" })
+      .mockResolvedValueOnce({ ok: true, bindCode: "NEW002", expiresIn: 120, confirmUrl: "https://shark.kim/bind" });
+    const cancelBind = vi.fn().mockResolvedValue({ ok: true, status: "cancelled" });
+
+    render(<BindDialog onClose={vi.fn()} agent={mockAgentState({ bindDevice, cancelBind, fetchStatus: vi.fn() })} />);
+    await settle();
+
+    await act(async () => {
+      vi.advanceTimersByTime(11_100);
+    });
+    await waitFor(() => expect(screen.getByText("二维码已过期")).toBeTruthy());
+
+    fireEvent.click(screen.getByText("重新生成二维码"));
+    await waitFor(() => {
+      expect(cancelBind).toHaveBeenCalledTimes(1);
+      expect(bindDevice).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy();
     });
   });
 });

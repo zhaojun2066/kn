@@ -6,6 +6,7 @@ export type AgentStateName =
   | "starting"
   | "unbound"
   | "binding"
+  | "bound_offline"
   | "connected"
   | "idle"
   | "running"
@@ -18,6 +19,16 @@ export interface AgentStatus {
   uptime_secs?: number;
   hostname?: string;
   purchase_url?: string;
+  binding?: AgentBindingStatus;
+}
+
+export interface AgentBindingStatus {
+  state: "idle" | "waitingAgent" | "activationUncertain" | "activating" | "expired";
+  pairingId?: string;
+  bindCode?: string;
+  confirmUrl?: string;
+  expiresIn?: number;
+  pairingExpiresIn?: number;
 }
 
 export interface AgentSession {
@@ -45,6 +56,14 @@ export interface BindResult {
   bindCode?: string;
   expiresIn?: number;
   confirmUrl?: string;
+  pairingId?: string;
+  pairingExpiresIn?: number;
+  error?: string;
+}
+
+export interface BindCancelResult {
+  ok: boolean;
+  status?: string;
   error?: string;
 }
 
@@ -174,11 +193,18 @@ export function useAgent() {
 
   const bindDevice = useCallback(async (): Promise<BindResult> => {
     try {
-      const result = await invoke<{ status: string; bindCode: string; expiresIn: number; confirmUrl: string }>(
+      const result = await invoke<{ status: string; pairingId: string; bindCode: string; expiresIn: number; pairingExpiresIn: number; confirmUrl: string }>(
         "agent_ipc",
-        { method: "bind" },
+        { method: "bindStartOrResume" },
       );
-      return { ok: true, bindCode: result.bindCode, expiresIn: result.expiresIn, confirmUrl: result.confirmUrl };
+      return {
+        ok: true,
+        pairingId: result.pairingId,
+        bindCode: result.bindCode,
+        expiresIn: result.expiresIn,
+        pairingExpiresIn: result.pairingExpiresIn,
+        confirmUrl: result.confirmUrl,
+      };
     } catch (e: unknown) {
       const msg = String(e);
       setError(msg);
@@ -186,11 +212,15 @@ export function useAgent() {
     }
   }, []);
 
-  const cancelBind = useCallback(async () => {
+  const cancelBind = useCallback(async (): Promise<BindCancelResult> => {
     try {
-      await invoke("agent_ipc", { method: "cancel_bind" });
-    } catch {
-      // Best-effort: agent might not be running
+      const result = await invoke<{ status?: string }>("agent_ipc", { method: "bindCancel" });
+      if (result.status === "activation_uncertain") {
+        return { ok: false, status: result.status, error: "电脑正在确认正式绑定，暂时不能重新生成二维码" };
+      }
+      return { ok: true, status: result.status };
+    } catch (e: unknown) {
+      return { ok: false, error: String(e) };
     }
   }, []);
 
@@ -208,7 +238,7 @@ export function useAgent() {
   }, []);
 
   const isRunning = agentStatus !== null;
-  const isBound = agentStatus !== null && ["connected", "idle", "running", "reconnecting"].includes(agentStatus.state);
+  const isBound = agentStatus !== null && ["bound_offline", "connected", "idle", "running", "reconnecting"].includes(agentStatus.state);
   const isBinding = agentStatus?.state === "binding";
   const isConnected =
     agentStatus?.state === "connected" ||
@@ -224,7 +254,7 @@ export function useAgent() {
         ? "binding"
         : isConnected
           ? "connected"
-          : agentStatus!.state === "reconnecting"
+          : agentStatus!.state === "reconnecting" || agentStatus!.state === "bound_offline"
             ? "reconnecting"
             : "starting";
 
