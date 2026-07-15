@@ -1,6 +1,6 @@
 /// <reference types="vitest" />
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { BindDialog } from "../BindDialog";
 import type { AgentState, AgentStatus } from "../../hooks/useAgent";
@@ -45,6 +45,33 @@ afterEach(() => {
 });
 
 describe("BindDialog", () => {
+  it("starts one binding attempt across the StrictMode effect replay", async () => {
+    const bindDevice = vi.fn().mockResolvedValue({
+      ok: true,
+      bindCode: "ABC123",
+      expiresIn: 120,
+      confirmUrl: "https://shark.kim/bind",
+    });
+    const cancelBind = vi.fn();
+    const agent = mockAgentState({ bindDevice, cancelBind, fetchStatus: vi.fn() });
+
+    const { unmount } = render(
+      <React.StrictMode>
+        <BindDialog onClose={vi.fn()} agent={agent} />
+      </React.StrictMode>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy();
+    });
+
+    expect(bindDevice).toHaveBeenCalledTimes(1);
+    expect(cancelBind).not.toHaveBeenCalled();
+
+    unmount();
+    await waitFor(() => expect(cancelBind).toHaveBeenCalledTimes(1));
+  });
+
   it("renders binding spinner initially", async () => {
     const bindDevice = vi.fn().mockImplementation(() => new Promise(() => {}));
     const agent = mockAgentState({ bindDevice });
@@ -129,6 +156,26 @@ describe("BindDialog", () => {
       expect(screen.getByText("绑定失败")).toBeTruthy();
       expect(screen.getByText("网络连接失败")).toBeTruthy();
     }, { timeout: 3000 });
+  });
+
+  it("starts a fresh binding attempt after a failed attempt is retried", async () => {
+    const bindDevice = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: "网络连接失败" })
+      .mockResolvedValueOnce({
+        ok: true,
+        bindCode: "RETRY01",
+        expiresIn: 120,
+        confirmUrl: "https://shark.kim/bind",
+      });
+    const agent = mockAgentState({ bindDevice, fetchStatus: vi.fn() });
+
+    render(<BindDialog onClose={vi.fn()} agent={agent} />);
+
+    await waitFor(() => expect(screen.getByText("绑定失败")).toBeTruthy());
+    fireEvent.click(screen.getByText("重试"));
+
+    await waitFor(() => expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy());
+    expect(bindDevice).toHaveBeenCalledTimes(2);
   });
 
   it("shows close button in error phase", async () => {

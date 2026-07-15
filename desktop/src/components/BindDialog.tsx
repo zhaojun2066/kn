@@ -26,7 +26,10 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mountedRef = useRef(true);
+  const deferredCancelRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const effectGenerationRef = useRef(0);
+  const activeBindRequestRef = useRef<ReturnType<AgentState["bindDevice"]> | null>(null);
+  const shouldCancelBindRef = useRef(false);
 
   const cleanup = useCallback(() => {
     if (pollRef.current) {
@@ -42,6 +45,16 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
       countdownRef.current = null;
     }
   }, []);
+
+  const discardActiveBindRequest = useCallback(() => {
+    if (deferredCancelRef.current) {
+      clearTimeout(deferredCancelRef.current);
+      deferredCancelRef.current = null;
+    }
+    activeBindRequestRef.current = null;
+    shouldCancelBindRef.current = false;
+    cancelBind();
+  }, [cancelBind]);
 
   // Pause background agent polling while bind dialog is open to avoid
   // duplicate IPC "status" calls (BindDialog does its own 2s polling).
@@ -66,12 +79,21 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
   }, [bindCode, confirmUrl]);
 
   useEffect(() => {
-    mountedRef.current = true;
+    const generation = ++effectGenerationRef.current;
+    if (deferredCancelRef.current) {
+      clearTimeout(deferredCancelRef.current);
+      deferredCancelRef.current = null;
+    }
 
     const startBind = async () => {
-      // Phase 1: Send bind request
-      const result = await bindDevice();
-      if (!mountedRef.current) return;
+      // React StrictMode replays effects in development. Keep the in-flight IPC
+      // request so the replay reattaches to the same bind code instead of
+      // starting another request that cancels the first Agent-side poll.
+      const request = activeBindRequestRef.current ?? bindDevice();
+      activeBindRequestRef.current = request;
+      shouldCancelBindRef.current = true;
+      const result = await request;
+      if (effectGenerationRef.current !== generation) return;
 
       if (!result.ok) {
         setPhase("error");
@@ -104,18 +126,18 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
 
       // Hard timeout = server TTL + 10s grace (B4: countdown matches timeout, B7: grace window for refresh)
       timeoutRef.current = setTimeout(() => {
-        if (!mountedRef.current) return;
+        if (effectGenerationRef.current !== generation) return;
         cleanup();
-        cancelBind();
+        discardActiveBindRequest();
         setPhase("timeout");
       }, ttl * 1000 + TIMEOUT_GRACE_MS);
 
       // Recursive polling — each call waits for the previous to finish,
       // preventing overlapping requests if the network is slow.
       const poll = async () => {
-        if (!mountedRef.current) return;
+        if (effectGenerationRef.current !== generation) return;
         await fetchStatus();
-        if (mountedRef.current) {
+        if (effectGenerationRef.current === generation) {
           pollRef.current = setTimeout(poll, POLL_INTERVAL_MS);
         }
       };
@@ -125,10 +147,18 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
     startBind();
 
     return () => {
-      mountedRef.current = false;
       cleanup();
-      // Cancel backend polling when dialog is dismissed
-      cancelBind();
+      // Delay cancellation by one task: StrictMode's simulated cleanup is
+      // immediately followed by another setup, which clears this timer. A real
+      // dialog dismissal has no following setup and still cancels Agent polling.
+      if (shouldCancelBindRef.current) {
+        deferredCancelRef.current = setTimeout(() => {
+          if (effectGenerationRef.current !== generation || !shouldCancelBindRef.current) return;
+          activeBindRequestRef.current = null;
+          shouldCancelBindRef.current = false;
+          cancelBind();
+        }, 0);
+      }
     };
   }, [retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -138,6 +168,8 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
       const status = agent.agentStatus.state;
       if (status === "connected" || status === "idle" || status === "running") {
         cleanup();
+        activeBindRequestRef.current = null;
+        shouldCancelBindRef.current = false;
         setPhase("success");
       }
     }
@@ -218,7 +250,7 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
               <button
                 onClick={() => {
                   cleanup();
-                  cancelBind();
+                  discardActiveBindRequest();
                   setPhase("binding");
                   setBindCode(null);
                   setConfirmUrl(null);
@@ -265,6 +297,7 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
                 </button>
                 <button
                   onClick={() => {
+                    discardActiveBindRequest();
                     setPhase("binding");
                     setBindCode(null);
                     setConfirmUrl(null);
@@ -297,6 +330,7 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
                 </button>
                 <button
                   onClick={() => {
+                    discardActiveBindRequest();
                     setPhase("binding");
                     setErrorMsg(null);
                     setBindCode(null);
