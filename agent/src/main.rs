@@ -833,6 +833,7 @@ fn is_project_delivery_operation(message: &proto::AgentIncoming) -> bool {
     matches!(
         message,
         proto::AgentIncoming::ProjectGitStatus { .. }
+            | proto::AgentIncoming::ProjectListStatus { .. }
             | proto::AgentIncoming::ProjectGitCommit { .. }
             | proto::AgentIncoming::ProjectGitPush { .. }
             | proto::AgentIncoming::ProjectPrStatus { .. }
@@ -1557,6 +1558,45 @@ async fn handle_incoming(
             let _ =
                 send_project_delivery_message(&outgoing, msg, "project_git_status_result").await;
         }
+        proto::AgentIncoming::ProjectListStatus {
+            project_key: _project_key,
+            device_id,
+            project_path,
+            request_id,
+        } => {
+            let project_key = canonical_project_key(device_id, &project_path);
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let last_verification =
+                    crate::session::verify_changes::last_verification(&project_key);
+                // 与提交、推送共用项目级 gate，避免读取 index/refs 的中间态或撞上 index.lock。
+                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let _operation = project_delivery_gate.lock(&operation_project_key).await;
+                crate::session::project_list_status::read(
+                    &project_key,
+                    &registered_path,
+                    last_verification,
+                )
+                .await
+            } else {
+                serde_json::json!({
+                    "projectKey": &project_key,
+                    "status": "pathDenied",
+                    "git": {"state": "unavailable", "branch": null, "hasUpstream": false, "ahead": 0, "behind": 0},
+                    "lastVerification": null,
+                    "message": "项目未登记"
+                })
+            };
+            let msg = proto::WsMessageBuilder::project_delivery_result(
+                "project_list_status_result",
+                &project_key,
+                device_id,
+                &project_path,
+                request_id.as_deref(),
+                data,
+            );
+            let _ =
+                send_project_delivery_message(&outgoing, msg, "project_list_status_result").await;
+        }
         proto::AgentIncoming::ProjectGitCommit {
             project_key: _project_key,
             device_id,
@@ -1900,6 +1940,7 @@ async fn handle_incoming(
             project_key: _project_key,
             device_id,
             project_path,
+            request_id,
             run_id,
             stage,
             center_line,
@@ -1932,11 +1973,12 @@ async fn handle_incoming(
                     "message": "阶段日志不存在"
                 })
             };
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_verify_log_window_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
             if let Some(tx) = outgoing.lock().await.as_ref() {
@@ -1947,6 +1989,7 @@ async fn handle_incoming(
             project_key: _project_key,
             device_id,
             project_path,
+            request_id,
             run_id,
             stages,
             rules_version,
@@ -1973,11 +2016,12 @@ async fn handle_incoming(
                 &matchers,
                 limit,
             );
-            let msg = proto::WsMessageBuilder::project_result(
+            let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_verify_log_issues_result",
                 &project_key,
                 device_id,
                 &project_path,
+                request_id.as_deref(),
                 data,
             );
             if let Some(tx) = outgoing.lock().await.as_ref() {

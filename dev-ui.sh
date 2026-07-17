@@ -2,10 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KN_HOME_DIR="${KN_HOME:-$HOME/.kn}"
-AGENT_DST="${KN_AGENT_DST:-$KN_HOME_DIR/agent/kn-agent}"
+DEV_KN_HOME="${KN_DEV_HOME:-$HOME/.kn-dev}"
+AGENT_DST="${KN_AGENT_DST:-$DEV_KN_HOME/agent/kn-agent}"
 AGENT_SRC="$ROOT_DIR/target/debug/kn-agent"
-IPC_SOCK="$KN_HOME_DIR/agent/ipc.sock"
+AGENT_DIR="$(dirname "$AGENT_DST")"
+IPC_SOCK="$AGENT_DIR/ipc.sock"
 
 agent_ipc_ok() {
   python3 -c 'import socket,sys
@@ -38,4 +39,4 @@ if ! agent_ipc_ok; then
 fi
 
 cd "$ROOT_DIR/desktop"
-KN_NO_AGENT_RESTART=true npm run tauri dev
+KN_HOME="$DEV_KN_HOME" KN_NO_AGENT_RESTART=true npm run tauri dev

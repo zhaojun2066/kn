@@ -185,10 +185,18 @@ pub enum AgentIncoming {
         project_path: String,
         request_id: Option<String>,
     },
+    /// 项目列表的轻量本地 Git 与最近验证摘要。
+    ProjectListStatus {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+    },
     ProjectVerifyLogWindow {
         project_key: String,
         device_id: u64,
         project_path: String,
+        request_id: Option<String>,
         run_id: String,
         stage: String,
         center_line: usize,
@@ -199,6 +207,7 @@ pub enum AgentIncoming {
         project_key: String,
         device_id: u64,
         project_path: String,
+        request_id: Option<String>,
         run_id: String,
         stages: Vec<String>,
         rules_version: String,
@@ -466,6 +475,20 @@ impl WsEnvelope {
                     request_id: parse_delivery_request_id(data),
                 })
             }
+            "project_list_status" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_list_status 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_list_status")?;
+                Ok(AgentIncoming::ProjectListStatus {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
             "project_git_commit" => {
                 let data = self
                     .data
@@ -652,6 +675,7 @@ impl WsEnvelope {
                     project_key,
                     device_id,
                     project_path,
+                    request_id: parse_delivery_request_id(data),
                     run_id,
                     stage,
                     center_line: data["centerLine"].as_u64().unwrap_or(1) as usize,
@@ -683,6 +707,7 @@ impl WsEnvelope {
                     project_key,
                     device_id,
                     project_path,
+                    request_id: parse_delivery_request_id(data),
                     run_id,
                     stages,
                     rules_version: data["rulesVersion"].as_str().unwrap_or("").to_string(),

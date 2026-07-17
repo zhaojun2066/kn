@@ -14,8 +14,10 @@ mod manager;
 pub mod output;
 pub mod persistence;
 pub mod pr_delivery;
+pub mod project_list_status;
 pub mod store;
 pub mod types;
+pub mod verification_history;
 pub mod verify_changes;
 
 /// 存储 PTY writer + OutputFanout，供 `attach_pty` 桥接。

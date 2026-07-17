@@ -93,6 +93,10 @@ fn test_all_incoming_types_parse_without_panic() {
             "project_git_status",
         ),
         (
+            r#"{"type":"project_list_status","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo","requestId":"req-list-42"}}"#,
+            "project_list_status",
+        ),
+        (
             r#"{"type":"project_git_commit","data":{"projectKey":"42:/repo","deviceId":42,"projectPath":"/repo","message":"Fix login","paths":["Sources/App.swift"]}}"#,
             "project_git_commit",
         ),
@@ -203,6 +207,7 @@ fn read_only_project_requests_parse_camel_case_request_id() {
             serde_json::json!({"environment": "default"}),
         ),
         ("project_verify_status", serde_json::json!({})),
+        ("project_list_status", serde_json::json!({})),
     ] {
         let mut data = serde_json::json!({
             "projectKey": "42:/repo",
@@ -232,6 +237,7 @@ fn read_only_project_results_preserve_request_id() {
         "project_change_summary_result",
         "project_verify_plan_result",
         "project_verify_status_result",
+        "project_list_status_result",
     ] {
         let message = WsMessageBuilder::project_delivery_result(
             message_type,
@@ -276,7 +282,8 @@ fn read_only_project_request_id(message: &AgentIncoming) -> Option<&str> {
     match message {
         AgentIncoming::ProjectChangeSummary { request_id, .. }
         | AgentIncoming::ProjectVerifyPlan { request_id, .. }
-        | AgentIncoming::ProjectVerifyStatus { request_id, .. } => request_id.as_deref(),
+        | AgentIncoming::ProjectVerifyStatus { request_id, .. }
+        | AgentIncoming::ProjectListStatus { request_id, .. } => request_id.as_deref(),
         other => panic!("expected read-only project request, got {other:?}"),
     }
 }
@@ -302,6 +309,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::ProjectVerifyChanges { .. } => "project_verify_changes",
         AgentIncoming::ProjectCancelVerify { .. } => "project_cancel_verify",
         AgentIncoming::ProjectVerifyStatus { .. } => "project_verify_status",
+        AgentIncoming::ProjectListStatus { .. } => "project_list_status",
         AgentIncoming::ProjectVerifyLogWindow { .. } => "project_verify_log_window",
         AgentIncoming::ProjectVerifyLogIssues { .. } => "project_verify_log_issues",
         AgentIncoming::ProjectGitStatus { .. } => "project_git_status",
@@ -333,6 +341,78 @@ fn test_output_session_id_is_string() {
     assert!(parsed["data"].get("to_session_id").is_none());
     // Verify ansi_text field is present
     assert_eq!(parsed["data"]["ansi_text"], "hello world");
+}
+
+#[test]
+fn test_verify_log_window_preserves_request_id() {
+    let incoming = serde_json::json!({
+        "type": "project_verify_log_window",
+        "data": {
+            "projectKey": "42:/repo",
+            "deviceId": 42,
+            "projectPath": "/repo",
+            "runId": "v_1",
+            "stage": "test",
+            "centerLine": 93,
+            "before": 100,
+            "after": 100,
+            "requestId": "log-window-1"
+        }
+    });
+    let parsed: WsEnvelope = serde_json::from_value(incoming).unwrap();
+    match parsed.parse().unwrap() {
+        AgentIncoming::ProjectVerifyLogWindow { request_id, .. } => {
+            assert_eq!(request_id.as_deref(), Some("log-window-1"));
+        }
+        other => panic!("expected project verify log window, got {other:?}"),
+    }
+
+    let outbound = WsMessageBuilder::project_delivery_result(
+        "project_verify_log_window_result",
+        "42:/repo",
+        42,
+        "/repo",
+        Some("log-window-1"),
+        serde_json::json!({"runId": "v_1", "stage": "test", "status": "ok"}),
+    );
+    let outbound: serde_json::Value = serde_json::from_str(&outbound).unwrap();
+    assert_eq!(outbound["data"]["requestId"], "log-window-1");
+}
+
+#[test]
+fn test_verify_log_issues_preserves_request_id() {
+    let incoming = serde_json::json!({
+        "type": "project_verify_log_issues",
+        "data": {
+            "projectKey": "42:/repo",
+            "deviceId": 42,
+            "projectPath": "/repo",
+            "runId": "v_1",
+            "stages": ["build", "test"],
+            "rulesVersion": "rules-1",
+            "matchers": [],
+            "limit": 300,
+            "requestId": "log-issues-1"
+        }
+    });
+    let parsed: WsEnvelope = serde_json::from_value(incoming).unwrap();
+    match parsed.parse().unwrap() {
+        AgentIncoming::ProjectVerifyLogIssues { request_id, .. } => {
+            assert_eq!(request_id.as_deref(), Some("log-issues-1"));
+        }
+        other => panic!("expected project verify log issues, got {other:?}"),
+    }
+
+    let outbound = WsMessageBuilder::project_delivery_result(
+        "project_verify_log_issues_result",
+        "42:/repo",
+        42,
+        "/repo",
+        Some("log-issues-1"),
+        serde_json::json!({"runId": "v_1", "status": "ok", "issues": []}),
+    );
+    let outbound: serde_json::Value = serde_json::from_str(&outbound).unwrap();
+    assert_eq!(outbound["data"]["requestId"], "log-issues-1");
 }
 
 #[test]

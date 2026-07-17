@@ -1,8 +1,10 @@
+use crate::session::verification_history::{LastVerification, VerificationHistory};
 use kn_common::project::{ProjectInfo, ProjectVerifyCommand, ProjectVerifyConfig};
 use regex_lite::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -21,7 +23,7 @@ const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_LINES: usize = 200;
 const PROGRESS_OUTPUT_BYTES: usize = 8 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(800);
-const VERIFY_RUN_LOG_TTL_SECS: u64 = 30 * 60;
+const VERIFY_RUN_LOG_TTL_SECS: u64 = 24 * 60 * 60;
 const VERIFY_RUN_LOG_MAX_BYTES: u64 = 200 * 1024 * 1024;
 const VERIFY_LOG_WINDOW_MAX_CONTEXT: usize = 300;
 const VERIFY_LOG_ISSUE_MAX_MATCHERS: usize = 80;
@@ -138,19 +140,26 @@ struct VerifyRunLog {
     test: Option<StageLogFile>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifyRunLogMeta {
+    session_id: String,
+    run_id: String,
+    created_at: u64,
+    #[serde(default)]
+    finished_at: Option<u64>,
+}
+
 impl VerifyRunLog {
     fn create(session_id: &str, run_id: &str) -> Self {
         ensure_verify_run_disk_cleanup_once();
         let dir = verify_runs_dir().join(run_id);
-        let _ = std::fs::create_dir_all(&dir);
-        let meta = json!({
-            "sessionId": session_id,
-            "runId": run_id,
-            "createdAt": unix_millis(),
-        });
-        let _ = std::fs::write(
-            dir.join("meta.json"),
-            serde_json::to_vec_pretty(&meta).unwrap_or_default(),
+        let _ = write_verify_run_meta(
+            &dir,
+            session_id,
+            run_id,
+            unix_millis_at(SystemTime::now()),
+            None,
         );
         Self {
             session_id: session_id.to_string(),
@@ -174,6 +183,46 @@ impl VerifyRunLog {
 
     fn mark_finished(&mut self) {
         self.expires_at = Some(Instant::now() + Duration::from_secs(VERIFY_RUN_LOG_TTL_SECS));
+        let created_at = read_verify_run_meta(&self.dir)
+            .map(|meta| meta.created_at)
+            .unwrap_or_else(|| unix_millis_at(SystemTime::now()));
+        let _ = write_verify_run_meta(
+            &self.dir,
+            &self.session_id,
+            &self.run_id,
+            created_at,
+            Some(unix_millis_at(SystemTime::now())),
+        );
+    }
+
+    fn restore_from_dir(
+        dir: &Path,
+        session_id: &str,
+        run_id: &str,
+        now: SystemTime,
+    ) -> Option<Self> {
+        let meta = read_verify_run_meta(dir)?;
+        if meta.session_id != session_id || meta.run_id != run_id {
+            return None;
+        }
+        let finished_at = meta.finished_at?;
+        let expires_at = system_time_from_millis(finished_at)?
+            .checked_add(Duration::from_secs(VERIFY_RUN_LOG_TTL_SECS))?;
+        let remaining = expires_at.duration_since(now).ok()?;
+        let build = StageLogFile::restore(StageName::Build, dir);
+        let test = StageLogFile::restore(StageName::Test, dir);
+        if build.is_none() && test.is_none() {
+            return None;
+        }
+        Some(Self {
+            session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
+            dir: dir.to_path_buf(),
+            created_at: Instant::now(),
+            expires_at: Some(Instant::now() + remaining),
+            build,
+            test,
+        })
     }
 
     fn is_expired(&self) -> bool {
@@ -269,6 +318,42 @@ impl StageLogFile {
             ends_with_newline: false,
             truncated: false,
         }
+    }
+
+    fn restore(stage: StageName, dir: &Path) -> Option<Self> {
+        let path = dir.join(format!("{}.log", stage.as_str()));
+        let byte_count = fs::metadata(&path).ok()?.len();
+        if byte_count > VERIFY_RUN_LOG_MAX_BYTES || File::open(&path).is_err() {
+            return None;
+        }
+        let mut reader = BufReader::new(File::open(&path).ok()?);
+        let mut line_starts = vec![0];
+        let mut offset = 0_u64;
+        let mut ends_with_newline = false;
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = reader.read(&mut buffer).ok()?;
+            if read == 0 {
+                break;
+            }
+            for (index, byte) in buffer[..read].iter().enumerate() {
+                if *byte == b'\n' {
+                    line_starts.push(offset + index as u64 + 1);
+                }
+            }
+            ends_with_newline = buffer[read - 1] == b'\n';
+            offset += read as u64;
+        }
+        Some(Self {
+            stage,
+            command: "已完成验证".to_string(),
+            path,
+            file: None,
+            line_starts,
+            byte_count,
+            ends_with_newline,
+            truncated: byte_count >= VERIFY_RUN_LOG_MAX_BYTES,
+        })
     }
 
     fn append(&mut self, text: &str) {
@@ -450,6 +535,8 @@ struct RunningGuard {
     session_id: String,
     run_id: String,
     cancel: CancellationToken,
+    target: VerifyTarget,
+    completed: bool,
 }
 
 impl RunningGuard {
@@ -468,6 +555,26 @@ impl RunningGuard {
         let started = Instant::now();
         let log = Arc::new(Mutex::new(VerifyRunLog::create(session_id, run_id)));
         register_run_log(log.clone());
+        let started_at_ms = unix_millis() as u64;
+        let initial_summary = LastVerification {
+            run_id: run_id.to_string(),
+            state: running_state_for_target(target).to_string(),
+            started_at_ms,
+            finished_at_ms: None,
+            duration_ms: 0,
+            target: target.as_str().to_string(),
+            environment: environment.to_string(),
+            command_source: "auto".to_string(),
+            build_state: None,
+            test_state: None,
+            log_available: true,
+            is_running: true,
+        };
+        if let Err(error) =
+            VerificationHistory::default_at_config_dir().save(session_id, &initial_summary)
+        {
+            tracing::warn!(%error, session_id, "保存验证运行摘要失败");
+        }
         guard.insert(
             session_id.to_string(),
             RunningRun {
@@ -487,6 +594,8 @@ impl RunningGuard {
             session_id: session_id.to_string(),
             run_id: run_id.to_string(),
             cancel,
+            target,
+            completed: false,
         })
     }
 
@@ -507,6 +616,40 @@ impl RunningGuard {
         guard
             .get(&self.session_id)
             .and_then(|run| (run.run_id == self.run_id).then(|| run.log.clone()))
+    }
+
+    fn finish(&mut self, result: &serde_json::Value) {
+        let now = unix_millis() as u64;
+        let state = summary_state(result, self.target);
+        let summary = LastVerification {
+            run_id: self.run_id.clone(),
+            state,
+            started_at_ms: now.saturating_sub(result["durationMs"].as_u64().unwrap_or_default()),
+            finished_at_ms: Some(now),
+            duration_ms: result["durationMs"].as_u64().unwrap_or_default(),
+            target: result["target"]
+                .as_str()
+                .unwrap_or(self.target.as_str())
+                .to_string(),
+            environment: result["environment"]
+                .as_str()
+                .unwrap_or("default")
+                .to_string(),
+            command_source: result["commandSource"]
+                .as_str()
+                .unwrap_or("auto")
+                .to_string(),
+            build_state: stage_state(result, StageName::Build),
+            test_state: stage_state(result, StageName::Test),
+            log_available: is_verify_log_available(&self.run_id),
+            is_running: false,
+        };
+        if let Err(error) =
+            VerificationHistory::default_at_config_dir().save(&self.session_id, &summary)
+        {
+            tracing::warn!(%error, session_id = %self.session_id, "保存验证结果摘要失败");
+        }
+        self.completed = true;
     }
 }
 
@@ -725,6 +868,9 @@ fn update_running_status(
 
 impl Drop for RunningGuard {
     fn drop(&mut self) {
+        if !self.completed {
+            tracing::debug!(session_id = %self.session_id, run_id = %self.run_id, "验证未完成，保留记录以便重启后恢复为中断");
+        }
         let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
         if guard.get(&self.session_id).map(|run| run.run_id.as_str()) == Some(self.run_id.as_str())
@@ -740,6 +886,91 @@ impl Drop for RunningGuard {
     }
 }
 
+fn running_state_for_target(target: VerifyTarget) -> &'static str {
+    match target {
+        VerifyTarget::Test => "runningTest",
+        VerifyTarget::All | VerifyTarget::Build => "runningBuild",
+    }
+}
+
+fn stage_state(result: &serde_json::Value, stage: StageName) -> Option<String> {
+    result["stages"]
+        .as_array()?
+        .iter()
+        .find(|value| value["name"].as_str() == Some(stage.as_str()))?
+        .get("status")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn summary_state(result: &serde_json::Value, target: VerifyTarget) -> String {
+    match result["status"].as_str().unwrap_or("error") {
+        "passed" => "passed".to_string(),
+        "cancelled" => "cancelled".to_string(),
+        "error" if result["message"].as_str() == Some("未找到可用命令，请在桌面端配置") => {
+            "commandNotFound".to_string()
+        }
+        "failed" => {
+            if stage_state(result, StageName::Test).as_deref() == Some("failed")
+                || target == VerifyTarget::Test
+            {
+                "testFailed".to_string()
+            } else {
+                "buildFailed".to_string()
+            }
+        }
+        other => other.to_string(),
+    }
+}
+
+pub fn last_verification(session_id: &str) -> Option<serde_json::Value> {
+    let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(run) = set
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(session_id)
+        .cloned()
+    {
+        let state = match run.current_stage {
+            Some(StageName::Test) => "runningTest",
+            Some(StageName::Build) | None => running_state_for_target(run.target),
+        };
+        return Some(
+            LastVerification {
+                run_id: run.run_id,
+                state: state.to_string(),
+                started_at_ms: unix_millis() as u64 - run.started.elapsed().as_millis() as u64,
+                finished_at_ms: None,
+                duration_ms: run.started.elapsed().as_millis() as u64,
+                target: run.target.as_str().to_string(),
+                environment: run.environment,
+                command_source: run.command_source,
+                build_state: None,
+                test_state: None,
+                log_available: true,
+                is_running: true,
+            }
+            .as_json(),
+        );
+    }
+    let mut summary =
+        VerificationHistory::default_at_config_dir().load(session_id, SystemTime::now())?;
+    if summary.log_available && !is_verify_log_available(&summary.run_id) {
+        summary.log_available = false;
+    }
+    Some(summary.as_json())
+}
+
+fn is_verify_log_available(run_id: &str) -> bool {
+    let path = verify_runs_dir().join(run_id);
+    is_verify_log_available_at(&path, SystemTime::now())
+}
+
+fn completed_result(running: &mut RunningGuard, result: serde_json::Value) -> serde_json::Value {
+    running.finish(&result);
+    result
+}
+
 pub async fn verify(
     session_id: &str,
     cwd: &str,
@@ -749,7 +980,8 @@ pub async fn verify(
     project_scope: (u64, String),
 ) -> serde_json::Value {
     let run_id = new_run_id();
-    let Some(running) = RunningGuard::try_acquire(session_id, &run_id, environment, target) else {
+    let Some(mut running) = RunningGuard::try_acquire(session_id, &run_id, environment, target)
+    else {
         return error_result(
             session_id,
             environment,
@@ -762,21 +994,27 @@ pub async fn verify(
     let repo_root = match repo_root(cwd).await {
         Ok(root) => root,
         Err(VerifyError::NotGitRepo) => {
-            return error_result(
-                session_id,
-                environment,
-                target,
-                "notGitRepo",
-                "当前目录不是 Git 仓库",
+            return completed_result(
+                &mut running,
+                error_result(
+                    session_id,
+                    environment,
+                    target,
+                    "notGitRepo",
+                    "当前目录不是 Git 仓库",
+                ),
             );
         }
         Err(_) => {
-            return error_result(
-                session_id,
-                environment,
-                target,
-                "error",
-                "无法检查 Git 仓库",
+            return completed_result(
+                &mut running,
+                error_result(
+                    session_id,
+                    environment,
+                    target,
+                    "error",
+                    "无法检查 Git 仓库",
+                ),
             );
         }
     };
@@ -821,11 +1059,14 @@ pub async fn verify(
                 }
             }
             None => {
-                return command_not_found(
-                    session_id,
-                    &resolved.environment,
-                    target,
-                    plan.command_source,
+                return completed_result(
+                    &mut running,
+                    command_not_found(
+                        session_id,
+                        &resolved.environment,
+                        target,
+                        plan.command_source,
+                    ),
                 );
             }
         },
@@ -849,21 +1090,27 @@ pub async fn verify(
                 }
             }
             None => {
-                return command_not_found(
-                    session_id,
-                    &resolved.environment,
-                    target,
-                    plan.command_source,
+                return completed_result(
+                    &mut running,
+                    command_not_found(
+                        session_id,
+                        &resolved.environment,
+                        target,
+                        plan.command_source,
+                    ),
                 );
             }
         },
         VerifyTarget::All => {
             let Some(build) = plan.build.as_ref() else {
-                return command_not_found(
-                    session_id,
-                    &resolved.environment,
-                    target,
-                    plan.command_source,
+                return completed_result(
+                    &mut running,
+                    command_not_found(
+                        session_id,
+                        &resolved.environment,
+                        target,
+                        plan.command_source,
+                    ),
                 );
             };
             let build_stage = run_stage(
@@ -915,7 +1162,7 @@ pub async fn verify(
             .mark_finished();
     }
 
-    json!({
+    let result = json!({
         "sessionId": session_id,
         "runId": run_id,
         "status": status,
@@ -924,7 +1171,8 @@ pub async fn verify(
         "commandSource": plan.command_source,
         "durationMs": started.elapsed().as_millis() as u64,
         "stages": stages
-    })
+    });
+    completed_result(&mut running, result)
 }
 
 pub async fn preview(session_id: &str, cwd: &str, environment: &str) -> serde_json::Value {
@@ -1011,12 +1259,14 @@ pub fn invalid_target_result(session_id: &str, environment: &str) -> serde_json:
 pub fn status(session_id: &str) -> serde_json::Value {
     ensure_verify_run_disk_cleanup_once();
     cleanup_expired_run_logs();
+    let last_verification = last_verification(session_id);
     let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
     let guard = set.lock().unwrap_or_else(|e| e.into_inner());
     let Some(run) = guard.get(session_id) else {
         return json!({
             "sessionId": session_id,
             "status": "idle",
+            "lastVerification": last_verification,
         });
     };
     let stages = run
@@ -1051,6 +1301,7 @@ pub fn status(session_id: &str) -> serde_json::Value {
         "currentStatus": run.current_status,
         "currentCommand": run.current_command,
         "stages": stages,
+        "lastVerification": last_verification,
     })
 }
 
@@ -2393,14 +2644,85 @@ fn new_run_id() -> String {
 }
 
 fn unix_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    unix_millis_at(SystemTime::now()) as u128
+}
+
+fn unix_millis_at(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis()
+        .as_millis() as u64
 }
 
 fn verify_runs_dir() -> PathBuf {
     kn_common::path::config_dir().join("verify-runs")
+}
+
+fn write_verify_run_meta(
+    dir: &Path,
+    session_id: &str,
+    run_id: &str,
+    created_at: u64,
+    finished_at: Option<u64>,
+) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+    let destination = dir.join("meta.json");
+    let temporary = dir.join(format!(".meta-{}.tmp", std::process::id()));
+    let meta = VerifyRunLogMeta {
+        session_id: session_id.to_string(),
+        run_id: run_id.to_string(),
+        created_at,
+        finished_at,
+    };
+    let bytes = serde_json::to_vec(&meta)
+        .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))?;
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, &destination)?;
+        File::open(dir)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn read_verify_run_meta(dir: &Path) -> Option<VerifyRunLogMeta> {
+    serde_json::from_slice(&fs::read(dir.join("meta.json")).ok()?).ok()
+}
+
+fn system_time_from_millis(value: u64) -> Option<SystemTime> {
+    UNIX_EPOCH.checked_add(Duration::from_millis(value))
+}
+
+fn is_verify_log_available_at(dir: &Path, now: SystemTime) -> bool {
+    let Some(meta) = read_verify_run_meta(dir) else {
+        return false;
+    };
+    let Some(finished_at) = meta.finished_at.and_then(system_time_from_millis) else {
+        return false;
+    };
+    if now.duration_since(finished_at).map_or(true, |age| {
+        age > Duration::from_secs(VERIFY_RUN_LOG_TTL_SECS)
+    }) {
+        return false;
+    }
+    [StageName::Build, StageName::Test]
+        .into_iter()
+        .any(|stage| {
+            let path = dir.join(format!("{}.log", stage.as_str()));
+            fs::metadata(&path)
+                .ok()
+                .filter(|metadata| metadata.is_file() && metadata.len() <= VERIFY_RUN_LOG_MAX_BYTES)
+                .is_some_and(|_| File::open(path).is_ok())
+        })
 }
 
 fn ensure_verify_run_disk_cleanup_once() {
@@ -2441,11 +2763,16 @@ fn cleanup_expired_verify_run_dirs_in(dir: &Path, active_dirs: &[PathBuf], cutof
         if active_dirs.iter().any(|active| active == &path) {
             continue;
         }
-        let modified = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(SystemTime::now());
-        if modified < cutoff {
+        let completed_at = read_verify_run_meta(&path)
+            .and_then(|meta| meta.finished_at)
+            .and_then(system_time_from_millis)
+            .or_else(|| {
+                entry
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+            });
+        if completed_at.is_some_and(|completed_at| completed_at < cutoff) {
             let _ = std::fs::remove_dir_all(path);
         }
     }
@@ -2471,11 +2798,30 @@ fn get_run_log(session_id: &str, run_id: &str) -> Option<Arc<Mutex<VerifyRunLog>
     ensure_verify_run_disk_cleanup_once();
     cleanup_expired_run_logs();
     let map = VERIFY_RUN_LOGS.get_or_init(|| Mutex::new(HashMap::new()));
-    let log = map
+    let existing = map
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(run_id)
-        .cloned()?;
+        .cloned();
+    let log = if let Some(log) = existing {
+        log
+    } else {
+        let restored = is_safe_verify_run_id(run_id)
+            .then(|| {
+                VerifyRunLog::restore_from_dir(
+                    &verify_runs_dir().join(run_id),
+                    session_id,
+                    run_id,
+                    SystemTime::now(),
+                )
+            })
+            .flatten()?;
+        let log = Arc::new(Mutex::new(restored));
+        map.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(run_id.to_string(), log.clone());
+        log
+    };
     let guard = log.lock().unwrap_or_else(|e| e.into_inner());
     if guard.session_id == session_id && !guard.is_expired() {
         drop(guard);
@@ -2483,6 +2829,14 @@ fn get_run_log(session_id: &str, run_id: &str) -> Option<Arc<Mutex<VerifyRunLog>
     } else {
         None
     }
+}
+
+fn is_safe_verify_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id.len() <= 128
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
 fn cleanup_expired_run_logs() {
@@ -2833,6 +3187,65 @@ mod tests {
 
         assert!(active.exists());
         assert!(!inactive.exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn restores_finished_verify_log_from_disk_after_restart() {
+        let dir = unique_temp_dir("verify-log-restore");
+        fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now();
+        write_verify_run_meta(
+            &dir,
+            "17:/repo",
+            "v_restore",
+            unix_millis_at(now),
+            Some(unix_millis_at(now)),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("build.log"),
+            "first line\nerror: restored failure\n",
+        )
+        .unwrap();
+
+        let log = VerifyRunLog::restore_from_dir(&dir, "17:/repo", "v_restore", now)
+            .expect("finished disk log should be restored");
+        let window = log.window(StageName::Build, 2, 1, 1);
+
+        assert_eq!(window["status"], "ok");
+        assert_eq!(window["lines"][1]["text"], "error: restored failure");
+        assert_eq!(log.issue_scan_targets(&[StageName::Build]).len(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn log_availability_uses_finished_time_not_creation_time() {
+        let dir = unique_temp_dir("verify-log-finished-ttl");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("build.log"), "ok\n").unwrap();
+        let now = SystemTime::now();
+        let old = now - Duration::from_secs(VERIFY_RUN_LOG_TTL_SECS + 60);
+
+        write_verify_run_meta(
+            &dir,
+            "17:/repo",
+            "v_ttl",
+            unix_millis_at(old),
+            Some(unix_millis_at(now)),
+        )
+        .unwrap();
+        assert!(is_verify_log_available_at(&dir, now));
+
+        write_verify_run_meta(
+            &dir,
+            "17:/repo",
+            "v_ttl",
+            unix_millis_at(old),
+            Some(unix_millis_at(old)),
+        )
+        .unwrap();
+        assert!(!is_verify_log_available_at(&dir, now));
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -9,16 +9,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_SRC="$ROOT_DIR/target/debug/kn-agent"
-KN_HOME_DIR="${KN_HOME:-$HOME/.kn}"
-AGENT_DST="${KN_AGENT_DST:-$KN_HOME_DIR/agent/kn-agent}"
+# Development is a complete separate runtime: profiles, device credentials,
+# IPC and logs all live under ~/.kn-dev by default, never under production ~/.kn.
+DEV_KN_HOME="${KN_DEV_HOME:-$HOME/.kn-dev}"
+AGENT_DST="${KN_AGENT_DST:-$DEV_KN_HOME/agent/kn-agent}"
 AGENT_DIR="$(dirname "$AGENT_DST")"
 IPC_SOCK="$AGENT_DIR/ipc.sock"
 LOG_DIR="$AGENT_DIR/logs"
 PLIST_DIR="$HOME/Library/LaunchAgents"
-PLIST_PATH="$PLIST_DIR/com.kn.agent.plist"
+PLIST_PATH="$PLIST_DIR/com.kn.agent.dev.plist"
 UID_NUM="$(id -u)"
 LAUNCHD_DOMAIN="gui/$UID_NUM"
-LAUNCHD_SERVICE="$LAUNCHD_DOMAIN/com.kn.agent"
+LAUNCHD_SERVICE="$LAUNCHD_DOMAIN/com.kn.agent.dev"
 
 agent_ipc_ok() {
   python3 -c 'import socket,sys
@@ -59,7 +61,7 @@ cat > "$PLIST_PATH" <<EOF
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.kn.agent</string>
+    <string>com.kn.agent.dev</string>
     <key>ProgramArguments</key>
     <array>
         <string>$AGENT_DST</string>
@@ -84,6 +86,8 @@ cat > "$PLIST_PATH" <<EOF
         <string>ws://localhost:8081/v1/ws</string>
         <key>KN_CLOUD_HTTP_URL</key>
         <string>http://localhost:8080</string>
+        <key>KN_HOME</key>
+        <string>$DEV_KN_HOME</string>
     </dict>
 </dict>
 </plist>
@@ -115,4 +119,4 @@ fi
 
 echo "[kn dev] Starting desktop Tauri dev..."
 cd "$ROOT_DIR/desktop"
-KN_NO_AGENT_RESTART=true npm run tauri dev
+KN_HOME="$DEV_KN_HOME" KN_NO_AGENT_RESTART=true npm run tauri dev
