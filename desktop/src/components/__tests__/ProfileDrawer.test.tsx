@@ -65,7 +65,7 @@ describe("ProfileDrawer", () => {
   it("renders a bottom drawer with the full profile list UI", () => {
     renderDrawer();
 
-    expect(screen.getByText("Profile Management")).not.toBeNull();
+    expect(screen.getByText("环境管理")).not.toBeNull();
     expect(screen.getByText("全部标签")).not.toBeNull();
     expect(screen.getByTitle("更多操作")).not.toBeNull();
     expect(screen.queryByText("全局 Profile")).toBeNull();

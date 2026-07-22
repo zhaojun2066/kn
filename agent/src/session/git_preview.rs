@@ -7,6 +7,7 @@ use tokio::time::{timeout, Duration};
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_FILES: usize = 300;
 const MAX_DIFF_BYTES: usize = 256 * 1024;
+const MAX_STAT_TEXT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StatusEntry {
@@ -71,19 +72,22 @@ pub async fn summary(session_id: &str, cwd: &str) -> serde_json::Value {
         }
     }
 
-    let truncated = entries.len() > files.len();
+    let mut truncated = entries.len() > files.len();
     let stat_text = git_output(
         cwd,
         &["-c", "core.quotePath=false", "diff", "--stat", "HEAD", "--"],
     )
     .await
     .unwrap_or_default();
+    let stat_text = stat_text.trim();
+    let bounded_stat_text = crate::session::response_limits::truncate_utf8(stat_text, MAX_STAT_TEXT_BYTES);
+    truncated |= bounded_stat_text.len() < stat_text.len();
     json!({
         "sessionId": session_id,
         "status": if files.is_empty() { "noChanges" } else { "ok" },
         "cwd": repo_root.to_string_lossy(),
         "files": files,
-        "statText": stat_text.trim(),
+        "statText": bounded_stat_text,
         "truncated": truncated
     })
 }
@@ -388,6 +392,14 @@ mod tests {
     fn detects_binary_diff_marker_after_header() {
         let diff = "diff --git a/image.png b/image.png\nindex 111..222\nBinary files a/image.png and b/image.png differ\n";
         assert!(is_binary_diff(diff));
+    }
+
+    #[test]
+    fn stat_text_limit_preserves_utf8_boundary() {
+        let source = format!("{}中文", "a".repeat(MAX_STAT_TEXT_BYTES));
+        let bounded = crate::session::response_limits::truncate_utf8(&source, MAX_STAT_TEXT_BYTES);
+        assert_eq!(bounded.len(), MAX_STAT_TEXT_BYTES);
+        assert!(bounded.is_char_boundary(bounded.len()));
     }
 
     #[tokio::test]

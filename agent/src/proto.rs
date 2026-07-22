@@ -49,9 +49,13 @@ pub struct WsEnvelope {
 #[derive(Debug, Clone)]
 pub enum AgentIncoming {
     /// 心跳响应
-    Pong { ts: i64 },
+    Pong {
+        ts: i64,
+    },
     /// Cloud 已完成对移动端的交付，Agent 可删除本地待确认结果。
-    ProjectDeliveryAck { request_id: String },
+    ProjectDeliveryAck {
+        request_id: String,
+    },
     /// WSS 连接确认
     Connected {
         ws_session_id: String,
@@ -91,11 +95,16 @@ pub enum AgentIncoming {
         rows: u16,
     },
     /// 云端错误通知（对齐 Java MessageTypes.ERROR_NOTIFY + sendError()）
-    ErrorNotify { code: String, message: String },
+    ErrorNotify {
+        code: String,
+        message: String,
+    },
     /// 配置文件列表确认
     ProfileListAck,
     /// 请求回放会话输出日志（iOS 恢复会话时发送）
-    ReplayOutput { session_nid: String },
+    ReplayOutput {
+        session_nid: String,
+    },
     /// WSS 对 session_created 的确认
     SessionCreatedAck {
         session_nid: String,
@@ -103,9 +112,14 @@ pub enum AgentIncoming {
         error: Option<String>,
     },
     /// iOS 恢复会话请求（cloud 已查 Redis，agent 做本地验证）
-    ResumeSession { session_nid: String },
+    ResumeSession {
+        session_nid: String,
+    },
     /// iOS/Cloud 请求强制结束远程会话
-    KillSession { session_nid: String, reason: String },
+    KillSession {
+        session_nid: String,
+        reason: String,
+    },
     ProjectChangeSummary {
         project_key: String,
         device_id: u64,
@@ -123,6 +137,9 @@ pub enum AgentIncoming {
         device_id: u64,
         project_path: String,
         request_id: Option<String>,
+        offset: i64,
+        limit: i64,
+        snapshot_id: Option<String>,
     },
     ProjectGitCommit {
         project_key: String,
@@ -130,6 +147,7 @@ pub enum AgentIncoming {
         project_path: String,
         message: String,
         paths: Vec<String>,
+        scope: String,
         request_id: Option<String>,
     },
     ProjectGitPush {
@@ -172,6 +190,7 @@ pub enum AgentIncoming {
         project_path: String,
         environment: String,
         target: String,
+        request_id: Option<String>,
     },
     ProjectCancelVerify {
         project_key: String,
@@ -213,6 +232,10 @@ pub enum AgentIncoming {
         rules_version: String,
         matchers: Vec<serde_json::Value>,
         limit: usize,
+    },
+    DeviceHealth {
+        device_id: u64,
+        request_id: String,
     },
     /// 未知消息类型
     Unknown {
@@ -473,6 +496,9 @@ impl WsEnvelope {
                     device_id,
                     project_path,
                     request_id: parse_delivery_request_id(data),
+                    offset: data["offset"].as_i64().unwrap_or(0),
+                    limit: data["limit"].as_i64().unwrap_or(100),
+                    snapshot_id: data["snapshotId"].as_str().map(str::to_string),
                 })
             }
             "project_list_status" => {
@@ -512,6 +538,7 @@ impl WsEnvelope {
                     project_path,
                     message,
                     paths,
+                    scope: data["scope"].as_str().unwrap_or("selected").to_string(),
                     request_id: parse_delivery_request_id(data),
                 })
             }
@@ -625,6 +652,7 @@ impl WsEnvelope {
                         .unwrap_or("default")
                         .to_string(),
                     target: data["target"].as_str().unwrap_or("all").to_string(),
+                    request_id: parse_delivery_request_id(data),
                 })
             }
             "project_cancel_verify" => {
@@ -715,6 +743,21 @@ impl WsEnvelope {
                     limit: data["limit"].as_u64().unwrap_or(300) as usize,
                 })
             }
+            "device_health" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "device_health 缺少 data 字段".to_string())?;
+                let device_id = data["deviceId"].as_u64().unwrap_or(0);
+                let request_id = data["requestId"].as_str().unwrap_or("").trim();
+                if device_id == 0 || request_id.is_empty() {
+                    return Err("device_health deviceId/requestId 为空".to_string());
+                }
+                Ok(AgentIncoming::DeviceHealth {
+                    device_id,
+                    request_id: request_id.to_string(),
+                })
+            }
             other => Ok(AgentIncoming::Unknown {
                 msg_type: other.to_string(),
                 raw: self.data.clone().unwrap_or(serde_json::Value::Null),
@@ -761,6 +804,32 @@ impl WsMessageBuilder {
         source: &str,
         msg_id: Option<&str>,
     ) -> String {
+        Self::session_created_with_msg_id_and_version(
+            session_nid,
+            tool,
+            cwd,
+            profile,
+            cols,
+            rows,
+            source,
+            msg_id,
+            None,
+        )
+    }
+
+    /// Session creation message with the CLI version used by Cloud command
+    /// catalog matching. The version is optional for unknown/custom tools.
+    pub fn session_created_with_msg_id_and_version(
+        session_nid: &str,
+        tool: &str,
+        cwd: &str,
+        profile: Option<&str>,
+        cols: u16,
+        rows: u16,
+        source: &str,
+        msg_id: Option<&str>,
+        cli_version: Option<&str>,
+    ) -> String {
         let mut data = serde_json::json!({
             "sessionId": session_nid,
             "tool": tool,
@@ -774,6 +843,9 @@ impl WsMessageBuilder {
         }
         if let Some(mid) = msg_id {
             data["msgId"] = serde_json::Value::String(mid.to_string());
+        }
+        if let Some(version) = cli_version {
+            data["cliVersion"] = serde_json::Value::String(version.to_string());
         }
         serde_json::json!({
             "type": "session_created",
@@ -920,6 +992,23 @@ impl WsMessageBuilder {
             data["requestId"] = serde_json::Value::String(request_id.to_string());
         }
         Self::project_result(msg_type, project_key, device_id, project_path, data)
+    }
+
+    /// 设备能力与健康摘要：没有项目范围、凭证或原始探测输出。
+    pub fn device_health_result(
+        device_id: u64,
+        request_id: &str,
+        summary: serde_json::Value,
+    ) -> String {
+        serde_json::json!({
+            "type": "device_health_result",
+            "data": {
+                "deviceId": device_id,
+                "requestId": request_id,
+                "summary": summary,
+            }
+        })
+        .to_string()
     }
 }
 
@@ -1178,7 +1267,8 @@ mod tests {
                 "deviceId": 42,
                 "projectPath": "/repo",
                 "environment": "ci",
-                "target": "build"
+                "target": "build",
+                "requestId": "verify-request-1"
             }
         });
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
@@ -1190,12 +1280,14 @@ mod tests {
                 project_path,
                 environment,
                 target,
+                request_id,
             } => {
                 assert_eq!(project_key, "42:/repo");
                 assert_eq!(device_id, 42);
                 assert_eq!(project_path, "/repo");
                 assert_eq!(environment, "ci");
                 assert_eq!(target, "build");
+                assert_eq!(request_id.as_deref(), Some("verify-request-1"));
             }
             _ => panic!("expected ProjectVerifyChanges"),
         }
@@ -1219,6 +1311,40 @@ mod tests {
             AgentIncoming::ProjectGitCommit { message, paths, .. } => {
                 assert_eq!(message, "feat: delivery");
                 assert_eq!(paths, vec!["Sources/App.swift"]);
+            }
+            _ => panic!("expected ProjectGitCommit"),
+        }
+    }
+
+    #[test]
+    fn test_parse_git_pagination_and_all_working_tree_commit_scope() {
+        let status: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "project_git_status",
+            "data": {
+                "projectKey": "42:/repo", "deviceId": 42, "projectPath": "/repo",
+                "offset": 100, "limit": 100, "snapshotId": "snapshot"
+            }
+        })).unwrap();
+        match status.parse().unwrap() {
+            AgentIncoming::ProjectGitStatus { offset, limit, snapshot_id, .. } => {
+                assert_eq!(offset, 100);
+                assert_eq!(limit, 100);
+                assert_eq!(snapshot_id.as_deref(), Some("snapshot"));
+            }
+            _ => panic!("expected ProjectGitStatus"),
+        }
+
+        let commit: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "project_git_commit",
+            "data": {
+                "projectKey": "42:/repo", "deviceId": 42, "projectPath": "/repo",
+                "message": "feat: include all", "scope": "allWorkingTree", "paths": []
+            }
+        })).unwrap();
+        match commit.parse().unwrap() {
+            AgentIncoming::ProjectGitCommit { scope, paths, .. } => {
+                assert_eq!(scope, "allWorkingTree");
+                assert!(paths.is_empty());
             }
             _ => panic!("expected ProjectGitCommit"),
         }
@@ -1441,5 +1567,46 @@ mod tests {
             }
             _ => panic!("expected ErrorNotify"),
         }
+    }
+
+    #[test]
+    fn device_health_requires_device_and_request_identifiers() {
+        let missing_request: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "device_health",
+            "data": { "deviceId": 42 }
+        }))
+        .unwrap();
+        assert!(missing_request.parse().is_err());
+
+        let envelope: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "device_health",
+            "data": { "deviceId": 42, "requestId": "health-42" }
+        }))
+        .unwrap();
+        match envelope.parse().unwrap() {
+            AgentIncoming::DeviceHealth {
+                device_id,
+                request_id,
+            } => {
+                assert_eq!(device_id, 42);
+                assert_eq!(request_id, "health-42");
+            }
+            other => panic!("expected DeviceHealth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn device_health_result_keeps_request_id_and_contains_no_scope_data() {
+        let json = WsMessageBuilder::device_health_result(
+            42,
+            "health-42",
+            serde_json::json!({ "schemaVersion": 1, "tools": [] }),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "device_health_result");
+        assert_eq!(parsed["data"]["deviceId"], 42);
+        assert_eq!(parsed["data"]["requestId"], "health-42");
+        assert!(parsed["data"].get("projectPath").is_none());
+        assert!(parsed["data"].get("deviceToken").is_none());
     }
 }

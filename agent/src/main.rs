@@ -414,6 +414,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // ── 3. 确保目录存在 ──
     ensure_dirs(&cfg.agent_dir, &cfg.log_dir)?;
 
+    // 仅清理带有 kn-agent 旁证且所属进程已退出的 Git 锁；普通
+    // `.git/index.lock` 永远不自动删除，避免误伤用户正在执行的 Git 操作。
+    for project in load_projects().await {
+        session::git_delivery::recover_stale_agent_lock(&project.path).await;
+    }
+
     // ── 4. 崩溃计数 ──
     let crash_count = state::StateMachine::load_crash_count();
     if crash_count > 0 {
@@ -667,7 +673,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     let acknowledgements = ack_registry.clone();
                     let delivery_gate = project_delivery_gate.clone();
                     let outbox = delivery_outbox.clone();
-                    if is_project_delivery_operation(&m) {
+                    if should_dispatch_in_background(&m) {
                         tokio::spawn(async move {
                             handle_incoming(
                                 m,
@@ -829,7 +835,7 @@ async fn cli_heartbeat_loop(
     }
 }
 
-fn is_project_delivery_operation(message: &proto::AgentIncoming) -> bool {
+fn should_dispatch_in_background(message: &proto::AgentIncoming) -> bool {
     matches!(
         message,
         proto::AgentIncoming::ProjectGitStatus { .. }
@@ -839,6 +845,7 @@ fn is_project_delivery_operation(message: &proto::AgentIncoming) -> bool {
             | proto::AgentIncoming::ProjectPrStatus { .. }
             | proto::AgentIncoming::ProjectPrDetails { .. }
             | proto::AgentIncoming::ProjectPrCreate { .. }
+            | proto::AgentIncoming::DeviceHealth { .. }
     )
 }
 
@@ -857,6 +864,34 @@ async fn handle_incoming(
         proto::AgentIncoming::ProjectDeliveryAck { request_id } => {
             if delivery_outbox.acknowledge(&request_id).await {
                 flush_delivery_outbox(&delivery_outbox, &outgoing).await;
+            }
+        }
+        proto::AgentIncoming::DeviceHealth {
+            device_id,
+            request_id,
+        } => {
+            let current_state = state.current().await;
+            let environment = kn_agent::health::normalized_environment(
+                std::env::var("KN_RUNTIME_ENV").ok().as_deref(),
+            );
+            let summary = kn_agent::health::cached_probe_snapshot(
+                env!("CARGO_PKG_VERSION"),
+                environment,
+                current_state.name(),
+            )
+            .await;
+            let response = proto::WsMessageBuilder::device_health_result(
+                device_id,
+                &request_id,
+                serde_json::to_value(summary).unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "schemaVersion": 1,
+                        "tools": []
+                    })
+                }),
+            );
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(response);
             }
         }
         proto::AgentIncoming::Connected {
@@ -975,6 +1010,7 @@ async fn handle_incoming(
                     return;
                 }
             };
+            let cli_version = session::env::resolve_cli_version(&resolved_tool).await;
             // Agent 自行生成 sessionId，cloud 不再预分配
             let session_nid = format!("s_{}", nanoid::nanoid!(12));
             tracing::info!(
@@ -1096,6 +1132,7 @@ async fn handle_incoming(
                     let ack_profile = profile.clone();
                     let ack_cols = cols;
                     let ack_rows = rows;
+                    let ack_cli_version = cli_version.clone();
 
                     tokio::spawn(async move {
                         const MAX_RETRIES: u32 = 3;
@@ -1103,7 +1140,7 @@ async fn handle_incoming(
 
                         for attempt in 0..MAX_RETRIES {
                             let msg_id = format!("{}-{}", ack_nid, attempt);
-                            let msg = proto::WsMessageBuilder::session_created_with_msg_id(
+                            let msg = proto::WsMessageBuilder::session_created_with_msg_id_and_version(
                                 &ack_nid,
                                 &ack_tool,
                                 &ack_cwd,
@@ -1112,6 +1149,7 @@ async fn handle_incoming(
                                 ack_rows,
                                 "ios",
                                 Some(&msg_id),
+                                ack_cli_version.as_deref(),
                             );
 
                             let send_ok = {
@@ -1537,14 +1575,35 @@ async fn handle_incoming(
             device_id,
             project_path,
             request_id,
+            offset,
+            limit,
+            snapshot_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if let Some(registered_path) = registered_project_path(&project_path).await {
                 let operation_project_key = canonical_project_key(device_id, &registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
-                crate::session::git_delivery::status(&project_key, &registered_path).await
+                crate::session::git_delivery::status_page(
+                    &project_key,
+                    &registered_path,
+                    offset,
+                    limit,
+                    snapshot_id.as_deref(),
+                )
+                .await
             } else {
-                serde_json::json!({"status": "pathDenied", "files": [], "message": "项目未登记"})
+                serde_json::json!({
+                    "projectKey": &project_key,
+                    "status": "pathDenied",
+                    "files": [],
+                    "totalFiles": 0,
+                    "offset": 0,
+                    "nextOffset": 0,
+                    "hasMore": false,
+                    "truncated": false,
+                    "snapshotId": null,
+                    "message": "项目未登记"
+                })
             };
             let msg = proto::WsMessageBuilder::project_delivery_result(
                 "project_git_status_result",
@@ -1603,19 +1662,27 @@ async fn handle_incoming(
             project_path,
             message,
             paths,
+            scope,
             request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if let Some(registered_path) = registered_project_path(&project_path).await {
                 let operation_project_key = canonical_project_key(device_id, &registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
-                crate::session::git_delivery::commit(
-                    &project_key,
-                    &registered_path,
-                    &message,
-                    &paths,
-                )
-                .await
+                match scope.as_str() {
+                    "selected" => crate::session::git_delivery::commit(
+                        &project_key,
+                        &registered_path,
+                        &message,
+                        &paths,
+                    ).await,
+                    "allWorkingTree" => crate::session::git_delivery::commit_all_working_tree(
+                        &project_key,
+                        &registered_path,
+                        &message,
+                    ).await,
+                    _ => serde_json::json!({"projectKey": &project_key, "status": "invalidScope"}),
+                }
             } else {
                 serde_json::json!({"status": "pathDenied", "message": "项目未登记"})
             };
@@ -1820,6 +1887,7 @@ async fn handle_incoming(
             project_path,
             environment,
             target,
+            request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             tracing::info!(project_key = %project_key, environment = %environment, target = %target, "收到 project_verify_changes 请求");
@@ -1828,11 +1896,12 @@ async fn handle_incoming(
                     &project_key,
                     &environment,
                 );
-                let msg = proto::WsMessageBuilder::project_result(
+                let msg = proto::WsMessageBuilder::project_delivery_result(
                     "project_verify_changes_result",
                     &project_key,
                     device_id,
                     &project_path,
+                    request_id.as_deref(),
                     data,
                 );
                 if let Some(tx) = outgoing.lock().await.as_ref() {
@@ -1852,11 +1921,12 @@ async fn handle_incoming(
                     "stages": [],
                     "message": "项目未登记"
                 });
-                let msg = proto::WsMessageBuilder::project_result(
+                let msg = proto::WsMessageBuilder::project_delivery_result(
                     "project_verify_changes_result",
                     &project_key,
                     device_id,
                     &project_path,
+                    request_id.as_deref(),
                     data,
                 );
                 if let Some(tx) = outgoing.lock().await.as_ref() {
@@ -1874,13 +1944,15 @@ async fn handle_incoming(
                     target,
                     tx.clone(),
                     (device_id, project_path.clone()),
+                    request_id.as_deref(),
                 )
                 .await;
-                let msg = proto::WsMessageBuilder::project_result(
+                let msg = proto::WsMessageBuilder::project_delivery_result(
                     "project_verify_changes_result",
                     &project_key,
                     device_id,
                     &project_path,
+                    request_id.as_deref(),
                     data,
                 );
                 if let Some(tx) = tx {
@@ -1896,7 +1968,7 @@ async fn handle_incoming(
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             tracing::info!(project_key = %project_key, run_id = %run_id, "收到 project_cancel_verify 请求");
-            if let Some((environment, target, command_source, started)) =
+            if let Some((environment, target, command_source, started, request_id)) =
                 crate::session::verify_changes::cancel(&project_key, &run_id)
             {
                 if let Some(tx) = outgoing.lock().await.as_ref().cloned() {
@@ -1911,6 +1983,7 @@ async fn handle_incoming(
                             &command_source,
                             Some(tx),
                             started,
+                            request_id.as_deref(),
                         );
                     reporter.send_cancelling();
                 }
@@ -2248,13 +2321,16 @@ mod tests {
     }
 
     #[test]
-    fn delivery_dispatch_backgrounds_all_git_and_pr_operations_only() {
+    fn background_dispatch_keeps_health_and_delivery_operations_off_the_serial_wss_loop() {
         let deliveries = [
             proto::AgentIncoming::ProjectGitStatus {
                 project_key: "42:/repo".to_string(),
                 device_id: 42,
                 project_path: "/repo".to_string(),
                 request_id: None,
+                offset: 0,
+                limit: 100,
+                snapshot_id: None,
             },
             proto::AgentIncoming::ProjectGitCommit {
                 project_key: "42:/repo".to_string(),
@@ -2262,6 +2338,7 @@ mod tests {
                 project_path: "/repo".to_string(),
                 message: "commit".to_string(),
                 paths: vec!["README.md".to_string()],
+                scope: "selected".to_string(),
                 request_id: None,
             },
             proto::AgentIncoming::ProjectGitPush {
@@ -2293,13 +2370,19 @@ mod tests {
             },
         ];
 
-        assert!(deliveries.iter().all(is_project_delivery_operation));
-        assert!(!is_project_delivery_operation(
+        assert!(deliveries.iter().all(should_dispatch_in_background));
+        assert!(!should_dispatch_in_background(
             &proto::AgentIncoming::Input {
                 session_nid: "s_test".to_string(),
                 seq: 1,
                 content: "keep terminal responsive".to_string(),
                 from_user_id: 1,
+            }
+        ));
+        assert!(should_dispatch_in_background(
+            &proto::AgentIncoming::DeviceHealth {
+                device_id: 1,
+                request_id: "health-request".to_string(),
             }
         ));
     }

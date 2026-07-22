@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { AgentHealthSnapshot } from "../lib/healthReport";
 
 export type AgentStateName =
   | "stopped"
@@ -19,6 +20,9 @@ export interface AgentStatus {
   uptime_secs?: number;
   hostname?: string;
   purchase_url?: string;
+  pid?: number;
+  version?: string;
+  environment?: "development" | "production";
   binding?: AgentBindingStatus;
 }
 
@@ -76,6 +80,7 @@ export interface RedeemResult {
 
 export function useAgent() {
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
+  const [health, setHealth] = useState<AgentHealthSnapshot | null>(null);
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isPolling, setIsPolling] = useState(false);
@@ -104,6 +109,17 @@ export function useAgent() {
       setSessions(result.sessions || []);
     } catch {
       // Agent not running
+    }
+  }, []);
+
+  const fetchHealth = useCallback(async () => {
+    try {
+      const result = await invoke<AgentHealthSnapshot>("agent_ipc", { method: "health" });
+      setHealth(result);
+      return result;
+    } catch {
+      setHealth(null);
+      return null;
     }
   }, []);
 
@@ -260,6 +276,7 @@ export function useAgent() {
 
   return {
     agentStatus,
+    health,
     sessions,
     error,
     isPolling,
@@ -273,6 +290,7 @@ export function useAgent() {
     redeemCode,
     fetchStatus,
     fetchSessions,
+    fetchHealth,
     pausePolling,
     resumePolling,
     tokenRevoked,

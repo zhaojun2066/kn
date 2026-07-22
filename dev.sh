@@ -88,6 +88,8 @@ cat > "$PLIST_PATH" <<EOF
         <string>http://localhost:8080</string>
         <key>KN_HOME</key>
         <string>$DEV_KN_HOME</string>
+        <key>KN_RUNTIME_ENV</key>
+        <string>development</string>
     </dict>
 </dict>
 </plist>

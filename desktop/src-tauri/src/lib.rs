@@ -1,5 +1,6 @@
 mod agent_ipc;
 mod agent_manager;
+mod agent_runtime;
 mod commands;
 mod hook_logs;
 mod hook_manager;
@@ -177,14 +178,15 @@ pub fn run() {
         .manage(pty_state)
         .manage(cancel_state)
         .setup(|app| {
-            let agent_dir = kn_common::path::agent_dir();
+            let agent_runtime = agent_runtime::AgentRuntime::current();
+            let agent_dir = agent_runtime.agent_dir();
             let agent_bin = agent_dir.join("kn-agent");
             let plist_dir = kn_common::path::home_dir().join("Library").join("LaunchAgents");
-            let plist_path = plist_dir.join("com.kn.agent.plist");
+            let plist_path = plist_dir.join(format!("{}.plist", agent_runtime.launchd_label));
             let log_dir = agent_dir.join("logs");
             let uid = unsafe { libc::getuid() };
             let domain = format!("gui/{}", uid);
-            let service_name = format!("gui/{}/com.kn.agent", uid);
+            let service_name = format!("gui/{}/{}", uid, agent_runtime.launchd_label);
 
             let _ = std::fs::create_dir_all(&agent_dir);
 
@@ -229,13 +231,22 @@ pub fn run() {
 
                 // 3. Always write plist (ensures env vars match dev config)
                 let _ = std::fs::create_dir_all(&log_dir);
+                let agent_bin_plist = agent_runtime::escape_plist_value(&agent_bin.display().to_string());
+                let stdout_log_plist = agent_runtime::escape_plist_value(
+                    &log_dir.join("stdout.log").display().to_string(),
+                );
+                let stderr_log_plist = agent_runtime::escape_plist_value(
+                    &log_dir.join("stderr.log").display().to_string(),
+                );
+                let config_dir_plist =
+                    agent_runtime::escape_plist_value(&agent_runtime.config_dir.display().to_string());
                 let plist_content = format!(
                     r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.kn.agent</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{bin}</string>
@@ -260,13 +271,20 @@ pub fn run() {
         <string>ws://localhost:8081/v1/ws</string>
         <key>KN_CLOUD_HTTP_URL</key>
         <string>http://localhost:8080</string>
+        <key>KN_HOME</key>
+        <string>{config_dir}</string>
+        <key>KN_RUNTIME_ENV</key>
+        <string>{runtime_env}</string>
     </dict>
 </dict>
 </plist>
 "#,
-                    bin = agent_bin.display(),
-                    stdout_log = log_dir.join("stdout.log").display(),
-                    stderr_log = log_dir.join("stderr.log").display(),
+                    bin = agent_bin_plist,
+                    stdout_log = stdout_log_plist,
+                    stderr_log = stderr_log_plist,
+                    label = agent_runtime.launchd_label,
+                    config_dir = config_dir_plist,
+                    runtime_env = agent_runtime.environment_name(),
                 );
                 let _ = std::fs::create_dir_all(&plist_dir);
                 let _ = std::fs::write(&plist_path, plist_content);
@@ -322,29 +340,58 @@ pub fn run() {
                 }
 
                 if agent_bin.exists() {
-                    if agent_updated {
-                        eprintln!("[kn] kn-agent updated, restarting launchd service...");
+                    // Existing installations may predate the PATH entry required for
+                    // package-manager-installed tools such as gh. Rewriting the plist
+                    // changes Agent environment variables, so it must restart the
+                    // running service before bootstrapping it again.
+                    let config_dir_plist = agent_runtime::escape_plist_value(
+                        &agent_runtime.config_dir.display().to_string(),
+                    );
+                    let plist_needs_update = std::fs::read_to_string(&plist_path)
+                        .map(|content| {
+                            !content.contains("<key>PATH</key>")
+                                || !content.contains(&format!("<string>{}</string>", config_dir_plist))
+                                || !content.contains(&format!("<string>{}</string>", agent_runtime.environment_name()))
+                                || !content.contains(&format!("<string>{}</string>", agent_runtime.launchd_label))
+                        })
+                        .unwrap_or(true);
+                    if agent_runtime::should_restart_agent(agent_updated, plist_needs_update) {
+                        eprintln!("[kn] kn-agent configuration updated, restarting launchd service...");
                         let _ = std::process::Command::new("launchctl")
                             .args(["bootout", &service_name])
                             .output();
                         std::thread::sleep(std::time::Duration::from_millis(500));
                     }
 
-                    // Existing installations may predate the PATH entry required for
-                    // package-manager-installed tools such as gh. Rewrite only when
-                    // the plist is absent or lacks that environment setting.
-                    let plist_needs_path_migration = std::fs::read_to_string(&plist_path)
-                        .map(|content| !content.contains("<key>PATH</key>"))
-                        .unwrap_or(true);
-                    if plist_needs_path_migration {
+                    if plist_needs_update {
                         let _ = std::fs::create_dir_all(&log_dir);
+                        let agent_bin_plist =
+                            agent_runtime::escape_plist_value(&agent_bin.display().to_string());
+                        let stdout_log_plist = agent_runtime::escape_plist_value(
+                            &log_dir.join("stdout.log").display().to_string(),
+                        );
+                        let stderr_log_plist = agent_runtime::escape_plist_value(
+                            &log_dir.join("stderr.log").display().to_string(),
+                        );
+                        let agent_env_vars = format!(
+                            r#"<key>KN_CLOUD_URL</key>
+        <string>wss://api.shark.kim/v1/ws</string>
+        <key>KN_CLOUD_HTTP_URL</key>
+        <string>https://api.shark.kim</string>
+        <key>KN_HOME</key>
+        <string>{}</string>
+        <key>KN_RUNTIME_ENV</key>
+        <string>{}</string>"#,
+                            config_dir_plist,
+                            agent_runtime.environment_name(),
+                        );
                         let plist_content = format!(
                             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.kn.agent</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{bin}</string>
@@ -370,13 +417,11 @@ pub fn run() {
 </dict>
 </plist>
 "#,
-                            bin = agent_bin.display(),
-                            stdout_log = log_dir.join("stdout.log").display(),
-                            stderr_log = log_dir.join("stderr.log").display(),
-                            env_vars = r#"<key>KN_CLOUD_URL</key>
-        <string>wss://api.shark.kim/v1/ws</string>
-        <key>KN_CLOUD_HTTP_URL</key>
-        <string>https://api.shark.kim</string>"#,
+                            bin = agent_bin_plist,
+                            stdout_log = stdout_log_plist,
+                            stderr_log = stderr_log_plist,
+                            env_vars = agent_env_vars,
+                            label = agent_runtime.launchd_label,
                         );
                         let _ = std::fs::create_dir_all(&plist_dir);
                         let _ = std::fs::write(&plist_path, plist_content);

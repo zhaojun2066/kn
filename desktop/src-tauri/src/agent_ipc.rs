@@ -4,7 +4,6 @@
 
 use std::time::Duration;
 
-use kn_common::path::agent_dir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -12,7 +11,9 @@ use tokio::net::UnixStream;
 const MAX_RESPONSE_LEN: usize = 1_048_576;
 
 fn ipc_socket_path() -> std::path::PathBuf {
-    agent_dir().join("ipc.sock")
+    crate::agent_runtime::AgentRuntime::current()
+        .agent_dir()
+        .join("ipc.sock")
 }
 
 #[tauri::command]

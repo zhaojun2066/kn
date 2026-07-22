@@ -2,7 +2,9 @@ import React, { useState, useCallback, useMemo, useEffect, useRef } from "react"
 import { X, ChevronRight, ChevronDown, Radio, Wifi, WifiOff, AlertTriangle, Loader2, Monitor, Globe, Gift, ExternalLink, Smartphone, CheckSquare, Square, TerminalSquare } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { AgentHealthSection } from "./AgentHealthSection";
 import type { AgentSession, StatusIcon, AgentState, AgentStateName } from "../hooks/useAgent";
+import { buildRedactedHealthReport } from "../lib/healthReport";
 
 const stateLabelCn: Record<AgentStateName, string> = {
   stopped: "已停止",
@@ -156,7 +158,7 @@ function SessionRow({
 // ── AgentPanel ────────────────────────────────────────────────
 
 export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, agent }: AgentPanelProps) {
-  const { agentStatus, sessions, isRunning, isBound, isBinding, isConnected, statusIcon: icon, isPolling, fetchSessions } = agent;
+  const { agentStatus, health, sessions, isRunning, isBound, isBinding, isConnected, statusIcon: icon, isPolling, fetchSessions, fetchHealth } = agent;
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sessionTab, setSessionTab] = useState<"local" | "remote">("local");
   const [selectedLocalNids, setSelectedLocalNids] = useState<Set<string>>(new Set());
@@ -164,6 +166,9 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
   const [remotingSessions, setRemotingSessions] = useState<Set<string>>(new Set());
   const [killConfirm, setKillConfirm] = useState<AgentSession[] | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isHealthLoading, setIsHealthLoading] = useState(false);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [copiedHealthReport, setCopiedHealthReport] = useState(false);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const runningSessions = useMemo(() => sessions.filter((s) => s.status === "running"), [sessions]);
@@ -185,6 +190,29 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
       if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
     };
   }, []);
+
+  const refreshHealth = useCallback(async () => {
+    setIsHealthLoading(true);
+    setHealthError(null);
+    const result = await fetchHealth();
+    setIsHealthLoading(false);
+    if (!result) setHealthError("暂时无法读取 Agent 健康状态");
+  }, [fetchHealth]);
+
+  useEffect(() => {
+    void refreshHealth();
+  }, [refreshHealth]);
+
+  const copyHealthReport = useCallback(async () => {
+    if (!health) return;
+    try {
+      await navigator.clipboard.writeText(buildRedactedHealthReport(health));
+      setCopiedHealthReport(true);
+      setTimeout(() => setCopiedHealthReport(false), 2500);
+    } catch {
+      setHealthError("无法复制诊断信息，请检查系统剪贴板权限");
+    }
+  }, [health]);
 
   // ── 本地终端操作（底层仍是 Agent session） ──
 
@@ -332,6 +360,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
   const hostname = agentStatus?.hostname;
   const uptime = agentStatus?.uptime_secs;
   const purchaseUrl = agentStatus?.purchase_url;
+  const agentRuntime = agentStatus?.environment === "development" ? "开发环境" : "生产环境";
 
   return (
     <>
@@ -376,7 +405,21 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                 运行 {formatUptime(uptime)}
               </div>
             )}
+            {agentStatus && (
+              <div className="text-[11px] font-mono text-app-text-muted">
+                {agentRuntime} · PID {agentStatus.pid ?? "—"} · v{agentStatus.version ?? "—"}
+              </div>
+            )}
           </div>
+
+          <AgentHealthSection
+            health={health}
+            isLoading={isHealthLoading}
+            error={healthError}
+            copied={copiedHealthReport}
+            onRefresh={() => void refreshHealth()}
+            onCopy={() => void copyHealthReport()}
+          />
 
           {/* ── Error message ── */}
           {errorMsg && (

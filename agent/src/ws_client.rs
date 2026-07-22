@@ -17,6 +17,8 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_util::sync::CancellationToken;
 
+mod outbound_frame;
+
 // ── Backoff configuration ───────────────────────────────────
 
 const INITIAL_BACKOFF_MS: u64 = 1000;
@@ -306,14 +308,16 @@ async fn connect_and_run(
         let mut pong_check = tokio::time::interval(PONG_TIMEOUT);
         let mut outgoing_rx = outgoing_rx; // take ownership
 
-        loop {
+        'write_loop: loop {
             tokio::select! {
                 _ = ping_tick.tick() => {
                     let ping = WsMessageBuilder::ping();
-                    if let Err(e) = write.send(Message::Text(ping)).await {
-                        tracing::warn!("WSS 发送 ping 失败: {}", e);
-                        *write_error_clone.lock().await = Some(format!("write error: {}", e));
-                        break;
+                    for frame in outbound_frame::protect_outbound_text(ping) {
+                        if let Err(e) = write.send(Message::Text(frame)).await {
+                            tracing::warn!("WSS 发送 ping 失败: {}", e);
+                            *write_error_clone.lock().await = Some(format!("write error: {}", e));
+                            break 'write_loop;
+                        }
                     }
                 }
                 _ = pong_check.tick() => {
@@ -327,10 +331,12 @@ async fn connect_and_run(
                 msg = outgoing_rx.recv() => {
                     match msg {
                         Some(text) => {
-                            if let Err(e) = write.send(Message::Text(text)).await {
-                                tracing::warn!("WSS 发送消息失败: {}", e);
-                                *write_error_clone.lock().await = Some(format!("write error: {}", e));
-                                break;
+                            for frame in outbound_frame::protect_outbound_text(text) {
+                                if let Err(e) = write.send(Message::Text(frame)).await {
+                                    tracing::warn!("WSS 发送消息失败: {}", e);
+                                    *write_error_clone.lock().await = Some(format!("write error: {}", e));
+                                    break 'write_loop;
+                                }
                             }
                         }
                         None => break,
@@ -417,5 +423,45 @@ mod tests {
 
         assert_eq!(preview.chars().count(), 200);
         assert!(preview.ends_with('中'));
+    }
+
+    #[test]
+    fn oversized_project_result_is_replaced_without_exceeding_frame_limit() {
+        let original = serde_json::json!({
+            "type": "project_git_status_result",
+            "data": {
+                "projectKey": "17:/repo", "deviceId": 17, "projectPath": "/repo",
+                "requestId": "r1", "files": ["x".repeat(800 * 1024)]
+            }
+        }).to_string();
+        let frames = outbound_frame::protect_outbound_text(original);
+        assert_eq!(frames.len(), 1);
+        let value: serde_json::Value = serde_json::from_str(&frames[0]).unwrap();
+        assert_eq!(value["type"], "project_git_status_result");
+        assert_eq!(value["data"]["status"], "responseTooLarge");
+        assert_eq!(value["data"]["projectKey"], "17:/repo");
+        assert_eq!(value["data"]["requestId"], "r1");
+        assert!(frames[0].len() <= outbound_frame::MAX_TEXT_FRAME_BYTES);
+    }
+
+    #[test]
+    fn oversized_log_window_result_keeps_required_window_fields() {
+        let original = serde_json::json!({
+            "type": "project_verify_log_window_result",
+            "data": {
+                "projectKey": "17:/repo", "deviceId": 17, "projectPath": "/repo",
+                "requestId": "r-log", "runId": "run-1", "stage": "build",
+                "lines": ["x".repeat(800 * 1024)]
+            }
+        }).to_string();
+        let frames = outbound_frame::protect_outbound_text(original);
+        let value: serde_json::Value = serde_json::from_str(&frames[0]).unwrap();
+        let data = &value["data"];
+        assert_eq!(data["status"], "responseTooLarge");
+        assert_eq!(data["startLine"], 0);
+        assert_eq!(data["endLine"], 0);
+        assert_eq!(data["centerLine"], 0);
+        assert!(data["lines"].is_array());
+        assert_eq!(data["contentTruncated"], true);
     }
 }

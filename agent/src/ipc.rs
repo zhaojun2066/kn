@@ -14,6 +14,7 @@
 //! | Method             | Params                             | Description                          |
 //! |--------------------|------------------------------------|--------------------------------------|
 //! | status             | —                                  | Agent state, crash_count, safe_mode  |
+//! | health             | —                                  | Redacted capability and health summary |
 //! | sessions           | —                                  | List all sessions                    |
 //! | bind / bindStartOrResume | —                             | Create or resume device binding      |
 //! | bindingStatus      | —                                  | Read durable binding progress        |
@@ -111,6 +112,16 @@ fn parse_error(message: &str) -> String {
     .to_string();
     s.push('\n');
     s
+}
+
+/// The Desktop health endpoint returns exactly the Agent's public snapshot.
+/// Serialization cannot fail for this fixed data-only schema; if it ever does,
+/// return a stable IPC error instead of exposing internal details.
+fn health_response(id: &str, snapshot: crate::health::HealthSnapshot) -> String {
+    match serde_json::to_value(snapshot) {
+        Ok(summary) => ok_response(id, summary),
+        Err(_) => err_response(id, "HEALTH_ERROR", "健康检查暂时不可用"),
+    }
 }
 
 // ── IpcServer ─────────────────────────────────────────────────
@@ -416,6 +427,7 @@ impl IpcHandle {
     async fn dispatch(&self, req: &IpcRequest) -> String {
         match req.method.as_str() {
             "status" => self.handle_status(req).await,
+            "health" => self.handle_health(req).await,
             "sessions" => self.handle_sessions(req).await,
             "bind" | "bindStartOrResume" => self.handle_bind(req).await,
             "bindingStatus" => self.handle_binding_status(req).await,
@@ -459,9 +471,26 @@ impl IpcHandle {
                 "uptime_secs": self.state.uptime_secs(),
                 "hostname": self.hostname,
                 "purchase_url": self.purchase_url,
+                "pid": std::process::id(),
+                "version": env!("CARGO_PKG_VERSION"),
+                "environment": crate::health::normalized_environment(std::env::var("KN_RUNTIME_ENV").ok().as_deref()),
                 "binding": binding,
             }),
         )
+    }
+
+    /// `health` — read-only, redacted Agent capability snapshot shared with iOS.
+    async fn handle_health(&self, req: &IpcRequest) -> String {
+        let state = self.state.current().await;
+        let environment =
+            crate::health::normalized_environment(std::env::var("KN_RUNTIME_ENV").ok().as_deref());
+        let snapshot = crate::health::cached_probe_snapshot(
+            env!("CARGO_PKG_VERSION"),
+            environment,
+            state.name(),
+        )
+        .await;
+        health_response(&req.id, snapshot)
     }
 
     /// `bindingStatus` — durable status for a pairing which can survive the Desktop dialog.
@@ -1728,5 +1757,44 @@ mod tests {
         assert!(!BindPhase::SavingCredential.can_cancel());
         assert!(!BindPhase::Activating.can_cancel());
         assert!(!BindPhase::Finalizing.can_cancel());
+    }
+
+    #[test]
+    fn runtime_environment_only_exposes_supported_values() {
+        assert_eq!(
+            crate::health::normalized_environment(Some("development")),
+            "development"
+        );
+        assert_eq!(
+            crate::health::normalized_environment(Some("production")),
+            "production"
+        );
+        assert_eq!(
+            crate::health::normalized_environment(Some("staging")),
+            "production"
+        );
+        assert_eq!(crate::health::normalized_environment(None), "production");
+    }
+
+    #[test]
+    fn health_response_uses_the_redacted_snapshot_contract() {
+        let summary = crate::health::HealthSnapshot::new_for_test(
+            "1.2.3",
+            "production",
+            crate::health::ConnectionHealth::connected(),
+            vec![crate::health::ToolHealth::available(
+                "git",
+                Some("2.45".into()),
+            )],
+        );
+
+        let response = health_response("health-1", summary);
+        let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(parsed["id"], "health-1");
+        assert_eq!(parsed["result"]["schemaVersion"], 1);
+        assert_eq!(parsed["result"]["tools"][0]["name"], "git");
+        assert!(parsed["result"].get("token").is_none());
+        assert!(parsed["result"].get("path").is_none());
     }
 }

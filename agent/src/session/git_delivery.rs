@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
@@ -8,6 +9,7 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_MESSAGE_BYTES: usize = 4 * 1024;
 const MAX_SELECTED_FILES: usize = 100;
 const MAX_OUTPUT_BYTES: usize = 8 * 1024;
+pub const GIT_STATUS_PAGE_SIZE: usize = 100;
 
 #[derive(Debug, Clone)]
 struct StatusEntry {
@@ -16,6 +18,16 @@ struct StatusEntry {
 }
 
 pub async fn status(project_key: &str, cwd: &str) -> Value {
+    status_page(project_key, cwd, 0, GIT_STATUS_PAGE_SIZE as i64, None).await
+}
+
+pub async fn status_page(
+    project_key: &str,
+    cwd: &str,
+    offset: i64,
+    limit: i64,
+    requested_snapshot_id: Option<&str>,
+) -> Value {
     let branch = match git_output(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
         Ok(branch) if branch.trim() != "HEAD" => branch.trim().to_string(),
         Ok(_) => {
@@ -30,23 +42,14 @@ pub async fn status(project_key: &str, cwd: &str) -> Value {
         }
         Err(_) => return status_error(project_key, "error", "无法读取 Git 状态"),
     };
-    let raw_status = match git_output(
-        cwd,
-        &[
-            "-c",
-            "core.quotePath=false",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--branch",
-            "--untracked-files=all",
-        ],
-    )
-    .await
-    {
+    let raw_status = match raw_status(cwd).await {
         Ok(value) => value,
         Err(_) => return status_error(project_key, "error", "无法读取 Git 状态"),
     };
+    let snapshot_id = snapshot_id(&raw_status);
+    if requested_snapshot_id.is_some_and(|expected| expected != snapshot_id) {
+        return workspace_changed(project_key);
+    }
     let (upstream, ahead, behind, entries) = parse_status(&raw_status);
     let upstream_remote = git_output(
         cwd,
@@ -86,17 +89,24 @@ pub async fn status(project_key: &str, cwd: &str) -> Value {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let has_index_changes = entries.iter().any(|entry| is_staged(&entry.raw_status));
+    let total_files = entries.len();
+    let offset = offset.max(0) as usize;
+    let limit = limit.clamp(1, GIT_STATUS_PAGE_SIZE as i64) as usize;
+    let page_end = offset.saturating_add(limit).min(total_files);
     let files: Vec<Value> = entries
-        .into_iter()
+        .iter()
+        .skip(offset)
+        .take(limit)
         .map(|entry| {
             json!({
-                "path": entry.path,
-                "rawStatus": entry.raw_status,
+                "path": &entry.path,
+                "rawStatus": &entry.raw_status,
                 "changeType": change_type(&entry.raw_status),
                 "isStaged": is_staged(&entry.raw_status)
             })
         })
         .collect();
+    let has_more = page_end < total_files;
     json!({
         "projectKey": project_key,
         "status": "ok",
@@ -109,7 +119,13 @@ pub async fn status(project_key: &str, cwd: &str) -> Value {
         "head": head,
         "latestCommit": latest_commit,
         "hasIndexChanges": has_index_changes,
-        "files": files
+        "files": files,
+        "totalFiles": total_files,
+        "offset": offset,
+        "nextOffset": page_end,
+        "hasMore": has_more,
+        "truncated": has_more,
+        "snapshotId": snapshot_id
     })
 }
 
@@ -124,21 +140,18 @@ pub async fn commit(project_key: &str, cwd: &str, message: &str, paths: &[String
     if before["hasIndexChanges"].as_bool() == Some(true) {
         return commit_error(project_key, "indexHasChanges");
     }
-    let available: HashSet<String> = before["files"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|file| file["path"].as_str().map(str::to_string))
-        .collect();
+    let entries = match raw_status(cwd).await {
+        Ok(raw) => parse_status(&raw).3,
+        Err(_) => return commit_error(project_key, "error"),
+    };
+    let available: HashSet<String> = entries.iter().map(|entry| entry.path.clone()).collect();
     if paths.iter().any(|path| !available.contains(path)) {
         return commit_error(project_key, "pathDenied");
     }
-    let untracked: Vec<String> = before["files"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|file| file["rawStatus"].as_str() == Some("??"))
-        .filter_map(|file| file["path"].as_str().map(str::to_string))
+    let untracked: Vec<String> = entries
+        .iter()
+        .filter(|entry| entry.raw_status == "??")
+        .map(|entry| entry.path.clone())
         .filter(|path| paths.contains(path))
         .collect();
     if !untracked.is_empty() {
@@ -196,6 +209,70 @@ pub async fn commit(project_key: &str, cwd: &str, message: &str, paths: &[String
         "status": "ok",
         "commit": head,
         "message": message.trim(),
+        "commitScope": "selected",
+        "committedFileCount": paths.len(),
+        "gitStatus": status(project_key, cwd).await
+    })
+}
+
+/// Commits every Git-visible working-tree change through an isolated temporary index.
+/// The repository's real staging area remains untouched throughout this operation.
+pub async fn commit_all_working_tree(project_key: &str, cwd: &str, message: &str) -> Value {
+    if message.trim().is_empty() || message.len() > MAX_MESSAGE_BYTES {
+        return commit_error(project_key, "invalidMessage");
+    }
+    let index_lock = match acquire_real_index_lock(cwd).await {
+        Ok(lock) => lock,
+        Err(IndexLockError::Busy) => return commit_error(project_key, "indexHasChanges"),
+        Err(IndexLockError::Git(error)) => return commit_error(project_key, commit_error_code(error)),
+        Err(IndexLockError::Io) => return commit_error(project_key, "error"),
+    };
+    let raw = match raw_status(cwd).await {
+        Ok(raw) => raw,
+        Err(_) => return commit_error(project_key, "error"),
+    };
+    let entries = parse_status(&raw).3;
+    if entries.iter().any(|entry| is_staged(&entry.raw_status)) {
+        return commit_error(project_key, "indexHasChanges");
+    }
+    if entries.is_empty() {
+        return commit_error(project_key, "nothingToCommit");
+    }
+
+    let temp_dir = match create_private_temp_dir().await {
+        Ok(dir) => dir,
+        Err(_) => return commit_error(project_key, "error"),
+    };
+    let index_path = temp_dir.path().join("index");
+    let message_file = temp_dir.path().join("message.txt");
+    let result = async {
+        tokio::fs::write(&message_file, message.trim()).await.map_err(|_| GitError::Io)?;
+        let env = [("GIT_INDEX_FILE", index_path.to_string_lossy().into_owned())];
+        git_output_with_env(cwd, &["read-tree".to_string(), "HEAD".to_string()], &env).await?;
+        git_output_with_env(cwd, &["add".to_string(), "-A".to_string()], &env).await?;
+        git_output_with_env(
+            cwd,
+            &[
+                "commit".to_string(),
+                "-F".to_string(),
+                message_file.to_string_lossy().into_owned(),
+            ],
+            &env,
+        ).await
+    }.await;
+    drop(index_lock);
+    drop(temp_dir);
+    if let Err(error) = result {
+        return commit_error(project_key, commit_error_code(error));
+    }
+    let head = git_output(cwd, &["rev-parse", "--short", "HEAD"]).await.ok().map(|value| value.trim().to_string());
+    json!({
+        "projectKey": project_key,
+        "status": "ok",
+        "commit": head,
+        "message": message.trim(),
+        "commitScope": "allWorkingTree",
+        "committedFileCount": entries.len(),
         "gitStatus": status(project_key, cwd).await
     })
 }
@@ -262,6 +339,44 @@ async fn git_output(cwd: &str, args: &[&str]) -> Result<String, GitError> {
             .collect::<Vec<_>>(),
     )
     .await
+}
+
+async fn raw_status(cwd: &str) -> Result<String, GitError> {
+    git_output_with_env(
+        cwd,
+        &[
+            "-c".to_string(),
+            "core.quotePath=false".to_string(),
+            "status".to_string(),
+            "--porcelain=v1".to_string(),
+            "-z".to_string(),
+            "--branch".to_string(),
+            "--untracked-files=all".to_string(),
+        ],
+        &[("GIT_OPTIONAL_LOCKS", "0".to_string())],
+    )
+    .await
+}
+
+async fn git_output_with_env(
+    cwd: &str,
+    args: &[String],
+    env: &[(&'static str, String)],
+) -> Result<String, GitError> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
+    for (key, value) in env {
+        command.env(*key, value);
+    }
+    let output = timeout(COMMAND_TIMEOUT, command.output()).await.map_err(|_| GitError::Timeout)?.map_err(|_| GitError::Io)?;
+    if !output.status.success() {
+        return Err(GitError::Failed(String::from_utf8_lossy(&output.stderr).chars().take(MAX_OUTPUT_BYTES).collect()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn snapshot_id(raw_status: &str) -> String {
+    hex::encode(Sha256::digest(raw_status.as_bytes()))
 }
 
 async fn git_output_owned(cwd: &str, args: &[String]) -> Result<String, GitError> {
@@ -380,7 +495,32 @@ fn is_safe_remote(remote: &str) -> bool {
 }
 
 fn status_error(project_key: &str, status: &str, message: &str) -> Value {
-    json!({"projectKey": project_key, "status": status, "files": [], "message": message})
+    json!({
+        "projectKey": project_key,
+        "status": status,
+        "files": [],
+        "totalFiles": 0,
+        "offset": 0,
+        "nextOffset": 0,
+        "hasMore": false,
+        "truncated": false,
+        "snapshotId": null,
+        "message": message
+    })
+}
+fn workspace_changed(project_key: &str) -> Value {
+    json!({
+        "projectKey": project_key,
+        "status": "workspaceChanged",
+        "files": [],
+        "totalFiles": 0,
+        "offset": 0,
+        "nextOffset": 0,
+        "hasMore": false,
+        "truncated": false,
+        "snapshotId": null,
+        "message": "电脑上的变更已更新，请重新加载"
+    })
 }
 fn commit_error(project_key: &str, status: &str) -> Value {
     json!({"projectKey": project_key, "status": status})
@@ -415,6 +555,187 @@ enum GitError {
     Timeout,
     Io,
     Failed(String),
+}
+
+#[derive(Debug)]
+enum IndexLockError {
+    Busy,
+    Io,
+    Git(GitError),
+}
+
+struct RealIndexLock {
+    path: PathBuf,
+    marker_path: PathBuf,
+    _file: std::fs::File,
+}
+
+impl Drop for RealIndexLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(&self.marker_path);
+    }
+}
+
+struct PrivateTempDir {
+    path: PathBuf,
+}
+
+impl PrivateTempDir {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PrivateTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+async fn acquire_real_index_lock(cwd: &str) -> Result<RealIndexLock, IndexLockError> {
+    let index_path = git_output(cwd, &["rev-parse", "--git-path", "index"])
+        .await
+        .map_err(IndexLockError::Git)?;
+    let index_path = PathBuf::from(index_path.trim());
+    let index_path = if index_path.is_absolute() {
+        index_path
+    } else {
+        Path::new(cwd).join(index_path)
+    };
+    let file_name = index_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(IndexLockError::Io)?;
+    let lock_path = index_path.with_file_name(format!("{file_name}.lock"));
+    let marker_path = index_path.with_file_name(format!("{file_name}.lock.kn-agent"));
+    recover_stale_lock_files(&lock_path, &marker_path);
+
+    // The sidecar is written first so a crash before the Git lock is created
+    // leaves no ambiguous lock behind. A plain index.lock without this sidecar
+    // is never removed automatically because it may belong to Git itself.
+    let marker = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            let pid = std::process::id();
+            if writeln!(file, "pid={pid}").is_err() {
+                let _ = std::fs::remove_file(&marker_path);
+                return Err(IndexLockError::Io);
+            }
+            file
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(IndexLockError::Busy)
+        }
+        Err(_) => return Err(IndexLockError::Io),
+    };
+    drop(marker);
+    let file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&marker_path);
+            return Err(IndexLockError::Busy)
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(&marker_path);
+            return Err(IndexLockError::Io);
+        }
+    };
+    Ok(RealIndexLock {
+        path: lock_path,
+        marker_path,
+        _file: file,
+    })
+}
+
+/// Startup recovery entry point. It is deliberately conservative: only an
+/// index lock accompanied by a kn-agent marker for a dead PID is removed.
+pub async fn recover_stale_agent_lock(cwd: &str) {
+    let Ok(index_path) = git_output(cwd, &["rev-parse", "--git-path", "index"]).await else {
+        return;
+    };
+    let index_path = PathBuf::from(index_path.trim());
+    let index_path = if index_path.is_absolute() {
+        index_path
+    } else {
+        Path::new(cwd).join(index_path)
+    };
+    let Some(file_name) = index_path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let lock_path = index_path.with_file_name(format!("{file_name}.lock"));
+    let marker_path = index_path.with_file_name(format!("{file_name}.lock.kn-agent"));
+    recover_stale_lock_files(&lock_path, &marker_path);
+}
+
+/// Removes only a lock that carries our sidecar marker and whose owning
+/// process is no longer alive. A normal Git `index.lock` is intentionally left
+/// untouched for safety.
+fn recover_stale_lock_files(lock_path: &Path, marker_path: &Path) {
+    if !lock_path.exists() {
+        let _ = std::fs::remove_file(marker_path);
+        return;
+    }
+    let Ok(marker) = std::fs::read_to_string(marker_path) else {
+        return;
+    };
+    let Some(pid) = marker
+        .strip_prefix("pid=")
+        .and_then(|value| value.trim().parse::<libc::pid_t>().ok())
+    else {
+        return;
+    };
+    if pid <= 0 || process_is_alive(pid) {
+        return;
+    }
+    let _ = std::fs::remove_file(lock_path);
+    let _ = std::fs::remove_file(marker_path);
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: libc::pid_t) -> bool {
+    // kill(pid, 0) performs existence/permission checking without signalling.
+    // EPERM still means the process exists, so only ESRCH is considered dead.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: libc::pid_t) -> bool {
+    true
+}
+
+async fn create_private_temp_dir() -> Result<PrivateTempDir, GitError> {
+    let path = std::env::temp_dir().join(format!("kn-git-index-{}", uuid::Uuid::new_v4()));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&path).map_err(|_| GitError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path)
+            .map_err(|_| GitError::Io)?
+            .permissions()
+            .mode()
+            & 0o777;
+        if mode != 0o700 {
+            let _ = std::fs::remove_dir_all(&path);
+            return Err(GitError::Io);
+        }
+    }
+    Ok(PrivateTempDir { path })
 }
 
 #[cfg(test)]
@@ -603,6 +924,133 @@ mod tests {
         assert!(current["files"].as_array().is_some_and(|files| files
             .iter()
             .any(|file| { file["path"] == "RENAMED.md" && file["changeType"] == "renamed" })));
+    }
+
+    #[tokio::test]
+    async fn status_page_returns_only_requested_page_and_snapshot() {
+        let repo = initialized_repo();
+        for index in 0..105 {
+            std::fs::write(repo.path().join(format!("file-{index}.txt")), "new\n")
+                .expect("write untracked file");
+        }
+
+        let first = status_page("device:/repo", repo.path().to_str().expect("utf8 repo"), 0, 100, None).await;
+        assert_eq!(first["status"], "ok");
+        assert_eq!(first["totalFiles"], 105);
+        assert_eq!(first["files"].as_array().map(Vec::len), Some(100));
+        assert_eq!(first["offset"], 0);
+        assert_eq!(first["nextOffset"], 100);
+        assert_eq!(first["hasMore"], true);
+        let snapshot = first["snapshotId"].as_str().expect("snapshot");
+
+        let second = status_page("device:/repo", repo.path().to_str().expect("utf8 repo"), 100, 100, Some(snapshot)).await;
+        assert_eq!(second["status"], "ok");
+        assert_eq!(second["files"].as_array().map(Vec::len), Some(5));
+        assert_eq!(second["offset"], 100);
+        assert_eq!(second["hasMore"], false);
+    }
+
+    #[tokio::test]
+    async fn status_page_rejects_mixed_workspace_snapshot() {
+        let repo = initialized_repo();
+        std::fs::write(repo.path().join("first.txt"), "first\n").expect("write file");
+        let first = status_page("device:/repo", repo.path().to_str().expect("utf8 repo"), 0, 100, None).await;
+        let snapshot = first["snapshotId"].as_str().expect("snapshot").to_string();
+        std::fs::write(repo.path().join("second.txt"), "second\n").expect("write file");
+
+        let result = status_page("device:/repo", repo.path().to_str().expect("utf8 repo"), 100, 100, Some(&snapshot)).await;
+        assert_eq!(result["status"], "workspaceChanged");
+        assert_eq!(result["files"].as_array().map(Vec::len), Some(0));
+        assert_eq!(result["hasMore"], false);
+    }
+
+    #[tokio::test]
+    async fn all_working_tree_commit_uses_temporary_index_and_includes_untracked() {
+        let repo = initialized_repo();
+        std::fs::write(repo.path().join("README.md"), "updated\n").expect("write tracked");
+        std::fs::write(repo.path().join("new.txt"), "new\n").expect("write untracked");
+        std::fs::write(repo.path().join(".gitignore"), "ignored.txt\n").expect("write ignore");
+        std::fs::write(repo.path().join("ignored.txt"), "ignored\n").expect("write ignored");
+        let before_index = std::fs::read(repo.path().join(".git/index")).expect("read real index");
+
+        let result = commit_all_working_tree(
+            "device:/repo",
+            repo.path().to_str().expect("utf8 repo"),
+            "commit everything",
+        ).await;
+
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["commitScope"], "allWorkingTree");
+        assert_eq!(result["committedFileCount"], 3);
+        assert_eq!(std::fs::read(repo.path().join(".git/index")).expect("read real index"), before_index);
+        let names = StdCommand::new("git")
+            .arg("-C").arg(repo.path()).args(["show", "--format=", "--name-only", "HEAD"])
+            .output().expect("read commit names");
+        let names = String::from_utf8_lossy(&names.stdout);
+        assert!(names.contains("README.md"));
+        assert!(names.contains("new.txt"));
+        assert!(names.contains(".gitignore"));
+        assert!(!names.contains("ignored.txt"));
+    }
+
+    #[tokio::test]
+    async fn all_working_tree_commit_holds_the_real_index_lock_until_it_finishes() {
+        let repo = initialized_repo();
+        let index_lock = acquire_real_index_lock(repo.path().to_str().expect("utf8 repo"))
+            .await
+            .expect("acquire real index lock");
+        std::fs::write(repo.path().join("README.md"), "staged\n").expect("write file");
+
+        let output = StdCommand::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["add", "README.md"])
+            .output()
+            .expect("start git add");
+
+        assert!(!output.status.success(), "git add must not race the temporary-index commit");
+        drop(index_lock);
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_removes_only_dead_agent_lock_with_marker() {
+        let repo = initialized_repo();
+        let index = repo.path().join(".git/index");
+        let lock = index.with_file_name("index.lock");
+        let marker = index.with_file_name("index.lock.kn-agent");
+        std::fs::write(&lock, b"").expect("create stale lock");
+        std::fs::write(&marker, b"pid=2147483647\n").expect("create agent marker");
+
+        recover_stale_agent_lock(repo.path().to_str().expect("utf8 repo")).await;
+
+        assert!(!lock.exists());
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_keeps_unmarked_git_lock() {
+        let repo = initialized_repo();
+        let lock = repo.path().join(".git/index.lock");
+        std::fs::write(&lock, b"").expect("create git lock");
+
+        recover_stale_agent_lock(repo.path().to_str().expect("utf8 repo")).await;
+
+        assert!(lock.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn all_working_tree_temporary_directory_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = create_private_temp_dir().await.expect("create private temp directory");
+        let permissions = std::fs::metadata(temp_dir.path())
+            .expect("temporary directory metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(permissions, 0o700);
     }
 
     #[tokio::test]

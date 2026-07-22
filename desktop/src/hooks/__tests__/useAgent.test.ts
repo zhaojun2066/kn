@@ -91,6 +91,26 @@ describe("useAgent", () => {
     expect(result.current.statusIcon).toBe("offline");
   });
 
+  it("fetchHealth reads the Agent redacted health endpoint", async () => {
+    const health = {
+      schemaVersion: 1,
+      generatedAt: 123,
+      agent: { version: "1.2.3", environment: "production" as const },
+      connection: { state: "connected" as const },
+      tools: [{ name: "git", state: "available" as const, version: "2.45" }],
+    };
+    mockInvoke.mockResolvedValue(health);
+
+    const { result } = renderHook(() => useAgent());
+
+    await act(async () => {
+      await result.current.fetchHealth();
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("agent_ipc", { method: "health" });
+    expect(result.current.health).toEqual(health);
+  });
+
   // ── fetchSessions ──────────────────────────────────────────
 
   it("fetchSessions populates sessions array", async () => {

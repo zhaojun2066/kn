@@ -30,6 +30,7 @@ clap.workspace = true
 sysinfo.workspace = true
 nanoid.workspace = true
 uuid.workspace = true
+sha2.workspace = true
 async-trait = "0.1"
 libc.workspace = true
 url = "2"

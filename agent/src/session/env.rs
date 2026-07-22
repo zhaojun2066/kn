@@ -1,3 +1,6 @@
+use tokio::process::Command;
+use tokio::time::{timeout, Duration};
+
 /// TOML 字符串转义（用于 Codex CLI -c 参数注入）。
 pub(crate) fn toml_string(s: &str) -> String {
     let escaped = s
@@ -24,6 +27,37 @@ pub fn tool_binary_candidates(tool: &str) -> std::result::Result<&'static [&'sta
 pub fn resolve_tool_path(tool: &str) -> std::result::Result<String, String> {
     let candidates = tool_binary_candidates(tool)?;
     kn_common::path::find_binary(candidates).ok_or_else(|| format!("未找到 {} 二进制", tool))
+}
+
+/// Reads the CLI version once for Cloud's version-specific command catalog.
+/// Failure is deliberately non-fatal: Cloud will select the tool's stable
+/// default catalog when the version is unavailable.
+pub async fn resolve_cli_version(tool: &str) -> Option<String> {
+    let path = resolve_tool_path(tool).ok()?;
+    let output = timeout(
+        Duration::from_secs(2),
+        Command::new(path).arg("--version").output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stdout.split_whitespace().chain(stderr.split_whitespace())
+        .find(|token| looks_like_semver(token))
+        .map(|token| token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '+').to_string())
+}
+
+fn looks_like_semver(value: &str) -> bool {
+    let value = value.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '+');
+    let value = value.strip_prefix('v').unwrap_or(value);
+    let mut parts = value.splitn(3, '.');
+    parts.next().is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        && parts.next().is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        && parts.next().is_some_and(|part| !part.is_empty() && part.chars().next().is_some_and(|c| c.is_ascii_digit()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +166,7 @@ pub(crate) fn prepare_tool_env(
 
 #[cfg(test)]
 mod tests {
-    use super::tool_binary_candidates;
+    use super::{looks_like_semver, tool_binary_candidates};
 
     #[test]
     fn qoder_tools_do_not_fallback_to_codex() {
@@ -144,6 +178,12 @@ mod tests {
         assert_eq!(tool_binary_candidates("codex").unwrap(), &["codex"]);
         assert_eq!(tool_binary_candidates("claude").unwrap(), &["claude"]);
     }
-}
 
-// ── Tests ───────────────────────────────────────────────────
+    #[test]
+    fn semver_detection_accepts_cli_version_tokens_only() {
+        assert!(looks_like_semver("1.4.2"));
+        assert!(looks_like_semver("v1.4.2"));
+        assert!(!looks_like_semver("version"));
+        assert!(!looks_like_semver("1.4"));
+    }
+}

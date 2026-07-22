@@ -318,6 +318,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::ProjectPrStatus { .. } => "project_pr_status",
         AgentIncoming::ProjectPrDetails { .. } => "project_pr_details",
         AgentIncoming::ProjectPrCreate { .. } => "project_pr_create",
+        AgentIncoming::DeviceHealth { .. } => "device_health",
         AgentIncoming::Unknown { .. } => "unknown",
     }
 }

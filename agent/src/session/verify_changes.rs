@@ -438,6 +438,7 @@ impl StageLogFile {
                 "lines": [],
                 "hasEarlier": false,
                 "hasLater": false,
+                "contentTruncated": false,
             });
         }
         let before = before.min(VERIFY_LOG_WINDOW_MAX_CONTEXT);
@@ -445,38 +446,86 @@ impl StageLogFile {
         let center = center_line.clamp(1, line_count);
         let start = center.saturating_sub(before).max(1);
         let end = (center + after).min(line_count);
-        let lines = self.read_line_entries(start, end);
+        let (lines, content_truncated) = self.read_line_entries(start, end, center);
+        let returned_start = lines
+            .first()
+            .and_then(|line| line["lineNumber"].as_u64())
+            .map(|line| line as usize)
+            .unwrap_or(start);
+        let returned_end = lines
+            .last()
+            .and_then(|line| line["lineNumber"].as_u64())
+            .map(|line| line as usize)
+            .unwrap_or(end);
         json!({
             "sessionId": session_id,
             "runId": run_id,
             "stage": self.stage.as_str(),
             "status": "ok",
-            "startLine": start,
-            "endLine": end,
+            "startLine": returned_start,
+            "endLine": returned_end,
             "centerLine": center,
             "lines": lines,
-            "hasEarlier": start > 1,
-            "hasLater": end < line_count,
+            "hasEarlier": returned_start > 1,
+            "hasLater": returned_end < line_count,
+            "contentTruncated": content_truncated,
         })
     }
 
-    fn read_line_entries(&self, start_line: usize, end_line: usize) -> Vec<serde_json::Value> {
-        let text = self.read_lines(start_line, end_line);
-        text.split('\n')
-            .enumerate()
-            .filter_map(|(index, line)| {
-                let line_number = start_line + index;
-                if line_number > end_line
-                    || (line_number == end_line && line.is_empty() && text.ends_with('\n'))
-                {
-                    return None;
-                }
-                Some(json!({
-                    "lineNumber": line_number,
-                    "text": line,
-                }))
-            })
-            .collect()
+    fn read_line_entries(
+        &self,
+        start_line: usize,
+        end_line: usize,
+        center_line: usize,
+    ) -> (Vec<serde_json::Value>, bool) {
+        let mut lines = Vec::with_capacity(end_line.saturating_sub(start_line).saturating_add(1));
+        let mut line_truncated = false;
+        for line_number in start_line..=end_line {
+            let (text, truncated) = self.read_line_text(line_number);
+            line_truncated |= truncated;
+            lines.push((line_number, text));
+        }
+        let (lines, budget_truncated) =
+            crate::session::response_limits::bounded_log_lines_around_center(lines, center_line);
+        (lines, line_truncated || budget_truncated)
+    }
+
+    fn read_line_text(&self, line_number: usize) -> (String, bool) {
+        let Some(start_offset) = self.line_starts.get(line_number - 1).copied() else {
+            return (String::new(), false);
+        };
+        let end_offset = self
+            .line_starts
+            .get(line_number)
+            .copied()
+            .unwrap_or(self.byte_count);
+        if end_offset <= start_offset {
+            return (String::new(), false);
+        }
+        let available = (end_offset - start_offset) as usize;
+        let read_len = available.min(crate::session::response_limits::LOG_LINE_MAX_BYTES + 1);
+        let mut file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(_) => return (String::new(), false),
+        };
+        if file.seek(SeekFrom::Start(start_offset)).is_err() {
+            return (String::new(), false);
+        }
+        let mut buf = vec![0; read_len];
+        if file.read_exact(&mut buf).is_err() {
+            return (String::new(), false);
+        }
+        let mut valid_len = buf.len();
+        while valid_len > 0 && std::str::from_utf8(&buf[..valid_len]).is_err() {
+            valid_len -= 1;
+        }
+        let text = std::str::from_utf8(&buf[..valid_len]).unwrap_or_default();
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        let text = crate::session::response_limits::truncate_utf8(
+            text,
+            crate::session::response_limits::LOG_LINE_MAX_BYTES,
+        );
+        (text, available > read_len || valid_len < buf.len())
     }
 
     fn read_lines(&self, start_line: usize, end_line: usize) -> String {
@@ -523,6 +572,7 @@ struct RunningRun {
     environment: String,
     target: VerifyTarget,
     command_source: String,
+    request_id: Option<String>,
     cancel: CancellationToken,
     started: Instant,
     current_stage: Option<StageName>,
@@ -545,6 +595,7 @@ impl RunningGuard {
         run_id: &str,
         environment: &str,
         target: VerifyTarget,
+        request_id: Option<&str>,
     ) -> Option<Self> {
         let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut guard = set.lock().unwrap_or_else(|e| e.into_inner());
@@ -582,6 +633,7 @@ impl RunningGuard {
                 environment: environment.to_string(),
                 target,
                 command_source: "auto".to_string(),
+                request_id: request_id.map(str::to_owned),
                 cancel: cancel.clone(),
                 started,
                 current_stage: None,
@@ -664,6 +716,7 @@ pub struct ProgressReporter {
     tx: Option<mpsc::UnboundedSender<String>>,
     project_device_id: Option<u64>,
     project_path: Option<String>,
+    request_id: Option<String>,
 }
 
 impl ProgressReporter {
@@ -695,10 +748,12 @@ impl ProgressReporter {
         target: VerifyTarget,
         command_source: &str,
         tx: Option<mpsc::UnboundedSender<String>>,
+        request_id: Option<&str>,
     ) -> Self {
         let mut reporter = Self::new(project_key, run_id, environment, target, command_source, tx);
         reporter.project_device_id = Some(device_id);
         reporter.project_path = Some(project_path.to_string());
+        reporter.request_id = request_id.map(str::to_owned);
         reporter
     }
 
@@ -721,6 +776,7 @@ impl ProgressReporter {
             tx,
             project_device_id: None,
             project_path: None,
+            request_id: None,
         }
     }
 
@@ -734,6 +790,7 @@ impl ProgressReporter {
         command_source: &str,
         tx: Option<mpsc::UnboundedSender<String>>,
         started: Instant,
+        request_id: Option<&str>,
     ) -> Self {
         let mut reporter = Self::new_with_started(
             project_key,
@@ -746,6 +803,7 @@ impl ProgressReporter {
         );
         reporter.project_device_id = Some(device_id);
         reporter.project_path = Some(project_path.to_string());
+        reporter.request_id = request_id.map(str::to_owned);
         reporter
     }
 
@@ -781,7 +839,7 @@ impl ProgressReporter {
     }
 
     fn base_data(&self, status: &str) -> serde_json::Value {
-        json!({
+        let mut data = json!({
             "sessionId": self.session_id,
             "runId": self.run_id,
             "environment": self.environment,
@@ -789,7 +847,11 @@ impl ProgressReporter {
             "commandSource": self.command_source,
             "status": status,
             "elapsedMs": self.started.elapsed().as_millis() as u64,
-        })
+        });
+        if let Some(request_id) = &self.request_id {
+            data["requestId"] = serde_json::Value::String(request_id.clone());
+        }
+        data
     }
 
     fn send(&self, status: &str, stage: Option<StageName>, command: &str, output_tail: &str) {
@@ -824,7 +886,10 @@ impl ProgressReporter {
     }
 }
 
-pub fn cancel(session_id: &str, run_id: &str) -> Option<(String, VerifyTarget, String, Instant)> {
+pub fn cancel(
+    session_id: &str,
+    run_id: &str,
+) -> Option<(String, VerifyTarget, String, Instant, Option<String>)> {
     let set = RUNNING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
     let guard = set.lock().unwrap_or_else(|e| e.into_inner());
     let Some(run) = guard.get(session_id) else {
@@ -839,6 +904,7 @@ pub fn cancel(session_id: &str, run_id: &str) -> Option<(String, VerifyTarget, S
         run.target,
         run.command_source.clone(),
         run.started,
+        run.request_id.clone(),
     ))
 }
 
@@ -978,9 +1044,11 @@ pub async fn verify(
     target: VerifyTarget,
     tx: Option<mpsc::UnboundedSender<String>>,
     project_scope: (u64, String),
+    request_id: Option<&str>,
 ) -> serde_json::Value {
     let run_id = new_run_id();
-    let Some(mut running) = RunningGuard::try_acquire(session_id, &run_id, environment, target)
+    let Some(mut running) =
+        RunningGuard::try_acquire(session_id, &run_id, environment, target, request_id)
     else {
         return error_result(
             session_id,
@@ -1034,6 +1102,7 @@ pub async fn verify(
         target,
         plan.command_source,
         tx,
+        request_id,
     );
     reporter.send("started", None, "", "");
     let mut stages = Vec::new();
@@ -1370,23 +1439,29 @@ pub fn log_issues(
 
     let mut issues = Vec::new();
     let mut truncated = false;
-    for target in targets {
-        let mut found = scan_log_issues(&target, &matchers, limit.saturating_sub(issues.len()));
-        issues.append(&mut found);
+    'targets: for target in targets {
+        let found = scan_log_issues(&target, &matchers, limit.saturating_sub(issues.len()));
+        for issue in found {
+            let (added, item_truncated) =
+                crate::session::response_limits::append_bounded_issue(&mut issues, issue);
+            truncated |= item_truncated;
+            if !added {
+                break 'targets;
+            }
+        }
         if issues.len() >= limit {
             truncated = true;
             break;
         }
     }
 
-    json!({
-        "sessionId": session_id,
-        "runId": run_id,
-        "status": "ok",
-        "rulesVersion": rules_version,
-        "issues": issues,
-        "truncated": truncated,
-    })
+    crate::session::response_limits::bounded_issue_response(
+        session_id,
+        run_id,
+        rules_version,
+        issues,
+        truncated,
+    )
 }
 
 fn scan_log_issues(
@@ -2883,6 +2958,7 @@ fn verify_log_window_error(
         "lines": [],
         "hasEarlier": false,
         "hasLater": false,
+        "contentTruncated": false,
         "message": message,
     })
 }
@@ -3220,6 +3296,25 @@ mod tests {
     }
 
     #[test]
+    fn log_window_keeps_the_requested_center_line_when_earlier_lines_exhaust_the_budget() {
+        let dir = unique_temp_dir("verify-log-window-center");
+        fs::create_dir_all(&dir).unwrap();
+        let mut stage = StageLogFile::create(StageName::Build, "test", &dir);
+        for line in 1..=201 {
+            stage.append(&format!("{line}:{}\n", "x".repeat(4 * 1024)));
+        }
+
+        let window = stage.window("17:/repo", "v_center", 101, 100, 100);
+
+        assert!(window["contentTruncated"].as_bool().unwrap_or(false));
+        assert!(window["lines"].as_array().is_some_and(|lines| lines
+            .iter()
+            .any(|line| line["lineNumber"] == 101)));
+        assert!(serde_json::to_vec(&window).unwrap().len() <= 128 * 1024);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn log_availability_uses_finished_time_not_creation_time() {
         let dir = unique_temp_dir("verify-log-finished-ttl");
         fs::create_dir_all(&dir).unwrap();
@@ -3344,6 +3439,7 @@ mod tests {
             VerifyTarget::Build,
             "auto",
             Some(tx),
+            None,
         );
         let spec = cmd(&["/bin/sh", "-c", "printf short-output"], 5);
         let mut progress_output = ProgressOutputBuffer::new();
@@ -3387,6 +3483,26 @@ mod tests {
         assert_eq!(result["status"], "error");
         assert_eq!(result["target"], "all");
         assert_eq!(result["message"], "验证目标不支持");
+    }
+
+    #[test]
+    fn cancelling_run_retains_original_request_id() {
+        let session_id = "cancel-request-id-test";
+        let run_id = "v_cancel_request_id";
+        let running = RunningGuard::try_acquire(
+            session_id,
+            run_id,
+            "default",
+            VerifyTarget::Build,
+            Some("verify-request-1"),
+        )
+        .expect("test run should acquire its isolated session");
+
+        let (_, _, _, _, request_id) =
+            cancel(session_id, run_id).expect("run should be cancellable");
+
+        assert_eq!(request_id.as_deref(), Some("verify-request-1"));
+        drop(running);
     }
 
     fn project_info(name: &str, path: &Path, verify: Option<ProjectVerifyConfig>) -> ProjectInfo {
