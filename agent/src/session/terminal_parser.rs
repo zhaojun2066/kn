@@ -209,7 +209,8 @@ impl TerminalOutputParser {
         let line = strip_ansi(line);
         match self.parser {
             ParserKind::Maven => self.parse_maven(&line),
-            ParserKind::Gradle | ParserKind::AndroidGradle => self.parse_gradle(&line),
+            ParserKind::Gradle => self.parse_gradle(&line),
+            ParserKind::AndroidGradle => { self.parse_gradle(&line); self.parse_android_diagnostic(&line); }
             ParserKind::Pytest => self.parse_pytest(&line),
             ParserKind::Cargo => self.parse_cargo(&line),
             ParserKind::TypeScript => self.parse_typescript(&line),
@@ -350,6 +351,32 @@ impl TerminalOutputParser {
         }
     }
 
+    fn parse_android_diagnostic(&mut self, line: &str) {
+        let lower = line.to_ascii_lowercase();
+        let fixed = [
+            ("aapt2", "Android AAPT2 resource error"),
+            ("manifest merger failed", "Android Manifest merge failed"),
+            ("dex archives", "Android DEX processing error"),
+            ("r8: ", "Android R8/ProGuard error"),
+            ("keystore", "Android signing/keystore error"),
+            ("sdk location not found", "Android SDK environment error"),
+            ("ndk", "Android NDK environment error"),
+            ("unsupported class file major version", "Android JDK/AGP compatibility error"),
+        ];
+        let resource_missing = lower.contains("resource") && lower.contains("not found");
+        let match_item = fixed.iter().find(|(needle, _)| lower.contains(needle));
+        let (needle, label) = match_item.map(|(needle, label)| (*needle, *label)).unwrap_or_else(|| {
+            if resource_missing { ("resource missing", "Android resource missing") } else { ("", "") }
+        });
+        if !needle.is_empty() {
+            // AAPT2 and the other tools emit stable prefixes; retain the full
+            // line for the user while classifying it without global keywords.
+            self.summary_failure = true;
+            self.summary = Some(label.to_string());
+            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: Some((*needle).to_string()), test_name: None, start_line: self.line_number, end_line: self.line_number });
+        }
+    }
+
     fn parse_pytest(&mut self, line: &str) {
         if let Some(rest) = line.strip_prefix("FAILED ") {
             let test_name = rest.split(" - ").next().unwrap_or(rest).trim();
@@ -375,6 +402,7 @@ impl TerminalOutputParser {
     }
 
     fn parse_cargo(&mut self, line: &str) {
+        if self.parse_cargo_json(line) { return; }
         if line.contains("test result: FAILED") || line.contains("could not compile") {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
@@ -411,6 +439,7 @@ impl TerminalOutputParser {
     }
 
     fn parse_go(&mut self, line: &str) {
+        if self.parse_go_json(line) { return; }
         if line == "FAIL" || line.starts_with("FAIL\t") {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
@@ -427,6 +456,65 @@ impl TerminalOutputParser {
                 end_line: self.line_number,
             });
         }
+    }
+
+    fn parse_go_json(&mut self, line: &str) -> bool {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { return false; };
+        let Some(action) = value.get("Action").and_then(|v| v.as_str()) else { return false; };
+        let package = value.get("Package").and_then(|v| v.as_str()).unwrap_or("");
+        match action {
+            "pass" => self.summary = Some(format!("go test passed: {package}")),
+            "fail" => {
+                self.summary_failure = true;
+                self.summary = Some(format!("go test failed: {package}"));
+                if let Some(test) = value.get("Test").and_then(|v| v.as_str()) {
+                    self.errors.push(TerminalParseError { message: format!("failed test: {test}"), file: None, line: None, column: None, code: None, test_name: Some(test.to_string()), start_line: self.line_number, end_line: self.line_number });
+                }
+            }
+            "build-fail" => {
+                self.summary_failure = true;
+                self.summary = Some(format!("go build failed: {package}"));
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn parse_cargo_json(&mut self, line: &str) -> bool {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { return false; };
+        let Some(reason) = value.get("reason").and_then(|v| v.as_str()) else { return false; };
+        match reason {
+            "compiler-message" => {
+                let message = value.get("message").cloned().unwrap_or_default();
+                let level = message.get("level").and_then(|v| v.as_str()).unwrap_or("");
+                if level == "error" {
+                    let rendered = message.get("rendered").and_then(|v| v.as_str()).unwrap_or("compiler error").trim().to_string();
+                    let code = message.get("code").and_then(|v| v.get("code")).and_then(|v| v.as_str()).map(str::to_string);
+                    self.summary_failure = true;
+                    self.summary = Some(rendered.clone());
+                    self.errors.push(TerminalParseError { message: rendered, file: None, line: None, column: None, code, test_name: None, start_line: self.line_number, end_line: self.line_number });
+                }
+            }
+            "test" => {
+                let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+                if event == "failed" {
+                    self.summary_failure = true;
+                    let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("unknown test");
+                    self.summary = Some(format!("cargo test failed: {name}"));
+                    self.errors.push(TerminalParseError { message: format!("failed test: {name}"), file: None, line: None, column: None, code: None, test_name: Some(name.to_string()), start_line: self.line_number, end_line: self.line_number });
+                } else if event == "ok" {
+                    self.summary = Some("cargo test passed".to_string());
+                }
+            }
+            "build-finished" => {
+                if value.get("success").and_then(|v| v.as_bool()) == Some(false) {
+                    self.summary_failure = true;
+                    self.summary = Some("cargo build failed".to_string());
+                }
+            }
+            _ => {}
+        }
+        true
     }
 
     fn parse_xcodebuild(&mut self, line: &str) {

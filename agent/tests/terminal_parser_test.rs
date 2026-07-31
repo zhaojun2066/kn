@@ -126,6 +126,29 @@ fn node_script_resolver_uses_declared_inner_jest() {
 }
 
 #[test]
+fn go_json_fail_event_is_authoritative() {
+    let result = parse(&["go", "test", "-json"], r#"{"Action":"fail","Package":"example/pkg","Test":"TestAdd"}"#, Some(0));
+    assert_eq!(result.parser, "go");
+    assert_eq!(result.status, ParseStatus::Failed);
+    assert_eq!(result.errors[0].test_name.as_deref(), Some("TestAdd"));
+}
+
+#[test]
+fn cargo_json_compiler_message_extracts_code() {
+    let result = parse(&["cargo", "check", "--message-format=json"], r#"{"reason":"compiler-message","message":{"level":"error","rendered":"type mismatch","code":{"code":"E0308"}}}"#, Some(0));
+    assert_eq!(result.status, ParseStatus::Failed);
+    assert_eq!(result.errors[0].code.as_deref(), Some("E0308"));
+}
+
+#[test]
+fn android_resource_diagnostic_is_structured() {
+    let result = parse(&["./gradlew", ":app:assembleDebug"], "AAPT2 error: resource string/app_name not found", Some(0));
+    assert_eq!(result.status, ParseStatus::Failed);
+    assert_eq!(result.parser, "android-gradle");
+    assert_eq!(result.errors[0].code.as_deref(), Some("aapt2"));
+}
+
+#[test]
 fn python_unittest_uses_final_failure_counters() {
     let result = parse(
         &["python", "-m", "unittest"],
