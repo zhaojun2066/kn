@@ -368,17 +368,19 @@ impl TerminalOutputParser {
         let fixed = [
             ("aapt2", "Android AAPT2 resource error"),
             ("manifest merger failed", "Android Manifest merge failed"),
-            ("dex archives", "Android DEX processing error"),
             ("r8: ", "Android R8/ProGuard error"),
-            ("keystore", "Android signing/keystore error"),
+            ("keystore was tampered", "Android signing/keystore error"),
             ("sdk location not found", "Android SDK environment error"),
-            ("ndk", "Android NDK environment error"),
+            ("ndk not found", "Android NDK environment error"),
             ("unsupported class file major version", "Android JDK/AGP compatibility error"),
         ];
         let resource_missing = lower.contains("resource") && lower.contains("not found");
+        let dex_failure = lower.contains("dex") && (lower.contains("error") || lower.contains("failed"));
         let match_item = fixed.iter().find(|(needle, _)| lower.contains(needle));
         let (needle, label) = match_item.map(|(needle, label)| (*needle, *label)).unwrap_or_else(|| {
-            if resource_missing { ("resource missing", "Android resource missing") } else { ("", "") }
+            if resource_missing { ("resource missing", "Android resource missing") }
+            else if dex_failure { ("dex failure", "Android DEX processing error") }
+            else { ("", "") }
         });
         if !needle.is_empty() {
             // AAPT2 and the other tools emit stable prefixes; retain the full

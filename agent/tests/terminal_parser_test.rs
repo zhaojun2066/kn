@@ -149,6 +149,12 @@ fn android_resource_diagnostic_is_structured() {
 }
 
 #[test]
+fn android_environment_info_does_not_fail_successful_build() {
+    let result = parse(&["./gradlew", ":app:assembleDebug"], "Using NDK 26.3.11579264\nBUILD SUCCESSFUL", Some(0));
+    assert_eq!(result.status, ParseStatus::Success);
+}
+
+#[test]
 fn swiftpm_test_summary_controls_status() {
     let result = parse(&["swift", "test"], "Test Suite 'All tests' failed at 2026-01-01", Some(0));
     assert_eq!(result.parser, "swiftpm");
