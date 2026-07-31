@@ -109,3 +109,25 @@ fn unsupported_node_script_uses_generic_exit_parser_until_inner_tool_is_resolved
     assert_eq!(result.status, ParseStatus::Success);
     assert!(result.errors.is_empty());
 }
+
+#[test]
+fn python_unittest_uses_final_failure_counters() {
+    let result = parse(
+        &["python", "-m", "unittest"],
+        "Ran 3 tests in 0.01s\nFAILED (failures=1, errors=0)",
+        Some(1),
+    );
+    assert_eq!(result.parser, "python-unittest");
+    assert_eq!(result.status, ParseStatus::Failed);
+}
+
+#[test]
+fn dotnet_test_zero_failures_is_success_even_with_error_word_in_test_name() {
+    let result = parse(
+        &["dotnet", "test"],
+        "ErrorHandlingTests passed\nPassed! - Failed: 0, Passed: 4, Skipped: 0",
+        Some(0),
+    );
+    assert_eq!(result.parser, "dotnet");
+    assert_eq!(result.status, ParseStatus::Success);
+}

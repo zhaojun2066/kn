@@ -112,6 +112,8 @@ enum ParserKind {
     Go,
     Cargo,
     Xcodebuild,
+    PythonUnittest,
+    Dotnet,
 }
 
 impl ParserKind {
@@ -126,6 +128,8 @@ impl ParserKind {
             Self::Go => "go",
             Self::Cargo => "cargo",
             Self::Xcodebuild => "xcodebuild",
+            Self::PythonUnittest => "python-unittest",
+            Self::Dotnet => "dotnet",
         }
     }
 }
@@ -177,6 +181,8 @@ impl TerminalOutputParser {
             ParserKind::TypeScript => self.parse_typescript(&line),
             ParserKind::Go => self.parse_go(&line),
             ParserKind::Xcodebuild => self.parse_xcodebuild(&line),
+            ParserKind::PythonUnittest => self.parse_python_unittest(&line),
+            ParserKind::Dotnet => self.parse_dotnet(&line),
             _ => {}
         }
     }
@@ -373,6 +379,30 @@ impl TerminalOutputParser {
             self.summary = Some(line.to_string());
         }
     }
+
+    fn parse_python_unittest(&mut self, line: &str) {
+        if line == "OK" {
+            self.summary = Some(line.to_string());
+        } else if line.starts_with("FAILED (") {
+            let failures = counter(line, "failures=").unwrap_or(0);
+            let errors = counter(line, "errors=").unwrap_or(0);
+            self.summary = Some(line.to_string());
+            self.summary_failure = failures > 0 || errors > 0;
+        }
+    }
+
+    fn parse_dotnet(&mut self, line: &str) {
+        if line.starts_with("Passed! -") || line.starts_with("Failed! -") {
+            let failed = counter(line, "Failed:").unwrap_or(0);
+            self.summary = Some(line.to_string());
+            self.summary_failure = failed > 0 || line.starts_with("Failed!");
+        } else if line.contains("Build FAILED") {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+        } else if line.contains("Build succeeded") {
+            self.summary = Some(line.to_string());
+        }
+    }
 }
 
 fn identify(argv: &[String]) -> (ParserKind, TaskType) {
@@ -406,6 +436,8 @@ fn identify(argv: &[String]) -> (ParserKind, TaskType) {
                 "go" => Some(ParserKind::Go),
                 "cargo" => Some(ParserKind::Cargo),
                 "xcodebuild" => Some(ParserKind::Xcodebuild),
+                "python-unittest" => Some(ParserKind::PythonUnittest),
+                "dotnet" => Some(ParserKind::Dotnet),
                 _ => None,
             };
             if let Some(parser) = known {
@@ -434,6 +466,12 @@ fn identify(argv: &[String]) -> (ParserKind, TaskType) {
     }
     if program == "pytest" || arguments.contains(" -m pytest") {
         return (ParserKind::Pytest, TaskType::Test);
+    }
+    if program == "python" && arguments.contains(" -m unittest") {
+        return (ParserKind::PythonUnittest, TaskType::Test);
+    }
+    if program == "dotnet" {
+        return (ParserKind::Dotnet, task_from_words(&arguments));
     }
     if program == "go" {
         return (ParserKind::Go, task_from_words(&arguments));
