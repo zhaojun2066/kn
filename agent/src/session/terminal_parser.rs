@@ -376,6 +376,28 @@ impl TerminalOutputParser {
 }
 
 fn identify(argv: &[String]) -> (ParserKind, TaskType) {
+    if let Some(profiles) = crate::session::terminal_profiles::active() {
+        let command = argv.join(" ");
+        if let Some(profile) = profiles.profiles.iter()
+            .filter(|profile| profile.command_matchers.iter().any(|pattern| regex_lite::Regex::new(pattern).is_ok_and(|regex| regex.is_match(&command))))
+            .max_by_key(|profile| profile.priority)
+        {
+            let known = match profile.id.as_str() {
+                "maven" => Some(ParserKind::Maven),
+                "gradle" => Some(ParserKind::Gradle),
+                "android-gradle" => Some(ParserKind::AndroidGradle),
+                "typescript" => Some(ParserKind::TypeScript),
+                "pytest" => Some(ParserKind::Pytest),
+                "go" => Some(ParserKind::Go),
+                "cargo" => Some(ParserKind::Cargo),
+                "xcodebuild" => Some(ParserKind::Xcodebuild),
+                _ => None,
+            };
+            if let Some(parser) = known {
+                return (parser, task_from_words(&command));
+            }
+        }
+    }
     let program = argv.first().map(|value| basename(value)).unwrap_or("");
     let arguments = argv.join(" ").to_ascii_lowercase();
     if program == "mvn" || program == "mvnw" {

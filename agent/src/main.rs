@@ -607,13 +607,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         cfg.agent_dir.join("terminal-parser-profiles.json"),
     );
     let _ = parser_profiles.load_cached();
-    let profile_client = reqwest::Client::new();
-    if let Err(error) = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        parser_profiles.refresh_from_cloud(&profile_client, &cfg.cloud_http_url),
-    ).await.unwrap_or_else(|_| Err(session::terminal_profiles::ProfileError::Io("profile refresh timeout".into()))) {
-        tracing::debug!(?error, "parser profile refresh skipped; using cached or built-in rules");
-    }
+    session::terminal_profiles::set_active(parser_profiles.current().cloned());
+    let profile_http_url = cfg.cloud_http_url.clone();
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            parser_profiles.refresh_from_cloud(&client, &profile_http_url),
+        ).await.unwrap_or_else(|_| Err(session::terminal_profiles::ProfileError::Io("profile refresh timeout".into())));
+        match result {
+            Ok(()) => session::terminal_profiles::set_active(parser_profiles.current().cloned()),
+            Err(error) => tracing::debug!(?error, "parser profile refresh skipped; using cached or built-in rules"),
+        }
+    });
 
     // 仅清理带有 kn-agent 旁证且所属进程已退出的 Git 锁；普通
     // `.git/index.lock` 永远不自动删除，避免误伤用户正在执行的 Git 操作。

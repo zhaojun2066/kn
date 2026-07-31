@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{OnceLock, RwLock};
 
 const MAX_PROFILE_BYTES: usize = 512 * 1024;
 const MAX_PROFILES: usize = 128;
@@ -58,6 +59,17 @@ pub enum ProfileError {
 pub struct TerminalProfileStore {
     cache_path: PathBuf,
     profiles: Option<TerminalParserProfiles>,
+}
+
+static ACTIVE_PROFILES: OnceLock<RwLock<Option<TerminalParserProfiles>>> = OnceLock::new();
+
+pub fn set_active(profiles: Option<TerminalParserProfiles>) {
+    let lock = ACTIVE_PROFILES.get_or_init(|| RwLock::new(None));
+    if let Ok(mut current) = lock.write() { *current = profiles; }
+}
+
+pub fn active() -> Option<TerminalParserProfiles> {
+    ACTIVE_PROFILES.get().and_then(|lock| lock.read().ok().and_then(|value| value.clone()))
 }
 
 impl TerminalProfileStore {
