@@ -163,6 +163,20 @@ fn flutter_analyze_no_issues_is_success() {
 }
 
 #[test]
+fn ctest_zero_failed_summary_is_success() {
+    let result = parse(&["ctest"], "100% tests passed, 0 tests failed out of 8", Some(0));
+    assert_eq!(result.parser, "ctest");
+    assert_eq!(result.status, ParseStatus::Success);
+}
+
+#[test]
+fn tox_failed_environment_is_failure() {
+    let result = parse(&["tox"], "py312: FAIL\ncongratulations :)", Some(1));
+    assert_eq!(result.parser, "tox-nox");
+    assert_eq!(result.status, ParseStatus::Failed);
+}
+
+#[test]
 fn python_unittest_uses_final_failure_counters() {
     let result = parse(
         &["python", "-m", "unittest"],

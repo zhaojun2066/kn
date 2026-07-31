@@ -137,6 +137,8 @@ enum ParserKind {
     WebBuild,
     SwiftPm,
     DartFlutter,
+    Ctest,
+    ToxNox,
 }
 
 impl ParserKind {
@@ -168,6 +170,8 @@ impl ParserKind {
             Self::WebBuild => "web-build",
             Self::SwiftPm => "swiftpm",
             Self::DartFlutter => "dart-flutter",
+            Self::Ctest => "ctest",
+            Self::ToxNox => "tox-nox",
         }
     }
 }
@@ -237,6 +241,8 @@ impl TerminalOutputParser {
             ParserKind::WebBuild => self.parse_web_build(&line),
             ParserKind::SwiftPm => self.parse_swiftpm(&line),
             ParserKind::DartFlutter => self.parse_dart_flutter(&line),
+            ParserKind::Ctest => self.parse_ctest(&line),
+            ParserKind::ToxNox => self.parse_tox_nox(&line),
             _ => {}
         }
     }
@@ -648,6 +654,29 @@ impl TerminalOutputParser {
             self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
         }
     }
+
+    fn parse_ctest(&mut self, line: &str) {
+        if line.contains("tests passed") && counter(line, "tests failed").unwrap_or(0) == 0 {
+            self.summary = Some(line.to_string());
+        } else if line.contains("tests failed") && counter(line, "tests failed").unwrap_or(0) > 0 {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+        } else if line.starts_with("The following tests FAILED") {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+        }
+    }
+
+    fn parse_tox_nox(&mut self, line: &str) {
+        if line.contains("congratulations :)" ) || line.contains("Sessions complete") {
+            self.summary = Some(line.to_string());
+        } else if line.contains(": FAIL") || line.contains("evaluation failed") || line.contains("Session ") && line.ends_with("failed") {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+        }
+    }
 }
 
 fn identify(argv: &[String], working_dir: Option<&std::path::Path>) -> (ParserKind, TaskType) {
@@ -707,6 +736,8 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>) -> (ParserKi
                 "web-build" => Some(ParserKind::WebBuild),
                 "swiftpm" => Some(ParserKind::SwiftPm),
                 "dart-flutter" => Some(ParserKind::DartFlutter),
+                "ctest" => Some(ParserKind::Ctest),
+                "tox-nox" => Some(ParserKind::ToxNox),
                 _ => None,
             };
             if let Some(parser) = known {
@@ -773,6 +804,8 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>) -> (ParserKi
         return (ParserKind::DartFlutter, task_from_words(&arguments));
     }
     if program == "flutter" { return (ParserKind::DartFlutter, task_from_words(&arguments)); }
+    if program == "ctest" { return (ParserKind::Ctest, TaskType::Test); }
+    if matches!(program, "tox" | "nox") { return (ParserKind::ToxNox, TaskType::Test); }
     (ParserKind::Generic, TaskType::Custom)
 }
 
