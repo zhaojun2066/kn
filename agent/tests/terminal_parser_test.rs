@@ -131,3 +131,24 @@ fn dotnet_test_zero_failures_is_success_even_with_error_word_in_test_name() {
     assert_eq!(result.parser, "dotnet");
     assert_eq!(result.status, ParseStatus::Success);
 }
+
+#[test]
+fn jest_final_tests_summary_controls_status() {
+    let result = parse(&["jest", "--runInBand"], "Tests: 1 failed, 2 passed, 3 total", Some(1));
+    assert_eq!(result.parser, "jest");
+    assert_eq!(result.status, ParseStatus::Failed);
+}
+
+#[test]
+fn vitest_zero_failed_files_is_success() {
+    let result = parse(&["vitest", "run"], "Test Files 2 passed (2)\nTests 5 passed (5)", Some(0));
+    assert_eq!(result.parser, "vitest");
+    assert_eq!(result.status, ParseStatus::Success);
+}
+
+#[test]
+fn playwright_flaky_retry_is_not_a_failed_final_summary() {
+    let result = parse(&["playwright", "test"], "1 flaky, 2 passed, 0 failed", Some(0));
+    assert_eq!(result.parser, "playwright");
+    assert_eq!(result.status, ParseStatus::Success);
+}

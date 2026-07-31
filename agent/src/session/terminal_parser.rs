@@ -114,6 +114,9 @@ enum ParserKind {
     Xcodebuild,
     PythonUnittest,
     Dotnet,
+    Jest,
+    Vitest,
+    Playwright,
 }
 
 impl ParserKind {
@@ -130,6 +133,9 @@ impl ParserKind {
             Self::Xcodebuild => "xcodebuild",
             Self::PythonUnittest => "python-unittest",
             Self::Dotnet => "dotnet",
+            Self::Jest => "jest",
+            Self::Vitest => "vitest",
+            Self::Playwright => "playwright",
         }
     }
 }
@@ -183,6 +189,9 @@ impl TerminalOutputParser {
             ParserKind::Xcodebuild => self.parse_xcodebuild(&line),
             ParserKind::PythonUnittest => self.parse_python_unittest(&line),
             ParserKind::Dotnet => self.parse_dotnet(&line),
+            ParserKind::Jest => self.parse_js_test(&line, "jest"),
+            ParserKind::Vitest => self.parse_js_test(&line, "vitest"),
+            ParserKind::Playwright => self.parse_js_test(&line, "playwright"),
             _ => {}
         }
     }
@@ -403,6 +412,14 @@ impl TerminalOutputParser {
             self.summary = Some(line.to_string());
         }
     }
+
+    fn parse_js_test(&mut self, line: &str, _tool: &str) {
+        let failed = counter(line, "failed").unwrap_or(0);
+        if line.contains("Tests:") || line.contains("Test Files") || line.contains("Test Suites") || line.contains("Tests ") || line.contains(" passed") {
+            self.summary = Some(line.to_string());
+            if failed > 0 { self.summary_failure = true; }
+        }
+    }
 }
 
 fn identify(argv: &[String]) -> (ParserKind, TaskType) {
@@ -438,6 +455,9 @@ fn identify(argv: &[String]) -> (ParserKind, TaskType) {
                 "xcodebuild" => Some(ParserKind::Xcodebuild),
                 "python-unittest" => Some(ParserKind::PythonUnittest),
                 "dotnet" => Some(ParserKind::Dotnet),
+                "jest" => Some(ParserKind::Jest),
+                "vitest" => Some(ParserKind::Vitest),
+                "playwright" => Some(ParserKind::Playwright),
                 _ => None,
             };
             if let Some(parser) = known {
@@ -472,6 +492,9 @@ fn identify(argv: &[String]) -> (ParserKind, TaskType) {
     }
     if program == "dotnet" {
         return (ParserKind::Dotnet, task_from_words(&arguments));
+    }
+    if matches!(program, "jest" | "vitest" | "playwright") {
+        return (match program { "jest" => ParserKind::Jest, "vitest" => ParserKind::Vitest, _ => ParserKind::Playwright }, TaskType::Test);
     }
     if program == "go" {
         return (ParserKind::Go, task_from_words(&arguments));
