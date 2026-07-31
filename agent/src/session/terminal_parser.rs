@@ -135,6 +135,8 @@ enum ParserKind {
     Haskell,
     Bazel,
     WebBuild,
+    SwiftPm,
+    DartFlutter,
 }
 
 impl ParserKind {
@@ -164,6 +166,8 @@ impl ParserKind {
             Self::Haskell => "haskell",
             Self::Bazel => "bazel",
             Self::WebBuild => "web-build",
+            Self::SwiftPm => "swiftpm",
+            Self::DartFlutter => "dart-flutter",
         }
     }
 }
@@ -231,6 +235,8 @@ impl TerminalOutputParser {
             ParserKind::Haskell => self.parse_language_summary(&line, "haskell"),
             ParserKind::Bazel => self.parse_language_summary(&line, "bazel"),
             ParserKind::WebBuild => self.parse_web_build(&line),
+            ParserKind::SwiftPm => self.parse_swiftpm(&line),
+            ParserKind::DartFlutter => self.parse_dart_flutter(&line),
             _ => {}
         }
     }
@@ -616,6 +622,32 @@ impl TerminalOutputParser {
             self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
         }
     }
+
+    fn parse_swiftpm(&mut self, line: &str) {
+        if line.contains("Test Suite '") && line.contains("passed") {
+            self.summary = Some(line.to_string());
+        } else if line.contains("Test Suite '") && line.contains("failed") {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+        } else if line.contains("Build complete!") || line.contains("Build complete") {
+            self.summary = Some(line.to_string());
+        } else if line.starts_with("error:") {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+        }
+    }
+
+    fn parse_dart_flutter(&mut self, line: &str) {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("all tests passed") || lower.contains("no issues found") || lower.contains("built successfully") {
+            self.summary = Some(line.to_string());
+        } else if lower.contains("some tests failed") || lower.contains("issues found") || lower.contains("build failed") {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+        }
+    }
 }
 
 fn identify(argv: &[String], working_dir: Option<&std::path::Path>) -> (ParserKind, TaskType) {
@@ -673,6 +705,8 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>) -> (ParserKi
                 "haskell" => Some(ParserKind::Haskell),
                 "bazel" => Some(ParserKind::Bazel),
                 "web-build" => Some(ParserKind::WebBuild),
+                "swiftpm" => Some(ParserKind::SwiftPm),
+                "dart-flutter" => Some(ParserKind::DartFlutter),
                 _ => None,
             };
             if let Some(parser) = known {
@@ -731,6 +765,14 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>) -> (ParserKi
     if program == "xcodebuild" {
         return (ParserKind::Xcodebuild, task_from_words(&arguments));
     }
+    if program == "swift" && (arguments.contains(" build") || arguments.contains(" test") || arguments.contains(" package")) {
+        return (ParserKind::SwiftPm, task_from_words(&arguments));
+    }
+    if program == "swiftpm" { return (ParserKind::SwiftPm, task_from_words(&arguments)); }
+    if program == "dart" && (arguments.contains(" test") || arguments.contains(" analyze") || arguments.contains(" compile")) {
+        return (ParserKind::DartFlutter, task_from_words(&arguments));
+    }
+    if program == "flutter" { return (ParserKind::DartFlutter, task_from_words(&arguments)); }
     (ParserKind::Generic, TaskType::Custom)
 }
 

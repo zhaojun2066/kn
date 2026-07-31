@@ -149,6 +149,20 @@ fn android_resource_diagnostic_is_structured() {
 }
 
 #[test]
+fn swiftpm_test_summary_controls_status() {
+    let result = parse(&["swift", "test"], "Test Suite 'All tests' failed at 2026-01-01", Some(0));
+    assert_eq!(result.parser, "swiftpm");
+    assert_eq!(result.status, ParseStatus::Failed);
+}
+
+#[test]
+fn flutter_analyze_no_issues_is_success() {
+    let result = parse(&["flutter", "analyze"], "No issues found!", Some(0));
+    assert_eq!(result.parser, "dart-flutter");
+    assert_eq!(result.status, ParseStatus::Success);
+}
+
+#[test]
 fn python_unittest_uses_final_failure_counters() {
     let result = parse(
         &["python", "-m", "unittest"],
