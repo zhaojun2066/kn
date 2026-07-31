@@ -166,3 +166,17 @@ fn compiler_warning_does_not_fail_successful_compile() {
     assert_eq!(result.parser, "cpp-compiler");
     assert_eq!(result.status, ParseStatus::Success);
 }
+
+#[test]
+fn ruby_rspec_summary_uses_failure_count() {
+    let result = parse(&["bundle", "exec", "rspec"], "3 examples, 0 failures", Some(0));
+    assert_eq!(result.parser, "ruby");
+    assert_eq!(result.status, ParseStatus::Success);
+}
+
+#[test]
+fn bazel_failed_target_is_failed() {
+    let result = parse(&["bazel", "test", "//..."], "FAILED: //app:test\nINFO: Build completed unsuccessfully", Some(1));
+    assert_eq!(result.parser, "bazel");
+    assert_eq!(result.status, ParseStatus::Failed);
+}

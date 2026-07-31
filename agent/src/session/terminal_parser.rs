@@ -120,6 +120,12 @@ enum ParserKind {
     Cmake,
     MakeNinja,
     CppCompiler,
+    Ruby,
+    Php,
+    Sbt,
+    Mix,
+    Haskell,
+    Bazel,
 }
 
 impl ParserKind {
@@ -142,6 +148,12 @@ impl ParserKind {
             Self::Cmake => "cmake",
             Self::MakeNinja => "make-ninja",
             Self::CppCompiler => "cpp-compiler",
+            Self::Ruby => "ruby",
+            Self::Php => "php",
+            Self::Sbt => "sbt",
+            Self::Mix => "mix",
+            Self::Haskell => "haskell",
+            Self::Bazel => "bazel",
         }
     }
 }
@@ -201,6 +213,12 @@ impl TerminalOutputParser {
             ParserKind::Cmake => self.parse_native_build(&line, "cmake"),
             ParserKind::MakeNinja => self.parse_native_build(&line, "make"),
             ParserKind::CppCompiler => self.parse_cpp_compiler(&line),
+            ParserKind::Ruby => self.parse_language_summary(&line, "ruby"),
+            ParserKind::Php => self.parse_language_summary(&line, "php"),
+            ParserKind::Sbt => self.parse_language_summary(&line, "sbt"),
+            ParserKind::Mix => self.parse_language_summary(&line, "mix"),
+            ParserKind::Haskell => self.parse_language_summary(&line, "haskell"),
+            ParserKind::Bazel => self.parse_language_summary(&line, "bazel"),
             _ => {}
         }
     }
@@ -456,6 +474,24 @@ impl TerminalOutputParser {
             });
         }
     }
+
+    fn parse_language_summary(&mut self, line: &str, tool: &str) {
+        let failure = match tool {
+            "ruby" => counter(line, "failure").unwrap_or(0) > 0,
+            "php" => counter(line, "failures:").unwrap_or(0) > 0 || counter(line, "errors:").unwrap_or(0) > 0,
+            "sbt" => line.starts_with("[error] Failed tests"),
+            "mix" => line.contains("failure") && counter(line, "failure").unwrap_or(0) > 0,
+            "haskell" => line.contains(": FAIL"),
+            "bazel" => line.starts_with("FAILED:") || line.contains("unsuccessfully"),
+            _ => false,
+        };
+        if failure {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+        } else if (tool == "ruby" && line.contains("examples")) || (tool == "php" && line.contains("Tests:")) || (tool == "bazel" && line.contains("successfully")) {
+            self.summary = Some(line.to_string());
+        }
+    }
 }
 
 fn identify(argv: &[String]) -> (ParserKind, TaskType) {
@@ -498,6 +534,12 @@ fn identify(argv: &[String]) -> (ParserKind, TaskType) {
                 "make" => Some(ParserKind::MakeNinja),
                 "ninja" => Some(ParserKind::MakeNinja),
                 "cpp-compiler" => Some(ParserKind::CppCompiler),
+                "ruby" => Some(ParserKind::Ruby),
+                "php" => Some(ParserKind::Php),
+                "sbt" => Some(ParserKind::Sbt),
+                "mix" => Some(ParserKind::Mix),
+                "haskell" => Some(ParserKind::Haskell),
+                "bazel" => Some(ParserKind::Bazel),
                 _ => None,
             };
             if let Some(parser) = known {
@@ -541,6 +583,12 @@ fn identify(argv: &[String]) -> (ParserKind, TaskType) {
     if matches!(program, "gcc" | "g++" | "clang" | "clang++" | "cc" | "c++" | "cl") {
         return (ParserKind::CppCompiler, TaskType::Compile);
     }
+    if matches!(program, "rspec" | "rake") || (program == "bundle" && arguments.contains("rspec")) { return (ParserKind::Ruby, TaskType::Test); }
+    if matches!(program, "phpunit" | "pest") || (program == "composer" && arguments.contains("test")) { return (ParserKind::Php, TaskType::Test); }
+    if program == "sbt" { return (ParserKind::Sbt, task_from_words(&arguments)); }
+    if program == "mix" { return (ParserKind::Mix, task_from_words(&arguments)); }
+    if matches!(program, "cabal" | "stack") { return (ParserKind::Haskell, task_from_words(&arguments)); }
+    if program == "bazel" { return (ParserKind::Bazel, task_from_words(&arguments)); }
     if program == "go" {
         return (ParserKind::Go, task_from_words(&arguments));
     }
