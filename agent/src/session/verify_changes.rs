@@ -839,6 +839,23 @@ impl ProgressReporter {
         let _ = tx.send(msg);
     }
 
+    fn send_candidate(
+        &self,
+        stage: StageName,
+        command: &str,
+        command_id: &str,
+        errors: Vec<crate::session::terminal_parser::TerminalParseError>,
+    ) {
+        let Some(tx) = self.tx.as_ref() else { return };
+        let mut data = self.base_data("terminalParseCandidate");
+        data["candidate"] = serde_json::Value::Bool(true);
+        data["stage"] = serde_json::Value::String(stage.as_str().to_string());
+        data["command"] = serde_json::Value::String(command.to_string());
+        data["commandId"] = serde_json::Value::String(command_id.to_string());
+        data["terminalParse"] = json!({"errors": errors});
+        let _ = tx.send(self.progress_message(data));
+    }
+
     fn base_data(&self, status: &str) -> serde_json::Value {
         let mut data = json!({
             "sessionId": self.session_id,
@@ -1975,6 +1992,7 @@ async fn run_stage(
         match run_command(
             repo_root,
             command,
+            &command_id,
             cancel,
             reporter,
             name,
@@ -2145,6 +2163,7 @@ struct OutputChunk {
 async fn run_command(
     repo_root: &Path,
     spec: &CommandSpec,
+    command_id: &str,
     cancel: &CancellationToken,
     reporter: &ProgressReporter,
     stage: StageName,
@@ -2213,7 +2232,7 @@ async fn run_command(
             _ = cancel.cancelled() => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, &mut parser).await;
+                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, command_id, reporter, &mut parser).await;
                 output.push_str("\n验证已取消");
                 progress_output.push_str("\n验证已取消");
                 append_run_log(run_log, stage, &spec.display, "\n验证已取消");
@@ -2226,7 +2245,7 @@ async fn run_command(
             _ = &mut deadline => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, &mut parser).await;
+                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, command_id, reporter, &mut parser).await;
                 let timeout_message = format!("\n命令超时：{}", spec.display);
                 output.push_str(&timeout_message);
                 progress_output.push_str(&timeout_message);
@@ -2241,6 +2260,10 @@ async fn run_command(
                 if let Some(chunk) = maybe_chunk {
                     let text = String::from_utf8_lossy(&chunk.bytes);
                     parser.on_bytes_from(chunk.stream, &chunk.bytes);
+                    let candidates = parser.take_candidates();
+                    if !candidates.is_empty() {
+                        reporter.send_candidate(stage, &spec.display, command_id, candidates);
+                    }
                     output.push_str(&text);
                     progress_output.push_str(&text);
                     append_run_log(run_log, stage, &spec.display, &text);
@@ -2262,7 +2285,7 @@ async fn run_command(
                 }
             }
             status = child.wait() => {
-                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, &mut parser).await;
+                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, command_id, reporter, &mut parser).await;
                 if pending_bytes > 0 || started.elapsed() >= PROGRESS_INTERVAL || progress_output.has_pending() {
                     emit_progress_output(reporter, stage, &spec.display, progress_output);
                 }
@@ -2303,11 +2326,17 @@ async fn drain_output(
     run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
     stage: StageName,
     command: &str,
+    command_id: &str,
+    reporter: &ProgressReporter,
     parser: &mut TerminalOutputParser,
 ) {
     while let Some(chunk) = output_rx.recv().await {
         let text = String::from_utf8_lossy(&chunk.bytes);
         parser.on_bytes_from(chunk.stream, &chunk.bytes);
+        let candidates = parser.take_candidates();
+        if !candidates.is_empty() {
+            reporter.send_candidate(stage, command, command_id, candidates);
+        }
         output.push_str(&text);
         progress_output.push_str(&text);
         append_run_log(run_log, stage, command, &text);
@@ -3593,6 +3622,7 @@ mod tests {
         let outcome = run_command(
             &dir,
             &spec,
+            "build-1",
             &CancellationToken::new(),
             &reporter,
             StageName::Build,
@@ -3656,6 +3686,7 @@ mod tests {
         let outcome = run_command(
             &dir,
             &spec,
+            "test-1",
             &CancellationToken::new(),
             &reporter,
             StageName::Test,
@@ -3701,6 +3732,7 @@ mod tests {
         let outcome = run_command(
             &dir,
             &spec,
+            "test-1",
             &CancellationToken::new(),
             &reporter,
             StageName::Test,
@@ -3745,6 +3777,7 @@ mod tests {
         let outcome = run_command(
             &dir,
             &spec,
+            "test-1",
             &CancellationToken::new(),
             &reporter,
             StageName::Test,

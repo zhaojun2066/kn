@@ -87,6 +87,7 @@ pub struct TerminalOutputParser {
     summary_failure: bool,
     summary: Option<String>,
     errors: Vec<TerminalParseError>,
+    emitted_error_count: usize,
     line_number: usize,
     pending_stdout: Vec<u8>,
     pending_stderr: Vec<u8>,
@@ -138,6 +139,7 @@ impl TerminalOutputParser {
             summary_failure: false,
             summary: None,
             errors: Vec::new(),
+            emitted_error_count: 0,
             line_number: 0,
             pending_stdout: Vec::new(),
             pending_stderr: Vec::new(),
@@ -177,6 +179,15 @@ impl TerminalOutputParser {
             ParserKind::Xcodebuild => self.parse_xcodebuild(&line),
             _ => {}
         }
+    }
+
+    /// Returns diagnostics discovered since the previous call. Candidates are
+    /// advisory while a command is running; the final result remains the
+    /// authoritative status and deduplicated error set.
+    pub fn take_candidates(&mut self) -> Vec<TerminalParseError> {
+        let candidates = self.errors[self.emitted_error_count..].to_vec();
+        self.emitted_error_count = self.errors.len();
+        candidates
     }
 
     pub fn finalize(mut self, exit_code: Option<i32>) -> TerminalParseResult {

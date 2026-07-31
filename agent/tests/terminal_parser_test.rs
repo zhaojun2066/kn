@@ -53,6 +53,16 @@ fn pytest_summary_with_failures_is_failed_and_extracts_test_name() {
 }
 
 #[test]
+fn parser_exposes_new_diagnostic_candidates_during_streaming() {
+    let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["pytest".into()]));
+    parser.on_line("FAILED tests/test_api.py::test_login - AssertionError");
+    let candidates = parser.take_candidates();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].test_name.as_deref(), Some("tests/test_api.py::test_login"));
+    assert!(parser.take_candidates().is_empty());
+}
+
+#[test]
 fn android_gradle_assemble_is_identified_separately_from_generic_gradle() {
     let result = parse(
         &["./gradlew", ":app:assembleDebug"],
