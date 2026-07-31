@@ -81,6 +81,17 @@ fn parser_keeps_stdout_and_stderr_partial_lines_separate() {
 }
 
 #[test]
+fn parser_bounds_long_utf8_partial_lines_without_splitting_character() {
+    let context = CommandContext::new(vec!["mystery".into()]);
+    let mut parser = TerminalOutputParser::new(context);
+    let mut bytes = vec![b'x'; 16 * 1024 - 1];
+    bytes.extend_from_slice("界\n".as_bytes());
+    parser.on_bytes(&bytes);
+    let result = parser.finalize(Some(0));
+    assert_eq!(result.status, ParseStatus::Success);
+}
+
+#[test]
 fn unsupported_node_script_uses_generic_exit_parser_until_inner_tool_is_resolved() {
     let result = parse(&["npm", "run", "test"], "FAIL tests named Error", Some(0));
 

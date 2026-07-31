@@ -407,7 +407,11 @@ fn complete_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
         lines.push(pending.drain(..=newline).collect());
     }
     if pending.len() > MAX_PENDING_LINE_BYTES {
-        lines.push(pending.drain(..MAX_PENDING_LINE_BYTES).collect());
+        let mut cutoff = MAX_PENDING_LINE_BYTES;
+        while cutoff > 0 && cutoff < pending.len() && (pending[cutoff] & 0b1100_0000) == 0b1000_0000 {
+            cutoff -= 1;
+        }
+        lines.push(pending.drain(..cutoff).collect());
     }
     lines
 }

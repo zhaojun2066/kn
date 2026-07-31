@@ -1964,6 +1964,12 @@ async fn run_stage(
     let command_display = display_commands(&plan.commands);
     reporter.send("stageStarted", Some(name), &command_display, "");
     for (index, command) in plan.commands.iter().enumerate() {
+        if index > 0 {
+            // Commands share a stage log. Force a physical record boundary so
+            // a prior command without a trailing newline cannot absorb the
+            // next command's diagnostics or line offset.
+            append_run_log(run_log.as_ref(), name, &command.display, "\n");
+        }
         let command_id = format!("{}-{}", name.as_str(), index + 1);
         let log_start_line = stage_log_line_count(run_log.as_ref(), name).saturating_add(1);
         match run_command(
