@@ -3796,6 +3796,37 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    #[tokio::test]
+    async fn run_command_emits_streaming_parse_candidate_with_command_identity() {
+        let dir = unique_temp_dir("terminal-parser-candidate-progress");
+        fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("pytest");
+        fs::write(&tool, "#!/bin/sh\nprintf 'FAILED tests/test_api.py::test_login - AssertionError\\n'\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&tool).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&tool, permissions).unwrap();
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reporter = ProgressReporter::new_project(
+            "42:/repo", 42, "/repo", "v_1", "default", VerifyTarget::Test, "auto", Some(tx), None,
+        );
+        let spec = cmd(&[tool.to_string_lossy().as_ref(), "tests"], 5);
+        let mut progress_output = ProgressOutputBuffer::new();
+        let outcome = run_command(
+            &dir, &spec, "test-1", &CancellationToken::new(), &reporter,
+            StageName::Test, &mut progress_output, None,
+        ).await;
+        assert!(matches!(outcome, CommandOutcome::Failed { .. }));
+        let messages: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(messages.iter().any(|message| {
+            message.contains("terminalParseCandidate") && message.contains("test-1") && message.contains("candidate")
+        }));
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn stage_result_preserves_parse_results_for_each_command() {
         let result = stage_result(
