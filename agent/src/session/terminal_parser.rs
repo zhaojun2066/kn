@@ -376,6 +376,21 @@ impl TerminalOutputParser {
 }
 
 fn identify(argv: &[String]) -> (ParserKind, TaskType) {
+    let program = argv.first().map(|value| basename(value)).unwrap_or("");
+    let arguments = argv.join(" ").to_ascii_lowercase();
+    // AGP task semantics are more specific than the generic Gradle profile;
+    // preserve Android parser identity regardless of profile refresh timing.
+    if matches!(program, "gradle" | "gradlew")
+        && (arguments.contains("assemble")
+            || arguments.contains("bundle")
+            || arguments.contains("connected")
+            || arguments.contains("androidtest")
+            || arguments.contains("lint")
+            || arguments.contains(" debug")
+            || arguments.contains(" release"))
+    {
+        return (ParserKind::AndroidGradle, gradle_task_type(&arguments));
+    }
     if let Some(profiles) = crate::session::terminal_profiles::active() {
         let command = argv.join(" ");
         if let Some(profile) = profiles.profiles.iter()
@@ -398,8 +413,6 @@ fn identify(argv: &[String]) -> (ParserKind, TaskType) {
             }
         }
     }
-    let program = argv.first().map(|value| basename(value)).unwrap_or("");
-    let arguments = argv.join(" ").to_ascii_lowercase();
     if program == "mvn" || program == "mvnw" {
         return (ParserKind::Maven, maven_task_type(&arguments));
     }
