@@ -117,6 +117,9 @@ enum ParserKind {
     Jest,
     Vitest,
     Playwright,
+    Cmake,
+    MakeNinja,
+    CppCompiler,
 }
 
 impl ParserKind {
@@ -136,6 +139,9 @@ impl ParserKind {
             Self::Jest => "jest",
             Self::Vitest => "vitest",
             Self::Playwright => "playwright",
+            Self::Cmake => "cmake",
+            Self::MakeNinja => "make-ninja",
+            Self::CppCompiler => "cpp-compiler",
         }
     }
 }
@@ -192,6 +198,9 @@ impl TerminalOutputParser {
             ParserKind::Jest => self.parse_js_test(&line, "jest"),
             ParserKind::Vitest => self.parse_js_test(&line, "vitest"),
             ParserKind::Playwright => self.parse_js_test(&line, "playwright"),
+            ParserKind::Cmake => self.parse_native_build(&line, "cmake"),
+            ParserKind::MakeNinja => self.parse_native_build(&line, "make"),
+            ParserKind::CppCompiler => self.parse_cpp_compiler(&line),
             _ => {}
         }
     }
@@ -420,6 +429,33 @@ impl TerminalOutputParser {
             if failed > 0 { self.summary_failure = true; }
         }
     }
+
+    fn parse_native_build(&mut self, line: &str, tool: &str) {
+        if (tool == "cmake" && line.contains("CMake Error"))
+            || (tool == "make" && line.contains("Error "))
+            || (tool == "make" && line.contains("build stopped"))
+        {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+            self.errors.push(TerminalParseError {
+                message: line.to_string(), file: None, line: None, column: None,
+                code: None, test_name: None, start_line: self.line_number, end_line: self.line_number,
+            });
+        }
+    }
+
+    fn parse_cpp_compiler(&mut self, line: &str) {
+        if let Some((location, message)) = line.split_once(": error:") {
+            let mut parts = location.rsplitn(3, ':');
+            let column = parts.next().and_then(|v| v.parse().ok());
+            let source_line = parts.next().and_then(|v| v.parse().ok());
+            let file = parts.next().map(str::to_string);
+            self.errors.push(TerminalParseError {
+                message: message.trim().to_string(), file, line: source_line, column,
+                code: None, test_name: None, start_line: self.line_number, end_line: self.line_number,
+            });
+        }
+    }
 }
 
 fn identify(argv: &[String]) -> (ParserKind, TaskType) {
@@ -458,6 +494,10 @@ fn identify(argv: &[String]) -> (ParserKind, TaskType) {
                 "jest" => Some(ParserKind::Jest),
                 "vitest" => Some(ParserKind::Vitest),
                 "playwright" => Some(ParserKind::Playwright),
+                "cmake" => Some(ParserKind::Cmake),
+                "make" => Some(ParserKind::MakeNinja),
+                "ninja" => Some(ParserKind::MakeNinja),
+                "cpp-compiler" => Some(ParserKind::CppCompiler),
                 _ => None,
             };
             if let Some(parser) = known {
@@ -495,6 +535,11 @@ fn identify(argv: &[String]) -> (ParserKind, TaskType) {
     }
     if matches!(program, "jest" | "vitest" | "playwright") {
         return (match program { "jest" => ParserKind::Jest, "vitest" => ParserKind::Vitest, _ => ParserKind::Playwright }, TaskType::Test);
+    }
+    if program == "cmake" { return (ParserKind::Cmake, task_from_words(&arguments)); }
+    if matches!(program, "make" | "gmake" | "ninja") { return (ParserKind::MakeNinja, TaskType::Build); }
+    if matches!(program, "gcc" | "g++" | "clang" | "clang++" | "cc" | "c++" | "cl") {
+        return (ParserKind::CppCompiler, TaskType::Compile);
     }
     if program == "go" {
         return (ParserKind::Go, task_from_words(&arguments));

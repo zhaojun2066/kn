@@ -152,3 +152,17 @@ fn playwright_flaky_retry_is_not_a_failed_final_summary() {
     assert_eq!(result.parser, "playwright");
     assert_eq!(result.status, ParseStatus::Success);
 }
+
+#[test]
+fn cmake_error_summary_is_failed() {
+    let result = parse(&["cmake", "--build", "build"], "CMake Error at CMakeLists.txt:4 (add_executable):\n  Cannot find source file", Some(1));
+    assert_eq!(result.parser, "cmake");
+    assert_eq!(result.status, ParseStatus::Failed);
+}
+
+#[test]
+fn compiler_warning_does_not_fail_successful_compile() {
+    let result = parse(&["clang++", "main.cpp"], "main.cpp:4:2: warning: unused variable", Some(0));
+    assert_eq!(result.parser, "cpp-compiler");
+    assert_eq!(result.status, ParseStatus::Success);
+}
