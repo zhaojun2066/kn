@@ -2369,6 +2369,10 @@ fn collect_fresh_test_reports(
         vec![repo_root.join("target/surefire-reports"), repo_root.join("target/failsafe-reports")]
     } else if matches!(program, "gradle" | "gradlew") {
         vec![repo_root.join("build/test-results")]
+    } else if matches!(program, "pytest" | "python") {
+        vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("junit.xml")]
+    } else if matches!(program, "jest" | "vitest" | "npm" | "pnpm" | "yarn" | "bun") {
+        vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("jest.json"), repo_root.join("vitest.json")]
     } else {
         Vec::new()
     };
@@ -2378,6 +2382,10 @@ fn collect_fresh_test_reports(
 }
 
 fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser) {
+    if root.is_file() {
+        collect_report_file(root, started_at, parser);
+        return;
+    }
     let Ok(entries) = fs::read_dir(root) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -2385,19 +2393,42 @@ fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut Terminal
             collect_report_dir(&path, started_at, parser);
             continue;
         }
-        if path.extension().and_then(|v| v.to_str()) != Some("xml") { continue; }
-        let Ok(meta) = entry.metadata() else { continue };
-        let Ok(modified) = meta.modified() else { continue };
-        if modified.duration_since(started_at).is_err() { continue; }
-        let Ok(text) = fs::read_to_string(&path) else { continue };
-        if !(text.contains("<failure") || text.contains("<error")) { continue; }
+        collect_report_file(&path, started_at, parser);
+    }
+}
+
+fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser) {
+    let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
+    if !matches!(extension, "xml" | "json") { return; }
+    let Ok(meta) = fs::metadata(path) else { return };
+    let Ok(modified) = meta.modified() else { return };
+    if modified.duration_since(started_at).is_err() { return; }
+    let Ok(text) = fs::read_to_string(path) else { return };
+    if extension == "xml" {
+        if !(text.contains("<failure") || text.contains("<error")) { return; }
         let name = xml_attr(&text, "testcase", "name").unwrap_or_else(|| path.file_stem().and_then(|v| v.to_str()).unwrap_or("test").to_string());
         let file = xml_attr(&text, "testcase", "file");
         let line = xml_attr(&text, "testcase", "line").and_then(|v| v.parse().ok());
-        parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError {
-            message: format!("测试报告失败: {name}"), file, line, column: None, code: None,
-            test_name: Some(name), start_line: 0, end_line: 0,
-        }, format!("fresh test report: {}", path.display()));
+        parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {name}"), file, line, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    collect_json_failures(&value, path, parser);
+}
+
+fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut TerminalOutputParser) {
+    if let Some(object) = value.as_object() {
+        let failed = object.get("status").and_then(|v| v.as_str()) == Some("failed")
+            || object.get("status").and_then(|v| v.as_str()) == Some("FAIL")
+            || object.get("numFailingTests").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
+        if failed {
+            let name = object.get("fullName").or_else(|| object.get("name")).and_then(|v| v.as_str()).unwrap_or("failed test").to_string();
+            let file = object.get("testFilePath").and_then(|v| v.as_str()).map(str::to_string);
+            parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {name}"), file, line: None, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
+        }
+        for child in object.values() { collect_json_failures(child, path, parser); }
+    } else if let Some(array) = value.as_array() {
+        for child in array { collect_json_failures(child, path, parser); }
     }
 }
 
