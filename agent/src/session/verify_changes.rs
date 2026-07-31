@@ -2180,7 +2180,7 @@ async fn run_command(
     progress_output: &mut ProgressOutputBuffer,
     run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
 ) -> CommandOutcome {
-    let mut parser = TerminalOutputParser::new(CommandContext::new(spec.argv.clone()));
+    let mut parser = TerminalOutputParser::new(CommandContext::with_working_dir(spec.argv.clone(), repo_root));
     let Some(program) = spec.argv.first() else {
         return CommandOutcome::Io {
             output_tail: "空命令".to_string(),
@@ -2229,6 +2229,7 @@ async fn run_command(
     }
 
     let started = Instant::now();
+    let report_started_at = SystemTime::now();
     let deadline = tokio::time::sleep(Duration::from_secs(spec.timeout_secs));
     tokio::pin!(deadline);
     let mut progress_tick = tokio::time::interval(PROGRESS_INTERVAL);
@@ -2302,6 +2303,7 @@ async fn run_command(
                 let output_tail = output.into_string();
                 return match status {
                     Ok(status) => {
+                        collect_fresh_test_reports(repo_root, &spec.argv, report_started_at, &mut parser);
                         let parsed = parser.finalize(status.code());
                         let parse_result = serde_json::to_value(&parsed).unwrap_or_default();
                         if status.success()
@@ -2352,6 +2354,62 @@ async fn drain_output(
         progress_output.push_str(&text);
         append_run_log(run_log, stage, command, &text);
     }
+}
+
+/// Consume only test reports written after this command started. This keeps a
+/// stale report from a prior run from changing the current exit result.
+fn collect_fresh_test_reports(
+    repo_root: &Path,
+    argv: &[String],
+    started_at: SystemTime,
+    parser: &mut TerminalOutputParser,
+) {
+    let program = argv.first().map(|v| v.rsplit('/').next().unwrap_or(v)).unwrap_or("");
+    let roots: Vec<PathBuf> = if matches!(program, "mvn" | "mvnw") {
+        vec![repo_root.join("target/surefire-reports"), repo_root.join("target/failsafe-reports")]
+    } else if matches!(program, "gradle" | "gradlew") {
+        vec![repo_root.join("build/test-results")]
+    } else {
+        Vec::new()
+    };
+    for root in roots {
+        collect_report_dir(&root, started_at, parser);
+    }
+}
+
+fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_report_dir(&path, started_at, parser);
+            continue;
+        }
+        if path.extension().and_then(|v| v.to_str()) != Some("xml") { continue; }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(modified) = meta.modified() else { continue };
+        if modified.duration_since(started_at).is_err() { continue; }
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        if !(text.contains("<failure") || text.contains("<error")) { continue; }
+        let name = xml_attr(&text, "testcase", "name").unwrap_or_else(|| path.file_stem().and_then(|v| v.to_str()).unwrap_or("test").to_string());
+        let file = xml_attr(&text, "testcase", "file");
+        let line = xml_attr(&text, "testcase", "line").and_then(|v| v.parse().ok());
+        parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError {
+            message: format!("测试报告失败: {name}"), file, line, column: None, code: None,
+            test_name: Some(name), start_line: 0, end_line: 0,
+        }, format!("fresh test report: {}", path.display()));
+    }
+}
+
+fn xml_attr(text: &str, element: &str, attr: &str) -> Option<String> {
+    let marker = format!("<{}", element);
+    let start = text.find(&marker)?;
+    let end = text[start..].find('>')? + start;
+    let fragment = &text[start..end];
+    let key = format!("{}=\"", attr);
+    let value_start = fragment.find(&key)? + key.len();
+    let value_end = fragment[value_start..].find('\"')? + value_start;
+    Some(fragment[value_start..value_end].to_string())
 }
 
 fn append_run_log(

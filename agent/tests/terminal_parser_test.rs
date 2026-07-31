@@ -111,6 +111,21 @@ fn unsupported_node_script_uses_generic_exit_parser_until_inner_tool_is_resolved
 }
 
 #[test]
+fn node_script_resolver_uses_declared_inner_jest() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"test":"jest --runInBand"}}"#).unwrap();
+    let context = CommandContext::with_working_dir(
+        vec!["npm".into(), "run".into(), "test".into()],
+        dir.path(),
+    );
+    let mut parser = TerminalOutputParser::new(context);
+    parser.on_line("Test Suites: 1 passed, 1 total");
+    let result = parser.finalize(Some(0));
+    assert_eq!(result.parser, "jest");
+    assert_eq!(result.status, ParseStatus::Success);
+}
+
+#[test]
 fn python_unittest_uses_final_failure_counters() {
     let result = parse(
         &["python", "-m", "unittest"],
