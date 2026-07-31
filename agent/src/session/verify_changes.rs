@@ -2368,7 +2368,7 @@ fn collect_fresh_test_reports(
     let roots: Vec<PathBuf> = if matches!(program, "mvn" | "mvnw") {
         vec![repo_root.join("target/surefire-reports"), repo_root.join("target/failsafe-reports")]
     } else if matches!(program, "gradle" | "gradlew") {
-        vec![repo_root.join("build/test-results")]
+        vec![repo_root.join("build/test-results"), repo_root.join("build/reports")]
     } else if matches!(program, "pytest" | "python") {
         vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("junit.xml")]
     } else if matches!(program, "jest" | "vitest" | "npm" | "pnpm" | "yarn" | "bun") {
@@ -2399,7 +2399,7 @@ fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut Terminal
 
 fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser) {
     let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
-    if !matches!(extension, "xml" | "json") { return; }
+    if !matches!(extension, "xml" | "json" | "sarif") { return; }
     let Ok(meta) = fs::metadata(path) else { return };
     let Ok(modified) = meta.modified() else { return };
     if modified.duration_since(started_at).is_err() { return; }
@@ -2418,6 +2418,25 @@ fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut Termina
 
 fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut TerminalOutputParser) {
     if let Some(object) = value.as_object() {
+        if let Some(runs) = object.get("runs").and_then(|v| v.as_array()) {
+            for run in runs {
+                if let Some(results) = run.get("results").and_then(|v| v.as_array()) {
+                    for result in results {
+                        if result.get("level").and_then(|v| v.as_str()) != Some("error") { continue; }
+                        let rule = result.get("ruleId").and_then(|v| v.as_str()).unwrap_or("lint");
+                        let message = result.get("message").and_then(|v| v.get("text")).and_then(|v| v.as_str()).unwrap_or("Android lint error");
+                        let location = result.get("locations").and_then(|v| v.as_array()).and_then(|v| v.first());
+                        let physical = location.and_then(|v| v.get("physicalLocation"));
+                        let file = physical.and_then(|v| v.get("artifactLocation")).and_then(|v| v.get("uri")).and_then(|v| v.as_str()).map(str::to_string);
+                        let line = physical.and_then(|v| v.get("region")).and_then(|v| v.get("startLine")).and_then(|v| v.as_u64()).map(|v| v as usize);
+                        parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: message.to_string(), file, line, column: None, code: Some(rule.to_string()), test_name: None, start_line: 0, end_line: 0 }, format!("fresh SARIF report: {}", path.display()));
+                    }
+                }
+            }
+            // SARIF has a nested object tree; the explicit handling above is
+            // authoritative and avoids treating tool metadata as a test.
+            return;
+        }
         let failed = object.get("status").and_then(|v| v.as_str()) == Some("failed")
             || object.get("status").and_then(|v| v.as_str()) == Some("FAIL")
             || object.get("numFailingTests").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
@@ -3267,6 +3286,21 @@ mod tests {
         assert_eq!(plan.build.unwrap().commands[0].display, "cargo check");
         assert_eq!(plan.test.unwrap().commands[0].display, "cargo test");
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fresh_android_sarif_report_becomes_structured_failure() {
+        let dir = unique_temp_dir("sarif");
+        fs::create_dir_all(dir.join("build/reports")).unwrap();
+        let started = SystemTime::now();
+        fs::write(dir.join("build/reports/lint-results.sarif"), r#"{"runs":[{"results":[{"ruleId":"MissingTranslation","level":"error","message":{"text":"Missing translation"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"res/values.xml"},"region":{"startLine":12}}}]}]}]}"#).unwrap();
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["./gradlew".into(), "lintDebug".into()]));
+        collect_fresh_test_reports(&dir, &["gradlew".into(), "lintDebug".into()], started, &mut parser);
+        let result = parser.finalize(Some(0));
+        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
+        assert_eq!(result.errors[0].code.as_deref(), Some("MissingTranslation"));
+        assert_eq!(result.errors[0].line, Some(12));
         fs::remove_dir_all(&dir).ok();
     }
 
