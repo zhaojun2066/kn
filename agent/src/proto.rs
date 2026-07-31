@@ -75,6 +75,10 @@ pub enum AgentIncoming {
         cols: u16,
         /// 初始终端行数
         rows: u16,
+        /// 本地历史恢复时 Cloud 声明的 CLI；普通新会话为 None。
+        expected_cli: Option<String>,
+        /// 仅由受校验的本地历史恢复生成的原生 CLI 参数。
+        cli_args: Vec<String>,
     },
     /// 用户输入文本（session 由 data.sessionId 标识）
     Input {
@@ -342,6 +346,8 @@ impl WsEnvelope {
                     from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
                     cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
                     rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
+                    expected_cli: None,
+                    cli_args: Vec::new(),
                 })
             }
             "input" => {
@@ -434,6 +440,33 @@ impl WsEnvelope {
                     return Err("resume_session sessionId 为空".to_string());
                 }
                 Ok(AgentIncoming::ResumeSession { session_nid })
+            }
+            "resume_local_history_session" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "resume_local_history_session 缺少 data 字段".to_string())?;
+                let required = |field: &str| {
+                    data[field]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("resume_local_history_session {} 为空", field))
+                };
+                let cli = required("cli")?;
+                let native_session_id = required("nativeSessionId")?;
+                let cli_args = crate::session::env::history_resume_args(&cli, &native_session_id)
+                    .map_err(|_| "resume_local_history_session 参数无效".to_string())?;
+                Ok(AgentIncoming::StartSession {
+                    profile: required("profile")?,
+                    cwd: Some(required("cwd")?),
+                    from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
+                    expected_cli: Some(cli),
+                    cli_args,
+                    cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
+                    rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
+                })
             }
             "kill_session" => {
                 let data = self
@@ -951,6 +984,25 @@ impl WsMessageBuilder {
         .to_string()
     }
 
+    /// 上报某项目的本地 CLI 会话索引快照。历史正文永不经此消息传输。
+    pub fn project_session_index(
+        project_path: &str,
+        revision: u64,
+        complete: bool,
+        sessions: &[ProjectSessionIndexEntry],
+    ) -> String {
+        serde_json::json!({
+            "type": "project_session_index",
+            "data": {
+                "projectPath": project_path,
+                "revision": revision,
+                "complete": complete,
+                "sessions": sessions
+            }
+        })
+        .to_string()
+    }
+
     /// 上报崩溃恢复——中断的会话列表。
     pub fn sessions_interrupted(sessions: &[InterruptedSession]) -> String {
         serde_json::json!({
@@ -1091,6 +1143,21 @@ pub struct ProjectInfoOut {
     pub description: Option<String>,
 }
 
+/// 可持久化到 Cloud 的本地 CLI 会话元信息；不含 transcript 或终端输出。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSessionIndexEntry {
+    pub native_session_id: String,
+    pub cli: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub last_active_at: u64,
+}
+
 // ── Tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1146,15 +1213,74 @@ mod tests {
                 from_user_id,
                 cols,
                 rows,
+                expected_cli,
+                cli_args,
             } => {
                 assert_eq!(profile, "my-profile");
                 assert_eq!(cwd, Some("/Users/test/project".into()));
                 assert_eq!(from_user_id, 100);
                 assert_eq!(cols, 48);
                 assert_eq!(rows, 18);
+                assert_eq!(expected_cli, None);
+                assert!(cli_args.is_empty());
             }
             _ => panic!("expected StartSession"),
         }
+    }
+
+    #[test]
+    fn test_parse_resume_local_history_session() {
+        let json = serde_json::json!({
+            "type": "resume_local_history_session",
+            "data": {
+                "profile": "work",
+                "cwd": "/Users/test/project",
+                "fromUserId": 100,
+                "nativeSessionId": "native_123",
+                "cli": "qoderclicn",
+                "cols": 48,
+                "rows": 18
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        match env.parse().unwrap() {
+            AgentIncoming::StartSession {
+                profile,
+                cwd,
+                from_user_id,
+                cols,
+                rows,
+                expected_cli,
+                cli_args,
+            } => {
+                assert_eq!(profile, "work");
+                assert_eq!(cwd, Some("/Users/test/project".to_string()));
+                assert_eq!(from_user_id, 100);
+                assert_eq!(expected_cli, Some("qoderclicn".to_string()));
+                assert_eq!(cli_args, vec!["-r", "native_123"]);
+                assert_eq!(cols, 48);
+                assert_eq!(rows, 18);
+            }
+            _ => panic!("expected history resume StartSession"),
+        }
+    }
+
+    #[test]
+    fn test_parse_resume_local_history_session_rejects_empty_native_session_id() {
+        let json = serde_json::json!({
+            "type": "resume_local_history_session",
+            "data": {
+                "profile": "work",
+                "cwd": "/Users/test/project",
+                "nativeSessionId": "  ",
+                "cli": "codex"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            env.parse().unwrap_err(),
+            "resume_local_history_session nativeSessionId 为空"
+        );
     }
 
     #[test]
@@ -1405,6 +1531,28 @@ mod tests {
         assert_eq!(parsed["data"]["cols"], 80);
         assert_eq!(parsed["data"]["rows"], 24);
         assert_eq!(parsed["data"]["source"], "ios");
+    }
+
+    #[test]
+    fn project_session_index_excludes_transcript_and_uses_camel_case_fields() {
+        let message = WsMessageBuilder::project_session_index(
+            "/workspace/kn",
+            7,
+            true,
+            &[ProjectSessionIndexEntry {
+                native_session_id: "native_1".into(),
+                cli: "codex".into(),
+                profile: Some("default".into()),
+                title: Some("fix login".into()),
+                summary: Some("short preview".into()),
+                last_active_at: 42,
+            }],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(parsed["type"], "project_session_index");
+        assert_eq!(parsed["data"]["sessions"][0]["nativeSessionId"], "native_1");
+        assert_eq!(parsed["data"]["complete"], true);
+        assert!(!parsed.to_string().contains("transcript"));
     }
 
     #[test]

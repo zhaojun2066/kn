@@ -12,7 +12,7 @@ interface ProjectDetailProps {
   profiles: ProfileSummary[];
   sessions: SessionInfo[];
   sessionsLoading: boolean;
-  onResumeSession: (session: SessionInfo) => void;
+  onResumeSession: (session: SessionInfo, profileName: string) => void;
   onRunProfile: (profileName: string, cliType: string) => void;
   onScanSessions: (projectPath: string) => void;
 }
@@ -239,6 +239,7 @@ export function ProjectDetail({
           <SessionList
             sessions={sessions}
             loading={sessionsLoading}
+            profiles={profiles}
             onResume={onResumeSession}
           />
         </div>

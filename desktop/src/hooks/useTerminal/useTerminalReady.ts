@@ -5,15 +5,15 @@ import type { TerminalContext } from "./context";
 import type { SessionRecord } from "./types";
 import { TERMINAL_READY_TIMEOUT_MS, MIN_COLS, MIN_ROWS } from "./types";
 import { findPaneInTabs } from "./helpers";
-import { parseAiCmd } from "./utils";
+import { isProfileCompatibleWithSession, parseAiCmd, type ProfileCliInfo } from "./utils";
 
 export function useTerminalReady(ctx: TerminalContext) {
   const { sessionsRef, readyPaneIdsRef, readyPromiseRefs, errorCallbackRef } = ctx;
   const deleteHistoryRef = useRef<((id: string) => void) | null>(null);
   const lastResizeByPaneRef = useRef<Map<string, { cols: number; rows: number }>>(new Map());
 
-  // Valid profile names (for validating history restore)
-  const profileNamesRef = useRef<Set<string>>(new Set());
+  // Local history must resume through a profile of the same CLI.
+  const profilesRef = useRef<readonly ProfileCliInfo[]>([]);
 
   const cleanupReadyWait = useCallback((paneId: string) => {
     readyPaneIdsRef.current.delete(paneId);
@@ -98,17 +98,25 @@ export function useTerminalReady(ctx: TerminalContext) {
     errorCallbackRef.current?.(`${action}: ${error}`);
   }, [errorCallbackRef]);
 
-  const setValidProfileNames = useCallback((names: string[]) => {
-    profileNamesRef.current = new Set(names);
+  const setValidProfiles = useCallback((profiles: readonly ProfileCliInfo[]) => {
+    profilesRef.current = profiles;
   }, []);
 
   const validateProfile = useCallback((record: SessionRecord): boolean => {
     const parsed = parseAiCmd(record.command);
     if (!parsed) return true;
-    if (profileNamesRef.current.has(parsed.profile)) return true;
-    deleteHistoryRef.current?.(record.id);
-    errorCallbackRef.current?.(`Profile "${parsed.profile}" 不存在，已删除历史记录`);
-    return false;
+    if (!profilesRef.current.some((profile) => profile.name === parsed.profile)) {
+      deleteHistoryRef.current?.(record.id);
+      errorCallbackRef.current?.(`Profile "${parsed.profile}" 不存在，已删除会话历史`);
+      return false;
+    }
+    if (!isProfileCompatibleWithSession(record.command, profilesRef.current)) {
+      errorCallbackRef.current?.(
+        `会话历史需要 ${parsed.tool} 类型的 Profile，不能使用同名的其他 CLI Profile`,
+      );
+      return false;
+    }
+    return true;
   }, [errorCallbackRef]);
 
   return {
@@ -119,7 +127,7 @@ export function useTerminalReady(ctx: TerminalContext) {
     attachTerminal,
     setErrorCallback,
     reportTerminalError,
-    setValidProfileNames,
+    setValidProfiles,
     validateProfile,
     deleteHistoryRef,
   };

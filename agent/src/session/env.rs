@@ -60,6 +60,84 @@ fn looks_like_semver(value: &str) -> bool {
         && parts.next().is_some_and(|part| !part.is_empty() && part.chars().next().is_some_and(|c| c.is_ascii_digit()))
 }
 
+/// Normalizes supported CLI identifiers without merging distinct products.
+/// `qoder` and `qoderclicn` are intentionally never aliases.
+pub fn normalized_cli(tool: &str) -> Option<&'static str> {
+    match tool.trim().to_ascii_lowercase().as_str() {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "qoder" => Some("qoder"),
+        "qoderclicn" => Some("qoderclicn"),
+        _ => None,
+    }
+}
+
+/// 构造原生 CLI 的恢复参数。profile 由 kn 的 profile 环境层注入，
+/// 因而不作为 shell 字符串拼接的一部分。
+pub fn history_resume_args(tool: &str, native_session_id: &str) -> Result<Vec<String>, String> {
+    let native_session_id = native_session_id.trim();
+    if native_session_id.is_empty()
+        || native_session_id.len() > 512
+        || native_session_id.chars().any(char::is_control)
+    {
+        return Err("invalid_native_session_id".to_string());
+    }
+
+    let flag = match normalized_cli(tool) {
+        Some("claude") => "--resume",
+        Some("codex") => "resume",
+        Some("qoderclicn") => "-r",
+        _ => return Err("unsupported_cli".to_string()),
+    };
+    Ok(vec![flag.to_string(), native_session_id.to_string()])
+}
+
+pub fn history_resume_cli_matches_profile(requested_cli: &str, profile_tool: &str) -> bool {
+    normalized_cli(requested_cli).is_some_and(|requested| {
+        normalized_cli(profile_tool).is_some_and(|profile| requested == profile)
+    })
+}
+
+#[cfg(test)]
+mod history_resume_tests {
+    use super::{history_resume_args, history_resume_cli_matches_profile};
+
+    #[test]
+    fn history_resume_arguments_follow_each_cli_native_syntax() {
+        assert_eq!(
+            history_resume_args("claude", "session-claude"),
+            Ok(vec!["--resume".to_string(), "session-claude".to_string()])
+        );
+        assert_eq!(
+            history_resume_args("codex", "session-codex"),
+            Ok(vec!["resume".to_string(), "session-codex".to_string()])
+        );
+        assert_eq!(
+            history_resume_args("qoderclicn", "session-qoder"),
+            Ok(vec!["-r".to_string(), "session-qoder".to_string()])
+        );
+    }
+
+    #[test]
+    fn history_resume_does_not_treat_qoder_as_qoderclicn() {
+        assert!(history_resume_args("qoder", "session-qoder").is_err());
+    }
+
+    #[test]
+    fn history_resume_arguments_reject_empty_or_control_character_session_ids() {
+        assert!(history_resume_args("codex", " ").is_err());
+        assert!(history_resume_args("codex", "session\nnext").is_err());
+    }
+
+    #[test]
+    fn history_resume_requires_profile_tool_to_match_requested_cli() {
+        assert!(!history_resume_cli_matches_profile("qoder", "qoderclicn"));
+        assert!(history_resume_cli_matches_profile("codex", "codex"));
+        assert!(!history_resume_cli_matches_profile("claude", "codex"));
+        assert!(!history_resume_cli_matches_profile("unknown", "codex"));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileToolResolveError {
     ProfileNotFound,

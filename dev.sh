@@ -52,6 +52,9 @@ echo "[kn dev] Installing dev kn-agent to: $AGENT_DST"
 mkdir -p "$AGENT_DIR"
 cp "$AGENT_SRC" "$AGENT_DST"
 chmod +x "$AGENT_DST"
+# Cargo's linker signature is rejected when launchd executes the copied binary
+# on recent macOS releases. Re-sign the installed development executable.
+codesign --force --sign - "$AGENT_DST"
 
 echo "[kn dev] Writing dev launchd plist: $PLIST_PATH"
 mkdir -p "$PLIST_DIR" "$LOG_DIR"

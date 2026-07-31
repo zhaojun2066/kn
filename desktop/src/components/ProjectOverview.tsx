@@ -12,7 +12,7 @@ interface ProjectOverviewProps {
   overviewData: ProjectOverviewData | null;
   overviewLoading: boolean;
   profiles: ProfileSummary[];
-  onResumeSession: (session: SessionInfo) => void;
+  onResumeSession: (session: SessionInfo, profileName: string) => void;
   onRunProfile: (name: string, cli: string) => void;
   onSplitProfile?: (name: string, cli: string) => void;
   onSetDefaultProfile: (name: string) => void;
@@ -135,10 +135,21 @@ function SectionHeader({ label }: { label: string }) {
 interface RecentSessionsProps {
   sessions: SessionInfo[];
   loading: boolean;
-  onResume: (session: SessionInfo) => void;
+  profiles: ProfileSummary[];
+  onResume: (session: SessionInfo, profileName: string) => void;
 }
 
-function OverviewRecentSessions({ sessions, loading, onResume }: RecentSessionsProps) {
+function OverviewRecentSessions({ sessions, loading, profiles, onResume }: RecentSessionsProps) {
+  const [sessionToResume, setSessionToResume] = useState<SessionInfo | null>(null);
+  const [selectedProfile, setSelectedProfile] = useState("");
+  const compatibleProfiles = sessionToResume
+    ? profiles.filter((profile) => profile.cli_type === sessionToResume.cli)
+    : [];
+
+  const openResumePicker = (session: SessionInfo) => {
+    setSessionToResume(session);
+    setSelectedProfile("");
+  };
   if (loading) {
     return (
       <div className="border border-app-border bg-app-sidebar">
@@ -196,7 +207,7 @@ function OverviewRecentSessions({ sessions, loading, onResume }: RecentSessionsP
             </span>
 
             <button
-              onClick={(e) => { e.stopPropagation(); onResume(s); }}
+              onClick={(e) => { e.stopPropagation(); openResumePicker(s); }}
               className="shrink-0 px-2 py-0.5 text-2xs font-mono text-app-accent
                 border border-app-border bg-transparent
                 opacity-0 group-hover:opacity-100 transition-opacity duration-fast
@@ -208,6 +219,22 @@ function OverviewRecentSessions({ sessions, loading, onResume }: RecentSessionsP
           </div>
         );
       })}
+      {sessionToResume && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
+          <div className="w-[360px] border border-app-border bg-app-panel p-5 shadow-dialog">
+            <h3 className="text-sm font-medium text-app-text">选择 Profile</h3>
+            <p className="mt-2 text-xs text-app-text-muted">恢复会话前请选择 {sessionToResume.cli} 的 Profile。</p>
+            <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value)} className="mt-4 w-full border border-app-border bg-app-input px-2 py-2 text-sm text-app-text">
+              <option value="">请选择 Profile</option>
+              {compatibleProfiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
+            </select>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setSessionToResume(null)} className="px-3 py-1.5 text-xs text-app-text-muted">取消</button>
+              <button disabled={!selectedProfile} onClick={() => { onResume(sessionToResume, selectedProfile); setSessionToResume(null); }} className="px-3 py-1.5 text-xs text-app-bg bg-app-accent disabled:opacity-40">恢复会话</button>
+            </div>
+          </div>
+        </div>, document.body,
+      )}
     </div>
   );
 }
@@ -864,6 +891,7 @@ export function ProjectOverview({
         <OverviewRecentSessions
           sessions={overviewData?.recentSessions ?? []}
           loading={overviewLoading}
+          profiles={profiles}
           onResume={onResumeSession}
         />
 

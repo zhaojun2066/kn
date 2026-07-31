@@ -216,7 +216,7 @@ export function useTerminal(panelId: string = "right") {
     activeTab,
     history: state.history,
     setErrorCallback: ready.setErrorCallback,
-    setValidProfileNames: ready.setValidProfileNames,
+    setValidProfiles: ready.setValidProfiles,
     usageCounts: state.usageCounts,
     open: actions.open,
     close: actions.close,

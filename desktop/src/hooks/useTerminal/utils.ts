@@ -1,13 +1,40 @@
-/** Normalize tool name: parseAiCmd returns "qoderclicn" but agent expects "qoder" */
+/** Preserve the selected CLI identity all the way to the Agent. */
 export function normalizeTool(tool: string): string {
-  if (tool === "qoderclicn") return "qoder";
   return tool;
 }
 
 export function parseAiCmd(cmd: string): { tool: string; profile: string } | null {
-  const m = cmd.match(/^ai\s+(claude|codex|qoderclicn)\s+(\S+)/);
+  const m = cmd.match(/^ai\s+(claude|codex|qoder|qoderclicn)\s+(\S+)/);
   if (!m) return null;
   return { tool: m[1], profile: m[2] };
+}
+
+export interface ProfileCliInfo {
+  name: string;
+  cli_type?: string;
+}
+
+/** CLI identity must match exactly; Qoder and Qoderclicn are distinct products. */
+export function normalizedCli(tool: string | undefined): string | null {
+  switch (tool?.trim().toLowerCase()) {
+    case "claude": return "claude";
+    case "codex": return "codex";
+    case "qoder": return "qoder";
+    case "qoderclicn": return "qoderclicn";
+    default: return null;
+  }
+}
+
+/** A local history entry may only be resumed with a profile from its own CLI. */
+export function isProfileCompatibleWithSession(
+  command: string,
+  profiles: readonly ProfileCliInfo[],
+): boolean {
+  const session = parseAiCmd(command);
+  if (!session) return true;
+  const profile = profiles.find((candidate) => candidate.name === session.profile);
+  return profile !== undefined
+    && normalizedCli(profile.cli_type) === normalizedCli(session.tool);
 }
 
 export interface RunCommandPolicy {

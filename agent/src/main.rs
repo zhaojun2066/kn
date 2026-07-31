@@ -319,6 +319,82 @@ async fn send_project_list(
     }
 }
 
+/// Publishes bounded, complete metadata snapshots after reconnect and local
+/// session activity. Scanning is offloaded so it never blocks WSS dispatch.
+async fn send_project_session_indexes(
+    outgoing: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    revisions: &Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectRevisionClock>>,
+    activity: &Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectActivityTracker>>,
+    scan_gate: &Arc<kn_agent::project_session_index::ProjectScanGate>,
+) {
+    let projects = load_projects().await;
+    for project in projects {
+        let project_path = project.path;
+        send_project_session_index(
+            outgoing,
+            revisions,
+            activity,
+            scan_gate,
+            project_path,
+        ).await;
+    }
+}
+
+async fn send_project_session_index(
+    outgoing: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    revisions: &Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectRevisionClock>>,
+    activity: &Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectActivityTracker>>,
+    scan_gate: &Arc<kn_agent::project_session_index::ProjectScanGate>,
+    project_path: String,
+) {
+    if !scan_gate.begin(&project_path) {
+        return;
+    }
+
+    loop {
+        let allow_qoderclicn_fallback = activity.lock().await.claim_qoderclicn_fallback(
+            &project_path, unix_millis(),
+        );
+        let scan_path = project_path.clone();
+        let scan = tokio::task::spawn_blocking(move || {
+            kn_agent::project_session_index::scan_project_history(&scan_path, allow_qoderclicn_fallback)
+        }).await.unwrap_or_else(|error| {
+            tracing::warn!(project_path = %project_path, %error, "会话索引扫描任务失败");
+            kn_agent::project_session_index::ProjectSessionScan { sessions: Vec::new(), complete: false }
+        });
+        let revision = match revisions.lock().await.next(&project_path) {
+            Ok(revision) => revision,
+            Err(error) => { tracing::warn!(project_path = %project_path, %error, "会话索引 revision 未持久化，跳过发送"); continue; }
+        };
+        let message = proto::WsMessageBuilder::project_session_index(
+            &project_path, revision, scan.complete, &scan.sessions,
+        );
+        if let Some(tx) = outgoing.lock().await.as_ref() {
+            if tx.send(message).is_err() {
+                tracing::warn!(project_path = %project_path, "会话索引快照发送失败");
+            } else {
+                tracing::info!(
+                    project_path = %project_path,
+                    revision,
+                    complete = scan.complete,
+                    session_count = scan.sessions.len(),
+                    "已上报项目会话索引"
+                );
+            }
+        }
+        if !scan_gate.finish(&project_path) {
+            break;
+        }
+    }
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 /// 启动 projects.json 文件监听，变化时自动重新上报。
 /// 返回 watcher handle，需要保持存活（drop 时停止监听）。
 fn start_project_watcher(
@@ -382,6 +458,116 @@ fn start_project_watcher(
     });
 
     Some(watcher)
+}
+
+/// Watches native CLI history roots. Events are debounced before resolving the
+/// affected registered project, and the per-project scan gate coalesces any
+/// event that races with an already-running scan.
+fn start_project_session_history_watcher(
+    outgoing: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    revisions: Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectRevisionClock>>,
+    activity: Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectActivityTracker>>,
+    scan_gate: Arc<kn_agent::project_session_index::ProjectScanGate>,
+) -> Option<notify::RecommendedWatcher> {
+    let home = kn_common::path::home_dir();
+    let roots = [
+        home.join(".claude/projects"),
+        home.join(".codex/sessions"),
+        home.join(".qoder-cn/projects"),
+    ];
+    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<std::path::PathBuf>>();
+    let mut watcher = match notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
+        if let Ok(event) = result {
+            if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)) {
+                let _ = tx.send(event.paths);
+            }
+        }
+    }) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            tracing::warn!(%error, "创建会话历史文件监听器失败");
+            return None;
+        }
+    };
+
+    let mut watched_root_count = 0usize;
+    for root in roots {
+        if !root.exists() {
+            tracing::debug!(path = %root.display(), "会话历史目录不存在，跳过监听");
+            continue;
+        }
+        match watcher.watch(&root, RecursiveMode::Recursive) {
+            Ok(()) => watched_root_count += 1,
+            Err(error) => tracing::warn!(path = %root.display(), %error, "注册会话历史目录监听失败"),
+        }
+    }
+    if watched_root_count == 0 {
+        return None;
+    }
+
+    tokio::spawn(async move {
+        while let Some(mut paths) = rx.recv().await {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            while let Ok(mut more_paths) = rx.try_recv() {
+                paths.append(&mut more_paths);
+            }
+            let projects = load_projects().await;
+            let project_paths: Vec<String> = projects.into_iter().map(|project| project.path).collect();
+            let affected = kn_agent::project_session_index::projects_affected_by_history_paths(
+                &paths,
+                &project_paths,
+            );
+            for project_path in affected {
+                activity.lock().await.mark_active(&project_path, unix_millis());
+                send_project_session_index(
+                    &outgoing,
+                    &revisions,
+                    &activity,
+                    &scan_gate,
+                    project_path,
+                ).await;
+            }
+        }
+    });
+
+    Some(watcher)
+}
+
+fn start_qoderclicn_history_fallback_loop(
+    outgoing: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    revisions: Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectRevisionClock>>,
+    activity: Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectActivityTracker>>,
+    scan_gate: Arc<kn_agent::project_session_index::ProjectScanGate>,
+    shutdown: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = interval.tick() => {
+                    if outgoing.lock().await.is_none() {
+                        continue;
+                    }
+                    let now = unix_millis();
+                    let projects = load_projects().await;
+                    for project in projects {
+                        if !activity.lock().await.allows_qoderclicn_fallback(&project.path, now) {
+                            continue;
+                        }
+                        send_project_session_index(
+                            &outgoing,
+                            &revisions,
+                            &activity,
+                            &scan_gate,
+                            project.path,
+                        ).await;
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[tokio::main]
@@ -549,6 +735,21 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut wss_task = None; // Option<JoinHandle<kn_agent::error::Result<()>>>
     let mut incoming_rx: Option<mpsc::UnboundedReceiver<proto::AgentIncoming>> = None;
     let mut _project_watcher: Option<notify::RecommendedWatcher> = None;
+    let mut _project_session_history_watcher: Option<notify::RecommendedWatcher> = None;
+    let project_session_revisions = Arc::new(tokio::sync::Mutex::new(
+        kn_agent::project_session_index::ProjectRevisionClock::default_at_config_dir(),
+    ));
+    let project_session_activity = Arc::new(tokio::sync::Mutex::new(
+        kn_agent::project_session_index::ProjectActivityTracker::default(),
+    ));
+    let project_session_scan_gate = Arc::new(kn_agent::project_session_index::ProjectScanGate::default());
+    start_qoderclicn_history_fallback_loop(
+        outgoing_tx_ref.clone(),
+        project_session_revisions.clone(),
+        project_session_activity.clone(),
+        project_session_scan_gate.clone(),
+        shutdown.clone(),
+    );
 
     // 初始状态转换
     if has_token {
@@ -617,6 +818,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
                 // 启动 project watcher
                 _project_watcher = start_project_watcher(outgoing_tx_ref.clone());
+                _project_session_history_watcher = start_project_session_history_watcher(
+                    outgoing_tx_ref.clone(),
+                    project_session_revisions.clone(),
+                    project_session_activity.clone(),
+                    project_session_scan_gate.clone(),
+                );
 
                 // 复制 WSS 所需参数
                 let ws_token = t;
@@ -673,6 +880,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     let acknowledgements = ack_registry.clone();
                     let delivery_gate = project_delivery_gate.clone();
                     let outbox = delivery_outbox.clone();
+                    let session_revisions = project_session_revisions.clone();
+                    let session_activity = project_session_activity.clone();
+                    let session_scan_gate = project_session_scan_gate.clone();
                     if should_dispatch_in_background(&m) {
                         tokio::spawn(async move {
                             handle_incoming(
@@ -684,6 +894,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 acknowledgements,
                                 delivery_gate,
                                 outbox,
+                                session_revisions,
+                                session_activity,
+                                session_scan_gate,
                             )
                             .await;
                         });
@@ -697,6 +910,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             acknowledgements,
                             delivery_gate,
                             outbox,
+                            session_revisions,
+                            session_activity,
+                            session_scan_gate,
                         )
                         .await;
                     }
@@ -858,6 +1074,9 @@ async fn handle_incoming(
     ack_registry: Arc<ack::AckRegistry>, // Phase 3 开始使用
     project_delivery_gate: Arc<kn_agent::project_delivery::ProjectOperationGate>,
     delivery_outbox: Arc<DeliveryOutbox>,
+    project_session_revisions: Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectRevisionClock>>,
+    project_session_activity: Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectActivityTracker>>,
+    project_session_scan_gate: Arc<kn_agent::project_session_index::ProjectScanGate>,
 ) {
     match msg {
         proto::AgentIncoming::Pong { .. } => {}
@@ -921,6 +1140,12 @@ async fn handle_incoming(
 
             // 上报 project 列表
             send_project_list(&outgoing).await;
+            send_project_session_indexes(
+                &outgoing,
+                &project_session_revisions,
+                &project_session_activity,
+                &project_session_scan_gate,
+            ).await;
 
             // WSS 重连后，重新同步所有开启远程的会话到云端。
             // agent 是会话状态的权威来源：即使云端因心跳超时把会话标为 ended，
@@ -993,6 +1218,8 @@ async fn handle_incoming(
             from_user_id,
             cols,
             rows,
+            expected_cli,
+            cli_args,
         } => {
             let resolved_tool = match session::env::resolve_tool_from_profile(&profile) {
                 Ok(tool) => tool,
@@ -1010,6 +1237,25 @@ async fn handle_incoming(
                     return;
                 }
             };
+            if let Some(expected_cli) = expected_cli.as_deref() {
+                if !session::env::history_resume_cli_matches_profile(expected_cli, &resolved_tool) {
+                    tracing::warn!(
+                        profile = %profile,
+                        expected_cli = %expected_cli,
+                        resolved_tool = %resolved_tool,
+                        user = from_user_id,
+                        "本地历史恢复失败：profile 与 CLI 不匹配"
+                    );
+                    let msg = proto::WsMessageBuilder::session_start_failed(
+                        &profile,
+                        "profile_cli_mismatch",
+                    );
+                    if let Some(tx) = outgoing.lock().await.as_ref() {
+                        let _ = tx.send(msg);
+                    }
+                    return;
+                }
+            }
             let cli_version = session::env::resolve_cli_version(&resolved_tool).await;
             // Agent 自行生成 sessionId，cloud 不再预分配
             let session_nid = format!("s_{}", nanoid::nanoid!(12));
@@ -1038,6 +1284,24 @@ async fn handle_incoming(
                 Ok(session) => {
                     // iOS 远程会话：显式开启 remote_enabled（create 默认 false）
                     let _ = sessions.set_remote_enabled(&session_nid, true).await;
+                    project_session_activity.lock().await.mark_active(&cwd_resolved, unix_millis());
+
+                    // A newly created session may cause the native CLI to
+                    // persist a history file shortly after launch. Refresh in
+                    // the background; this never delays session creation.
+                    let index_outgoing = outgoing.clone();
+                    let index_revisions = project_session_revisions.clone();
+                    let index_activity = project_session_activity.clone();
+                    let index_scan_gate = project_session_scan_gate.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        send_project_session_indexes(
+                            &index_outgoing,
+                            &index_revisions,
+                            &index_activity,
+                            &index_scan_gate,
+                        ).await;
+                    });
 
                     // Spawn PTY + CLI process (before ACK — process needs to be running)
                     let (wss_tx, mut wss_rx) = mpsc::unbounded_channel::<String>();
@@ -1076,19 +1340,21 @@ async fn handle_incoming(
                     let t = resolved_tool.clone();
                     let p = profile.clone();
                     let c = cwd_resolved.clone();
+                    let history_cli_args = cli_args.clone();
                     let remote_enabled = Some(session.remote_enabled.clone());
                     let out = outgoing.clone();
 
                     tokio::spawn(async move {
                         let s_cleanup = s.clone();
                         match s
-                            .start_session(
+                            .start_session_with_args(
                                 &nid,
                                 &t,
                                 Some(p.as_str()),
                                 &c,
                                 cols,
                                 rows,
+                                &history_cli_args,
                                 wss_tx,
                                 ipc_tx,
                                 m,
@@ -2250,6 +2516,13 @@ mod tests {
             Arc::new(ack::AckRegistry::new()),
             Arc::new(kn_agent::project_delivery::ProjectOperationGate::default()),
             outbox,
+            Arc::new(tokio::sync::Mutex::new(
+                kn_agent::project_session_index::ProjectRevisionClock::default(),
+            )),
+            Arc::new(tokio::sync::Mutex::new(
+                kn_agent::project_session_index::ProjectActivityTracker::default(),
+            )),
+            Arc::new(kn_agent::project_session_index::ProjectScanGate::default()),
         )
         .await;
 

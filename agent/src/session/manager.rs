@@ -526,6 +526,38 @@ impl SessionManager {
         merger: std::sync::Arc<InputMerger>,
         remote_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> std::result::Result<OutputFanout, String> {
+        self.start_session_with_args(
+            nid,
+            tool,
+            profile,
+            cwd,
+            cols,
+            rows,
+            &[],
+            wss_tx,
+            ipc_tx,
+            merger,
+            remote_enabled,
+        )
+        .await
+    }
+
+    /// 创建 PTY 会话，并将可信的原生 CLI 参数附加到二进制调用。
+    /// 参数始终通过 `CommandBuilder` 逐项传递，绝不经 shell 解释。
+    pub async fn start_session_with_args(
+        self: Arc<Self>,
+        nid: &str,
+        tool: &str,
+        profile: Option<&str>,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        cli_args: &[String],
+        wss_tx: mpsc::UnboundedSender<String>,
+        ipc_tx: mpsc::UnboundedSender<String>,
+        merger: std::sync::Arc<InputMerger>,
+        remote_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> std::result::Result<OutputFanout, String> {
         // 1. 查找 CLI 二进制
         let binary = resolve_tool_path(tool)?;
 
@@ -578,6 +610,7 @@ impl SessionManager {
         } else {
             let mut cli_cmd = portable_pty::CommandBuilder::new(&binary);
             cli_cmd.args(&prep.extra_args);
+            cli_cmd.args(cli_args);
             cli_cmd
         };
         if !cwd.is_empty() {

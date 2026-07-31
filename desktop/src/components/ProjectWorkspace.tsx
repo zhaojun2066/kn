@@ -49,7 +49,7 @@ interface ProjectWorkspaceProps {
   onUpdateVerifyConfig?: (verify: ProjectVerifyConfig | null) => void | Promise<void>;
   onPreviewVerifyConfig?: (projectName: string) => Promise<ProjectVerifyConfig | null>;
   onScanSessions: (projectPath: string) => void;
-  onResumeSession: (session: SessionInfo) => void;
+  onResumeSession: (session: SessionInfo, profileName: string) => void;
   // Toast integration for resource operations
   addToast: (type: "error" | "success", message: string) => void;
   setToasts: React.Dispatch<React.SetStateAction<any[]>>;
@@ -1222,6 +1222,7 @@ export function ProjectWorkspace({
           <SessionList
             sessions={sessions}
             loading={sessionsLoading}
+            profiles={profiles}
             onResume={onResumeSession}
           />
         </div>

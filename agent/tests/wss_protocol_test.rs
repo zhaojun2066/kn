@@ -613,6 +613,7 @@ fn test_start_session_parsing_matches_java_forward_format() {
             from_user_id,
             cols,
             rows,
+            ..
         } => {
             assert_eq!(profile, "work");
             assert_eq!(cwd, Some("/Users/test/project".into()));

@@ -309,11 +309,10 @@ export function App() {
     }
   }, [profileDrawerOpen, drawerSelectedName, ctx.selectedName, ctx.profiles, selectDrawerProfile]);
 
-  // Keep terminals aware of valid profile names (for history restore validation)
+  // Keep terminals aware of profile CLI types for safe local history restoration.
   useEffect(() => {
-    const names = ctx.profiles.map((p) => p.name);
-    rightTerminal.setValidProfileNames(names);
-    bottomTerminal.setValidProfileNames(names);
+    rightTerminal.setValidProfiles(ctx.profiles);
+    bottomTerminal.setValidProfiles(ctx.profiles);
   }, [ctx.profiles]);
 
   // Environment check — refresh on mount, on panel open, on dialog open
@@ -836,13 +835,17 @@ export function App() {
     rightTerminal.runInNewTab(cmd, projectPath, `${projectName} · ${profileName}`);
   }, [rightTerminal]);
 
-  const handleResumeSession = useCallback((session: SessionInfo) => {
+  const handleResumeSession = useCallback((session: SessionInfo, profileName: string) => {
     const cmdMap: Record<string, string> = {
-      claude: `ai claude ${session.profile || ""} --resume ${session.sessionId}`,
-      codex: `ai codex ${session.profile || ""} resume ${session.sessionId}`,
-      qoder: `ai qoderclicn ${session.profile || ""} -r ${session.sessionId}`,
+      claude: `ai claude ${profileName} --resume ${session.sessionId}`,
+      codex: `ai codex ${profileName} resume ${session.sessionId}`,
+      qoderclicn: `ai qoderclicn ${profileName} -r ${session.sessionId}`,
     };
-    const cmd = cmdMap[session.cli] || `ai claude --resume ${session.sessionId}`;
+    const cmd = cmdMap[session.cli];
+    if (!cmd) {
+      window.alert("该 CLI 暂不支持恢复会话");
+      return;
+    }
     const label = session.title.slice(0, 30);
     rightTerminal.runInNewTab(cmd.trim(), session.projectPath, label);
   }, [rightTerminal]);

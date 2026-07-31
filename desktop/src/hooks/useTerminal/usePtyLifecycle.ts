@@ -188,8 +188,8 @@ export function usePtyLifecycle(ctx: TerminalContext) {
             });
           }),
         );
-        termRefs.current.get(pane.paneId)?.writeln(`\r\n\x1b[31m[无法接管远程终端: ${e}]\x1b[0m`);
-        errorCallbackRef.current?.(`远程终端接管失败: ${e}`);
+        termRefs.current.get(pane.paneId)?.writeln(`\r\n\x1b[31m[无法接管远程会话: ${e}]\x1b[0m`);
+        errorCallbackRef.current?.(`远程会话接管失败: ${e}`);
         reject(e);
       }
     });

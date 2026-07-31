@@ -116,12 +116,12 @@ function SessionRow({
         {session.remote_enabled ? (
           <span className="shrink-0 text-[10px] px-1 py-0.5 bg-emerald-400/15 text-emerald-400 border border-emerald-400/30 flex items-center gap-0.5">
             <Globe size={10} />
-            远程终端
+            远程会话
           </span>
         ) : (
           <span className="shrink-0 text-[10px] px-1 py-0.5 bg-app-text-dim/10 text-app-text-muted border border-app-border flex items-center gap-0.5">
             <Monitor size={10} />
-            本地终端
+            本地会话
           </span>
         )}
         <span className="shrink-0">
@@ -137,7 +137,7 @@ function SessionRow({
           <button
             onClick={(e) => { e.stopPropagation(); onOpen(session); }}
             className="shrink-0 p-0.5 text-app-text-dim hover:text-app-accent transition-colors"
-            title="打开远程终端"
+            title="打开远程会话"
           >
             <TerminalSquare size={12} />
           </button>
@@ -174,7 +174,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
   const runningSessions = useMemo(() => sessions.filter((s) => s.status === "running"), [sessions]);
   // UI 命名边界：
   // - AgentSession/session 是 Agent/Cloud 的内部会话模型，仍对应 nid/sessionId。
-  // - 用户在 Agent 面板里看到的是终端实例：未开放给 iOS 的叫“本地终端”，已开启 remote relay 的叫“远程终端”。
+  // - 用户在 Agent 面板里看到的是会话实例：未开放给 iOS 的叫“本地会话”，已开启 remote relay 的叫“远程会话”。
   const localSessions = useMemo(() => runningSessions.filter((s) => !s.remote_enabled), [runningSessions]);
   const remoteSessions = useMemo(() => runningSessions.filter((s) => s.remote_enabled), [runningSessions]);
 
@@ -214,7 +214,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
     }
   }, [health]);
 
-  // ── 本地终端操作（底层仍是 Agent session） ──
+  // ── 本地会话操作（底层仍是 Agent session） ──
 
   const handleCheckLocal = useCallback((nid: string) => {
     setSelectedLocalNids((prev) => {
@@ -244,8 +244,8 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
       const remaining = 10 - remoteSessions.length;
       showError(
         remaining <= 0
-          ? "已达到远程控制上限（10个），请先关闭其他远程终端"
-          : `最多还能开启 ${remaining} 个远程终端，当前选中了 ${targets.length} 个`,
+          ? "已达到远程控制上限（10个），请先关闭其他远程会话"
+          : `最多还能开启 ${remaining} 个远程会话，当前选中了 ${targets.length} 个`,
       );
       return;
     }
@@ -266,7 +266,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
         }
         if (errStr.includes("REMOTE_LIMIT")) {
           shownSpecificError = true;
-          showError("已达到远程控制上限（10个），请先关闭其他远程终端"); break;
+          showError("已达到远程控制上限（10个），请先关闭其他远程会话"); break;
         }
         if (errStr.includes("WSS_ACK_TIMEOUT")) {
           shownSpecificError = true;
@@ -277,7 +277,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
           showError("云端拒绝远程连接，请稍后重试"); break;
         }
         shownSpecificError = true;
-        showError(`开启远程失败：${errStr}`);
+        showError(`开启远程会话失败：${errStr}`);
         console.error("set_remote_enabled failed for", s.nid, e);
       } finally {
         // Remove from processing set
@@ -289,13 +289,13 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
       }
     }
     if (failCount > 0 && failCount === targets.length && !shownSpecificError) {
-      showError(`${failCount} 个终端开启远程失败`);
+      showError(`${failCount} 个会话开启远程失败`);
     }
     setSelectedLocalNids(new Set());
     fetchSessions();
   }, [localSessions, remoteSessions.length, selectedLocalNids, remotingSessions, fetchSessions, showError]);
 
-  // ── 远程终端操作（底层仍是 Agent session） ──
+  // ── 远程会话操作（底层仍是 Agent session） ──
 
   const handleCheckRemote = useCallback((nid: string) => {
     setSelectedRemoteNids((prev) => {
@@ -329,7 +329,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
         console.error("set_remote_enabled failed for", s.nid, e);
       }
     }
-    if (failCount > 0) showError(`${failCount} 个远程终端关闭失败`);
+    if (failCount > 0) showError(`${failCount} 个远程会话关闭失败`);
     setSelectedRemoteNids(new Set());
     fetchSessions();
   }, [remoteSessions, selectedRemoteNids, fetchSessions, showError]);
@@ -510,7 +510,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                         }`}
                       >
                         <Monitor size={11} />
-                        本地终端
+                        本地会话
                         {localSessions.length > 0 && (
                           <span className="text-[10px] opacity-60">({localSessions.length})</span>
                         )}
@@ -524,7 +524,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                         }`}
                       >
                         <Globe size={11} className={sessionTab === "remote" ? "text-emerald-400" : ""} />
-                        远程终端
+                        远程会话
                         {remoteSessions.length > 0 && (
                           <span className="text-[10px] opacity-60">({remoteSessions.length})</span>
                         )}
@@ -536,7 +536,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                       <>
                         {localSessions.length === 0 ? (
                           <div className="px-3 py-3 text-xs text-app-text-muted font-mono text-center">
-                            暂无本地终端
+                            暂无本地会话
                           </div>
                         ) : (
                           <>
@@ -566,7 +566,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                                           开启中...
                                         </>
                                       ) : (
-                                        "开启远程"
+                                        "开启远程会话"
                                       )}
                                     </button>
                                   );
@@ -599,7 +599,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                       <>
                         {remoteSessions.length === 0 ? (
                           <div className="px-3 py-3 text-xs text-app-text-muted font-mono text-center">
-                            暂无远程终端
+                            暂无远程会话
                           </div>
                         ) : (
                           <>
@@ -683,7 +683,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
     <ConfirmDialog
       open={killConfirm !== null}
       title="终止进程"
-      message={`确定要终止 ${killConfirm?.length ?? 0} 个终端进程吗？此操作不可撤销。\n远程终端将在 iOS 端立即断开。`}
+      message={`确定要终止 ${killConfirm?.length ?? 0} 个终端进程吗？此操作不可撤销。\n远程会话将在 iOS 端立即断开。`}
       confirmLabel="终止"
       variant="danger"
       onConfirm={() => {
