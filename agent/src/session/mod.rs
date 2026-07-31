@@ -20,6 +20,7 @@ pub mod store;
 pub mod types;
 pub mod verification_history;
 pub mod verify_changes;
+pub mod terminal_parser;
 
 /// 存储 PTY writer + OutputFanout，供 `attach_pty` 桥接。
 /// 放在 mod.rs 以避免 types.rs ↔ output.rs 循环依赖。

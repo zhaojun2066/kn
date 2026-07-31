@@ -1,4 +1,5 @@
 use crate::session::verification_history::{LastVerification, VerificationHistory};
+use crate::session::terminal_parser::{CommandContext, OutputStream, TerminalOutputParser};
 use kn_common::project::{ProjectInfo, ProjectVerifyCommand, ProjectVerifyConfig};
 use regex_lite::Regex;
 use serde::{Deserialize, Serialize};
@@ -1958,10 +1959,13 @@ async fn run_stage(
 ) -> serde_json::Value {
     let started = Instant::now();
     let mut output = OutputTailBuffer::new();
+    let mut parse_results = Vec::new();
     let mut progress_output = ProgressOutputBuffer::new();
     let command_display = display_commands(&plan.commands);
     reporter.send("stageStarted", Some(name), &command_display, "");
-    for command in &plan.commands {
+    for (index, command) in plan.commands.iter().enumerate() {
+        let command_id = format!("{}-{}", name.as_str(), index + 1);
+        let log_start_line = stage_log_line_count(run_log.as_ref(), name).saturating_add(1);
         match run_command(
             repo_root,
             command,
@@ -1973,14 +1977,34 @@ async fn run_stage(
         )
         .await
         {
-            CommandOutcome::Passed { output_tail } => {
+            CommandOutcome::Passed {
+                output_tail,
+                parse_result,
+            } => {
                 output.push_str(&output_tail);
+                parse_results.push(decorate_parse_result(
+                    parse_result,
+                    name,
+                    &command_id,
+                    &command.display,
+                    log_start_line,
+                    stage_log_line_count(run_log.as_ref(), name),
+                ));
             }
             CommandOutcome::Failed {
                 exit_code,
                 output_tail,
+                parse_result,
             } => {
                 output.push_str(&output_tail);
+                parse_results.push(decorate_parse_result(
+                    parse_result,
+                    name,
+                    &command_id,
+                    &command.display,
+                    log_start_line,
+                    stage_log_line_count(run_log.as_ref(), name),
+                ));
                 let result = stage_result(
                     name,
                     "failed",
@@ -1988,12 +2012,24 @@ async fn run_stage(
                     exit_code,
                     started.elapsed(),
                     output.as_str(),
+                    parse_results,
                 );
                 reporter.send("stageFinished", Some(name), &command_display, "");
                 return result;
             }
-            CommandOutcome::Timeout { output_tail } => {
+            CommandOutcome::Timeout {
+                output_tail,
+                parse_result,
+            } => {
                 output.push_str(&output_tail);
+                parse_results.push(decorate_parse_result(
+                    parse_result,
+                    name,
+                    &command_id,
+                    &command.display,
+                    log_start_line,
+                    stage_log_line_count(run_log.as_ref(), name),
+                ));
                 let result = stage_result(
                     name,
                     "timeout",
@@ -2001,12 +2037,24 @@ async fn run_stage(
                     None,
                     started.elapsed(),
                     output.as_str(),
+                    parse_results,
                 );
                 reporter.send("stageFinished", Some(name), &command_display, "");
                 return result;
             }
-            CommandOutcome::Io { output_tail } => {
+            CommandOutcome::Io {
+                output_tail,
+                parse_result,
+            } => {
                 output.push_str(&output_tail);
+                parse_results.push(decorate_parse_result(
+                    parse_result,
+                    name,
+                    &command_id,
+                    &command.display,
+                    log_start_line,
+                    stage_log_line_count(run_log.as_ref(), name),
+                ));
                 let result = stage_result(
                     name,
                     "commandNotFound",
@@ -2014,12 +2062,24 @@ async fn run_stage(
                     None,
                     started.elapsed(),
                     output.as_str(),
+                    parse_results,
                 );
                 reporter.send("stageFinished", Some(name), &command_display, "");
                 return result;
             }
-            CommandOutcome::Cancelled { output_tail } => {
+            CommandOutcome::Cancelled {
+                output_tail,
+                parse_result,
+            } => {
                 output.push_str(&output_tail);
+                parse_results.push(decorate_parse_result(
+                    parse_result,
+                    name,
+                    &command_id,
+                    &command.display,
+                    log_start_line,
+                    stage_log_line_count(run_log.as_ref(), name),
+                ));
                 let result = stage_result(
                     name,
                     "cancelled",
@@ -2027,6 +2087,7 @@ async fn run_stage(
                     None,
                     started.elapsed(),
                     output.as_str(),
+                    parse_results,
                 );
                 reporter.send("stageFinished", Some(name), &command_display, "");
                 return result;
@@ -2040,6 +2101,7 @@ async fn run_stage(
         Some(0),
         started.elapsed(),
         output.as_str(),
+        parse_results,
     );
     reporter.send("stageFinished", Some(name), &command_display, "");
     result
@@ -2048,20 +2110,30 @@ async fn run_stage(
 enum CommandOutcome {
     Passed {
         output_tail: String,
+        parse_result: serde_json::Value,
     },
     Failed {
         exit_code: Option<i32>,
         output_tail: String,
+        parse_result: serde_json::Value,
     },
     Timeout {
         output_tail: String,
+        parse_result: serde_json::Value,
     },
     Io {
         output_tail: String,
+        parse_result: serde_json::Value,
     },
     Cancelled {
         output_tail: String,
+        parse_result: serde_json::Value,
     },
+}
+
+struct OutputChunk {
+    stream: OutputStream,
+    bytes: Vec<u8>,
 }
 
 async fn run_command(
@@ -2073,9 +2145,11 @@ async fn run_command(
     progress_output: &mut ProgressOutputBuffer,
     run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
 ) -> CommandOutcome {
+    let mut parser = TerminalOutputParser::new(CommandContext::new(spec.argv.clone()));
     let Some(program) = spec.argv.first() else {
         return CommandOutcome::Io {
             output_tail: "空命令".to_string(),
+            parse_result: serde_json::to_value(parser.finalize_launch_failed()).unwrap_or_default(),
         };
     };
 
@@ -2106,16 +2180,17 @@ async fn run_command(
             emit_progress_output(reporter, stage, &spec.display, progress_output);
             return CommandOutcome::Io {
                 output_tail: message,
+                parse_result: serde_json::to_value(parser.finalize_launch_failed()).unwrap_or_default(),
             };
         }
     };
 
-    let (output_tx, mut output_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (output_tx, mut output_rx) = mpsc::channel::<OutputChunk>(64);
     if let Some(stdout) = child.stdout.take() {
-        spawn_output_reader(stdout, output_tx.clone());
+        spawn_output_reader(stdout, OutputStream::Stdout, output_tx.clone());
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_output_reader(stderr, output_tx);
+        spawn_output_reader(stderr, OutputStream::Stderr, output_tx);
     }
 
     let started = Instant::now();
@@ -2132,19 +2207,20 @@ async fn run_command(
             _ = cancel.cancelled() => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display).await;
+                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, &mut parser).await;
                 output.push_str("\n验证已取消");
                 progress_output.push_str("\n验证已取消");
                 append_run_log(run_log, stage, &spec.display, "\n验证已取消");
                 emit_progress_output(reporter, stage, &spec.display, progress_output);
                 return CommandOutcome::Cancelled {
                     output_tail: output.into_string(),
+                    parse_result: serde_json::to_value(parser.finalize_cancelled()).unwrap_or_default(),
                 };
             }
             _ = &mut deadline => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display).await;
+                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, &mut parser).await;
                 let timeout_message = format!("\n命令超时：{}", spec.display);
                 output.push_str(&timeout_message);
                 progress_output.push_str(&timeout_message);
@@ -2152,15 +2228,17 @@ async fn run_command(
                 emit_progress_output(reporter, stage, &spec.display, progress_output);
                 return CommandOutcome::Timeout {
                     output_tail: output.into_string(),
+                    parse_result: serde_json::to_value(parser.finalize_timeout()).unwrap_or_default(),
                 };
             }
             maybe_chunk = output_rx.recv(), if !output_closed => {
                 if let Some(chunk) = maybe_chunk {
-                    let text = String::from_utf8_lossy(&chunk);
+                    let text = String::from_utf8_lossy(&chunk.bytes);
+                    parser.on_bytes_from(chunk.stream, &chunk.bytes);
                     output.push_str(&text);
                     progress_output.push_str(&text);
                     append_run_log(run_log, stage, &spec.display, &text);
-                    pending_bytes += chunk.len();
+                    pending_bytes += chunk.bytes.len();
                     if pending_bytes >= PROGRESS_OUTPUT_BYTES || last_emit.elapsed() >= PROGRESS_INTERVAL {
                         emit_progress_output(reporter, stage, &spec.display, progress_output);
                         pending_bytes = 0;
@@ -2178,21 +2256,33 @@ async fn run_command(
                 }
             }
             status = child.wait() => {
-                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display).await;
+                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, &mut parser).await;
                 if pending_bytes > 0 || started.elapsed() >= PROGRESS_INTERVAL || progress_output.has_pending() {
                     emit_progress_output(reporter, stage, &spec.display, progress_output);
                 }
                 let output_tail = output.into_string();
                 return match status {
-                    Ok(status) if status.success() => CommandOutcome::Passed {
-                        output_tail,
-                    },
-                    Ok(status) => CommandOutcome::Failed {
-                        exit_code: status.code(),
-                        output_tail,
-                    },
+                    Ok(status) => {
+                        let parsed = parser.finalize(status.code());
+                        let parse_result = serde_json::to_value(&parsed).unwrap_or_default();
+                        if status.success()
+                            && parsed.status == crate::session::terminal_parser::ParseStatus::Success
+                        {
+                            CommandOutcome::Passed {
+                                output_tail,
+                                parse_result,
+                            }
+                        } else {
+                            CommandOutcome::Failed {
+                                exit_code: status.code(),
+                                output_tail,
+                                parse_result,
+                            }
+                        }
+                    }
                     Err(err) => CommandOutcome::Io {
                         output_tail: format!("无法等待命令 `{}`: {}", spec.display, err),
+                        parse_result: serde_json::to_value(parser.finalize_launch_failed()).unwrap_or_default(),
                     },
                 };
             }
@@ -2201,15 +2291,17 @@ async fn run_command(
 }
 
 async fn drain_output(
-    output_rx: &mut mpsc::Receiver<Vec<u8>>,
+    output_rx: &mut mpsc::Receiver<OutputChunk>,
     output: &mut OutputTailBuffer,
     progress_output: &mut ProgressOutputBuffer,
     run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
     stage: StageName,
     command: &str,
+    parser: &mut TerminalOutputParser,
 ) {
     while let Some(chunk) = output_rx.recv().await {
-        let text = String::from_utf8_lossy(&chunk);
+        let text = String::from_utf8_lossy(&chunk.bytes);
+        parser.on_bytes_from(chunk.stream, &chunk.bytes);
         output.push_str(&text);
         progress_output.push_str(&text);
         append_run_log(run_log, stage, command, &text);
@@ -2229,7 +2321,7 @@ fn append_run_log(
     guard.append(stage, command, text);
 }
 
-fn spawn_output_reader<T>(mut reader: T, tx: mpsc::Sender<Vec<u8>>)
+fn spawn_output_reader<T>(mut reader: T, stream: OutputStream, tx: mpsc::Sender<OutputChunk>)
 where
     T: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -2239,7 +2331,14 @@ where
             match reader.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    if tx.send(buf[..n].to_vec()).await.is_err() {
+                    if tx
+                        .send(OutputChunk {
+                            stream,
+                            bytes: buf[..n].to_vec(),
+                        })
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -2372,6 +2471,7 @@ fn stage_result(
     exit_code: Option<i32>,
     duration: Duration,
     output: &str,
+    parse_results: Vec<serde_json::Value>,
 ) -> serde_json::Value {
     json!({
         "name": name.as_str(),
@@ -2379,8 +2479,48 @@ fn stage_result(
         "command": command,
         "exitCode": exit_code,
         "durationMs": duration.as_millis() as u64,
-        "outputTail": tail_string(output)
+        "outputTail": tail_string(output),
+        "parseResults": parse_results,
     })
+}
+
+fn stage_log_line_count(run_log: Option<&Arc<Mutex<VerifyRunLog>>>, stage: StageName) -> usize {
+    run_log
+        .and_then(|log| {
+            log.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .stage_ref(stage)
+                .map(StageLogFile::line_count)
+        })
+        .unwrap_or(0)
+}
+
+fn decorate_parse_result(
+    mut result: serde_json::Value,
+    stage: StageName,
+    command_id: &str,
+    command: &str,
+    log_start_line: usize,
+    log_end_line: usize,
+) -> serde_json::Value {
+    let offset = log_start_line.saturating_sub(1) as u64;
+    if let Some(errors) = result.get_mut("errors").and_then(serde_json::Value::as_array_mut) {
+        for error in errors {
+            for key in ["startLine", "endLine"] {
+                if let Some(value) = error.get(key).and_then(serde_json::Value::as_u64) {
+                    error[key] = serde_json::Value::Number((value + offset).into());
+                }
+            }
+        }
+    }
+    if let Some(object) = result.as_object_mut() {
+        object.insert("stage".to_string(), serde_json::Value::String(stage.as_str().to_string()));
+        object.insert("commandId".to_string(), serde_json::Value::String(command_id.to_string()));
+        object.insert("command".to_string(), serde_json::Value::String(command.to_string()));
+        object.insert("logStartLine".to_string(), serde_json::Value::Number((log_start_line as u64).into()));
+        object.insert("logEndLine".to_string(), serde_json::Value::Number((log_end_line as u64).into()));
+    }
+    result
 }
 
 fn skipped_stage(name: StageName, message: &str) -> serde_json::Value {
@@ -3456,7 +3596,7 @@ mod tests {
         .await;
 
         match outcome {
-            CommandOutcome::Passed { output_tail } => assert_eq!(output_tail, "short-output"),
+            CommandOutcome::Passed { output_tail, .. } => assert_eq!(output_tail, "short-output"),
             _ => panic!("expected command to pass"),
         }
         let mut saw_output = false;
@@ -3474,6 +3614,186 @@ mod tests {
 
         assert!(saw_output);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_command_returns_tool_aware_final_parse_result() {
+        let dir = unique_temp_dir("terminal-parser-final-result");
+        fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("mvn");
+        fs::write(
+            &tool,
+            "#!/bin/sh\nprintf '[INFO] Tests run: 4, Failures: 0, Errors: 0\\n'\nprintf '[INFO] BUILD SUCCESS\\n'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&tool).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&tool, permissions).unwrap();
+        }
+        let reporter = ProgressReporter::new_project(
+            "42:/repo",
+            42,
+            "/repo",
+            "v_1",
+            "default",
+            VerifyTarget::Test,
+            "auto",
+            None,
+            None,
+        );
+        let spec = cmd(&[tool.to_string_lossy().as_ref(), "test"], 5);
+        let mut progress_output = ProgressOutputBuffer::new();
+
+        let outcome = run_command(
+            &dir,
+            &spec,
+            &CancellationToken::new(),
+            &reporter,
+            StageName::Test,
+            &mut progress_output,
+            None,
+        )
+        .await;
+
+        match outcome {
+            CommandOutcome::Passed { parse_result, .. } => {
+                assert_eq!(parse_result["parser"], "maven");
+                assert_eq!(parse_result["status"], "success");
+                assert_eq!(parse_result["taskType"], "test");
+            }
+            _ => panic!("expected command to pass"),
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_command_treats_nonzero_maven_failure_summary_as_failed_even_with_zero_exit() {
+        let dir = unique_temp_dir("terminal-parser-summary-failure");
+        fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("mvn");
+        fs::write(
+            &tool,
+            "#!/bin/sh\nprintf '[INFO] Tests run: 4, Failures: 1, Errors: 0\\n'\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&tool).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&tool, permissions).unwrap();
+        }
+        let reporter = ProgressReporter::new_project(
+            "42:/repo", 42, "/repo", "v_1", "default", VerifyTarget::Test, "auto", None, None,
+        );
+        let spec = cmd(&[tool.to_string_lossy().as_ref(), "test"], 5);
+        let mut progress_output = ProgressOutputBuffer::new();
+
+        let outcome = run_command(
+            &dir,
+            &spec,
+            &CancellationToken::new(),
+            &reporter,
+            StageName::Test,
+            &mut progress_output,
+            None,
+        )
+        .await;
+
+        match outcome {
+            CommandOutcome::Failed { exit_code, parse_result, .. } => {
+                assert_eq!(exit_code, Some(0));
+                assert_eq!(parse_result["reason"], "summaryFailure");
+            }
+            _ => panic!("a final Maven failure summary must fail the command"),
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_command_keeps_stdout_and_stderr_records_separate_for_parsing() {
+        let dir = unique_temp_dir("terminal-parser-separate-process-streams");
+        fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("mvn");
+        fs::write(
+            &tool,
+            "#!/bin/sh\nprintf '[INFO] Tests run: 1, Failures: '\nprintf '1, Errors: 0\\n' >&2\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&tool).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&tool, permissions).unwrap();
+        }
+        let reporter = ProgressReporter::new_project(
+            "42:/repo", 42, "/repo", "v_1", "default", VerifyTarget::Test, "auto", None, None,
+        );
+        let spec = cmd(&[tool.to_string_lossy().as_ref(), "test"], 5);
+        let mut progress_output = ProgressOutputBuffer::new();
+
+        let outcome = run_command(
+            &dir,
+            &spec,
+            &CancellationToken::new(),
+            &reporter,
+            StageName::Test,
+            &mut progress_output,
+            None,
+        )
+        .await;
+
+        match outcome {
+            CommandOutcome::Passed { parse_result, .. } => {
+                assert_eq!(parse_result["status"], "success");
+                assert_eq!(parse_result["reason"], "none");
+            }
+            _ => panic!("independent stdout/stderr records must not form a Maven summary"),
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stage_result_preserves_parse_results_for_each_command() {
+        let result = stage_result(
+            StageName::Test,
+            "passed",
+            "mvn test".to_string(),
+            Some(0),
+            Duration::from_millis(1),
+            "",
+            vec![json!({"parser": "maven", "status": "success"})],
+        );
+
+        assert_eq!(result["parseResults"][0]["parser"], "maven");
+        assert_eq!(result["parseResults"][0]["status"], "success");
+    }
+
+    #[test]
+    fn parse_result_is_bound_to_its_command_and_stage_log_range() {
+        let result = decorate_parse_result(
+            json!({
+                "errors": [{"startLine": 2, "endLine": 3}],
+                "parser": "cargo"
+            }),
+            StageName::Build,
+            "build-2",
+            "cargo check",
+            11,
+            24,
+        );
+
+        assert_eq!(result["commandId"], "build-2");
+        assert_eq!(result["command"], "cargo check");
+        assert_eq!(result["stage"], "build");
+        assert_eq!(result["logStartLine"], 11);
+        assert_eq!(result["logEndLine"], 24);
+        assert_eq!(result["errors"][0]["startLine"], 12);
+        assert_eq!(result["errors"][0]["endLine"], 13);
     }
 
     #[test]
