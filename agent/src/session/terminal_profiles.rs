@@ -94,6 +94,32 @@ impl TerminalProfileStore {
 
     pub fn current(&self) -> Option<&TerminalParserProfiles> { self.profiles.as_ref() }
 
+    /// Refreshes the public Cloud profile only after obtaining its advertised
+    /// SHA-256. Network or validation failures leave the current cache intact.
+    pub async fn refresh_from_cloud(
+        &mut self,
+        client: &reqwest::Client,
+        cloud_http_url: &str,
+    ) -> Result<(), ProfileError> {
+        #[derive(Deserialize)]
+        struct Envelope<T> { data: T }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Version { sha256: String }
+        let base = cloud_http_url.trim_end_matches('/');
+        let version: Envelope<Version> = client
+            .get(format!("{base}/api/v1/app-config/terminal-parser-profiles/version"))
+            .send().await.map_err(|error| ProfileError::Io(error.to_string()))?
+            .error_for_status().map_err(|error| ProfileError::Io(error.to_string()))?
+            .json().await.map_err(|error| ProfileError::Io(error.to_string()))?;
+        let bytes = client
+            .get(format!("{base}/api/v1/app-config/terminal-parser-profiles"))
+            .send().await.map_err(|error| ProfileError::Io(error.to_string()))?
+            .error_for_status().map_err(|error| ProfileError::Io(error.to_string()))?
+            .bytes().await.map_err(|error| ProfileError::Io(error.to_string()))?;
+        self.accept_remote(&bytes, &version.data.sha256)
+    }
+
     pub fn parse(bytes: &[u8], _expected_sha256: Option<&str>) -> Result<TerminalParserProfiles, ProfileError> {
         if bytes.len() > MAX_PROFILE_BYTES { return Err(ProfileError::TooLarge); }
         let profiles: TerminalParserProfiles = serde_json::from_slice(bytes).map_err(|_| ProfileError::InvalidJson)?;

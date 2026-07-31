@@ -600,6 +600,21 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // ── 3. 确保目录存在 ──
     ensure_dirs(&cfg.agent_dir, &cfg.log_dir)?;
 
+    // Parser profiles are optional runtime metadata. A failed refresh never
+    // blocks the Agent: the validated on-disk cache and built-in parsers remain
+    // the safe fallback for offline or older Cloud deployments.
+    let mut parser_profiles = session::terminal_profiles::TerminalProfileStore::new(
+        cfg.agent_dir.join("terminal-parser-profiles.json"),
+    );
+    let _ = parser_profiles.load_cached();
+    let profile_client = reqwest::Client::new();
+    if let Err(error) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        parser_profiles.refresh_from_cloud(&profile_client, &cfg.cloud_http_url),
+    ).await.unwrap_or_else(|_| Err(session::terminal_profiles::ProfileError::Io("profile refresh timeout".into()))) {
+        tracing::debug!(?error, "parser profile refresh skipped; using cached or built-in rules");
+    }
+
     // 仅清理带有 kn-agent 旁证且所属进程已退出的 Git 锁；普通
     // `.git/index.lock` 永远不自动删除，避免误伤用户正在执行的 Git 操作。
     for project in load_projects().await {
