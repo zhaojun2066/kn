@@ -177,6 +177,20 @@ fn tox_failed_environment_is_failure() {
 }
 
 #[test]
+fn vite_success_banner_is_not_confused_by_warning_text() {
+    let result = parse(&["vite", "build"], "warning: dependency contains error string\n✓ built in 842ms", Some(0));
+    assert_eq!(result.parser, "web-build");
+    assert_eq!(result.status, ParseStatus::Success);
+}
+
+#[test]
+fn webpack_failed_compile_summary_is_failure() {
+    let result = parse(&["webpack"], "Failed to compile.", Some(0));
+    assert_eq!(result.parser, "web-build");
+    assert_eq!(result.status, ParseStatus::Failed);
+}
+
+#[test]
 fn python_unittest_uses_final_failure_counters() {
     let result = parse(
         &["python", "-m", "unittest"],

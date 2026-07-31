@@ -619,10 +619,10 @@ impl TerminalOutputParser {
         // Web bundlers vary in wording; only their explicit terminal markers
         // are trusted. Warnings and module names containing "error" are not.
         let lower = line.to_ascii_lowercase();
-        if lower.contains("compiled successfully") || lower.contains("build complete") || lower.contains("built in ") {
+        if lower.contains("compiled successfully") || lower.contains("build complete") || lower.contains("built in ") || lower.contains("✓ built") || lower.contains("created ") {
             self.summary = Some(line.to_string());
         }
-        if lower.contains("compilation failed") || lower.contains("build failed") || lower.starts_with("error: failed to") {
+        if lower.contains("failed to compile") || lower.contains("compilation failed") || lower.contains("build failed") || lower.starts_with("error: failed to") {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
             self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
@@ -804,6 +804,9 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>) -> (ParserKi
         return (ParserKind::DartFlutter, task_from_words(&arguments));
     }
     if program == "flutter" { return (ParserKind::DartFlutter, task_from_words(&arguments)); }
+    if matches!(program, "vite" | "webpack" | "rollup" | "next" | "nuxt") {
+        return (ParserKind::WebBuild, TaskType::Build);
+    }
     if program == "ctest" { return (ParserKind::Ctest, TaskType::Test); }
     if matches!(program, "tox" | "nox") { return (ParserKind::ToxNox, TaskType::Test); }
     (ParserKind::Generic, TaskType::Custom)
