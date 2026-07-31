@@ -117,7 +117,16 @@ impl TerminalProfileStore {
             .send().await.map_err(|error| ProfileError::Io(error.to_string()))?
             .error_for_status().map_err(|error| ProfileError::Io(error.to_string()))?
             .bytes().await.map_err(|error| ProfileError::Io(error.to_string()))?;
-        self.accept_remote(&bytes, &version.data.sha256)
+        let envelope: Envelope<TerminalParserProfiles> =
+            serde_json::from_slice(&bytes).map_err(|_| ProfileError::InvalidJson)?;
+        let profiles_bytes = serde_json::to_vec(&envelope.data)
+            .map_err(|error| ProfileError::Io(error.to_string()))?;
+        // Cloud hashes the canonical profile payload, not the transport
+        // envelope. Validate before replacing the cache.
+        if sha256_hex(&canonical_json(&envelope.data)) != version.data.sha256 {
+            return Err(ProfileError::HashMismatch);
+        }
+        self.accept_remote(&profiles_bytes, &sha256_hex(&profiles_bytes))
     }
 
     pub fn parse(bytes: &[u8], _expected_sha256: Option<&str>) -> Result<TerminalParserProfiles, ProfileError> {
@@ -157,6 +166,21 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())
+}
+
+fn canonical_json(value: &TerminalParserProfiles) -> Vec<u8> {
+    fn sort(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut entries: Vec<_> = map.into_iter().collect();
+                entries.sort_by(|left, right| left.0.cmp(&right.0));
+                serde_json::Value::Object(entries.into_iter().map(|(key, value)| (key, sort(value))).collect())
+            }
+            serde_json::Value::Array(values) => serde_json::Value::Array(values.into_iter().map(sort).collect()),
+            other => other,
+        }
+    }
+    serde_json::to_vec(&sort(serde_json::to_value(value).unwrap_or_default())).unwrap_or_default()
 }
 
 #[cfg(test)]
