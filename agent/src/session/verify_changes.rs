@@ -2373,6 +2373,8 @@ fn collect_fresh_test_reports(
         vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("junit.xml")]
     } else if matches!(program, "jest" | "vitest" | "npm" | "pnpm" | "yarn" | "bun") {
         vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("jest.json"), repo_root.join("vitest.json")]
+    } else if program == "dotnet" {
+        vec![repo_root.join("TestResults"), repo_root.join("test-results"), repo_root.join("artifacts")]
     } else {
         Vec::new()
     };
@@ -2399,14 +2401,17 @@ fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut Terminal
 
 fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser) {
     let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
-    if !matches!(extension, "xml" | "json" | "sarif") { return; }
+    if !matches!(extension, "xml" | "json" | "sarif" | "trx") { return; }
     let Ok(meta) = fs::metadata(path) else { return };
     let Ok(modified) = meta.modified() else { return };
     if modified.duration_since(started_at).is_err() { return; }
     let Ok(text) = fs::read_to_string(path) else { return };
-    if extension == "xml" {
-        if !(text.contains("<failure") || text.contains("<error")) { return; }
-        let name = xml_attr(&text, "testcase", "name").unwrap_or_else(|| path.file_stem().and_then(|v| v.to_str()).unwrap_or("test").to_string());
+    if matches!(extension, "xml" | "trx") {
+        let junit_failure = text.contains("<failure") || text.contains("<error");
+        let trx_failure = text.contains("<UnitTestResult") && text.contains("outcome=\"Failed\"");
+        if !(junit_failure || trx_failure) { return; }
+        let (element, name_attr) = if trx_failure { ("UnitTestResult", "testName") } else { ("testcase", "name") };
+        let name = xml_attr(&text, element, name_attr).unwrap_or_else(|| path.file_stem().and_then(|v| v.to_str()).unwrap_or("test").to_string());
         let file = xml_attr(&text, "testcase", "file");
         let line = xml_attr(&text, "testcase", "line").and_then(|v| v.parse().ok());
         parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {name}"), file, line, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
@@ -3301,6 +3306,20 @@ mod tests {
         assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
         assert_eq!(result.errors[0].code.as_deref(), Some("MissingTranslation"));
         assert_eq!(result.errors[0].line, Some(12));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fresh_dotnet_trx_failed_result_becomes_structured_failure() {
+        let dir = unique_temp_dir("trx");
+        fs::create_dir_all(dir.join("TestResults")).unwrap();
+        let started = SystemTime::now();
+        fs::write(dir.join("TestResults/results.trx"), r#"<TestRun><Results><UnitTestResult testName="Calculator.Add" outcome="Failed" /></Results></TestRun>"#).unwrap();
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["dotnet".into(), "test".into()]));
+        collect_fresh_test_reports(&dir, &["dotnet".into(), "test".into()], started, &mut parser);
+        let result = parser.finalize(Some(0));
+        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
+        assert_eq!(result.errors[0].test_name.as_deref(), Some("Calculator.Add"));
         fs::remove_dir_all(&dir).ok();
     }
 
