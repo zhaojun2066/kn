@@ -536,6 +536,14 @@ impl TerminalOutputParser {
         } else if line.contains("BUILD SUCCEEDED") || line.contains("TEST SUCCEEDED") {
             self.summary = Some(line.to_string());
         }
+        if let Some(error) = xcode_diagnostic(line, self.line_number) {
+            self.summary_failure = true;
+            self.errors.push(error);
+        }
+        if line.contains("Test Case '-[") && line.contains("failed") {
+            self.summary_failure = true;
+            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: Some(line.to_string()), start_line: self.line_number, end_line: self.line_number });
+        }
     }
 
     fn parse_python_unittest(&mut self, line: &str) {
@@ -930,6 +938,17 @@ fn maven_diagnostic(line: &str, line_number: usize) -> Option<TerminalParseError
         start_line: line_number,
         end_line: line_number,
     })
+}
+
+fn xcode_diagnostic(line: &str, line_number: usize) -> Option<TerminalParseError> {
+    let marker = ": error:";
+    let index = line.find(marker)?;
+    let location = &line[..index];
+    let mut parts = location.rsplitn(3, ':');
+    let column = parts.next().and_then(|v| v.parse().ok());
+    let source_line = parts.next().and_then(|v| v.parse().ok());
+    let file = parts.next()?.to_string();
+    Some(TerminalParseError { message: line[index + marker.len()..].trim().to_string(), file: Some(file), line: source_line, column, code: None, test_name: None, start_line: line_number, end_line: line_number })
 }
 
 fn rust_error_code(line: &str) -> Option<String> {

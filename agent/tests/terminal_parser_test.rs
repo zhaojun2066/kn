@@ -191,6 +191,15 @@ fn webpack_failed_compile_summary_is_failure() {
 }
 
 #[test]
+fn xcodebuild_error_extracts_source_location() {
+    let result = parse(&["xcodebuild", "build"], "Sources/App.swift:12:7: error: cannot find 'value' in scope\n** BUILD FAILED **", Some(65));
+    assert_eq!(result.parser, "xcodebuild");
+    assert_eq!(result.errors[0].file.as_deref(), Some("Sources/App.swift"));
+    assert_eq!(result.errors[0].line, Some(12));
+    assert_eq!(result.errors[0].column, Some(7));
+}
+
+#[test]
 fn python_unittest_uses_final_failure_counters() {
     let result = parse(
         &["python", "-m", "unittest"],
