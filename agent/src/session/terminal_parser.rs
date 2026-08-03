@@ -47,15 +47,27 @@ pub struct CommandContext {
     /// callers that only have an argv (for example protocol fixtures) retain
     /// the generic resolver behaviour.
     pub working_dir: Option<std::path::PathBuf>,
+    pub parser_hint: Option<String>,
+    pub task_type_hint: Option<String>,
 }
 
 impl CommandContext {
     pub fn new(argv: Vec<String>) -> Self {
-        Self { argv, working_dir: None }
+        Self { argv, working_dir: None, parser_hint: None, task_type_hint: None }
     }
 
     pub fn with_working_dir(argv: Vec<String>, working_dir: impl Into<std::path::PathBuf>) -> Self {
-        Self { argv, working_dir: Some(working_dir.into()) }
+        Self { argv, working_dir: Some(working_dir.into()), parser_hint: None, task_type_hint: None }
+    }
+
+    pub fn with_parser_hint(mut self, parser_hint: impl Into<String>) -> Self {
+        self.parser_hint = Some(parser_hint.into());
+        self
+    }
+
+    pub fn with_task_type_hint(mut self, task_type_hint: impl Into<String>) -> Self {
+        self.task_type_hint = Some(task_type_hint.into());
+        self
     }
 }
 
@@ -178,7 +190,8 @@ impl ParserKind {
 
 impl TerminalOutputParser {
     pub fn new(context: CommandContext) -> Self {
-        let (parser, task_type) = identify(&context.argv, context.working_dir.as_deref());
+        let (parser, detected_task) = identify(&context.argv, context.working_dir.as_deref(), context.parser_hint.as_deref());
+        let task_type = context.task_type_hint.as_deref().and_then(task_type_hint).unwrap_or(detected_task);
         Self {
             parser,
             task_type,
@@ -689,9 +702,12 @@ impl TerminalOutputParser {
     }
 }
 
-fn identify(argv: &[String], working_dir: Option<&std::path::Path>) -> (ParserKind, TaskType) {
+fn identify(argv: &[String], working_dir: Option<&std::path::Path>, parser_hint: Option<&str>) -> (ParserKind, TaskType) {
     let program = argv.first().map(|value| basename(value)).unwrap_or("");
     let arguments = argv.join(" ").to_ascii_lowercase();
+    if let Some(parser) = parser_hint.and_then(parser_hint_kind) {
+        return (parser, task_from_words(&arguments));
+    }
     if matches!(program, "npm" | "pnpm" | "yarn" | "bun") {
         if let Some((inner, task)) = resolve_node_script(argv, working_dir) {
             return (inner, task);
@@ -820,6 +836,25 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>) -> (ParserKi
     if program == "ctest" { return (ParserKind::Ctest, TaskType::Test); }
     if matches!(program, "tox" | "nox") { return (ParserKind::ToxNox, TaskType::Test); }
     (ParserKind::Generic, TaskType::Custom)
+}
+
+fn parser_hint_kind(value: &str) -> Option<ParserKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "generic" | "generic-exit" => Some(ParserKind::Generic),
+        "maven" => Some(ParserKind::Maven), "gradle" => Some(ParserKind::Gradle), "android-gradle" => Some(ParserKind::AndroidGradle),
+        "pytest" => Some(ParserKind::Pytest), "go" => Some(ParserKind::Go), "cargo" => Some(ParserKind::Cargo),
+        "jest" => Some(ParserKind::Jest), "vitest" => Some(ParserKind::Vitest), "playwright" => Some(ParserKind::Playwright),
+        "typescript" => Some(ParserKind::TypeScript), "xcodebuild" => Some(ParserKind::Xcodebuild), "swiftpm" => Some(ParserKind::SwiftPm),
+        "dart-flutter" => Some(ParserKind::DartFlutter), "web-build" => Some(ParserKind::WebBuild), "ctest" => Some(ParserKind::Ctest),
+        "tox-nox" => Some(ParserKind::ToxNox), "dotnet" => Some(ParserKind::Dotnet), _ => None,
+    }
+}
+
+fn task_type_hint(value: &str) -> Option<TaskType> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "compile" => Some(TaskType::Compile), "test" => Some(TaskType::Test), "package" => Some(TaskType::Package),
+        "build" => Some(TaskType::Build), "run" => Some(TaskType::Run), "lint" => Some(TaskType::Lint), "custom" => Some(TaskType::Custom), _ => None,
+    }
 }
 
 /// Resolve a package-manager script to the tool it actually invokes. This is

@@ -206,6 +206,18 @@ fn xcodebuild_error_extracts_source_location() {
 }
 
 #[test]
+fn parser_hint_overrides_unknown_custom_command() {
+    let context = CommandContext::new(vec!["./scripts/ci-wrapper".into()])
+        .with_parser_hint("pytest")
+        .with_task_type_hint("test");
+    let mut parser = TerminalOutputParser::new(context);
+    parser.on_line("FAILED tests/test_api.py::test_login - assertion failed");
+    let result = parser.finalize(Some(1));
+    assert_eq!(result.parser, "pytest");
+    assert_eq!(result.task_type, TaskType::Test);
+}
+
+#[test]
 fn python_unittest_uses_final_failure_counters() {
     let result = parse(
         &["python", "-m", "unittest"],
