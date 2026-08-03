@@ -2505,9 +2505,11 @@ fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut Te
             || object.get("numFailingTests").and_then(|v| v.as_u64()).unwrap_or(0) > 0
             || object.get("failedTestsCount").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
         if failed {
-            let name = object.get("fullName").or_else(|| object.get("name")).and_then(|v| v.as_str()).unwrap_or("failed test").to_string();
-            let file = object.get("testFilePath").and_then(|v| v.as_str()).map(str::to_string);
-            parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {name}"), file, line: None, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
+            let name = object.get("fullName").or_else(|| object.get("title")).or_else(|| object.get("name")).and_then(|v| v.as_str()).unwrap_or("failed test").to_string();
+            let file = object.get("testFilePath").or_else(|| object.get("file")).and_then(|v| v.as_str()).map(str::to_string);
+            let line = object.get("location").and_then(|v| v.get("line")).and_then(|v| v.as_u64()).map(|v| v as usize);
+            let project = object.get("projectName").and_then(|v| v.as_str()).map(|v| format!(" [{v}]")).unwrap_or_default();
+            parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败{project}: {name}"), file, line, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
         }
         for (key, child) in object {
             // Jest/Vitest/Playwright may retain failed retry attempts below a
@@ -3407,6 +3409,17 @@ mod tests {
         let result = parser.finalize(Some(0));
         assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Success);
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn javascript_report_failure_keeps_file_line_and_project() {
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["playwright".into(), "test".into()]));
+        let value = serde_json::json!({"status":"failed", "title":"login", "file":"tests/login.spec.ts", "location":{"line":18}, "projectName":"chromium"});
+        collect_json_failures(&value, Path::new("playwright.json"), &mut parser);
+        let result = parser.finalize(Some(1));
+        assert_eq!(result.errors[0].file.as_deref(), Some("tests/login.spec.ts"));
+        assert_eq!(result.errors[0].line, Some(18));
+        assert!(result.errors[0].message.contains("chromium"));
     }
 
     #[test]
