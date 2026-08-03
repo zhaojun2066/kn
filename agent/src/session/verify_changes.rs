@@ -2499,7 +2499,8 @@ fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut Te
             // authoritative and avoids treating tool metadata as a test.
             return;
         }
-        let failed = object.get("status").and_then(|v| v.as_str()).is_some_and(|v| matches!(v, "failed" | "Failed" | "TestFailure"))
+        let status = object.get("status").and_then(|v| v.as_str());
+        let failed = status.is_some_and(|v| matches!(v, "failed" | "Failed" | "TestFailure"))
             || object.get("status").and_then(|v| v.as_str()) == Some("FAIL")
             || object.get("numFailingTests").and_then(|v| v.as_u64()).unwrap_or(0) > 0
             || object.get("failedTestsCount").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
@@ -2508,7 +2509,14 @@ fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut Te
             let file = object.get("testFilePath").and_then(|v| v.as_str()).map(str::to_string);
             parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {name}"), file, line: None, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
         }
-        for child in object.values() { collect_json_failures(child, path, parser); }
+        for (key, child) in object {
+            // Jest/Vitest/Playwright may retain failed retry attempts below a
+            // final passed result. Historical attempts are evidence of flaky
+            // behaviour, not a final command failure.
+            if status.is_some_and(|v| matches!(v, "passed" | "passedWithRetry" | "ok"))
+                && matches!(key.as_str(), "attempts" | "retries" | "retryResults") { continue; }
+            collect_json_failures(child, path, parser);
+        }
     } else if let Some(array) = value.as_array() {
         for child in array { collect_json_failures(child, path, parser); }
     }
@@ -3389,6 +3397,16 @@ mod tests {
         let result = parser.finalize(Some(0));
         assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
         assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn final_passed_test_ignores_failed_retry_attempt() {
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["playwright".into(), "test".into()]));
+        let value = serde_json::json!({"status":"passed", "attempts":[{"status":"failed"}], "name":"login"});
+        collect_json_failures(&value, Path::new("playwright.json"), &mut parser);
+        let result = parser.finalize(Some(0));
+        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Success);
+        assert!(result.errors.is_empty());
     }
 
     #[test]
