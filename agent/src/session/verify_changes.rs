@@ -27,6 +27,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(800);
 const VERIFY_RUN_LOG_TTL_SECS: u64 = 24 * 60 * 60;
 const VERIFY_RUN_LOG_MAX_BYTES: u64 = 200 * 1024 * 1024;
 const VERIFY_LOG_WINDOW_MAX_CONTEXT: usize = 300;
+const MAX_REPORT_BYTES: u64 = 8 * 1024 * 1024;
 const VERIFY_LOG_ISSUE_MAX_MATCHERS: usize = 80;
 const VERIFY_LOG_ISSUE_MAX_PATTERN_LEN: usize = 300;
 const VERIFY_LOG_ISSUE_MAX_LIMIT: usize = 300;
@@ -2443,6 +2444,7 @@ fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut Termina
     }
     if !matches!(extension, "xml" | "json" | "sarif" | "trx") { return; }
     let Ok(meta) = fs::metadata(path) else { return };
+    if meta.len() > MAX_REPORT_BYTES { return; }
     let Ok(modified) = meta.modified() else { return };
     if modified.duration_since(started_at).is_err() { return; }
     let Ok(text) = fs::read_to_string(path) else { return };
