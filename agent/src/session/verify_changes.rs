@@ -2397,6 +2397,8 @@ fn collect_fresh_test_reports(
         vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("jest.json"), repo_root.join("vitest.json")]
     } else if program == "dotnet" {
         vec![repo_root.join("TestResults"), repo_root.join("test-results"), repo_root.join("artifacts")]
+    } else if program == "xcodebuild" {
+        vec![repo_root.join("build"), repo_root.join("Build"), repo_root.join("DerivedData")]
     } else {
         Vec::new()
     };
@@ -2430,6 +2432,15 @@ fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut Terminal
 
 fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser) {
     let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
+    if extension == "xcresult" && path.is_dir() {
+        let Ok(meta) = fs::metadata(path) else { return };
+        let Ok(modified) = meta.modified() else { return };
+        if modified.duration_since(started_at).is_err() { return; }
+        if let Some(value) = export_xcresult_summary(path) {
+            collect_json_failures(&value, path, parser);
+        }
+        return;
+    }
     if !matches!(extension, "xml" | "json" | "sarif" | "trx") { return; }
     let Ok(meta) = fs::metadata(path) else { return };
     let Ok(modified) = meta.modified() else { return };
@@ -2448,6 +2459,23 @@ fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut Termina
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return };
     collect_json_failures(&value, path, parser);
+}
+
+fn export_xcresult_summary(path: &Path) -> Option<serde_json::Value> {
+    let tool = if Path::new("/Applications/Xcode.app/Contents/Developer/usr/bin/xcresulttool").is_file() {
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/xcresulttool"
+    } else {
+        "xcrun"
+    };
+    let mut command = std::process::Command::new(tool);
+    if tool == "xcrun" {
+        command.args(["xcresulttool", "get", "test-results", "summary", "--path"]);
+    } else {
+        command.args(["get", "test-results", "summary", "--path"]);
+    }
+    let output = command.arg(path).arg("--format").arg("json").output().ok()?;
+    if !output.status.success() { return None; }
+    serde_json::from_slice(&output.stdout).ok()
 }
 
 fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut TerminalOutputParser) {
@@ -2471,9 +2499,10 @@ fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut Te
             // authoritative and avoids treating tool metadata as a test.
             return;
         }
-        let failed = object.get("status").and_then(|v| v.as_str()) == Some("failed")
+        let failed = object.get("status").and_then(|v| v.as_str()).is_some_and(|v| matches!(v, "failed" | "Failed" | "TestFailure"))
             || object.get("status").and_then(|v| v.as_str()) == Some("FAIL")
-            || object.get("numFailingTests").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
+            || object.get("numFailingTests").and_then(|v| v.as_u64()).unwrap_or(0) > 0
+            || object.get("failedTestsCount").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
         if failed {
             let name = object.get("fullName").or_else(|| object.get("name")).and_then(|v| v.as_str()).unwrap_or("failed test").to_string();
             let file = object.get("testFilePath").and_then(|v| v.as_str()).map(str::to_string);
@@ -3350,6 +3379,16 @@ mod tests {
         assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
         assert_eq!(result.errors[0].test_name.as_deref(), Some("Calculator.Add"));
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn xcresult_summary_json_failure_is_structured() {
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["xcodebuild".into(), "test".into()]));
+        let value = serde_json::json!({"status":"Failed", "failedTestsCount": 1, "tests": [{"name":"AppTests.testLogin", "status":"Failed"}]});
+        collect_json_failures(&value, Path::new("Tests.xcresult"), &mut parser);
+        let result = parser.finalize(Some(0));
+        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
+        assert!(!result.errors.is_empty());
     }
 
     #[test]
