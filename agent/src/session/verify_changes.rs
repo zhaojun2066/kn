@@ -1663,6 +1663,9 @@ fn preview_stage(
                 "enabled": false,
                 "command": command.command,
                 "timeoutSeconds": clamp_timeout(command.timeout_seconds, stage.default_timeout_secs()),
+                "parserHint": command.parser_hint,
+                "taskTypeHint": command.task_type_hint,
+                "reportHints": command.report_hints,
                 "source": "manual",
                 "message": if stage == StageName::Build { "构建已在桌面端配置为禁用" } else { "测试已在桌面端配置为禁用" }
             });
@@ -1673,6 +1676,9 @@ fn preview_stage(
                 "enabled": true,
                 "command": command.command,
                 "timeoutSeconds": clamp_timeout(command.timeout_seconds, stage.default_timeout_secs()),
+                "parserHint": command.parser_hint,
+                "taskTypeHint": command.task_type_hint,
+                "reportHints": command.report_hints,
                 "source": "manual"
             }),
             Err(err) => json!({
@@ -1680,6 +1686,9 @@ fn preview_stage(
                 "enabled": true,
                 "command": command.command,
                 "timeoutSeconds": clamp_timeout(command.timeout_seconds, stage.default_timeout_secs()),
+                "parserHint": command.parser_hint,
+                "taskTypeHint": command.task_type_hint,
+                "reportHints": command.report_hints,
                 "source": "manual",
                 "message": format!("命令配置不可用：{err}")
             }),
@@ -3537,6 +3546,22 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("命令配置不可用"));
+    }
+
+    #[test]
+    fn preview_stage_preserves_parser_and_report_hints() {
+        let command = ProjectVerifyCommand {
+            command: "npm run test".to_string(),
+            enabled: true,
+            timeout_seconds: Some(120),
+            parser_hint: Some("jest".to_string()),
+            task_type_hint: Some("test".to_string()),
+            report_hints: Some(vec!["reports/jest.json".to_string()]),
+        };
+        let preview = preview_stage(StageName::Test, None, Some(&command), "manual");
+        assert_eq!(preview["parserHint"], "jest");
+        assert_eq!(preview["taskTypeHint"], "test");
+        assert_eq!(preview["reportHints"][0], "reports/jest.json");
     }
 
     #[test]
