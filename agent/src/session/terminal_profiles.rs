@@ -37,6 +37,18 @@ pub struct ParserProfile {
     #[serde(default)]
     pub summary_patterns: Vec<String>,
     #[serde(default)]
+    pub success_patterns: Vec<String>,
+    #[serde(default)]
+    pub failure_patterns: Vec<String>,
+    #[serde(default)]
+    pub ignore_patterns: Vec<String>,
+    #[serde(default)]
+    pub stack_trace_patterns: Vec<String>,
+    #[serde(default)]
+    pub artifact_collectors: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub fixture_version: Option<String>,
+    #[serde(default)]
     pub operation_rules: serde_json::Value,
     #[serde(default)]
     pub diagnostic_rules: serde_json::Value,
@@ -161,10 +173,18 @@ fn validate(value: &TerminalParserProfiles) -> Result<(), ProfileError> {
         if profile.id.trim().is_empty() || !ids.insert(profile.id.clone()) {
             return Err(ProfileError::Invalid("duplicate or empty profile id".into()));
         }
-        if profile.command_matchers.len() > MAX_PATTERNS || profile.summary_patterns.len() > MAX_PATTERNS {
+        if profile.command_matchers.len() > MAX_PATTERNS || profile.summary_patterns.len() > MAX_PATTERNS
+            || profile.success_patterns.len() > MAX_PATTERNS || profile.failure_patterns.len() > MAX_PATTERNS
+            || profile.ignore_patterns.len() > MAX_PATTERNS || profile.stack_trace_patterns.len() > MAX_PATTERNS
+            || profile.artifact_collectors.len() > MAX_PATTERNS {
             return Err(ProfileError::Invalid(profile.id.clone()));
         }
-        for pattern in profile.command_matchers.iter().chain(profile.summary_patterns.iter()) {
+        for pattern in profile.command_matchers.iter()
+            .chain(profile.summary_patterns.iter())
+            .chain(profile.success_patterns.iter())
+            .chain(profile.failure_patterns.iter())
+            .chain(profile.ignore_patterns.iter())
+            .chain(profile.stack_trace_patterns.iter()) {
             if pattern.len() > MAX_PATTERN_BYTES || Regex::new(pattern).is_err() {
                 return Err(ProfileError::Invalid(profile.id.clone()));
             }
@@ -219,5 +239,16 @@ mod tests {
         store.accept_remote(&bytes, &expected).unwrap();
         let mut loaded = TerminalProfileStore::new(&path);
         assert_eq!(loaded.load_cached().unwrap().unwrap().profiles_version, "1");
+    }
+
+    #[test]
+    fn accepts_extended_rule_and_artifact_fields() {
+        let value = json();
+        let mut parsed: serde_json::Value = serde_json::from_slice(&value).unwrap();
+        parsed["profiles"][1]["successPatterns"] = serde_json::json!(["BUILD SUCCESS"]);
+        parsed["profiles"][1]["failurePatterns"] = serde_json::json!(["BUILD FAILURE"]);
+        parsed["profiles"][1]["artifactCollectors"] = serde_json::json!([{"kind":"junit","root":"target"}]);
+        let bytes = serde_json::to_vec(&parsed).unwrap();
+        assert!(TerminalProfileStore::parse(&bytes, None).is_ok());
     }
 }
