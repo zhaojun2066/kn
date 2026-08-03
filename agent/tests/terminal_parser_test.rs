@@ -225,6 +225,17 @@ fn parser_hint_overrides_unknown_custom_command() {
 }
 
 #[test]
+fn node_script_resolver_follows_nested_package_scripts() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"test":"npm run unit","unit":"vitest run"}}"#).unwrap();
+    let context = CommandContext::with_working_dir(vec!["npm".into(), "run".into(), "test".into()], dir.path());
+    let mut parser = TerminalOutputParser::new(context);
+    parser.on_line("Tests 2 passed");
+    let result = parser.finalize(Some(0));
+    assert_eq!(result.parser, "vitest");
+}
+
+#[test]
 fn python_unittest_uses_final_failure_counters() {
     let result = parse(
         &["python", "-m", "unittest"],

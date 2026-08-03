@@ -869,19 +869,29 @@ fn resolve_node_script(argv: &[String], working_dir: Option<&std::path::Path>) -
     let package = std::fs::read_to_string(cwd.join("package.json")).ok()?;
     let value: serde_json::Value = serde_json::from_str(&package).ok()?;
     let command = value.get("scripts")?.get(script)?.as_str()?.to_ascii_lowercase();
-    let words = command.split(|c: char| c.is_whitespace() || c == '&' || c == ';' || c == '|').filter(|w| !w.is_empty());
+    let mut queue = vec![command.clone()];
+    let mut visited = std::collections::HashSet::new();
     let mut best = None;
-    for word in words {
-        let name = basename(word).trim_matches(['"', '\'']);
-        let candidate = match name {
-            "jest" | "react-scripts" => Some((ParserKind::Jest, TaskType::Test)),
-            "vitest" => Some((ParserKind::Vitest, TaskType::Test)),
-            "playwright" => Some((ParserKind::Playwright, TaskType::Test)),
-            "tsc" | "vue-tsc" | "ngc" => Some((ParserKind::TypeScript, TaskType::Compile)),
-            "vite" | "webpack" | "rollup" | "next" | "nuxt" => Some((ParserKind::WebBuild, TaskType::Build)),
-            _ => None,
-        };
-        if candidate.is_some() { best = candidate; }
+    for _ in 0..8 {
+        let Some(current) = queue.pop() else { break };
+        if !visited.insert(current.clone()) { continue; }
+        let words: Vec<_> = current.split(|c: char| c.is_whitespace() || c == '&' || c == ';' || c == '|').filter(|w| !w.is_empty()).collect();
+        for (index, word) in words.iter().enumerate() {
+            let name = basename(word).trim_matches(['"', '\'']);
+            let candidate = match name {
+                "jest" | "react-scripts" => Some((ParserKind::Jest, TaskType::Test)),
+                "vitest" => Some((ParserKind::Vitest, TaskType::Test)),
+                "playwright" => Some((ParserKind::Playwright, TaskType::Test)),
+                "tsc" | "vue-tsc" | "ngc" => Some((ParserKind::TypeScript, TaskType::Compile)),
+                "vite" | "webpack" | "rollup" | "next" | "nuxt" => Some((ParserKind::WebBuild, TaskType::Build)),
+                "npm" | "pnpm" | "yarn" | "bun" if words.get(index + 1) == Some(&"run") => {
+                    if let Some(nested) = words.get(index + 2).and_then(|name| value.get("scripts")?.get(*name)?.as_str()) { queue.push(nested.to_ascii_lowercase()); }
+                    None
+                }
+                _ => None,
+            };
+            if candidate.is_some() { best = candidate; }
+        }
     }
     best.or_else(|| Some((ParserKind::Generic, task_from_words(&command))))
 }
