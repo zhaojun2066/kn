@@ -90,6 +90,9 @@ struct CommandSpec {
     argv: Vec<String>,
     display: String,
     timeout_secs: u64,
+    parser_hint: Option<String>,
+    task_type_hint: Option<String>,
+    report_hints: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1631,6 +1634,9 @@ fn manual_stage(stage: StageName, command: Option<&ProjectVerifyCommand>) -> Opt
             argv,
             display: command.command.clone(),
             timeout_secs: clamp_timeout(command.timeout_seconds, stage.default_timeout_secs()),
+            parser_hint: command.parser_hint.clone(),
+            task_type_hint: command.task_type_hint.clone(),
+            report_hints: command.report_hints.clone(),
         }],
     })
 }
@@ -1971,6 +1977,9 @@ fn cmd(parts: &[&str], timeout_secs: u64) -> CommandSpec {
         display: parts.join(" "),
         argv,
         timeout_secs,
+        parser_hint: None,
+        task_type_hint: None,
+        report_hints: None,
     }
 }
 
@@ -2180,7 +2189,10 @@ async fn run_command(
     progress_output: &mut ProgressOutputBuffer,
     run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
 ) -> CommandOutcome {
-    let mut parser = TerminalOutputParser::new(CommandContext::with_working_dir(spec.argv.clone(), repo_root));
+    let mut context = CommandContext::with_working_dir(spec.argv.clone(), repo_root);
+    if let Some(hint) = &spec.parser_hint { context = context.with_parser_hint(hint); }
+    if let Some(hint) = &spec.task_type_hint { context = context.with_task_type_hint(hint); }
+    let mut parser = TerminalOutputParser::new(context);
     let Some(program) = spec.argv.first() else {
         return CommandOutcome::Io {
             output_tail: "空命令".to_string(),
@@ -2303,7 +2315,7 @@ async fn run_command(
                 let output_tail = output.into_string();
                 return match status {
                     Ok(status) => {
-                        collect_fresh_test_reports(repo_root, &spec.argv, report_started_at, &mut parser);
+                        collect_fresh_test_reports(repo_root, &spec.argv, report_started_at, spec.report_hints.as_deref(), &mut parser);
                         let parsed = parser.finalize(status.code());
                         let parse_result = serde_json::to_value(&parsed).unwrap_or_default();
                         if status.success()
@@ -2362,6 +2374,7 @@ fn collect_fresh_test_reports(
     repo_root: &Path,
     argv: &[String],
     started_at: SystemTime,
+    report_hints: Option<&[String]>,
     parser: &mut TerminalOutputParser,
 ) {
     let program = argv.first().map(|v| v.rsplit('/').next().unwrap_or(v)).unwrap_or("");
@@ -2380,6 +2393,13 @@ fn collect_fresh_test_reports(
     };
     for root in roots {
         collect_report_dir(&root, started_at, parser);
+    }
+    if let Some(hints) = report_hints {
+        for hint in hints.iter().take(8) {
+            let path = Path::new(hint);
+            if path.is_absolute() || hint.contains("..") { continue; }
+            collect_report_dir(&repo_root.join(path), started_at, parser);
+        }
     }
 }
 
@@ -3301,7 +3321,7 @@ mod tests {
         let started = SystemTime::now();
         fs::write(dir.join("build/reports/lint-results.sarif"), r#"{"runs":[{"results":[{"ruleId":"MissingTranslation","level":"error","message":{"text":"Missing translation"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"res/values.xml"},"region":{"startLine":12}}}]}]}]}"#).unwrap();
         let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["./gradlew".into(), "lintDebug".into()]));
-        collect_fresh_test_reports(&dir, &["gradlew".into(), "lintDebug".into()], started, &mut parser);
+        collect_fresh_test_reports(&dir, &["gradlew".into(), "lintDebug".into()], started, None, &mut parser);
         let result = parser.finalize(Some(0));
         assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
         assert_eq!(result.errors[0].code.as_deref(), Some("MissingTranslation"));
@@ -3316,7 +3336,7 @@ mod tests {
         let started = SystemTime::now();
         fs::write(dir.join("TestResults/results.trx"), r#"<TestRun><Results><UnitTestResult testName="Calculator.Add" outcome="Failed" /></Results></TestRun>"#).unwrap();
         let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["dotnet".into(), "test".into()]));
-        collect_fresh_test_reports(&dir, &["dotnet".into(), "test".into()], started, &mut parser);
+        collect_fresh_test_reports(&dir, &["dotnet".into(), "test".into()], started, None, &mut parser);
         let result = parser.finalize(Some(0));
         assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
         assert_eq!(result.errors[0].test_name.as_deref(), Some("Calculator.Add"));
@@ -3354,11 +3374,13 @@ mod tests {
                     command: "mvn -q -DskipTests compile".to_string(),
                     enabled: true,
                     timeout_seconds: Some(400),
+                    parser_hint: None, task_type_hint: None, report_hints: None,
                 }),
                 test: Some(ProjectVerifyCommand {
                     command: "mvn -q test".to_string(),
                     enabled: false,
                     timeout_seconds: None,
+                    parser_hint: None, task_type_hint: None, report_hints: None,
                 }),
             },
         );
@@ -3389,6 +3411,7 @@ mod tests {
                     command: "cargo check".to_string(),
                     enabled: true,
                     timeout_seconds: Some(300),
+                    parser_hint: None, task_type_hint: None, report_hints: None,
                 }),
                 test: None,
             },
@@ -3416,6 +3439,7 @@ mod tests {
                     command: "mvn -q -DskipTests compile".to_string(),
                     enabled: true,
                     timeout_seconds: None,
+                    parser_hint: None, task_type_hint: None, report_hints: None,
                 }),
                 test: None,
             },
@@ -3491,6 +3515,7 @@ mod tests {
             command: "cargo test".to_string(),
             enabled: false,
             timeout_seconds: None,
+            parser_hint: None, task_type_hint: None, report_hints: None,
         };
         let disabled_preview = preview_stage(StageName::Test, None, Some(&disabled), "manual");
 
@@ -3502,6 +3527,7 @@ mod tests {
             command: "cargo test && rm -rf target".to_string(),
             enabled: true,
             timeout_seconds: Some(600),
+            parser_hint: None, task_type_hint: None, report_hints: None,
         };
         let invalid_preview = preview_stage(StageName::Test, None, Some(&invalid), "manual");
 
@@ -4072,11 +4098,13 @@ mod tests {
                     command: build.to_string(),
                     enabled: true,
                     timeout_seconds: None,
+                    parser_hint: None, task_type_hint: None, report_hints: None,
                 }),
                 test: Some(ProjectVerifyCommand {
                     command: test.to_string(),
                     enabled: true,
                     timeout_seconds: None,
+                    parser_hint: None, task_type_hint: None, report_hints: None,
                 }),
             },
         );

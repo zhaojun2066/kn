@@ -50,6 +50,15 @@ pub struct ProjectVerifyCommand {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub parser_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub task_type_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub report_hints: Option<Vec<String>>,
 }
 
 fn default_verify_command_enabled() -> bool {

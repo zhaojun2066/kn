@@ -58,6 +58,9 @@ export interface ProjectVerifyCommand {
   command: string;
   enabled: boolean;
   timeoutSeconds?: number;
+  parserHint?: string;
+  taskTypeHint?: 'compile' | 'test' | 'package' | 'build' | 'run' | 'lint' | 'custom';
+  reportHints?: string[];
 }
 
 export interface ActiveProjectContext {

@@ -383,6 +383,7 @@ fn verify_command(command: String, timeout_seconds: u64) -> Option<ProjectVerify
         command,
         enabled: true,
         timeout_seconds: Some(timeout_seconds),
+        parser_hint: None, task_type_hint: None, report_hints: None,
     })
 }
 
@@ -2055,11 +2056,13 @@ mod tests {
                     command: "cargo check".to_string(),
                     enabled: true,
                     timeout_seconds: Some(300),
+                    parser_hint: None, task_type_hint: None, report_hints: None,
                 }),
                 test: Some(kn_common::project::ProjectVerifyCommand {
                     command: "cargo test".to_string(),
                     enabled: false,
                     timeout_seconds: Some(600),
+                    parser_hint: None, task_type_hint: None, report_hints: None,
                 }),
             },
         );
@@ -2140,6 +2143,7 @@ mod tests {
                     command: "cargo check --workspace".to_string(),
                     enabled: true,
                     timeout_seconds: Some(500),
+                    parser_hint: None, task_type_hint: None, report_hints: None,
                 }),
                 test: None,
             },
