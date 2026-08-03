@@ -402,6 +402,9 @@ impl TerminalOutputParser {
             self.summary = Some(label.to_string());
             self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: Some((*needle).to_string()), test_name: None, start_line: self.line_number, end_line: self.line_number });
         }
+        if let Some(error) = android_location_diagnostic(line, self.line_number) {
+            self.errors.push(error);
+        }
     }
 
     fn parse_pytest(&mut self, line: &str) {
@@ -986,6 +989,17 @@ fn xcode_diagnostic(line: &str, line_number: usize) -> Option<TerminalParseError
     let source_line = parts.next().and_then(|v| v.parse().ok());
     let file = parts.next()?.to_string();
     Some(TerminalParseError { message: line[index + marker.len()..].trim().to_string(), file: Some(file), line: source_line, column, code: None, test_name: None, start_line: line_number, end_line: line_number })
+}
+
+fn android_location_diagnostic(line: &str, line_number: usize) -> Option<TerminalParseError> {
+    let marker = ": error:";
+    let index = line.find(marker)?;
+    let location = &line[..index];
+    let mut parts = location.rsplitn(3, ':');
+    let column = parts.next().and_then(|v| v.parse().ok());
+    let source_line = parts.next().and_then(|v| v.parse().ok());
+    let file = parts.next()?.to_string();
+    Some(TerminalParseError { message: line[index + marker.len()..].trim().to_string(), file: Some(file), line: source_line, column, code: Some("android-diagnostic".to_string()), test_name: None, start_line: line_number, end_line: line_number })
 }
 
 fn rust_error_code(line: &str) -> Option<String> {

@@ -155,6 +155,13 @@ fn android_environment_info_does_not_fail_successful_build() {
 }
 
 #[test]
+fn android_resource_error_extracts_source_location() {
+    let result = parse(&["./gradlew", ":app:assembleDebug"], "app/src/main/res/values/strings.xml:14:5: error: resource string/title not found", Some(1));
+    assert_eq!(result.status, ParseStatus::Failed);
+    assert!(result.errors.iter().any(|error| error.file.as_deref() == Some("app/src/main/res/values/strings.xml") && error.line == Some(14)));
+}
+
+#[test]
 fn swiftpm_test_summary_controls_status() {
     let result = parse(&["swift", "test"], "Test Suite 'All tests' failed at 2026-01-01", Some(0));
     assert_eq!(result.parser, "swiftpm");
