@@ -117,7 +117,7 @@ pub struct TerminalOutputParser {
 }
 
 #[derive(Debug, Clone)]
-struct ProfileRules { success: Vec<Regex>, failure: Vec<Regex>, ignore: Vec<Regex> }
+struct ProfileRules { summary: Vec<Regex>, success: Vec<Regex>, failure: Vec<Regex>, ignore: Vec<Regex> }
 
 const MAX_PENDING_LINE_BYTES: usize = 16 * 1024;
 
@@ -279,6 +279,7 @@ impl TerminalOutputParser {
     fn apply_profile_rules(&mut self, line: &str) {
         let Some(rules) = self.profile_rules.as_ref() else { return; };
         if rules.ignore.iter().any(|pattern| pattern.is_match(line)) { return; }
+        if rules.summary.iter().any(|pattern| pattern.is_match(line)) { self.summary = Some(line.to_string()); }
         if rules.failure.iter().any(|pattern| pattern.is_match(line)) {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
@@ -882,7 +883,7 @@ fn active_profile_rules(argv: &[String], parser: ParserKind) -> Option<ProfileRu
         .filter(|profile| profile.command_matchers.is_empty() || profile.command_matchers.iter().any(|pattern| profile_matches_command(pattern, &command)))
         .max_by_key(|profile| profile.priority)?;
     let compile = |patterns: &[String]| patterns.iter().filter_map(|pattern| Regex::new(pattern).ok()).collect();
-    Some(ProfileRules { success: compile(&profile.success_patterns), failure: compile(&profile.failure_patterns), ignore: compile(&profile.ignore_patterns) })
+    Some(ProfileRules { summary: compile(&profile.summary_patterns), success: compile(&profile.success_patterns), failure: compile(&profile.failure_patterns), ignore: compile(&profile.ignore_patterns) })
 }
 
 fn profile_matches_command(pattern: &str, command: &str) -> bool {
