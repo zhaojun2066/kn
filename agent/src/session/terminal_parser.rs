@@ -104,6 +104,7 @@ pub struct TerminalParseResult {
 
 pub struct TerminalOutputParser {
     parser: ParserKind,
+    secondary_parsers: Vec<ParserKind>,
     task_type: TaskType,
     profile_rules: Option<ProfileRules>,
     summary_failure: bool,
@@ -198,8 +199,10 @@ impl TerminalOutputParser {
         let (parser, detected_task) = identify(&context.argv, context.working_dir.as_deref(), context.parser_hint.as_deref());
         let task_type = context.task_type_hint.as_deref().and_then(task_type_hint).unwrap_or(detected_task);
         let profile_rules = active_profile_rules(&context.argv, parser);
+        let secondary_parsers = node_script_secondary_parsers(&context.argv, context.working_dir.as_deref(), parser);
         Self {
             parser,
+            secondary_parsers,
             task_type,
             profile_rules,
             summary_failure: false,
@@ -236,7 +239,12 @@ impl TerminalOutputParser {
         self.line_number += 1;
         let line = strip_ansi(line);
         self.apply_profile_rules(&line);
-        match self.parser {
+        self.parse_kind(self.parser, &line);
+        for parser in self.secondary_parsers.clone() { self.parse_kind(parser, &line); }
+    }
+
+    fn parse_kind(&mut self, parser: ParserKind, line: &str) {
+        match parser {
             ParserKind::Maven => self.parse_maven(&line),
             ParserKind::Gradle => self.parse_gradle(&line),
             ParserKind::AndroidGradle => { self.parse_gradle(&line); self.parse_android_diagnostic(&line); }
@@ -941,6 +949,29 @@ fn resolve_node_script(argv: &[String], working_dir: Option<&std::path::Path>) -
         }
     }
     best.or_else(|| Some((ParserKind::Generic, task_from_words(&command))))
+}
+
+fn node_script_secondary_parsers(argv: &[String], working_dir: Option<&std::path::Path>, primary: ParserKind) -> Vec<ParserKind> {
+    let Some(cwd) = working_dir else { return Vec::new(); };
+    let Some(script) = argv.iter().skip(1).find(|arg| !arg.starts_with('-') && *arg != "run") else { return Vec::new(); };
+    let Ok(package) = std::fs::read_to_string(cwd.join("package.json")) else { return Vec::new(); };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&package) else { return Vec::new(); };
+    let Some(command) = value.get("scripts").and_then(|scripts| scripts.get(script)).and_then(|value| value.as_str()) else { return Vec::new(); };
+    let mut result = Vec::new();
+    for word in command.split(|c: char| c.is_whitespace() || c == '&' || c == ';' || c == '|') {
+        let kind = match basename(word).trim_matches(['"', '\'']) {
+            "jest" | "react-scripts" => Some(ParserKind::Jest),
+            "vitest" => Some(ParserKind::Vitest),
+            "playwright" => Some(ParserKind::Playwright),
+            "tsc" | "vue-tsc" | "ngc" => Some(ParserKind::TypeScript),
+            "vite" | "webpack" | "rollup" | "next" | "nuxt" => Some(ParserKind::WebBuild),
+            _ => None,
+        };
+        if let Some(kind) = kind.filter(|kind| *kind != primary) {
+            if !result.contains(&kind) { result.push(kind); }
+        }
+    }
+    result
 }
 
 fn complete_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {

@@ -126,6 +126,17 @@ fn node_script_resolver_uses_declared_inner_jest() {
 }
 
 #[test]
+fn node_script_runs_secondary_build_parser_for_composite_script() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"check":"tsc --noEmit && vite build"}}"#).unwrap();
+    let context = CommandContext::with_working_dir(vec!["npm".into(), "run".into(), "check".into()], dir.path());
+    let mut parser = TerminalOutputParser::new(context);
+    parser.on_line("Failed to compile");
+    let result = parser.finalize(Some(0));
+    assert_eq!(result.status, ParseStatus::Failed);
+}
+
+#[test]
 fn go_json_fail_event_is_authoritative() {
     let result = parse(&["go", "test", "-json"], r#"{"Action":"fail","Package":"example/pkg","Test":"TestAdd"}"#, Some(0));
     assert_eq!(result.parser, "go");
