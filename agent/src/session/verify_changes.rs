@@ -2425,7 +2425,8 @@ struct ReportScanBudget { files: usize, total_bytes: u64 }
 fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser, budget: &mut ReportScanBudget, depth: usize, repo_root: &Path) {
     if depth > MAX_REPORT_DEPTH || budget.files >= MAX_REPORT_FILES { return; }
     let Ok(canonical) = fs::canonicalize(root) else { return };
-    if !canonical.starts_with(repo_root) { return; }
+    let Ok(canonical_root) = fs::canonicalize(repo_root) else { return; };
+    if !canonical.starts_with(canonical_root) { return; }
     if root.is_file() {
         collect_report_file(root, started_at, parser, budget);
         return;
@@ -2467,10 +2468,27 @@ fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut Termina
         let trx_failure = text.contains("<UnitTestResult") && text.contains("outcome=\"Failed\"");
         if !(junit_failure || trx_failure) { return; }
         let (element, name_attr) = if trx_failure { ("UnitTestResult", "testName") } else { ("testcase", "name") };
-        let name = xml_attr(&text, element, name_attr).unwrap_or_else(|| path.file_stem().and_then(|v| v.to_str()).unwrap_or("test").to_string());
-        let file = xml_attr(&text, "testcase", "file");
-        let line = xml_attr(&text, "testcase", "line").and_then(|v| v.parse().ok());
-        parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {name}"), file, line, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
+        let mut cursor = 0;
+        let mut found = false;
+        while let Some(relative) = text[cursor..].find(&format!("<{}", element)) {
+            let start = cursor + relative;
+            let end = text[start..].find('>').map(|v| start + v).unwrap_or(text.len());
+            let fragment = &text[start..=end.min(text.len().saturating_sub(1))];
+            let case_end = text[end..].find(&format!("</{}>", element)).map(|v| end + v + element.len() + 3).unwrap_or(text.len());
+            let body = &text[start..case_end.min(text.len())];
+            if trx_failure || body.contains("<failure") || body.contains("<error") {
+                let name = xml_attr(fragment, element, name_attr).unwrap_or_else(|| path.file_stem().and_then(|v| v.to_str()).unwrap_or("test").to_string());
+                let file = xml_attr(fragment, element, "file");
+                let line = xml_attr(fragment, element, "line").and_then(|v| v.parse().ok());
+                parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {name}"), file, line, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
+                found = true;
+            }
+            if end >= text.len() { break; }
+            cursor = end + 1;
+        }
+        if !found {
+            parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {}", path.display()), file: None, line: None, column: None, code: None, test_name: None, start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
+        }
         return;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return };
