@@ -247,6 +247,57 @@ fn node_script_resolver_follows_nested_package_scripts() {
 }
 
 #[test]
+fn parser_resolution_matrix_covers_supported_tool_families() {
+    let cases: Vec<(Vec<&str>, &str, &str)> = vec![
+        (vec!["mvn", "compile"], "BUILD SUCCESS", "maven"),
+        (vec!["gradle", "build"], "BUILD SUCCESSFUL", "gradle"),
+        (vec!["./gradlew", "assembleDebug"], "BUILD SUCCESSFUL", "android-gradle"),
+        (vec!["tsc", "--noEmit"], "", "typescript"),
+        (vec!["pytest"], "1 passed", "pytest"),
+        (vec!["python", "-m", "unittest"], "OK", "python-unittest"),
+        (vec!["go", "test"], "ok example/pkg", "go"),
+        (vec!["cargo", "check"], "Finished dev", "cargo"),
+        (vec!["dotnet", "build"], "Build succeeded.", "dotnet"),
+        (vec!["jest"], "Tests: 1 passed", "jest"),
+        (vec!["vitest", "run"], "Test Files 1 passed", "vitest"),
+        (vec!["playwright", "test"], "1 passed", "playwright"),
+        (vec!["cmake", "--build", "."], "Build files have been written", "cmake"),
+        (vec!["make"], "", "make-ninja"),
+        (vec!["clang", "main.c"], "", "cpp-compiler"),
+        (vec!["rspec"], "1 example, 0 failures", "ruby"),
+        (vec!["phpunit"], "OK (1 test, 1 assertion)", "php"),
+        (vec!["sbt", "test"], "[success]", "sbt"),
+        (vec!["mix", "test"], "0 failures", "mix"),
+        (vec!["cabal", "test"], "", "haskell"),
+        (vec!["bazel", "build", "//..."], "completed successfully", "bazel"),
+        (vec!["vite", "build"], "✓ built", "web-build"),
+        (vec!["swift", "test"], "Test Suite 'All tests' passed", "swiftpm"),
+        (vec!["flutter", "analyze"], "No issues found", "dart-flutter"),
+        (vec!["ctest"], "100% tests passed", "ctest"),
+        (vec!["tox"], "congratulations :)", "tox-nox"),
+        (vec!["xcodebuild", "test"], "TEST SUCCEEDED", "xcodebuild"),
+    ];
+    for (command, output, parser_name) in cases {
+        let result = parse(&command, output, Some(0));
+        assert_eq!(result.parser, parser_name, "command: {:?}", command);
+        assert_eq!(result.status, ParseStatus::Success, "command: {:?}", command);
+    }
+}
+
+#[test]
+fn parser_terminal_state_matrix_covers_timeout_cancel_and_lost_exit() {
+    let mut timeout_parser = TerminalOutputParser::new(CommandContext::new(vec!["custom.sh".into()]));
+    timeout_parser.on_line("ExceptionTest contains Error but is informational");
+    assert_eq!(timeout_parser.finalize_timeout().reason, kn_agent::session::terminal_parser::ParseReason::Timeout);
+
+    let cancelled_parser = TerminalOutputParser::new(CommandContext::new(vec!["custom.sh".into()]));
+    assert_eq!(cancelled_parser.finalize_cancelled().reason, kn_agent::session::terminal_parser::ParseReason::Cancelled);
+
+    let lost_exit_parser = TerminalOutputParser::new(CommandContext::new(vec!["custom.sh".into()]));
+    assert_eq!(lost_exit_parser.finalize(None).reason, kn_agent::session::terminal_parser::ParseReason::LostExitStatus);
+}
+
+#[test]
 fn numeric_failure_before_label_overrides_zero_exit() {
     assert_eq!(parse(&["pytest"], "1 failed, 3 passed", Some(0)).status, ParseStatus::Failed);
     assert_eq!(parse(&["ctest"], "2 tests failed out of 4", Some(0)).status, ParseStatus::Failed);
