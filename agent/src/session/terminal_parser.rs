@@ -6,6 +6,7 @@
 //! parsed, non-zero failure counter.
 
 use serde::{Deserialize, Serialize};
+use regex_lite::Regex;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,6 +105,7 @@ pub struct TerminalParseResult {
 pub struct TerminalOutputParser {
     parser: ParserKind,
     task_type: TaskType,
+    profile_rules: Option<ProfileRules>,
     summary_failure: bool,
     summary: Option<String>,
     errors: Vec<TerminalParseError>,
@@ -112,6 +114,9 @@ pub struct TerminalOutputParser {
     pending_stdout: Vec<u8>,
     pending_stderr: Vec<u8>,
 }
+
+#[derive(Debug, Clone)]
+struct ProfileRules { success: Vec<Regex>, failure: Vec<Regex>, ignore: Vec<Regex> }
 
 const MAX_PENDING_LINE_BYTES: usize = 16 * 1024;
 
@@ -192,9 +197,11 @@ impl TerminalOutputParser {
     pub fn new(context: CommandContext) -> Self {
         let (parser, detected_task) = identify(&context.argv, context.working_dir.as_deref(), context.parser_hint.as_deref());
         let task_type = context.task_type_hint.as_deref().and_then(task_type_hint).unwrap_or(detected_task);
+        let profile_rules = active_profile_rules(&context.argv, parser);
         Self {
             parser,
             task_type,
+            profile_rules,
             summary_failure: false,
             summary: None,
             errors: Vec::new(),
@@ -228,6 +235,7 @@ impl TerminalOutputParser {
     pub fn on_line(&mut self, line: &str) {
         self.line_number += 1;
         let line = strip_ansi(line);
+        self.apply_profile_rules(&line);
         match self.parser {
             ParserKind::Maven => self.parse_maven(&line),
             ParserKind::Gradle => self.parse_gradle(&line),
@@ -260,6 +268,18 @@ impl TerminalOutputParser {
         }
     }
 
+    fn apply_profile_rules(&mut self, line: &str) {
+        let Some(rules) = self.profile_rules.as_ref() else { return; };
+        if rules.ignore.iter().any(|pattern| pattern.is_match(line)) { return; }
+        if rules.failure.iter().any(|pattern| pattern.is_match(line)) {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+        } else if rules.success.iter().any(|pattern| pattern.is_match(line)) {
+            self.summary_failure = false;
+            self.summary = Some(line.to_string());
+        }
+    }
+
     /// Returns diagnostics discovered since the previous call. Candidates are
     /// advisory while a command is running; the final result remains the
     /// authoritative status and deduplicated error set.
@@ -275,6 +295,9 @@ impl TerminalOutputParser {
     pub fn add_artifact_error(&mut self, error: TerminalParseError, summary: impl Into<String>) {
         self.summary_failure = true;
         self.summary = Some(summary.into());
+        let mut error = error;
+        if error.start_line == 0 { if let Some(line) = error.line { error.start_line = line; } }
+        if error.end_line == 0 { error.end_line = error.start_line; }
         if !self.errors.iter().any(|existing| existing.message == error.message && existing.file == error.file && existing.line == error.line) {
             self.errors.push(error);
         }
@@ -737,7 +760,7 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>, parser_hint:
     if let Some(profiles) = crate::session::terminal_profiles::active() {
         let command = argv.join(" ");
         if let Some(profile) = profiles.profiles.iter()
-            .filter(|profile| profile.command_matchers.iter().any(|pattern| regex_lite::Regex::new(pattern).is_ok_and(|regex| regex.is_match(&command))))
+            .filter(|profile| profile.command_matchers.iter().any(|pattern| profile_matches_command(pattern, &command)))
             .max_by_key(|profile| profile.priority)
         {
             let known = match profile.id.as_str() {
@@ -841,6 +864,24 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>, parser_hint:
     if program == "ctest" { return (ParserKind::Ctest, TaskType::Test); }
     if matches!(program, "tox" | "nox") { return (ParserKind::ToxNox, TaskType::Test); }
     (ParserKind::Generic, TaskType::Custom)
+}
+
+fn active_profile_rules(argv: &[String], parser: ParserKind) -> Option<ProfileRules> {
+    let profiles = crate::session::terminal_profiles::active()?;
+    let command = argv.join(" ");
+    let profile = profiles.profiles.iter()
+        .filter(|profile| profile.id == parser.id())
+        .filter(|profile| profile.command_matchers.is_empty() || profile.command_matchers.iter().any(|pattern| profile_matches_command(pattern, &command)))
+        .max_by_key(|profile| profile.priority)?;
+    let compile = |patterns: &[String]| patterns.iter().filter_map(|pattern| Regex::new(pattern).ok()).collect();
+    Some(ProfileRules { success: compile(&profile.success_patterns), failure: compile(&profile.failure_patterns), ignore: compile(&profile.ignore_patterns) })
+}
+
+fn profile_matches_command(pattern: &str, command: &str) -> bool {
+    let pattern = pattern.trim();
+    let executable = command.split_whitespace().next().map(basename).unwrap_or("");
+    if pattern.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-' | '.')) { return executable == pattern; }
+    Regex::new(pattern).is_ok_and(|regex| regex.is_match(command))
 }
 
 fn parser_hint_kind(value: &str) -> Option<ParserKind> {

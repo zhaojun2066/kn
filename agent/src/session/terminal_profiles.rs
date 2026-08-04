@@ -64,6 +64,7 @@ pub enum ProfileError {
     MissingGeneric,
     Invalid(String),
     HashMismatch,
+    Downgrade,
     Io(String),
 }
 
@@ -106,6 +107,11 @@ impl TerminalProfileStore {
             return Err(ProfileError::HashMismatch);
         }
         let profiles = Self::parse(bytes, Some(expected_sha256))?;
+        if let Some(current) = self.profiles.as_ref() {
+            if compare_versions(&profiles.profiles_version, &current.profiles_version).is_lt() {
+                return Err(ProfileError::Downgrade);
+            }
+        }
         if let Some(parent) = self.cache_path.parent() {
             fs::create_dir_all(parent).map_err(|error| ProfileError::Io(error.to_string()))?;
         }
@@ -204,6 +210,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let parse = |value: &str| value.split(['.', '-', '_']).map(|part| part.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    let left = parse(left);
+    let right = parse(right);
+    (0..left.len().max(right.len()))
+        .map(|index| (left.get(index).copied().unwrap_or(0), right.get(index).copied().unwrap_or(0)))
+        .find_map(|(l, r)| (l != r).then(|| l.cmp(&r)))
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
 fn canonical_json(value: &TerminalParserProfiles) -> Vec<u8> {
     fn sort(value: serde_json::Value) -> serde_json::Value {
         match value {
@@ -243,6 +259,17 @@ mod tests {
         store.accept_remote(&bytes, &expected).unwrap();
         let mut loaded = TerminalProfileStore::new(&path);
         assert_eq!(loaded.load_cached().unwrap().unwrap().profiles_version, "1");
+    }
+
+    #[test]
+    fn rejects_profile_downgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.json");
+        let bytes = json();
+        let mut store = TerminalProfileStore::new(&path);
+        store.accept_remote(&bytes, &sha256_hex(&bytes)).unwrap();
+        let older = String::from_utf8(bytes).unwrap().replace("\"profilesVersion\":\"1\"", "\"profilesVersion\":\"0\"");
+        assert_eq!(store.accept_remote(older.as_bytes(), &sha256_hex(older.as_bytes())), Err(ProfileError::Downgrade));
     }
 
     #[test]
