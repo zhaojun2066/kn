@@ -2206,6 +2206,7 @@ async fn run_command(
     if let Some(hint) = &spec.parser_hint { context = context.with_parser_hint(hint); }
     if let Some(hint) = &spec.task_type_hint { context = context.with_task_type_hint(hint); }
     let mut parser = TerminalOutputParser::new(context);
+    let report_snapshot = snapshot_reports(repo_root, &spec.argv, spec.report_hints.as_deref());
     let Some(program) = spec.argv.first() else {
         return CommandOutcome::Io {
             output_tail: "空命令".to_string(),
@@ -2328,7 +2329,7 @@ async fn run_command(
                 let output_tail = output.into_string();
                 return match status {
                     Ok(status) => {
-                        collect_fresh_test_reports(repo_root, &spec.argv, report_started_at, spec.report_hints.as_deref(), &mut parser);
+                        collect_fresh_test_reports(repo_root, &spec.argv, report_started_at, spec.report_hints.as_deref(), Some(&report_snapshot), &mut parser);
                         let parsed = parser.finalize(status.code());
                         let parse_result = serde_json::to_value(&parsed).unwrap_or_default();
                         if status.success()
@@ -2388,6 +2389,7 @@ fn collect_fresh_test_reports(
     argv: &[String],
     started_at: SystemTime,
     report_hints: Option<&[String]>,
+    snapshot: Option<&ReportSnapshot>,
     parser: &mut TerminalOutputParser,
 ) {
     let program = argv.first().map(|v| v.rsplit('/').next().unwrap_or(v)).unwrap_or("");
@@ -2408,44 +2410,89 @@ fn collect_fresh_test_reports(
     };
     let mut budget = ReportScanBudget::default();
     for root in roots {
-        collect_report_dir(&root, started_at, parser, &mut budget, 0, repo_root);
+        collect_report_dir(&root, started_at, snapshot, parser, &mut budget, 0, repo_root);
     }
     if let Some(hints) = report_hints {
         for hint in hints.iter().take(8) {
             let path = Path::new(hint);
             if path.is_absolute() || hint.contains("..") { continue; }
-            collect_report_dir(&repo_root.join(path), started_at, parser, &mut budget, 0, repo_root);
+            collect_report_dir(&repo_root.join(path), started_at, snapshot, parser, &mut budget, 0, repo_root);
         }
     }
+}
+
+fn report_roots(repo_root: &Path, program: &str) -> Vec<PathBuf> {
+    if matches!(program, "mvn" | "mvnw") { vec![repo_root.join("target/surefire-reports"), repo_root.join("target/failsafe-reports")] }
+    else if matches!(program, "gradle" | "gradlew") { vec![repo_root.join("build/test-results"), repo_root.join("build/reports")] }
+    else if matches!(program, "pytest" | "python") { vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("junit.xml")] }
+    else if matches!(program, "jest" | "vitest" | "npm" | "pnpm" | "yarn" | "bun") { vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("jest.json"), repo_root.join("vitest.json")] }
+    else if program == "dotnet" { vec![repo_root.join("TestResults"), repo_root.join("test-results"), repo_root.join("artifacts")] }
+    else if program == "xcodebuild" { vec![repo_root.join("build"), repo_root.join("Build"), repo_root.join("DerivedData")] }
+    else { Vec::new() }
+}
+
+type ReportSnapshot = HashMap<PathBuf, (u64, SystemTime)>;
+
+fn snapshot_reports(repo_root: &Path, argv: &[String], report_hints: Option<&[String]>) -> ReportSnapshot {
+    let mut snapshot = ReportSnapshot::new();
+    let program = argv.first().map(|v| v.rsplit('/').next().unwrap_or(v)).unwrap_or("");
+    let roots = report_roots(repo_root, program);
+    for root in roots { snapshot_report_tree(&root, &mut snapshot, 0); }
+    if let Some(hints) = report_hints {
+        for hint in hints.iter().take(8) {
+            if hint.contains("..") || Path::new(hint).is_absolute() { continue; }
+            snapshot_report_tree(&repo_root.join(hint), &mut snapshot, 0);
+        }
+    }
+    snapshot
+}
+
+fn snapshot_report_tree(path: &Path, snapshot: &mut ReportSnapshot, depth: usize) {
+    if depth > MAX_REPORT_DEPTH { return; }
+    let Ok(meta) = fs::metadata(path) else { return; };
+    if meta.is_file() {
+        let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
+        if matches!(extension, "xml" | "json" | "sarif" | "trx") {
+            if let Ok(canonical) = fs::canonicalize(path) { if let Ok(modified) = meta.modified() { snapshot.insert(canonical, (meta.len(), modified)); } }
+        }
+        return;
+    }
+    let Ok(entries) = fs::read_dir(path) else { return; };
+    for entry in entries.flatten() { snapshot_report_tree(&entry.path(), snapshot, depth + 1); }
 }
 
 #[derive(Default)]
 struct ReportScanBudget { files: usize, total_bytes: u64 }
 
-fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser, budget: &mut ReportScanBudget, depth: usize, repo_root: &Path) {
+fn collect_report_dir(root: &Path, started_at: SystemTime, snapshot: Option<&ReportSnapshot>, parser: &mut TerminalOutputParser, budget: &mut ReportScanBudget, depth: usize, repo_root: &Path) {
     if depth > MAX_REPORT_DEPTH || budget.files >= MAX_REPORT_FILES { return; }
     let Ok(canonical) = fs::canonicalize(root) else { return };
     let Ok(canonical_root) = fs::canonicalize(repo_root) else { return; };
     if !canonical.starts_with(canonical_root) { return; }
     if root.is_file() {
-        collect_report_file(root, started_at, parser, budget);
+        collect_report_file(root, started_at, snapshot, parser, budget);
         return;
     }
     let Ok(entries) = fs::read_dir(root) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_report_dir(&path, started_at, parser, budget, depth + 1, repo_root);
+            collect_report_dir(&path, started_at, snapshot, parser, budget, depth + 1, repo_root);
             continue;
         }
-        collect_report_file(&path, started_at, parser, budget);
+        collect_report_file(&path, started_at, snapshot, parser, budget);
     }
 }
 
-fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser, budget: &mut ReportScanBudget) {
+fn collect_report_file(path: &Path, started_at: SystemTime, snapshot: Option<&ReportSnapshot>, parser: &mut TerminalOutputParser, budget: &mut ReportScanBudget) {
     let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
     if extension == "xcresult" && path.is_dir() {
         let Ok(meta) = fs::metadata(path) else { return };
+        if let Some(snapshot) = snapshot {
+            let current = meta.modified().ok().map(|modified| (meta.len(), modified));
+            let key = fs::canonicalize(path).ok();
+            if key.and_then(|key| snapshot.get(&key).copied()) == current { return; }
+        }
         let Ok(modified) = meta.modified() else { return };
         if modified.duration_since(started_at).is_err() { return; }
         if let Some(value) = export_xcresult_summary(path) {
@@ -2456,6 +2503,11 @@ fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut Termina
     }
     if !matches!(extension, "xml" | "json" | "sarif" | "trx") { return; }
     let Ok(meta) = fs::metadata(path) else { return };
+    if let Some(snapshot) = snapshot {
+        let current = meta.modified().ok().map(|modified| (meta.len(), modified));
+        let key = fs::canonicalize(path).ok();
+        if key.and_then(|key| snapshot.get(&key).copied()) == current { return; }
+    }
     if meta.len() > MAX_REPORT_BYTES { return; }
     if budget.files >= MAX_REPORT_FILES || budget.total_bytes.saturating_add(meta.len()) > MAX_REPORT_TOTAL_BYTES { return; }
     budget.files += 1;
@@ -3406,7 +3458,7 @@ mod tests {
         let started = SystemTime::now();
         fs::write(dir.join("build/reports/lint-results.sarif"), r#"{"runs":[{"results":[{"ruleId":"MissingTranslation","level":"error","message":{"text":"Missing translation"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"res/values.xml"},"region":{"startLine":12}}}]}]}]}"#).unwrap();
         let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["./gradlew".into(), "lintDebug".into()]));
-        collect_fresh_test_reports(&dir, &["gradlew".into(), "lintDebug".into()], started, None, &mut parser);
+        collect_fresh_test_reports(&dir, &["gradlew".into(), "lintDebug".into()], started, None, None, &mut parser);
         let result = parser.finalize(Some(0));
         assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
         assert_eq!(result.errors[0].code.as_deref(), Some("MissingTranslation"));
@@ -3421,7 +3473,7 @@ mod tests {
         let started = SystemTime::now();
         fs::write(dir.join("TestResults/results.trx"), r#"<TestRun><Results><UnitTestResult testName="Calculator.Add" outcome="Failed" /></Results></TestRun>"#).unwrap();
         let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["dotnet".into(), "test".into()]));
-        collect_fresh_test_reports(&dir, &["dotnet".into(), "test".into()], started, None, &mut parser);
+        collect_fresh_test_reports(&dir, &["dotnet".into(), "test".into()], started, None, None, &mut parser);
         let result = parser.finalize(Some(0));
         assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
         assert_eq!(result.errors[0].test_name.as_deref(), Some("Calculator.Add"));
