@@ -179,6 +179,10 @@ fn validate(value: &TerminalParserProfiles) -> Result<(), ProfileError> {
             || profile.artifact_collectors.len() > MAX_PATTERNS {
             return Err(ProfileError::Invalid(profile.id.clone()));
         }
+        if profile.fixture_version.as_deref().is_some_and(|version| version.len() > 64)
+            || profile.artifact_collectors.iter().any(|collector| serde_json::to_vec(collector).map(|bytes| bytes.len() > 16 * 1024).unwrap_or(true)) {
+            return Err(ProfileError::Invalid(profile.id.clone()));
+        }
         for pattern in profile.command_matchers.iter()
             .chain(profile.summary_patterns.iter())
             .chain(profile.success_patterns.iter())
@@ -250,5 +254,13 @@ mod tests {
         parsed["profiles"][1]["artifactCollectors"] = serde_json::json!([{"kind":"junit","root":"target"}]);
         let bytes = serde_json::to_vec(&parsed).unwrap();
         assert!(TerminalProfileStore::parse(&bytes, None).is_ok());
+    }
+
+    #[test]
+    fn rejects_oversized_artifact_collector_definition() {
+        let mut parsed: serde_json::Value = serde_json::from_slice(&json()).unwrap();
+        parsed["profiles"][1]["artifactCollectors"] = serde_json::json!([{"pattern": "x".repeat(20 * 1024)}]);
+        let bytes = serde_json::to_vec(&parsed).unwrap();
+        assert_eq!(TerminalProfileStore::parse(&bytes, None), Err(ProfileError::Invalid("maven".into())));
     }
 }
