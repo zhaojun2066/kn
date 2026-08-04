@@ -363,6 +363,8 @@ impl TerminalOutputParser {
             self.summary = Some(line.to_string());
         }
         if let Some(task) = line.strip_prefix("> Task ").and_then(|value| value.strip_suffix(" FAILED")) {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
             self.errors.push(TerminalParseError {
                 message: format!("Gradle task failed: {task}"),
                 file: None,
@@ -421,8 +423,8 @@ impl TerminalOutputParser {
                 end_line: self.line_number,
             });
         }
-        let failed = counter(line, "failed").unwrap_or(0);
-        let errors = counter(line, "errors").unwrap_or(0);
+        let failed = counter(line, "failed").unwrap_or(0).max(counter_before(line, "failed").unwrap_or(0));
+        let errors = counter(line, "errors").unwrap_or(0).max(counter_before(line, "errors").unwrap_or(0));
         if (line.contains(" passed") || line.contains(" failed") || line.contains(" errors"))
             && (failed > 0 || errors > 0)
         {
@@ -625,10 +627,10 @@ impl TerminalOutputParser {
 
     fn parse_language_summary(&mut self, line: &str, tool: &str) {
         let failure = match tool {
-            "ruby" => counter(line, "failure").unwrap_or(0) > 0,
+            "ruby" => counter(line, "failure").unwrap_or(0).max(counter_before(line, "failure").unwrap_or(0)) > 0,
             "php" => counter(line, "failures:").unwrap_or(0) > 0 || counter(line, "errors:").unwrap_or(0) > 0,
             "sbt" => line.starts_with("[error] Failed tests"),
-            "mix" => line.contains("failure") && counter(line, "failure").unwrap_or(0) > 0,
+            "mix" => line.contains("failure") && counter(line, "failure").unwrap_or(0).max(counter_before(line, "failure").unwrap_or(0)) > 0,
             "haskell" => line.contains(": FAIL"),
             "bazel" => line.starts_with("FAILED:") || line.contains("unsuccessfully"),
             _ => false,
@@ -682,9 +684,9 @@ impl TerminalOutputParser {
     }
 
     fn parse_ctest(&mut self, line: &str) {
-        if line.contains("tests passed") && counter(line, "tests failed").unwrap_or(0) == 0 {
+        if line.contains("tests passed") && counter(line, "tests failed").unwrap_or(0).max(counter_before(line, "tests failed").unwrap_or(0)) == 0 {
             self.summary = Some(line.to_string());
-        } else if line.contains("tests failed") && counter(line, "tests failed").unwrap_or(0) > 0 {
+        } else if line.contains("tests failed") && counter(line, "tests failed").unwrap_or(0).max(counter_before(line, "tests failed").unwrap_or(0)) > 0 {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
         } else if line.starts_with("The following tests FAILED") {
@@ -849,7 +851,11 @@ fn parser_hint_kind(value: &str) -> Option<ParserKind> {
         "jest" => Some(ParserKind::Jest), "vitest" => Some(ParserKind::Vitest), "playwright" => Some(ParserKind::Playwright),
         "typescript" => Some(ParserKind::TypeScript), "xcodebuild" => Some(ParserKind::Xcodebuild), "swiftpm" => Some(ParserKind::SwiftPm),
         "dart-flutter" => Some(ParserKind::DartFlutter), "web-build" => Some(ParserKind::WebBuild), "ctest" => Some(ParserKind::Ctest),
-        "tox-nox" => Some(ParserKind::ToxNox), "dotnet" => Some(ParserKind::Dotnet), _ => None,
+        "tox-nox" => Some(ParserKind::ToxNox), "dotnet" => Some(ParserKind::Dotnet),
+        "python-unittest" => Some(ParserKind::PythonUnittest), "cmake" => Some(ParserKind::Cmake),
+        "make-ninja" | "make" | "ninja" => Some(ParserKind::MakeNinja), "cpp-compiler" => Some(ParserKind::CppCompiler),
+        "ruby" => Some(ParserKind::Ruby), "php" => Some(ParserKind::Php), "sbt" => Some(ParserKind::Sbt),
+        "mix" => Some(ParserKind::Mix), "haskell" => Some(ParserKind::Haskell), "bazel" => Some(ParserKind::Bazel), _ => None,
     }
 }
 
@@ -966,6 +972,15 @@ fn counter(line: &str, label: &str) -> Option<u64> {
         .chars()
         .take_while(|character| character.is_ascii_digit())
         .collect();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
+fn counter_before(line: &str, label: &str) -> Option<u64> {
+    let lower = line.to_ascii_lowercase();
+    let label = label.to_ascii_lowercase();
+    let index = lower.find(&label)?;
+    let digits: String = lower[..index].trim_end_matches(|c: char| c == ',' || c == ':' || c.is_whitespace())
+        .chars().rev().take_while(|c| c.is_ascii_digit()).collect::<String>().chars().rev().collect();
     (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
 }
 

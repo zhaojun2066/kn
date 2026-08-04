@@ -28,6 +28,9 @@ const VERIFY_RUN_LOG_TTL_SECS: u64 = 24 * 60 * 60;
 const VERIFY_RUN_LOG_MAX_BYTES: u64 = 200 * 1024 * 1024;
 const VERIFY_LOG_WINDOW_MAX_CONTEXT: usize = 300;
 const MAX_REPORT_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_REPORT_FILES: usize = 256;
+const MAX_REPORT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_REPORT_DEPTH: usize = 8;
 const VERIFY_LOG_ISSUE_MAX_MATCHERS: usize = 80;
 const VERIFY_LOG_ISSUE_MAX_PATTERN_LEN: usize = 300;
 const VERIFY_LOG_ISSUE_MAX_LIMIT: usize = 300;
@@ -2403,35 +2406,42 @@ fn collect_fresh_test_reports(
     } else {
         Vec::new()
     };
+    let mut budget = ReportScanBudget::default();
     for root in roots {
-        collect_report_dir(&root, started_at, parser);
+        collect_report_dir(&root, started_at, parser, &mut budget, 0, repo_root);
     }
     if let Some(hints) = report_hints {
         for hint in hints.iter().take(8) {
             let path = Path::new(hint);
             if path.is_absolute() || hint.contains("..") { continue; }
-            collect_report_dir(&repo_root.join(path), started_at, parser);
+            collect_report_dir(&repo_root.join(path), started_at, parser, &mut budget, 0, repo_root);
         }
     }
 }
 
-fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser) {
+#[derive(Default)]
+struct ReportScanBudget { files: usize, total_bytes: u64 }
+
+fn collect_report_dir(root: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser, budget: &mut ReportScanBudget, depth: usize, repo_root: &Path) {
+    if depth > MAX_REPORT_DEPTH || budget.files >= MAX_REPORT_FILES { return; }
+    let Ok(canonical) = fs::canonicalize(root) else { return };
+    if !canonical.starts_with(repo_root) { return; }
     if root.is_file() {
-        collect_report_file(root, started_at, parser);
+        collect_report_file(root, started_at, parser, budget);
         return;
     }
     let Ok(entries) = fs::read_dir(root) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_report_dir(&path, started_at, parser);
+            collect_report_dir(&path, started_at, parser, budget, depth + 1, repo_root);
             continue;
         }
-        collect_report_file(&path, started_at, parser);
+        collect_report_file(&path, started_at, parser, budget);
     }
 }
 
-fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser) {
+fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut TerminalOutputParser, budget: &mut ReportScanBudget) {
     let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
     if extension == "xcresult" && path.is_dir() {
         let Ok(meta) = fs::metadata(path) else { return };
@@ -2440,11 +2450,15 @@ fn collect_report_file(path: &Path, started_at: SystemTime, parser: &mut Termina
         if let Some(value) = export_xcresult_summary(path) {
             collect_json_failures(&value, path, parser);
         }
+        budget.files += 1;
         return;
     }
     if !matches!(extension, "xml" | "json" | "sarif" | "trx") { return; }
     let Ok(meta) = fs::metadata(path) else { return };
     if meta.len() > MAX_REPORT_BYTES { return; }
+    if budget.files >= MAX_REPORT_FILES || budget.total_bytes.saturating_add(meta.len()) > MAX_REPORT_TOTAL_BYTES { return; }
+    budget.files += 1;
+    budget.total_bytes = budget.total_bytes.saturating_add(meta.len());
     let Ok(modified) = meta.modified() else { return };
     if modified.duration_since(started_at).is_err() { return; }
     let Ok(text) = fs::read_to_string(path) else { return };

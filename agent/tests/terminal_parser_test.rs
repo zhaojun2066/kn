@@ -236,6 +236,19 @@ fn node_script_resolver_follows_nested_package_scripts() {
 }
 
 #[test]
+fn numeric_failure_before_label_overrides_zero_exit() {
+    assert_eq!(parse(&["pytest"], "1 failed, 3 passed", Some(0)).status, ParseStatus::Failed);
+    assert_eq!(parse(&["ctest"], "2 tests failed out of 4", Some(0)).status, ParseStatus::Failed);
+    assert_eq!(parse(&["rspec"], "3 examples, 1 failure", Some(0)).status, ParseStatus::Failed);
+}
+
+#[test]
+fn gradle_failed_task_overrides_zero_exit() {
+    let result = parse(&["gradle", "test"], "> Task :test FAILED", Some(0));
+    assert_eq!(result.status, ParseStatus::Failed);
+}
+
+#[test]
 fn python_unittest_uses_final_failure_counters() {
     let result = parse(
         &["python", "-m", "unittest"],
