@@ -2534,8 +2534,11 @@ fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut Te
             return;
         }
         let status = object.get("status").and_then(|v| v.as_str());
-        let failed = status.is_some_and(|v| matches!(v, "failed" | "Failed" | "TestFailure"))
-            || object.get("status").and_then(|v| v.as_str()) == Some("FAIL")
+        let has_test_identity = object.get("fullName").or_else(|| object.get("title")).or_else(|| object.get("name")).is_some()
+            && (object.get("testFilePath").is_some() || object.get("file").is_some()
+                || object.get("location").is_some() || object.get("failureMessages").is_some()
+                || object.get("ancestorTitles").is_some() || object.get("projectName").is_some());
+        let failed = (status.is_some_and(|v| matches!(v, "failed" | "Failed" | "TestFailure" | "FAIL")) && has_test_identity)
             || object.get("numFailingTests").and_then(|v| v.as_u64()).unwrap_or(0) > 0
             || object.get("failedTestsCount").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
         if failed {
@@ -3440,6 +3443,16 @@ mod tests {
         let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["playwright".into(), "test".into()]));
         let value = serde_json::json!({"status":"passed", "attempts":[{"status":"failed"}], "name":"login"});
         collect_json_failures(&value, Path::new("playwright.json"), &mut parser);
+        let result = parser.finalize(Some(0));
+        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Success);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn json_metadata_status_failed_is_not_a_test_failure() {
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["jest".into()]));
+        let value = serde_json::json!({"status":"failed", "message":"previous upload failed", "metadata":{"attempt":1}});
+        collect_json_failures(&value, Path::new("report.json"), &mut parser);
         let result = parser.finalize(Some(0));
         assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Success);
         assert!(result.errors.is_empty());
