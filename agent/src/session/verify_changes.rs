@@ -1902,41 +1902,29 @@ fn node_plan(repo_root: &Path) -> VerifyPlan {
     let scripts = package.get("scripts").and_then(|v| v.as_object());
     let manager = package_manager(repo_root);
     let mut build_commands = Vec::new();
-    if scripts
-        .and_then(|s| s.get("typecheck"))
-        .and_then(|v| v.as_str())
-        .is_some()
-    {
-        build_commands.push(package_run_cmd(
-            &manager,
-            "typecheck",
-            DEFAULT_BUILD_TIMEOUT_SECS,
-        ));
+    let mut test_commands = Vec::new();
+    let mut names: Vec<&str> = scripts.map(|scripts| scripts.keys().map(String::as_str).collect()).unwrap_or_default();
+    names.sort_unstable();
+    // Keep the stable, conventional order so type checking happens before
+    // bundling, while still discovering project-specific names such as
+    // `verify`, `compile:prod`, `test:unit`, and `test:e2e`.
+    let mut ordered = Vec::new();
+    for preferred in ["typecheck", "check", "lint", "compile", "build", "verify"] {
+        if names.contains(&preferred) { ordered.push(preferred); }
     }
-    if scripts
-        .and_then(|s| s.get("build"))
-        .and_then(|v| v.as_str())
-        .is_some()
-    {
-        build_commands.push(package_run_cmd(
-            &manager,
-            "build",
-            DEFAULT_BUILD_TIMEOUT_SECS,
-        ));
+    for name in names.iter().copied() {
+        if !ordered.contains(&name) && is_build_script_name(name) { ordered.push(name); }
     }
-    let test_script = scripts
-        .and_then(|s| s.get("test"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let test = if is_valid_test_script(test_script) {
-        Some(stage(vec![package_run_cmd(
-            &manager,
-            "test",
-            DEFAULT_TEST_TIMEOUT_SECS,
-        )]))
-    } else {
-        None
-    };
+    for name in ordered {
+        if let Some(command) = scripts.and_then(|scripts| scripts.get(name)).and_then(|value| value.as_str()) {
+            if !command.trim().is_empty() { build_commands.push(package_run_cmd(&manager, name, DEFAULT_BUILD_TIMEOUT_SECS)); }
+        }
+    }
+    for name in names.iter().copied().filter(|name| is_test_script_name(name)) {
+        if let Some(script) = scripts.and_then(|scripts| scripts.get(name)).and_then(|value| value.as_str()) {
+            if is_valid_test_script(script) { test_commands.push(package_run_cmd(&manager, name, DEFAULT_TEST_TIMEOUT_SECS)); }
+        }
+    }
     plan(
         "auto",
         if build_commands.is_empty() {
@@ -1944,8 +1932,21 @@ fn node_plan(repo_root: &Path) -> VerifyPlan {
         } else {
             Some(stage(build_commands))
         },
-        test,
+        if test_commands.is_empty() { None } else { Some(stage(test_commands)) },
     )
+}
+
+fn is_build_script_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized == "build" || normalized == "compile" || normalized == "check" || normalized == "verify"
+        || normalized == "typecheck" || normalized == "lint" || normalized.starts_with("build:")
+        || normalized.starts_with("compile:") || normalized.starts_with("typecheck:")
+}
+
+fn is_test_script_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    (normalized == "test" || normalized.starts_with("test:") || normalized.ends_with(":test"))
+        && !normalized.contains("watch") && !normalized.contains("debug") && !normalized.contains("ui")
 }
 
 fn package_manager(repo_root: &Path) -> String {
@@ -3539,6 +3540,20 @@ mod tests {
         assert_eq!(build.commands[1].display, "pnpm run build");
         assert!(plan.test.is_none());
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn discovers_custom_node_build_and_test_scripts() {
+        let dir = unique_temp_dir("node-custom-scripts");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("package.json"), r#"{"scripts":{"verify":"webpack --mode production","test:unit":"jest --runInBand","test:e2e":"playwright test","dev":"vite"}}"#).unwrap();
+        let plan = auto_plan(&dir);
+        assert_eq!(plan.build.unwrap().commands[0].display, "npm run verify");
+        let tests = plan.test.unwrap();
+        assert_eq!(tests.commands.len(), 2);
+        assert_eq!(tests.commands[0].display, "npm run test:e2e");
+        assert_eq!(tests.commands[1].display, "npm run test:unit");
         fs::remove_dir_all(&dir).ok();
     }
 
