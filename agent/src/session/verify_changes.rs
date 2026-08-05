@@ -1820,6 +1820,22 @@ fn auto_plan(repo_root: &Path) -> VerifyPlan {
     if repo_root.join("package.json").exists() {
         return node_plan(repo_root);
     }
+    if let Some(project) = discover_xcode_project(repo_root) {
+        let scheme = project.file_stem().and_then(|value| value.to_str()).unwrap_or("App");
+        let project_name = project.file_name().and_then(|value| value.to_str()).unwrap_or("App.xcodeproj");
+        return plan(
+            "auto",
+            Some(stage(vec![cmd(&["xcodebuild", "-project", project_name, "-scheme", scheme, "build"], DEFAULT_BUILD_TIMEOUT_SECS)])),
+            Some(stage(vec![cmd(&["xcodebuild", "-project", project_name, "-scheme", scheme, "test"], DEFAULT_TEST_TIMEOUT_SECS)])),
+        );
+    }
+    if repo_root.join("Package.swift").exists() {
+        return plan(
+            "auto",
+            Some(stage(vec![cmd(&["swift", "build"], DEFAULT_BUILD_TIMEOUT_SECS)])),
+            Some(stage(vec![cmd(&["swift", "test"], DEFAULT_TEST_TIMEOUT_SECS)])),
+        );
+    }
     if repo_root.join("pom.xml").exists() {
         return plan(
             "auto",
@@ -1894,6 +1910,15 @@ fn auto_plan(repo_root: &Path) -> VerifyPlan {
         );
     }
     plan("auto", None, None)
+}
+
+fn discover_xcode_project(repo_root: &Path) -> Option<PathBuf> {
+    let mut projects: Vec<PathBuf> = fs::read_dir(repo_root).ok()?.flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("xcodeproj"))
+        .collect();
+    projects.sort();
+    projects.into_iter().next()
 }
 
 fn node_plan(repo_root: &Path) -> VerifyPlan {
@@ -3554,6 +3579,27 @@ mod tests {
         assert_eq!(tests.commands.len(), 2);
         assert_eq!(tests.commands[0].display, "npm run test:e2e");
         assert_eq!(tests.commands[1].display, "npm run test:unit");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn discovers_xcode_project_build_and_test_commands() {
+        let dir = unique_temp_dir("xcode-plan");
+        fs::create_dir_all(dir.join("kn.xcodeproj")).unwrap();
+        let plan = auto_plan(&dir);
+        assert_eq!(plan.build.unwrap().commands[0].display, "xcodebuild -project kn.xcodeproj -scheme kn build");
+        assert_eq!(plan.test.unwrap().commands[0].display, "xcodebuild -project kn.xcodeproj -scheme kn test");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn discovers_swiftpm_build_and_test_commands() {
+        let dir = unique_temp_dir("swiftpm-plan");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Package.swift"), "// swift-tools-version:5.7\n").unwrap();
+        let plan = auto_plan(&dir);
+        assert_eq!(plan.build.unwrap().commands[0].display, "swift build");
+        assert_eq!(plan.test.unwrap().commands[0].display, "swift test");
         fs::remove_dir_all(&dir).ok();
     }
 
