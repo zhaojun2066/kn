@@ -296,9 +296,57 @@ fn has_project_marker(path: &Path) -> bool {
         "pyproject.toml",
         "pytest.ini",
         "requirements.txt",
+        "Package.swift",
     ]
     .iter()
     .any(|marker| path.join(marker).exists())
+        || discover_xcode_project(path).is_some()
+}
+
+fn discover_xcode_project(root: &Path) -> Option<PathBuf> {
+    let mut projects: Vec<PathBuf> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("xcodeproj"))
+        .collect();
+    projects.sort();
+    projects.into_iter().next()
+}
+
+fn xcode_scheme(project: &Path) -> String {
+    let mut schemes: Vec<String> = std::fs::read_dir(project.join("xcshareddata/xcschemes"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .path()
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        })
+        .collect();
+    schemes.sort();
+    schemes.into_iter().next().unwrap_or_else(|| {
+        project
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("App")
+            .to_string()
+    })
+}
+
+fn shell_word(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 fn auto_build_command(root: &Path) -> Option<ProjectVerifyCommand> {
@@ -313,6 +361,24 @@ fn auto_build_command(root: &Path) -> Option<ProjectVerifyCommand> {
             commands.push(package_run_command(&manager, "build"));
         }
         return verify_command(commands.join(" && "), 300);
+    }
+    if let Some(project) = discover_xcode_project(root) {
+        let scheme = xcode_scheme(&project);
+        let project_name = project
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("App.xcodeproj");
+        return verify_command(
+            format!(
+                "xcodebuild -project {} -scheme {} build",
+                shell_word(project_name),
+                shell_word(&scheme)
+            ),
+            900,
+        );
+    }
+    if root.join("Package.swift").exists() {
+        return verify_command("swift build".to_string(), 600);
     }
     if root.join("pom.xml").exists() {
         return verify_command("mvn -q -DskipTests compile".to_string(), 300);
@@ -349,6 +415,24 @@ fn auto_test_command(root: &Path) -> Option<ProjectVerifyCommand> {
         }
         return None;
     }
+    if let Some(project) = discover_xcode_project(root) {
+        let scheme = xcode_scheme(&project);
+        let project_name = project
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("App.xcodeproj");
+        return verify_command(
+            format!(
+                "xcodebuild -project {} -scheme {} test",
+                shell_word(project_name),
+                shell_word(&scheme)
+            ),
+            1200,
+        );
+    }
+    if root.join("Package.swift").exists() {
+        return verify_command("swift test".to_string(), 900);
+    }
     if root.join("pom.xml").exists() {
         return verify_command("mvn -q test".to_string(), 600);
     }
@@ -383,7 +467,9 @@ fn verify_command(command: String, timeout_seconds: u64) -> Option<ProjectVerify
         command,
         enabled: true,
         timeout_seconds: Some(timeout_seconds),
-        parser_hint: None, task_type_hint: None, report_hints: None,
+        parser_hint: None,
+        task_type_hint: None,
+        report_hints: None,
     })
 }
 
@@ -2056,13 +2142,17 @@ mod tests {
                     command: "cargo check".to_string(),
                     enabled: true,
                     timeout_seconds: Some(300),
-                    parser_hint: None, task_type_hint: None, report_hints: None,
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
                 }),
                 test: Some(kn_common::project::ProjectVerifyCommand {
                     command: "cargo test".to_string(),
                     enabled: false,
                     timeout_seconds: Some(600),
-                    parser_hint: None, task_type_hint: None, report_hints: None,
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
                 }),
             },
         );
@@ -2125,6 +2215,71 @@ mod tests {
     }
 
     #[test]
+    fn preview_project_verify_config_detects_xcode_build_and_test_commands() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("kn-ios");
+        fs::create_dir_all(project_dir.join("kn.xcodeproj")).unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "kn-ios".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+            verify: None,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let verify = preview_project_verify_config("kn-ios".to_string())
+            .unwrap()
+            .unwrap();
+        let env = &verify.environments["default"];
+
+        assert_eq!(
+            env.build.as_ref().unwrap().command,
+            "xcodebuild -project kn.xcodeproj -scheme kn build"
+        );
+        assert_eq!(
+            env.test.as_ref().unwrap().command,
+            "xcodebuild -project kn.xcodeproj -scheme kn test"
+        );
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn preview_project_verify_config_detects_swiftpm_build_and_test_commands() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("swift-package");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("Package.swift"),
+            "// swift-tools-version:5.7\n",
+        )
+        .unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "swift-package".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+            verify: None,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let verify = preview_project_verify_config("swift-package".to_string())
+            .unwrap()
+            .unwrap();
+        let env = &verify.environments["default"];
+
+        assert_eq!(env.build.as_ref().unwrap().command, "swift build");
+        assert_eq!(env.test.as_ref().unwrap().command, "swift test");
+
+        cleanup_config(dir);
+    }
+
+    #[test]
     fn preview_project_verify_config_prefers_manual_config() {
         let (_guard, dir) = temp_config_setup();
         let project_dir = dir.path().join("project");
@@ -2143,7 +2298,9 @@ mod tests {
                     command: "cargo check --workspace".to_string(),
                     enabled: true,
                     timeout_seconds: Some(500),
-                    parser_hint: None, task_type_hint: None, report_hints: None,
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
                 }),
                 test: None,
             },
