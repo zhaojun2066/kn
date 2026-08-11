@@ -215,6 +215,18 @@ fn webpack_failed_compile_summary_is_failure() {
 }
 
 #[test]
+fn vite_error_during_build_extracts_nested_error_line() {
+    let result = parse(
+        &["vite", "build"],
+        "failed to load config from vite.config.ts\nerror during build:\nError: EPERM: operation not permitted, open 'vite.config.ts.timestamp.mjs'\n    at async loadConfigFromFile",
+        Some(1),
+    );
+    assert_eq!(result.parser, "web-build");
+    assert_eq!(result.status, ParseStatus::Failed);
+    assert!(result.errors.iter().any(|error| error.message.starts_with("Error: EPERM:")));
+}
+
+#[test]
 fn xcodebuild_error_extracts_source_location() {
     let result = parse(&["xcodebuild", "build"], "Sources/App.swift:12:7: error: cannot find 'value' in scope\n** BUILD FAILED **", Some(65));
     assert_eq!(result.parser, "xcodebuild");

@@ -114,6 +114,7 @@ pub struct TerminalOutputParser {
     line_number: usize,
     pending_stdout: Vec<u8>,
     pending_stderr: Vec<u8>,
+    web_build_error_context: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +213,7 @@ impl TerminalOutputParser {
             line_number: 0,
             pending_stdout: Vec::new(),
             pending_stderr: Vec::new(),
+            web_build_error_context: false,
         }
     }
 
@@ -681,6 +683,24 @@ impl TerminalOutputParser {
         let lower = line.to_ascii_lowercase();
         if lower.contains("compiled successfully") || lower.contains("build complete") || lower.contains("built in ") || lower.contains("✓ built") || lower.contains("created ") {
             self.summary = Some(line.to_string());
+        }
+        if lower.contains("failed to load config") {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+        }
+        if lower.contains("error during build:") {
+            self.summary_failure = true;
+            self.summary = Some(line.to_string());
+            self.web_build_error_context = true;
+            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+        } else if self.web_build_error_context {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("Error:") || trimmed.starts_with("error:") {
+                self.summary_failure = true;
+                self.errors.push(TerminalParseError { message: trimmed.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+            }
+            self.web_build_error_context = false;
         }
         if lower.contains("failed to compile") || lower.contains("compilation failed") || lower.contains("build failed") || lower.starts_with("error: failed to") {
             self.summary_failure = true;
