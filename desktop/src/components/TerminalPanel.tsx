@@ -1,6 +1,6 @@
 import { relativeTime } from "../lib/time-utils";
 import React, { useRef, useEffect, useCallback, useState } from "react";
-import { X, Plus, FolderOpen, Clock, Trash2, Play, Minus, Maximize2, Minimize2, Search, ChevronUp, ChevronDown, Copy, CopyCheck, Palette, SplitSquareVertical, SplitSquareHorizontal } from "lucide-react";
+import { X, Plus, FolderOpen, Clock, Trash2, Play, Minus, Maximize2, Minimize2, Search, ChevronUp, ChevronDown, Copy, CopyCheck, Palette, SplitSquareVertical, SplitSquareHorizontal, Globe2, Monitor, Loader2 } from "lucide-react";
 
 
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
@@ -20,6 +20,8 @@ interface TabInfo {
   name: string;
   workDir: string;
   ptyRunning: boolean;
+  agentNid?: string;
+  agentRemoteEnabled?: boolean;
   // Pane tree fields (for split-pane support)
   rootNode: PaneNode;
   activePaneId: string;
@@ -58,6 +60,8 @@ interface TerminalPanelProps {
   onNavigatePane: (tabId: string, direction: NavDirection) => void;
   onCyclePane: (tabId: string, forward: boolean) => void;
   onZoomPane: (tabId: string) => void;
+  onToggleRemoteSession?: (tabId: string, enabled: boolean) => void | Promise<void>;
+  remoteToggleBusyNid?: string | null;
 }
 
 /* ── Format relative time ───────────────────────────────── */
@@ -71,8 +75,15 @@ export function TerminalPanel({
   fontSize, onSetFontSize,
   onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearHistory,
   onSplitPane, onClosePane, onFocusPane, onNavigatePane, onCyclePane, onZoomPane,
+  onToggleRemoteSession, remoteToggleBusyNid,
 }: TerminalPanelProps) {
+  const isBottom = mode === "bottom";
   const activeTab = tabs.find((t) => t.id === activeTabId);
+  const activePane = activeTab?.rootNode ? flattenPanes(activeTab.rootNode).find((leaf) => leaf.paneId === activeTab.activePaneId) : null;
+  const activeAgentNid = activePane?.agentNid ?? activeTab?.agentNid;
+  const activeRemoteEnabled = activePane?.agentRemoteEnabled ?? activeTab?.agentRemoteEnabled ?? false;
+  const canToggleRemote = !isBottom && Boolean(activeAgentNid && activeTab && onToggleRemoteSession);
+  const remoteToggleBusy = Boolean(activeAgentNid && remoteToggleBusyNid === activeAgentNid);
   const runningCount = tabs.reduce((sum, tab) => sum + flattenPanes(tab.rootNode).filter((l) => l.ptyRunning).length, 0);
   const maximizeTip = `${maximized ? "还原" : "最大化"} (${formatShortcut("mod+⇧M")})`;
   const [showHistory, setShowHistory] = useState(false);
@@ -366,8 +377,6 @@ export function TerminalPanel({
     return () => { cancelled = true; };
   }, [size, maximized, visible, activeTabId, activePaneId, activeRootNode]);
 
-  const isBottom = mode === "bottom";
-
   // When not visible, collapse the panel to zero — belt-and-suspenders:
   // height/maxHeight/minHeight all set to 0 to override any flex or child min-size.
   const containerStyle: React.CSSProperties = !visible
@@ -405,6 +414,13 @@ export function TerminalPanel({
                     : "text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"}`}
               >
                 <span className={`w-2 h-2 rounded-full shrink-0 ${tab.ptyRunning ? "bg-app-accent shadow-[0_0_4px_var(--app-glow)]" : "bg-app-text-muted opacity-40"}`} />
+                {mode === "right" && tab.agentNid && (
+                  tab.agentRemoteEnabled ? (
+                    <Globe2 size={11} className="shrink-0 text-emerald-400" aria-label="远程会话" />
+                  ) : (
+                    <Monitor size={11} className="shrink-0 text-app-text-muted" aria-label="本地会话" />
+                  )
+                )}
                 <span className="max-w-[100px] truncate">{tab.name}</span>
                 {tabs.length > 1 && (
                   <button onClick={(e) => { e.stopPropagation(); setClosingTabId(tab.id); }}
@@ -544,6 +560,33 @@ export function TerminalPanel({
             </>
           )}
         </div>
+        )}
+
+        {/* Remote toggle — right panel only */}
+        {!isBottom && (
+          <button
+            onClick={() => activeTab && onToggleRemoteSession?.(activeTab.id, !activeRemoteEnabled)}
+            disabled={!canToggleRemote || remoteToggleBusy}
+            className={`shrink-0 px-2 h-[32px] transition-colors flex items-center gap-1
+              ${activeRemoteEnabled ? "text-emerald-400 hover:text-emerald-300" : "text-app-text-muted hover:text-app-text"}
+              ${!canToggleRemote || remoteToggleBusy ? "opacity-50 cursor-default" : ""}`}
+            title={
+              canToggleRemote
+                ? `${activeRemoteEnabled ? "关闭远程" : "开启远程"}`
+                : "本地会话启动后可开启远程"
+            }
+          >
+            {remoteToggleBusy ? (
+              <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+            ) : activeRemoteEnabled ? (
+              <Globe2 size={14} aria-hidden="true" />
+            ) : (
+              <Monitor size={14} aria-hidden="true" />
+            )}
+            <span className="text-2xs font-mono hidden 2xl:inline">
+              {activeRemoteEnabled ? "远程" : "本地"}
+            </span>
+          </button>
         )}
 
         {/* Search button (triggers terminal search bar) */}

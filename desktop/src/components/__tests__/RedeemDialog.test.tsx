@@ -61,7 +61,7 @@ describe("RedeemDialog", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("卡密格式无效，应以 KN- 开头")).toBeTruthy();
+      expect(screen.getByText("兑换码格式无效，应以 KN- 开头")).toBeTruthy();
     });
   });
 
@@ -93,7 +93,7 @@ describe("RedeemDialog", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("卡密格式无效，长度不足")).toBeTruthy();
+      expect(screen.getByText("兑换码格式无效，长度不足")).toBeTruthy();
     });
   });
 
@@ -143,7 +143,7 @@ describe("RedeemDialog", () => {
   it("shows error on redeem failure with retry button", async () => {
     const redeemCode = vi.fn().mockResolvedValue({
       ok: false,
-      error: "该卡密已被使用",
+      error: "该兑换码已被使用",
     });
     render(<RedeemDialog onClose={vi.fn()} agent={mockAgentState({ redeemCode })} />);
 
@@ -158,7 +158,7 @@ describe("RedeemDialog", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("该卡密已被使用")).toBeTruthy();
+      expect(screen.getByText("该兑换码已被使用")).toBeTruthy();
       expect(screen.getByText("重试")).toBeTruthy();
       expect(screen.getByText("关闭")).toBeTruthy();
     });
@@ -252,7 +252,7 @@ describe("RedeemDialog", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("请输入卡密")).toBeTruthy();
+      expect(screen.getByText("请输入兑换码")).toBeTruthy();
     });
   });
 });

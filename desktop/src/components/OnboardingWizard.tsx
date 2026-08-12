@@ -190,7 +190,7 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
                 </div>
                 <div className="text-xs text-app-text-dim leading-relaxed">
                   自动检测 ~/.claude/settings.json 和 ~/.codex/ 中的 API 配置，
-                  一键导入为 profile
+                  一键导入为运行配置
                 </div>
               </div>
             </button>
@@ -211,10 +211,10 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
               <div>
                 <div className="text-sm font-semibold text-app-text font-mono mb-0.5">
                   <span className="text-app-amber opacity-70">$ </span>
-                  手动创建 Profile
+                  手动创建运行配置
                 </div>
                 <div className="text-xs text-app-text-dim leading-relaxed">
-                  填写 API 密钥、Base URL 和模型名称，创建自定义 profile。
+                  填写 API 密钥、Base URL 和模型名称，创建自定义运行配置。
                   支持任何兼容 Anthropic 或 OpenAI 协议的服务商
                 </div>
               </div>
@@ -277,7 +277,7 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
               </div>
               <div className="px-4 py-2 space-y-1 font-mono">
                 {[
-                  [formatShortcut("mod+N"), "新建 Profile"],
+                  [formatShortcut("mod+N"), "新建运行配置"],
                   [formatShortcut("mod+B"), "切换侧边栏"],
                   ["Ctrl+`", "打开终端面板"],
                   [formatShortcut("mod+K"), "查看全部快捷键"],

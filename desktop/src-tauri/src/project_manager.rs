@@ -381,7 +381,7 @@ fn auto_build_command(root: &Path) -> Option<ProjectVerifyCommand> {
         return verify_command("swift build".to_string(), 600);
     }
     if root.join("pom.xml").exists() {
-        return verify_command("mvn -q -DskipTests compile".to_string(), 300);
+        return verify_command("mvn -DskipTests compile".to_string(), 300);
     }
     if root.join("build.gradle").exists() || root.join("build.gradle.kts").exists() {
         let gradle = if root.join("gradlew").exists() {
@@ -434,7 +434,7 @@ fn auto_test_command(root: &Path) -> Option<ProjectVerifyCommand> {
         return verify_command("swift test".to_string(), 900);
     }
     if root.join("pom.xml").exists() {
-        return verify_command("mvn -q test".to_string(), 600);
+        return verify_command("mvn test".to_string(), 600);
     }
     if root.join("build.gradle").exists() || root.join("build.gradle.kts").exists() {
         let gradle = if root.join("gradlew").exists() {

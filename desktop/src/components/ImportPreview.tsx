@@ -70,7 +70,7 @@ export function ImportPreview({ open, data, onConfirm, onCancel }: Props) {
         <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
           <div className="flex items-center gap-2">
             <FileJson size={15} className="text-app-accent" />
-            <h3 className="font-semibold text-sm font-mono">导入 Profile</h3>
+            <h3 className="font-semibold text-sm font-mono">导入运行配置</h3>
           </div>
           <button onClick={onCancel} className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors">
             <X size={14} />
@@ -82,7 +82,7 @@ export function ImportPreview({ open, data, onConfirm, onCancel }: Props) {
           {/* Name + CLI type */}
           <div>
             <label className="block text-xs text-app-text-dim mb-1.5 font-mono">
-              <span className="text-app-text-muted">$ </span>Profile 名称
+              <span className="text-app-text-muted">$ </span>运行配置名称
             </label>
             <div className="flex items-center gap-2">
               <input

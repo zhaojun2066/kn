@@ -4,8 +4,8 @@ import { ref, onMounted, onUnmounted } from 'vue'
 const steps = [
   {
     num: '1',
-    title: '创建 Profile',
-    desc: '在 GUI 中新建 Profile，填入 API Key 和 Base URL，或从现有配置一键扫描导入。',
+    title: '创建运行配置',
+    desc: '在 GUI 中新建运行配置，填入 API Key 和 Base URL，或从现有配置一键扫描导入。',
     cmd: 'profile add deepseek "DeepSeek 中转"',
   },
   {

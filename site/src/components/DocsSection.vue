@@ -21,7 +21,7 @@ bash install.sh
 source ~/.zshrc`,
   },
   {
-    title: '2. 创建 Profile',
+    title: '2. 创建运行配置',
     desc: '交互式引导，填入 API Key、Base URL 和模型配置。',
     code: `profile add deepseek -i`,
   },

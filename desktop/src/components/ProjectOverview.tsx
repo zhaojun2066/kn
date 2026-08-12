@@ -39,7 +39,7 @@ interface MetricCardsProps {
 }
 
 const METRICS = [
-  { key: "sessions", label: "Sessions", icon: "◉" } as const,
+  { key: "sessions", label: "会话", icon: "◉" } as const,
   { key: "skills", label: "Skills", icon: "⬡" } as const,
   { key: "plugins", label: "Plugins", icon: "⬢" } as const,
   { key: "commands", label: "Commands", icon: "⌘" } as const,
@@ -222,10 +222,10 @@ function OverviewRecentSessions({ sessions, loading, profiles, onResume }: Recen
       {sessionToResume && createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
           <div className="w-[360px] border border-app-border bg-app-panel p-5 shadow-dialog">
-            <h3 className="text-sm font-medium text-app-text">选择 Profile</h3>
-            <p className="mt-2 text-xs text-app-text-muted">恢复会话前请选择 {sessionToResume.cli} 的 Profile。</p>
+            <h3 className="text-sm font-medium text-app-text">选择运行配置</h3>
+            <p className="mt-2 text-xs text-app-text-muted">恢复会话前请选择 {sessionToResume.cli} 的运行配置。</p>
             <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value)} className="mt-4 w-full border border-app-border bg-app-input px-2 py-2 text-sm text-app-text">
-              <option value="">请选择 Profile</option>
+              <option value="">请选择运行配置</option>
               {compatibleProfiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
             </select>
             <div className="mt-5 flex justify-end gap-2">
@@ -372,7 +372,7 @@ function ProjectVerifyCard({
   const displayConfig = project.verify ?? autoPreview;
   const envName = resolveVerifyEnvironmentName(displayConfig ?? undefined);
   const env = displayConfig?.environments?.[envName];
-  const source = project.verify ? "桌面端配置" : "自动识别";
+  const source = project.verify ? "电脑端配置" : "自动识别";
 
   useEffect(() => {
     if (project.verify) {
@@ -469,7 +469,7 @@ function ProjectVerifyConfigEditor({
   const [loadingPlan, setLoadingPlan] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const source = project.verify ? "桌面端配置" : "自动识别";
+  const source = project.verify ? "电脑端配置" : "自动识别";
 
   const parseTimeout = (value: string, fallback: number) => {
     const parsed = Number.parseInt(value, 10);
@@ -839,10 +839,10 @@ export function ProjectOverview({
                   onClick={handleRunDefault}
                   className="h-7 flex items-center gap-1.5 px-3 text-xs font-mono
                     bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity"
-                  title={defaultProfile ? `Run with ${defaultProfile}` : "Select profile"}
+                  title={defaultProfile ? `使用 ${defaultProfile} 运行` : "选择运行配置"}
                 >
                   <span>▶</span>
-                  <span>Run</span>
+                  <span>运行</span>
                 </button>
                 <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 px-2 py-1
                   bg-[var(--app-panel)] text-[var(--app-text)] text-2xs
@@ -894,7 +894,7 @@ export function ProjectOverview({
         <div className="h-px bg-app-border" />
 
         {/* ── Metrics ── */}
-        <SectionHeader label="Metrics" />
+        <SectionHeader label="指标" />
         {overviewLoading && !overviewData ? (
           <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
             {Array.from({ length: 5 }).map((_, i) => (
@@ -918,7 +918,7 @@ export function ProjectOverview({
         )}
 
         {/* ── Verification ── */}
-        <SectionHeader label="Verification" />
+        <SectionHeader label="验证" />
         <ProjectVerifyCard
           project={project}
           onEdit={() => setShowVerifyEditor(true)}
@@ -934,7 +934,7 @@ export function ProjectOverview({
         )}
 
         {/* ── Recent Sessions ── */}
-        <SectionHeader label="Recent Sessions" />
+        <SectionHeader label="最近会话" />
         <OverviewRecentSessions
           sessions={overviewData?.recentSessions ?? []}
           loading={overviewLoading}
@@ -943,7 +943,7 @@ export function ProjectOverview({
         />
 
         {/* ── Config Status ── */}
-        <SectionHeader label="Config Status" />
+        <SectionHeader label="配置状态" />
         {overviewData ? (
           <OverviewConfigMatrix matrix={overviewData.configMatrix} />
         ) : (

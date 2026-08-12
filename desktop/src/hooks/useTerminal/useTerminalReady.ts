@@ -107,12 +107,12 @@ export function useTerminalReady(ctx: TerminalContext) {
     if (!parsed) return true;
     if (!profilesRef.current.some((profile) => profile.name === parsed.profile)) {
       deleteHistoryRef.current?.(record.id);
-      errorCallbackRef.current?.(`Profile "${parsed.profile}" 不存在，已删除会话历史`);
+      errorCallbackRef.current?.(`运行配置 "${parsed.profile}" 不存在，已删除会话历史`);
       return false;
     }
     if (!isProfileCompatibleWithSession(record.command, profilesRef.current)) {
       errorCallbackRef.current?.(
-        `会话历史需要 ${parsed.tool} 类型的 Profile，不能使用同名的其他 CLI Profile`,
+        `会话历史需要 ${parsed.tool} 类型的运行配置，不能使用同名的其他 CLI 运行配置`,
       );
       return false;
     }

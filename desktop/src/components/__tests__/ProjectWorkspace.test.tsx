@@ -58,9 +58,9 @@ describe("ProjectWorkspace", () => {
       />,
     );
 
-    expect(screen.getByText("Overview")).not.toBeNull();
-    expect(screen.getByText("Sessions")).not.toBeNull();
-    expect(screen.getByText("Resource")).not.toBeNull();
+    expect(screen.getByText("总览（Overview）")).not.toBeNull();
+    expect(screen.getByText("会话（Sessions）")).not.toBeNull();
+    expect(screen.getByText("扩展（Extensions）")).not.toBeNull();
     expect(screen.queryByText("Profiles")).toBeNull();
   });
 
@@ -229,14 +229,14 @@ describe("ProjectWorkspace", () => {
       />,
     );
 
-    fireEvent.click(screen.getByText("Resource"));
+    fireEvent.click(screen.getByText("扩展（Extensions）"));
 
     expect(await screen.findByText("chrome")).not.toBeNull();
     expect(await screen.findByText("browser")).not.toBeNull();
     expect(await screen.findByText("继承")).not.toBeNull();
   });
 
-  it("filters the project Resource tab to project-local resources", async () => {
+  it("filters the project Extensions tab to project-local resources", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "scan_hooks") return Promise.resolve({ hooks: [] });
       if (cmd === "get_home_dir") return Promise.resolve("/home/test");
@@ -305,7 +305,7 @@ describe("ProjectWorkspace", () => {
       />,
     );
 
-    fireEvent.click(screen.getByText("Resource"));
+    fireEvent.click(screen.getByText("扩展（Extensions）"));
 
     expect(await screen.findByText("chrome")).not.toBeNull();
     expect(await screen.findByText("browser")).not.toBeNull();
@@ -418,7 +418,7 @@ describe("ProjectWorkspace", () => {
       />,
     );
 
-    fireEvent.click(screen.getByText("Resource"));
+    fireEvent.click(screen.getByText("扩展（Extensions）"));
 
     expect(await screen.findByText("user-skill")).not.toBeNull();
     expect(await screen.findByText("project-skill")).not.toBeNull();
@@ -472,10 +472,10 @@ describe("ProjectWorkspace", () => {
       />,
     );
 
-    fireEvent.click(screen.getByText("Resource"));
+    fireEvent.click(screen.getByText("扩展（Extensions）"));
     fireEvent.click(await screen.findByTitle("浏览 Marketplace"));
 
-    expect(await screen.findByText("Plugin Marketplace")).not.toBeNull();
+    expect(await screen.findByText("扩展市场")).not.toBeNull();
     expect(await screen.findByText("项目 · kn")).not.toBeNull();
   });
 });

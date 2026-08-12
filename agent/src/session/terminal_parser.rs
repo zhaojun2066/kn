@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use regex_lite::Regex;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -247,6 +248,7 @@ impl TerminalOutputParser {
 
     fn parse_kind(&mut self, parser: ParserKind, line: &str) {
         match parser {
+            ParserKind::Generic => self.parse_typescript(&line),
             ParserKind::Maven => self.parse_maven(&line),
             ParserKind::Gradle => self.parse_gradle(&line),
             ParserKind::AndroidGradle => { self.parse_gradle(&line); self.parse_android_diagnostic(&line); }
@@ -274,7 +276,6 @@ impl TerminalOutputParser {
             ParserKind::DartFlutter => self.parse_dart_flutter(&line),
             ParserKind::Ctest => self.parse_ctest(&line),
             ParserKind::ToxNox => self.parse_tox_nox(&line),
-            _ => {}
         }
     }
 
@@ -490,7 +491,18 @@ impl TerminalOutputParser {
     }
 
     fn parse_typescript(&mut self, line: &str) {
-        if let Some(code) = typescript_code(line) {
+        if let Some((message, source_line, column, code)) = eslint_diagnostic(line) {
+            self.errors.push(TerminalParseError {
+                message,
+                file: None,
+                line: Some(source_line),
+                column: Some(column),
+                code: Some(code),
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
+        } else if let Some(code) = typescript_code(line) {
             self.errors.push(TerminalParseError {
                 message: line.to_string(),
                 file: None,
@@ -958,7 +970,7 @@ fn resolve_node_script(argv: &[String], working_dir: Option<&std::path::Path>) -
                 "jest" | "react-scripts" => Some((ParserKind::Jest, TaskType::Test)),
                 "vitest" => Some((ParserKind::Vitest, TaskType::Test)),
                 "playwright" => Some((ParserKind::Playwright, TaskType::Test)),
-                "tsc" | "vue-tsc" | "ngc" => Some((ParserKind::TypeScript, TaskType::Compile)),
+                "tsc" | "vue-tsc" | "ngc" | "eslint" => Some((ParserKind::TypeScript, TaskType::Lint)),
                 "vite" | "webpack" | "rollup" | "next" | "nuxt" => Some((ParserKind::WebBuild, TaskType::Build)),
                 "npm" | "pnpm" | "yarn" | "bun" if words.get(index + 1) == Some(&"run") => {
                     if let Some(nested) = words.get(index + 2).and_then(|name| value.get("scripts")?.get(*name)?.as_str()) { queue.push(nested.to_ascii_lowercase()); }
@@ -984,7 +996,7 @@ fn node_script_secondary_parsers(argv: &[String], working_dir: Option<&std::path
             "jest" | "react-scripts" => Some(ParserKind::Jest),
             "vitest" => Some(ParserKind::Vitest),
             "playwright" => Some(ParserKind::Playwright),
-            "tsc" | "vue-tsc" | "ngc" => Some(ParserKind::TypeScript),
+            "tsc" | "vue-tsc" | "ngc" | "eslint" => Some(ParserKind::TypeScript),
             "vite" | "webpack" | "rollup" | "next" | "nuxt" => Some(ParserKind::WebBuild),
             _ => None,
         };
@@ -1130,6 +1142,37 @@ fn typescript_code(line: &str) -> Option<String> {
     line.split_whitespace()
         .find(|part| part.len() == 6 && part.starts_with("TS") && part[2..].chars().all(|character| character.is_ascii_digit()))
         .map(str::to_string)
+}
+
+fn eslint_diagnostic(line: &str) -> Option<(String, usize, usize, String)> {
+    static ESLINT_DETAIL: OnceLock<Regex> = OnceLock::new();
+    let captures = ESLINT_DETAIL
+        .get_or_init(|| Regex::new(r"^\s*(\d+):(\d+)\s+error\s+(.+?)\s{2,}([\w/-]+)\s*$").unwrap())
+        .captures(line)?;
+    Some((
+        captures.get(3)?.as_str().to_string(),
+        captures.get(1)?.as_str().parse().ok()?,
+        captures.get(2)?.as_str().parse().ok()?,
+        captures.get(4)?.as_str().to_string(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_eslint_detail_line() {
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["eslint".to_string(), ".".to_string()]));
+        parser.on_line("  44:3  error  Unexpected console statement  no-console");
+
+        let result = parser.finalize(Some(1));
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].line, Some(44));
+        assert_eq!(result.errors[0].column, Some(3));
+        assert_eq!(result.errors[0].code.as_deref(), Some("no-console"));
+        assert_eq!(result.errors[0].message, "Unexpected console statement");
+    }
 }
 
 fn strip_ansi(line: &str) -> String {

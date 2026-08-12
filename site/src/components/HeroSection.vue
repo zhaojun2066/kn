@@ -12,9 +12,9 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
       <div class="hero-grid">
         <!-- Left -->
         <div class="hero-text reveal">
-          <span class="section-label">AI CLI 工具的统一管理中心</span>
+          <span class="section-label">用手机继续电脑端 AI 会话</span>
           <h1 class="hero-title">
-            告别手动改配置，<span class="hero-highlight">一行命令</span>切换 AI 环境
+            电脑端开跑，<span class="hero-highlight">手机继续</span>推进 AI 工作
           </h1>
 
           <!-- Supported CLI tools -->
@@ -26,7 +26,7 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
 
           <div class="hero-features-wrap">
             <ul class="hero-features">
-              <li>多 Profile 管理，一键切换 API Key / Model / Base URL</li>
+              <li>多运行配置管理，一键切换 API Key / Model / Base URL</li>
               <li>会话级隔离，终端之间互不干扰，退出自动清除</li>
               <li>Quick Switcher (⌘K) 全局快速启动，按使用频率排序</li>
               <li>自动追踪 Token 用量，按模型 / 项目统计成本</li>

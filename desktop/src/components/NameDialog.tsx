@@ -36,7 +36,7 @@ export function NameDialog({
     }
     const reserved = ["claude", "codex", "qoderclicn", "profile", "ai", "help"];
     if (reserved.includes(trimmed)) {
-      setError(`"${trimmed}" 是系统保留关键字，不能用作 Profile 名称`);
+      setError(`"${trimmed}" 是系统保留关键字，不能用作运行配置名称`);
       return false;
     }
     setError("");
@@ -74,7 +74,7 @@ export function NameDialog({
 
       <div className="p-4">
         <label className="block text-xs text-app-text-dim mb-1.5 font-mono">
-          <span className="text-app-text-muted">$ </span>Profile 名称
+          <span className="text-app-text-muted">$ </span>运行配置名称
         </label>
         <input
           ref={inputRef}

@@ -1125,14 +1125,14 @@ function EmptyState({ scope }: { scope?: "user" | "project" }) {
         </div>
         <div>
           <div className="text-base font-mono font-semibold text-[var(--app-text)] mb-1">
-            Resources
+            扩展
           </div>
           <div className="text-xs text-[var(--app-text-dim)] leading-relaxed">
             {isUser
-              ? "管理用户级 Plugin、Skill、Agent 和 Command"
+              ? "管理用户级 Plugin、Skill、Agent 和 Command 扩展"
               : isProject
-              ? "管理当前项目的 Plugin、Skill、Agent 和 Command"
-              : "统一管理 Plugin、Skill、Agent 和 Command"}
+              ? "管理当前项目的 Plugin、Skill、Agent 和 Command 扩展"
+              : "统一管理 Plugin、Skill、Agent 和 Command 扩展"}
           </div>
         </div>
 

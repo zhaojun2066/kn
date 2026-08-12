@@ -1,6 +1,6 @@
 # kn
 
-AI CLI 工具的多 profile 管理器。在不同终端会话中为 `claude` / `codex` / `qoder` 无缝切换 API key、Base URL 和模型配置。
+用手机继续电脑端 AI 会话的远程控制工具，同时提供 AI CLI 运行配置管理。在不同会话中为 `claude` / `codex` / `qoder` 无缝切换 API key、Base URL 和模型配置。
 
 > 🌐 官网：[https://zhaojun2066.github.io/kn/](https://zhaojun2066.github.io/kn/)
 
@@ -30,8 +30,8 @@ cd kn && bash install.sh && source ~/.zshrc
 
 ```bash
 profile init                # 导入已有配置
-profile add my-api -i       # 交互式创建 profile
-ai claude my-api            # 启动 Claude Code + 指定 profile
+profile add my-api -i       # 交互式创建运行配置
+ai claude my-api            # 启动 Claude Code + 指定运行配置
 ai codex                    # 自动检测：项目级 → 默认 → 交互选择
 ```
 
@@ -39,15 +39,15 @@ ai codex                    # 自动检测：项目级 → 默认 → 交互选�
 
 ## Desktop 应用
 
-Desktop 是 kn 的核心——一个基于 Tauri v2 的桌面 GUI，提供可视化的 profile 管理、内置 PTY 终端、扩展管理和用量追踪。
+Desktop 是 kn 的电脑端入口——一个基于 Tauri v2 的桌面 GUI，提供可视化运行配置管理、内置 PTY 终端、扩展管理、用量追踪和手机远程控制。
 
-### 环境管理
+### 运行配置管理
 
 - **可视化管理** — 表格展示环境变量，敏感 key 自动打码，双击编辑
 - **4 步创建向导** — 名称 → CLI 类型 → 环境变量 → 完成
 - **系统扫描导入** — 自动发现 `~/.claude/settings.json`、`~/.codex/auth.json` 等已有配置
 - **批量操作** — 多选删除/导出，JSON 格式导入导出
-- **项目绑定** — 读取项目 `.ai-profile`，自动关联 profile
+- **项目绑定** — 读取项目 `.ai-profile`，自动关联运行配置
 
 ### 扩展管理
 
@@ -62,12 +62,12 @@ Desktop 是 kn 的核心——一个基于 Tauri v2 的桌面 GUI，提供可视
 
 | 终端 | 打开方式 | 位置 |
 |------|---------|------|
-| Right Terminal | Profile "运行"按钮 | 主面板右侧 |
+| Right Terminal | 运行配置“运行”按钮 | 主面板右侧 |
 | Bottom Terminal | 工具栏 / `Ctrl+`` | 主面板下方 |
 
 ### Quick Switcher (`⌘K`)
 
-全局快速启动器——模糊搜索 profile、项目目录，按使用频率排序，回车即启。
+全局快速启动器——模糊搜索运行配置、项目目录，按使用频率排序，回车即启。
 
 ### Token 用量追踪
 
@@ -78,7 +78,7 @@ Desktop 是 kn 的核心——一个基于 Tauri v2 的桌面 GUI，提供可视
 ## CLI 命令
 
 ```bash
-profile list                    # 列出所有 profile
+profile list                    # 列出所有运行配置
 profile show <name>             # 查看详情（key 打码）
 profile add <name> -i           # 交互式创建
 profile set <name> KEY=VALUE    # 设置环境变量
@@ -89,10 +89,10 @@ profile default [name]          # 查看/切换默认
 Shell Wrapper `ai` 命令：
 
 ```bash
-ai claude <profile>             # 指定 profile 启动 Claude Code
-ai codex <profile>              # 指定 profile 启动 Codex
-ai claude                       # 自动检测 profile
-ai profile list                 # 列出 profile
+ai claude <profile>             # 指定运行配置启动 Claude Code
+ai codex <profile>              # 指定运行配置启动 Codex
+ai claude                       # 自动检测运行配置
+ai profile list                 # 列出运行配置
 ai profile switch <name>        # 切换默认
 ai tips                         # 模型推荐 + 使用排行
 ```
@@ -103,14 +103,14 @@ ai tips                         # 模型推荐 + 使用排行
 
 ## 项目级自动切换
 
-在项目根目录创建 `.ai-profile` 文件，写入 profile 名，该目录下 `ai claude` 自动使用对应 profile：
+在项目根目录创建 `.ai-profile` 文件，写入运行配置名，该目录下 `ai claude` 自动使用对应运行配置：
 
 ```bash
 echo "work" > ~/project/.ai-profile
-cd ~/project && ai claude   # 自动使用 work profile
+cd ~/project && ai claude   # 自动使用 work 运行配置
 ```
 
-优先级：显式指定 > `.ai-profile` > 默认 profile > 交互选择
+优先级：显式指定 > `.ai-profile` > 默认运行配置 > 交互选择
 
 ---
 

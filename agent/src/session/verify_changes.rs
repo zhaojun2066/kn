@@ -24,6 +24,7 @@ const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_LINES: usize = 200;
 const PROGRESS_OUTPUT_BYTES: usize = 8 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(800);
+const CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 const VERIFY_RUN_LOG_TTL_SECS: u64 = 24 * 60 * 60;
 const VERIFY_RUN_LOG_MAX_BYTES: u64 = 200 * 1024 * 1024;
 const VERIFY_LOG_WINDOW_MAX_CONTEXT: usize = 300;
@@ -1840,11 +1841,11 @@ fn auto_plan(repo_root: &Path) -> VerifyPlan {
         return plan(
             "auto",
             Some(stage(vec![cmd(
-                &["mvn", "-q", "-DskipTests", "compile"],
+                &["mvn", "-DskipTests", "compile"],
                 DEFAULT_BUILD_TIMEOUT_SECS,
             )])),
             Some(stage(vec![cmd(
-                &["mvn", "-q", "test"],
+                &["mvn", "test"],
                 DEFAULT_TEST_TIMEOUT_SECS,
             )])),
         );
@@ -2228,6 +2229,12 @@ async fn run_command(
     progress_output: &mut ProgressOutputBuffer,
     run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
 ) -> CommandOutcome {
+    if cancel.is_cancelled() {
+        return CommandOutcome::Cancelled {
+            output_tail: "验证已取消".to_string(),
+            parse_result: json!({ "status": "cancelled" }),
+        };
+    }
     let mut context = CommandContext::with_working_dir(spec.argv.clone(), repo_root);
     if let Some(hint) = &spec.parser_hint { context = context.with_parser_hint(hint); }
     if let Some(hint) = &spec.task_type_hint { context = context.with_task_type_hint(hint); }
@@ -2250,6 +2257,8 @@ async fn run_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
 
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -2293,9 +2302,8 @@ async fn run_command(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, command_id, log_start_line, reporter, &mut parser).await;
+                terminate_child(&mut child).await;
+                drain_output_with_timeout(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, command_id, log_start_line, reporter, &mut parser, CANCEL_DRAIN_TIMEOUT).await;
                 output.push_str("\n验证已取消");
                 progress_output.push_str("\n验证已取消");
                 append_run_log(run_log, stage, &spec.display, "\n验证已取消");
@@ -2306,9 +2314,8 @@ async fn run_command(
                 };
             }
             _ = &mut deadline => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                drain_output(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, command_id, log_start_line, reporter, &mut parser).await;
+                terminate_child(&mut child).await;
+                drain_output_with_timeout(&mut output_rx, &mut output, progress_output, run_log, stage, &spec.display, command_id, log_start_line, reporter, &mut parser, CANCEL_DRAIN_TIMEOUT).await;
                 let timeout_message = format!("\n命令超时：{}", spec.display);
                 output.push_str(&timeout_message);
                 progress_output.push_str(&timeout_message);
@@ -2406,6 +2413,50 @@ async fn drain_output(
         progress_output.push_str(&text);
         append_run_log(run_log, stage, command, &text);
     }
+}
+
+async fn drain_output_with_timeout(
+    output_rx: &mut mpsc::Receiver<OutputChunk>,
+    output: &mut OutputTailBuffer,
+    progress_output: &mut ProgressOutputBuffer,
+    run_log: Option<&Arc<Mutex<VerifyRunLog>>>,
+    stage: StageName,
+    command: &str,
+    command_id: &str,
+    log_start_line: usize,
+    reporter: &ProgressReporter,
+    parser: &mut TerminalOutputParser,
+    duration: Duration,
+) {
+    let _ = timeout(duration, drain_output(
+        output_rx,
+        output,
+        progress_output,
+        run_log,
+        stage,
+        command,
+        command_id,
+        log_start_line,
+        reporter,
+        parser,
+    ))
+    .await;
+}
+
+async fn terminate_child(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let pgid = -(pid as i32);
+        unsafe {
+            libc::kill(pgid, libc::SIGTERM);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        unsafe {
+            libc::kill(pgid, libc::SIGKILL);
+        }
+        return;
+    }
+    let _ = child.start_kill();
 }
 
 /// Consume only test reports written after this command started. This keeps a
@@ -4084,6 +4135,45 @@ mod tests {
         }
 
         assert!(saw_output);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_command_returns_cancelled_without_starting_when_token_is_already_cancelled() {
+        let dir = unique_temp_dir("already-cancelled-command");
+        fs::create_dir_all(&dir).unwrap();
+        let reporter = ProgressReporter::new_project(
+            "42:/repo",
+            42,
+            "/repo",
+            "v_1",
+            "default",
+            VerifyTarget::Test,
+            "auto",
+            None,
+            None,
+        );
+        let marker = dir.join("should-not-run");
+        let spec = cmd(&["/bin/sh", "-c", "touch should-not-run"], 10);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut progress_output = ProgressOutputBuffer::new();
+
+        let outcome = run_command(
+            &dir,
+            &spec,
+            "test-1",
+            1,
+            &cancel,
+            &reporter,
+            StageName::Test,
+            &mut progress_output,
+            None,
+        )
+        .await;
+
+        assert!(matches!(outcome, CommandOutcome::Cancelled { .. }));
+        assert!(!marker.exists());
         fs::remove_dir_all(&dir).ok();
     }
 

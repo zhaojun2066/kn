@@ -19,15 +19,15 @@ export function RedeemDialog({ onClose, agent }: RedeemDialogProps) {
   const handleRedeem = async () => {
     const trimmed = code.trim();
     if (!trimmed) {
-      setErrorMsg("请输入卡密");
+      setErrorMsg("请输入兑换码");
       return;
     }
     if (!trimmed.startsWith("KN-")) {
-      setErrorMsg("卡密格式无效，应以 KN- 开头");
+      setErrorMsg("兑换码格式无效，应以 KN- 开头");
       return;
     }
     if (trimmed.length < 50) {
-      setErrorMsg("卡密格式无效，长度不足");
+      setErrorMsg("兑换码格式无效，长度不足");
       return;
     }
 
@@ -65,7 +65,7 @@ export function RedeemDialog({ onClose, agent }: RedeemDialogProps) {
         <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
           <div className="flex items-center gap-2">
             <Gift size={14} className="text-app-accent" />
-            <span className="text-sm font-mono text-app-text font-semibold">兑换卡密</span>
+            <span className="text-sm font-mono text-app-text font-semibold">兑换码</span>
           </div>
           <button
             onClick={onClose}
@@ -81,9 +81,9 @@ export function RedeemDialog({ onClose, agent }: RedeemDialogProps) {
             <>
               <Gift size={28} className="text-app-accent" />
               <div className="text-center space-y-1">
-                <div className="text-sm font-mono text-app-text">输入卡密激活 Pro 会员</div>
+                <div className="text-sm font-mono text-app-text">输入兑换码激活 Pro 会员</div>
                 <div className="text-xs font-mono text-app-text-muted">
-                  卡密格式: KN-xxxx-xxxx-xxxx
+                  兑换码格式: KN-xxxx-xxxx-xxxx
                 </div>
               </div>
               <input
@@ -120,7 +120,7 @@ export function RedeemDialog({ onClose, agent }: RedeemDialogProps) {
               <Loader2 size={28} className="animate-spin text-app-accent" />
               <div className="text-center space-y-1">
                 <div className="text-sm font-mono text-app-text">正在兑换...</div>
-                <div className="text-xs font-mono text-app-text-muted">正在验证卡密，请稍候</div>
+                <div className="text-xs font-mono text-app-text-muted">正在验证兑换码，请稍候</div>
               </div>
             </>
           )}

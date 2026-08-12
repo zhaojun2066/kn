@@ -36,7 +36,7 @@ export function buildKillSessionIpcArgs(session: AgentSession) {
 // ── Status display mapping (dot color + icon + text) ──────────
 
 const statusLabel: Record<StatusIcon, string> = {
-  offline: "Agent 未运行",
+  offline: "电脑端未运行",
   unbound: "设备未绑定",
   binding: "绑定中...",
   connected: "已连接",
@@ -196,7 +196,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
     setHealthError(null);
     const result = await fetchHealth();
     setIsHealthLoading(false);
-    if (!result) setHealthError("暂时无法读取 Agent 健康状态");
+    if (!result) setHealthError("暂时无法读取电脑端健康状态");
   }, [fetchHealth]);
 
   useEffect(() => {
@@ -262,7 +262,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
         const errStr = String(e);
         if (errStr.includes("WSS_NOT_CONNECTED")) {
           shownSpecificError = true;
-          showError("Agent 未连接到云端，请先绑定设备"); break;
+          showError("电脑端未连接到云端，请先绑定设备"); break;
         }
         if (errStr.includes("REMOTE_LIMIT")) {
           shownSpecificError = true;
@@ -324,7 +324,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
         failCount++;
         const errStr = String(e);
         if (errStr.includes("WSS_NOT_CONNECTED")) {
-          showError("Agent 未连接到云端，请先绑定设备"); break;
+          showError("电脑端未连接到云端，请先绑定设备"); break;
         }
         console.error("set_remote_enabled failed for", s.nid, e);
       }
@@ -459,7 +459,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                 className="w-full px-3 py-2 text-sm font-mono border border-app-accent text-app-accent hover:bg-app-accent hover:text-[var(--app-bg)] transition-colors flex items-center justify-center gap-2"
               >
                 <Gift size={14} />
-                兑换卡密
+                兑换码
               </button>
             )}
 

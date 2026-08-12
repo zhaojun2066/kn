@@ -1,12 +1,12 @@
 <script setup lang="ts">
 const comparisons = [
   { aspect: '切换 API Key', bad: '手动编辑 settings.json，改完重启 Claude Code', good: '一行命令：ai claude <profile>' },
-  { aspect: '多账号并行', bad: '全局配置，只能同时用一个 key', good: '每个终端独立 Profile，互不干扰' },
+  { aspect: '多账号并行', bad: '全局配置，只能同时用一个 key', good: '每个会话独立运行配置，互不干扰' },
   { aspect: '配置管理', bad: '记事本/备忘录记 key，容易丢失', good: '可视化 GUI + YAML 同步，所见即所得' },
   { aspect: '环境隔离', bad: '改完影响所有终端窗口', good: '会话级注入，退出自动清除' },
   { aspect: '团队协作', bad: '手动分享配置文件，版本混乱', good: '一键导出 JSON，对方一键导入' },
   { aspect: '错误恢复', bad: '改错格式导致 Claude Code 报错', good: 'GUI 校验 + 自动备份 + 一键恢复' },
-  { aspect: '多 CLI 工具', bad: '每种工具单独配置，格式各不同', good: '统一 Profile 管理 Claude Code / Codex / Qoder' },
+  { aspect: '多 CLI 工具', bad: '每种工具单独配置，格式各不同', good: '统一运行配置管理 Claude Code / Codex / Qoder' },
   { aspect: 'Shell 补全', bad: '无自动补全，全靠记忆', good: 'zsh + bash 自动配置补全，Tab 即出' },
   { aspect: '项目级配置', bad: '手动维护 .env 文件，容易泄露', good: '.ai-profile 文件自动绑定，进目录即切换' },
 ]

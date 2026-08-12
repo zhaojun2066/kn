@@ -253,7 +253,7 @@ export function ProjectDetail({
             style={{ left: pickerPosition.x, top: pickerPosition.y }}
           >
             <div className="px-2 py-1 text-3xs text-[var(--app-text-muted)] font-mono uppercase">
-              选择 Profile
+              选择运行配置
             </div>
             <div className="border-t border-[var(--app-border)]" />
             {project.defaultProfile && (

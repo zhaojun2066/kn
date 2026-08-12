@@ -10,7 +10,7 @@ interface ActivityItem {
 }
 
 const ACTIVITIES: ActivityItem[] = [
-  { key: "projects", icon: Folder, label: "Projects" },
+  { key: "projects", icon: Folder, label: "项目" },
 ];
 
 interface ActivityBarProps {

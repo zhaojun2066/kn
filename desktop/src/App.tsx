@@ -54,6 +54,7 @@ import type { ProfileDetail, ProjectInfo, ScopeTab, SessionInfo } from "./lib/ty
 import { basename } from "./lib/path-utils";
 import { showProfile, setEnvVar as setProfileEnvVar, unsetEnvVar as unsetProfileEnvVar } from "./lib/tauri-api";
 import { buildDestDir, getResourceData, getResourceType, getSubdir, type ResourceData } from "./lib/resource-transfer";
+import { flattenPanes } from "./lib/pane-types";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -94,6 +95,7 @@ export function App() {
   const [showAgentPanel, setShowAgentPanel] = useState(false);
   const [showBindDialog, setShowBindDialog] = useState(false);
   const [showRedeemDialog, setShowRedeemDialog] = useState(false);
+  const [remoteToggleBusyNid, setRemoteToggleBusyNid] = useState<string | null>(null);
   const agentHook = useAgent();
   const { clearTokenRevoked } = agentHook;
   const handleCloseBindDialog = useCallback(() => {
@@ -1263,6 +1265,40 @@ export function App() {
     bottomTerminal.runInTerminal(cmd, "");
   }, [bottomTerminal]);
 
+  const handleToggleRightTerminalRemote = useCallback(async (tabId: string, enabled: boolean) => {
+    const tab = rightTerminal.tabs.find((item) => item.id === tabId);
+    if (!tab) return;
+    const activePane = flattenPanes(tab.rootNode).find((leaf) => leaf.paneId === tab.activePaneId);
+    const nid = activePane?.agentNid ?? tab.agentNid;
+    if (!nid) {
+      addToast("error", "当前会话暂时不能开启远程");
+      return;
+    }
+
+    setRemoteToggleBusyNid(nid);
+    try {
+      await invoke("agent_ipc", { method: "set_remote_enabled", params: { nid, enabled } });
+      const sessions = await agentHook.fetchSessions();
+      if (sessions) rightTerminal.syncAgentSessions(sessions);
+      addToast("success", enabled ? "已开启远程会话" : "已关闭远程会话");
+    } catch (e: unknown) {
+      const errStr = String(e);
+      if (errStr.includes("WSS_NOT_CONNECTED")) {
+        addToast("error", "电脑端未连接到云端，请先绑定设备");
+      } else if (errStr.includes("REMOTE_LIMIT")) {
+        addToast("error", "已达到远程控制上限（10个），请先关闭其他远程会话");
+      } else if (errStr.includes("WSS_ACK_TIMEOUT")) {
+        addToast("error", "云端确认超时，请检查网络后重试");
+      } else if (errStr.includes("WSS_ACK_ERROR")) {
+        addToast("error", "云端拒绝远程连接，请稍后重试");
+      } else {
+        addToast("error", `${enabled ? "开启" : "关闭"}远程会话失败：${errStr.slice(0, 120)}`);
+      }
+    } finally {
+      setRemoteToggleBusyNid((current) => current === nid ? null : current);
+    }
+  }, [rightTerminal, agentHook, addToast]);
+
   const handleQuickLaunchProfile = useCallback((name: string, command: string, workDir: string) => {
     ctx.selectProfile(name);
     rightTerminal.runInNewTab(command, workDir, command);
@@ -1802,6 +1838,8 @@ export function App() {
             size={rightMaximized ? undefined : rightTerminal.size}
             maximized={rightMaximized}
             onToggleMaximize={() => { setRightMaximized((v) => !v); setBottomMaximized(false); }}
+            onToggleRemoteSession={handleToggleRightTerminalRemote}
+            remoteToggleBusyNid={remoteToggleBusyNid}
             {...buildTerminalProps(rightTerminal)}
           />
         </div>

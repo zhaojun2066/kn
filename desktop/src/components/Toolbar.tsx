@@ -106,62 +106,38 @@ export function Toolbar({
         <div className="max-w-[220px] truncate px-2 py-1 text-xs font-mono border border-app-border bg-app-panel text-app-text-dim">
           {activeProject ? activeProject.name : "未选择项目"}
         </div>
-        {onOpenProfiles && (
-          <div className="relative group">
-            <button
-              onClick={onOpenProfiles}
-              className="px-2 py-1 text-xs font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors flex items-center gap-1"
-            >
-              <Container size={12} />
-              环境
-            </button>
-            <span
-              className="absolute left-1/2 -translate-x-1/2 -bottom-6 px-1.5 py-0.5
-                text-2xs font-mono whitespace-nowrap
-                bg-[var(--app-panel)] text-[var(--app-text)]
-                border border-[var(--app-border)] shadow-panel
-                opacity-0 group-hover:opacity-100
-                pointer-events-none z-50
-                transition-opacity duration-150 ease-out"
-            >
-              {formatShortcut("mod+⇧G")}
-            </span>
-          </div>
-        )}
-        {onOpenResources && (
-          <div className="relative group">
-            <button
-              onClick={onOpenResources}
-              className="px-2 py-1 text-xs font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors flex items-center gap-1"
-            >
-              <Puzzle size={12} />
-              扩展
-            </button>
-            <span
-              className="absolute left-1/2 -translate-x-1/2 -bottom-6 px-1.5 py-0.5
-                text-2xs font-mono whitespace-nowrap
-                bg-[var(--app-panel)] text-[var(--app-text)]
-                border border-[var(--app-border)] shadow-panel
-                opacity-0 group-hover:opacity-100
-                pointer-events-none z-50
-                transition-opacity duration-150 ease-out"
-            >
-              {formatShortcut("mod+⇧Y")}
-            </span>
-          </div>
-        )}
       </div>
 
       <div className="flex-1" />
 
       {/* ── Right side — Quick Switcher + layout controls (VS Code style) ── */}
       <div className="flex items-center gap-0.5 mr-1">
+        {onOpenProfiles && (
+          <button
+            onClick={onOpenProfiles}
+            aria-label="运行配置管理"
+            className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded"
+            title={`运行配置管理 (${formatShortcut("mod+⇧G")})`}
+          >
+            <Container size={14} aria-hidden="true" />
+          </button>
+        )}
+        {onOpenResources && (
+          <button
+            onClick={onOpenResources}
+            aria-label="扩展"
+            className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded"
+            title={`扩展 (${formatShortcut("mod+⇧Y")})`}
+          >
+            <Puzzle size={14} aria-hidden="true" />
+          </button>
+        )}
         {/* Quick Switcher button */}
         <button
           onClick={onQuickSwitcher}
-          aria-label="快速切换 profile"
+          aria-label="快速切换运行配置"
           className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded"
-          title={`快速切换 Profile (${formatShortcut("mod+P")})`}
+          title={`快速切换运行配置 (${formatShortcut("mod+P")})`}
         >
           <Search size={14} aria-hidden="true" />
         </button>
@@ -201,16 +177,16 @@ export function Toolbar({
         </button>
       </div>
 
-      {/* Agent status — remote control indicator */}
+      {/* 电脑端状态 — remote control indicator */}
       {onToggleAgent && (
         <div className="relative group">
           <button
             onClick={onToggleAgent}
-            aria-label="Agent 状态"
+            aria-label="电脑端状态"
             className={`p-1 transition-colors duration-fast rounded ${
               agentPanelOpen ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"
             }`}
-            title={`Agent 状态${agentStatusIcon ? ` (${agentStatusIcon})` : ""}`}
+            title={`电脑端状态${agentStatusIcon ? ` (${agentStatusIcon})` : ""}`}
           >
             <Radio size={14} aria-hidden="true" />
           </button>

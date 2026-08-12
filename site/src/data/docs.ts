@@ -58,7 +58,7 @@ export const docPages: Record<string, DocPage> = {
 
 ## Desktop 亮点功能
 
-- **Quick Switcher (⌘K)** — 全局快速启动器，模糊搜索 Profile 和项目
+- **Quick Switcher (⌘K)** — 全局快速启动器，模糊搜索运行配置和项目
 - **Hook 可视化管理** — 创建/编辑 Hook，支持 Stop、PreTool、PostTool 等事件
 - **Agent 管理** — 浏览 Claude Code / Codex / Qoder 的 Agent 配置
 - **Token 用量仪表盘** — 按模型/项目统计，成本估算，趋势图
@@ -230,17 +230,17 @@ claude                   # 无 profile 注入，照常使用
 
 ## 项目级自动切换
 
-在项目根目录创建 \`.ai-profile\` 文件，写入 profile 名称：
+在项目根目录创建 \`.ai-profile\` 文件，写入运行配置名称：
 
 \`\`\`bash
 echo "deepseek" > ~/projects/my-app/.ai-profile
 \`\`\`
 
-进入该目录后直接运行 \`ai claude\`，会自动使用对应 profile，无需每次指定。
+进入该目录后直接运行 \`ai claude\`，会自动使用对应运行配置，无需每次指定。
 
-**Profile 优先级：** 显式参数 > \`.ai-profile\` 项目绑定 > 默认 profile > 交互式选择
+**运行配置优先级：** 显式参数 > \`.ai-profile\` 项目绑定 > 默认运行配置 > 交互式选择
 
-## 设置默认 Profile
+## 设置默认运行配置
 
 \`\`\`bash
 profile default deepseek   # 设置默认
@@ -256,7 +256,7 @@ ai tips                    # 模型推荐 + 使用频率排名
 
   'config-management': {
     id: 'config-management', group: 'cli-reference', groupIcon: '📋', title: '配置管理', prev: 'quickstart', next: 'shell-wrapper',
-    content: `## 新增 Profile
+    content: `## 新增运行配置
 
 ### 方式一：交互式引导（推荐）
 
@@ -285,7 +285,7 @@ profile init
 - **\`~/.claude/settings.json\`** — Claude Code 环境变量
 - **\`~/.codex/auth.json\` + \`~/.codex/config.toml\`** — Codex CLI 配置
 
-## 修改 Profile
+## 修改运行配置
 
 \`\`\`bash
 # 修改已有的 key
@@ -295,13 +295,13 @@ profile set deepseek ANTHROPIC_AUTH_TOKEN=sk-new-key
 profile unset deepseek ANTHROPIC_DEFAULT_OPUS_MODEL
 \`\`\`
 
-## 删除 Profile
+## 删除运行配置
 
 \`\`\`bash
 profile remove my-provider
 \`\`\`
 
-## 设置默认 Profile
+## 设置默认运行配置
 
 \`\`\`bash
 profile default deepseek   # 设为默认
@@ -326,14 +326,14 @@ profile show deepseek
 ## 工作原理
 
 1. 定义 \`ai\` 函数，拦截 \`claude\` / \`codex\` 子命令
-2. 读取对应 profile 的 \`config.yaml\` 中的 \`env\` 字段
+2. 读取对应运行配置 的 \`config.yaml\` 中的 \`env\` 字段
 3. 以 \`export VAR=VAL\` 形式注入环境变量
 4. 启动真实的 \`claude\` / \`codex\` 进程
 5. 进程退出后，环境变量自动清除（Session 级隔离）
 
 ## 项目级自动切换
 
-在项目根目录创建 \`.ai-profile\` 文件，写入 profile 名称。进入该目录后运行 \`ai claude\` 会自动使用对应 profile：
+在项目根目录创建 \`.ai-profile\` 文件，写入运行配置名称。进入该目录后运行 \`ai claude\` 会自动使用对应运行配置：
 
 \`\`\`bash
 echo "deepseek" > ~/projects/my-app/.ai-profile
@@ -341,7 +341,7 @@ cd ~/projects/my-app
 ai claude    # 自动使用 deepseek profile
 \`\`\`
 
-**Profile 优先级：** 显式参数 > \`.ai-profile\` 项目绑定 > 默认 profile > 交互式选择
+**运行配置优先级：** 显式参数 > \`.ai-profile\` 项目绑定 > 默认运行配置 > 交互式选择
 
 ## Shell 补全
 
@@ -356,7 +356,7 @@ ai claude    # 自动使用 deepseek profile
 - **多终端互不影响** — 每个终端窗口独立注入，互不干扰
 - **原生命令不受影响** — 直接调用 \`claude\` / \`codex\` 不经过 wrapper
 - **支持交互式选择** — 无参数调用时弹出 fzf 选择器
-- **默认 profile** — 设了默认后无需每次选择
+- **默认运行配置** — 设了默认后无需每次选择
 - **项目自动绑定** — \`.ai-profile\` 文件实现进目录即切换`,
   },
 
@@ -374,7 +374,7 @@ ai claude    # 自动使用 deepseek profile
 | \`profile remove <name>\` | 删除 profile |
 | \`profile set <name> <K>=<V>\` | 设置环境变量 |
 | \`profile unset <name> <K>\` | 删除环境变量 |
-| \`profile default [name]\` | 查看/设置默认 profile |
+| \`profile default [name]\` | 查看/设置默认运行配置 |
 | \`profile init\` | 从已有配置（Claude + Codex）导入 |
 
 ## Shell Wrapper 命令
@@ -387,7 +387,7 @@ ai claude    # 自动使用 deepseek profile
 | \`ai claude\` | 交互式选择 profile 后启动 |
 | \`ai profile list\` | 列出所有 profile（标注默认） |
 | \`ai profile env <name>\` | 查看 profile 环境变量 |
-| \`ai profile switch <name>\` | 切换默认 profile |
+| \`ai profile switch <name>\` | 切换默认运行配置 |
 | \`ai tips\` | 模型推荐与使用频率排名 |
 | \`ai\` / \`ai --help\` | 显示帮助信息 |`,
   },
@@ -413,7 +413,7 @@ ai tips
 \`\`\`
 📊 AI CLI 使用统计 (最近 30 天)
 
-Profile 使用排名:
+运行配置使用排名:
   1. deepseek        ▏ 23 次  (deepseek-v4-pro)
   2. codex-work      ▏ 15 次  (gpt-5)
   3. anthropic       ▏  8 次  (claude-sonnet-4-6)
@@ -422,7 +422,7 @@ Profile 使用排名:
   deepseek-v4-pro  → 常用在 deepseek profile
   gpt-5            → 常用在 codex-work profile
 
-💡 建议: 将 deepseek 设为默认 profile
+💡 建议: 将 deepseek 设为默认运行配置
        profile default deepseek
 \`\`\`
 
@@ -599,7 +599,7 @@ Desktop 应用与 CLI **共享同一份** \`~/.kn/config.yaml\`，数据实时�
 | <span style="display:none">按钮</span> | 功能 |
 |------|------|
 | ➕ **新建** | 打开 4 步创建向导，新建 profile |
-| ⭐ **默认** | 设为默认 profile |
+| ⭐ **默认** | 设为默认运行配置 |
 | 📋 **复制** | 复制当前 profile |
 | 📥 **导入** | 下拉菜单：扫描系统配置 / 从 JSON 文件导入 |
 | 📤 **导出** | 导出当前或选中的 profile 为 JSON |
@@ -618,7 +618,7 @@ Desktop 应用与 CLI **共享同一份** \`~/.kn/config.yaml\`，数据实时�
 - **搜索** — 输入关键字实时过滤 profile
 - **排序** — 按名称 / CLI 类型 / 环境变量数量排序
 - **CLI 类型图标** — 每个 profile 旁标注 Claude 或 Codex 图标
-- **默认标记** — 星标显示当前默认 profile
+- **默认标记** — 星标显示当前默认运行配置
 - **右键菜单** — 右键 profile 弹出操作菜单（编辑 / 复制 / 导出 / 删除）
 - **多选** — ⌘ + 点击多选，批量删除或导出
 
@@ -676,15 +676,15 @@ Desktop 应用内置两个独立的 PTY 终端面板，各有独立 tab 和会�
    - \`~/.codex/auth.json\` → 提取 API Key
    - \`~/.codex/config.toml\` → 提取 Model 和 Base URL
    - \`~/.qoder-cn/\` → Qoder CN 配置
-3. **预览确认** — 展示扫描结果，用户可选择导入哪些、自定义 profile 名称和 CLI 类型
+3. **预览确认** — 展示扫描结果，用户可选择导入哪些、自定义运行配置名称和 CLI 类型
 4. **完成** — 导入选中的配置，生成初始 profile 列表
 
 ## Quick Switcher (⌘K)
 
 全局快速启动器，类似 VS Code 的 Command Palette：
 
-- **模糊搜索** — 输入关键字即时过滤 Profile 和项目
-- **按频率排序** — 使用最多的 profile 排在前面
+- **模糊搜索** — 输入关键字即时过滤运行配置和项目
+- **按频率排序** — 使用最多的运行配置排在前面
 - **一键直达** — 选中后直接在新终端中启动
 - **快捷键** — \`⌘K\`
 
@@ -756,13 +756,13 @@ Desktop 应用内置两个独立的 PTY 终端面板，各有独立 tab 和会�
 - **导入** — 支持 JSON 文件导入，自动识别 CLI 类型，预览后合并
 - **批量操作** — 侧边栏多选后批量导出/删除
 
-## Profile 管理
+## 运行配置管理
 
 除了 [CLI 方式](/docs/config-management) 管理 profile 外，Desktop 提供可视化操作：
 
 - **4 步创建向导** — 名称 → CLI 类型（Anthropic/OpenAI/Both/Qoder） → env vars → 完成
 - **可视化编辑** — 表格直接编辑环境变量，支持添加自定义变量
-- **Profile 复制** — 一键复制 profile 作为模板
+- **运行配置复制** — 一键复制运行配置作为模板
 - **右键操作** — 侧边栏右键菜单快速操作`,
   },
 
@@ -947,13 +947,13 @@ Desktop 应用内置自动更新功能：
 
 | 快捷键 | 功能 |
 |--------|------|
-| \`⌘N\` | 新建 Profile |
+| \`⌘N\` | 新建运行配置 |
 | \`⌘B\` | 切换侧边栏 |
 | \`Ctrl+\`\` / \`⌘J\` | 切换底部终端 |
 | \`⌘⇧M\` | 最大化终端 |
 | \`⌘F\` | 搜索终端输出 |
 | \`⌘K\` | 快捷键帮助 |
-| \`Backspace\` | 删除选中的 Profile |
+| \`Backspace\` | 删除选中的运行配置 |
 
 ## 已知陷阱
 
@@ -1039,7 +1039,7 @@ ai claude client-b    # 用客户 B 的 key
 
 ## 自动切换（推荐）
 
-在项目根目录创建 \`.ai-profile\` 文件，写入 profile 名称：
+在项目根目录创建 \`.ai-profile\` 文件，写入运行配置名称：
 
 \`\`\`bash
 echo "client-a" > ~/projects/client-a/.ai-profile
@@ -1168,13 +1168,13 @@ chmod 700 ~/.kn
 
 功能相同，都会导入 Claude Code、Codex 和 Qoder CN 的已有配置。区别在于：
 - **CLI \`profile init\`** — 自动导入，不预览，直接写入 config.yaml
-- **Desktop「Scan」** — 扫描后展示预览，可勾选要导入的项、自定义 profile 名称
+- **Desktop「Scan」** — 扫描后展示预览，可勾选要导入的项、自定义运行配置名称
 
 ## Project 级别
 
 **Q: 怎么让 profile 对整个项目目录生效？**
 
-在项目根目录创建 \`.ai-profile\` 文件，写入 profile 名称即可。进入该目录后 \`ai claude\` 会自动使用对应 profile。
+在项目根目录创建 \`.ai-profile\` 文件，写入运行配置名称即可。进入该目录后 \`ai claude\` 会自动使用对应运行配置。
 
 \`\`\`bash
 echo "deepseek" > ~/projects/my-app/.ai-profile

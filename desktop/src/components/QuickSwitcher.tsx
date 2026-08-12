@@ -325,13 +325,13 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
   const placeholder = isHistory
     ? "搜索会话历史..."
     : isProfileStep
-      ? "搜索 profile..."
+      ? "搜索运行配置..."
       : "搜索项目目录...";
 
   const title = isHistory
     ? "会话历史"
     : isProfileStep
-      ? "快速切换 Profile"
+      ? "快速切换运行配置"
       : "选择项目目录";
 
   const footerHints = isHistory

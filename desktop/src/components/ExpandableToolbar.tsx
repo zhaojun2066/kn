@@ -106,7 +106,7 @@ export function ExpandableToolbar({
   return (
     <div className="flex items-center gap-1 px-2 pt-1.5 pb-1">
       {/* ── Always visible ──────────────────────────── */}
-      <Button variant="primary" size="sm" onClick={onAdd} title="新增 Profile">
+      <Button variant="primary" size="sm" onClick={onAdd} title="新增运行配置">
         <Plus size={14} />
       </Button>
 

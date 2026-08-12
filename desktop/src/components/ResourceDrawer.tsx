@@ -777,7 +777,7 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
               }`}
           >
             <Puzzle size={12} className={activeTab === "resources" ? "text-[var(--app-accent)]" : ""} />
-            Resource
+            扩展
             {activeTab === "resources" && (
               <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-[var(--app-accent)]" />
             )}

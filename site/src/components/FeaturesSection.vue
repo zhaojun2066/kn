@@ -8,20 +8,20 @@ const features = [
   },
   {
     num: '02',
-    title: '可视化 Profile 管理',
-    desc: '告别手写 YAML。图形界面创建、编辑、复制、导入导出 Profile，所见即所得。',
+    title: '可视化运行配置管理',
+    desc: '告别手写 YAML。图形界面创建、编辑、复制、导入导出运行配置，所见即所得。',
     icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`,
   },
   {
     num: '03',
     title: '内置终端',
-    desc: '基于 xterm.js + WebGL，右侧面板一键运行命令，无需离开 App。支持多标签页与会话历史。',
+    desc: '基于 xterm.js + Canvas，右侧面板一键运行命令，无需离开 App。支持多标签页与会话历史。',
     icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
   },
   {
     num: '04',
     title: '智能扫描导入',
-    desc: '自动检测 <code>~/.claude/settings.json</code> 和 <code>~/.codex/</code> 现有配置，一键导入为 Profile。',
+    desc: '自动检测 <code>~/.claude/settings.json</code> 和 <code>~/.codex/</code> 现有配置，一键导入为运行配置。',
     icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
   },
   {
@@ -39,7 +39,7 @@ const features = [
   {
     num: '07',
     title: 'Quick Switcher (⌘K)',
-    desc: '全局快速启动器，模糊搜索 Profile 和项目，按使用频率排序，一键直达目标会话。',
+    desc: '全局快速启动器，模糊搜索运行配置和项目，按使用频率排序，一键直达目标会话。',
     icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M8 11h6"/></svg>`,
   },
   {
@@ -82,7 +82,7 @@ const features = [
         <span class="section-label">核心特性</span>
         <h2 class="section-title">专为多会话 API Key 管理场景打造</h2>
         <p class="section-desc">
-          不论是 DeepSeek 中转、官方 Anthropic、OpenAI 兼容 API——一套 Profile 全管理。
+          不论是 DeepSeek 中转、官方 Anthropic、OpenAI 兼容 API——一套运行配置全管理。
         </p>
       </div>
 

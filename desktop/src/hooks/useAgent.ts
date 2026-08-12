@@ -106,9 +106,12 @@ export function useAgent() {
   const fetchSessions = useCallback(async () => {
     try {
       const result = await invoke<{ sessions: AgentSession[] }>("agent_ipc", { method: "sessions" });
-      setSessions(result.sessions || []);
+      const nextSessions = result.sessions || [];
+      setSessions(nextSessions);
+      return nextSessions;
     } catch {
       // Agent not running
+      return null;
     }
   }, []);
 
