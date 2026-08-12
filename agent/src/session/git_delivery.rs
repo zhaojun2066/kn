@@ -536,6 +536,13 @@ fn push_error_code(message: &str) -> &'static str {
         "authRequired"
     } else if value.contains("protected branch") || value.contains("remote rejected") {
         "remoteRejected"
+    } else if value.contains("failed to connect")
+        || value.contains("could not resolve host")
+        || value.contains("network is unreachable")
+        || value.contains("connection timed out")
+        || value.contains("connection refused")
+    {
+        "networkUnavailable"
     } else {
         "error"
     }
@@ -742,6 +749,18 @@ async fn create_private_temp_dir() -> Result<PrivateTempDir, GitError> {
 mod tests {
     use super::*;
     use std::process::Command as StdCommand;
+
+    #[test]
+    fn push_classifies_proxy_and_dns_failures_as_network_unavailable() {
+        assert_eq!(
+            push_error_code("Failed to connect to localhost port 7890 after 0 ms"),
+            "networkUnavailable"
+        );
+        assert_eq!(
+            push_error_code("Could not resolve host: github.com"),
+            "networkUnavailable"
+        );
+    }
     use tempfile::TempDir;
 
     fn run_git(cwd: &std::path::Path, args: &[&str]) {
