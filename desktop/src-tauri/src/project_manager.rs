@@ -2044,9 +2044,11 @@ mod tests {
     fn temp_config_setup() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::env::set_var("KN_HOME", &config_dir);
         std::env::set_var(
             "CLAUDE_PROFILES_HOME",
-            dir.path().join("config").to_string_lossy().to_string(),
+            config_dir.to_string_lossy().to_string(),
         );
         (guard, dir)
     }

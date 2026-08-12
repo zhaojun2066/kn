@@ -164,6 +164,7 @@ mod tests {
     fn temp_config_setup() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KN_HOME", dir.path());
         std::env::set_var(
             "CLAUDE_PROFILES_HOME",
             dir.path().to_string_lossy().to_string(),
