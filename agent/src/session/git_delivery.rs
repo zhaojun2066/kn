@@ -6,6 +6,7 @@ use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const PUSH_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const MAX_MESSAGE_BYTES: usize = 4 * 1024;
 const MAX_SELECTED_FILES: usize = 100;
 const MAX_OUTPUT_BYTES: usize = 8 * 1024;
@@ -303,7 +304,7 @@ pub async fn push(project_key: &str, cwd: &str, report_progress: impl Fn(&str)) 
         ]
     };
     report_progress("正在推送提交");
-    match git_output_owned(cwd, &args).await {
+    match git_output_owned_with_timeout(cwd, &args, PUSH_TIMEOUT).await {
         Ok(_) => json!({
             "projectKey": project_key,
             "status": "ok",
@@ -380,9 +381,17 @@ fn snapshot_id(raw_status: &str) -> String {
 }
 
 async fn git_output_owned(cwd: &str, args: &[String]) -> Result<String, GitError> {
+    git_output_owned_with_timeout(cwd, args, COMMAND_TIMEOUT).await
+}
+
+async fn git_output_owned_with_timeout(
+    cwd: &str,
+    args: &[String],
+    command_timeout: Duration,
+) -> Result<String, GitError> {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
-    let output = timeout(COMMAND_TIMEOUT, command.output())
+    let output = timeout(command_timeout, command.output())
         .await
         .map_err(|_| GitError::Timeout)?
         .map_err(|_| GitError::Io)?;
