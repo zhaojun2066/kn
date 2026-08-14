@@ -235,6 +235,14 @@ async fn connect_and_run(
                                         chrono::Utc::now().timestamp_millis(),
                                         Ordering::Relaxed,
                                     );
+                                    match env.parse() {
+                                        Ok(parsed) => {
+                                            let _ = read_incoming.send(parsed);
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!("pong 解析失败: {}", e);
+                                        }
+                                    }
                                 }
                                 Ok(env) => {
                                     match env.parse() {

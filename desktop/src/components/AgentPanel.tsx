@@ -3,7 +3,7 @@ import { X, ChevronRight, ChevronDown, Radio, Wifi, WifiOff, AlertTriangle, Load
 import { invoke } from "@tauri-apps/api/core";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { AgentHealthSection } from "./AgentHealthSection";
-import type { AgentSession, StatusIcon, AgentState, AgentStateName } from "../hooks/useAgent";
+import type { AgentSession, StatusIcon, AgentState, AgentStateName, RemoteAccessStatus } from "../hooks/useAgent";
 import { buildRedactedHealthReport } from "../lib/healthReport";
 
 const stateLabelCn: Record<AgentStateName, string> = {
@@ -68,6 +68,21 @@ function formatUptime(secs: number): string {
   if (secs >= 3600) return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
   if (secs >= 60) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
   return `${secs}s`;
+}
+
+function formatRemoteAccess(status?: RemoteAccessStatus): { text: string; tone: "ok" | "warn" | "muted" } | null {
+  if (!status) return null;
+  if (status.allowed) {
+    const expires = status.expiresAt ? status.expiresAt.slice(0, 10) : null;
+    return { text: expires ? `会员有效期至 ${expires}` : "会员状态正常", tone: "ok" };
+  }
+  if (status.code === "membershipInactive") {
+    return { text: "账号不可用，远程会话不可用", tone: "warn" };
+  }
+  if (status.code === "membershipExpired" || status.code === "membershipGracePeriod") {
+    return { text: "会员已到期，远程会话不可用", tone: "warn" };
+  }
+  return { text: status.message || "远程会话暂不可用", tone: "warn" };
 }
 
 // ── SessionRow ────────────────────────────────────────────────
@@ -274,7 +289,16 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
         }
         if (errStr.includes("WSS_ACK_ERROR")) {
           shownSpecificError = true;
-          showError("云端拒绝远程连接，请稍后重试"); break;
+          if (errStr.includes("membershipExpired")) {
+            showError("会员已过期，无法开启远程会话");
+          } else if (errStr.includes("membershipGracePeriod")) {
+            showError("会员已到期，缓冲期内无法开启远程会话");
+          } else if (errStr.includes("membershipInactive")) {
+            showError("会员已过期或账号已禁用，无法开启远程会话");
+          } else {
+            showError("云端拒绝远程连接，请稍后重试");
+          }
+          break;
         }
         shownSpecificError = true;
         showError(`开启远程会话失败：${errStr}`);
@@ -361,6 +385,9 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
   const uptime = agentStatus?.uptime_secs;
   const purchaseUrl = agentStatus?.purchase_url;
   const agentRuntime = agentStatus?.environment === "development" ? "开发环境" : "生产环境";
+  const remoteAccess = agentStatus?.remote_access;
+  const remoteAccessDisplay = formatRemoteAccess(remoteAccess);
+  const canEnableRemoteByMembership = remoteAccess?.allowed !== false;
 
   return (
     <>
@@ -408,6 +435,15 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
             {agentStatus && (
               <div className="text-[11px] font-mono text-app-text-muted">
                 {agentRuntime} · PID {agentStatus.pid ?? "—"} · v{agentStatus.version ?? "—"}
+              </div>
+            )}
+            {isConnected && remoteAccessDisplay && (
+              <div
+                className={`text-[11px] font-mono ${
+                  remoteAccessDisplay.tone === "ok" ? "text-emerald-400" : "text-amber-300"
+                }`}
+              >
+                {remoteAccessDisplay.text}
               </div>
             )}
           </div>
@@ -557,7 +593,8 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                                   return (
                                     <button
                                       onClick={handleEnableRemote}
-                                      disabled={selectedLocalNids.size === 0 || isRemoting}
+                                      disabled={selectedLocalNids.size === 0 || isRemoting || !canEnableRemoteByMembership}
+                                      title={!canEnableRemoteByMembership ? remoteAccess?.message : undefined}
                                       className="px-2 py-0.5 text-[10px] border border-emerald-400/50 text-emerald-400 hover:bg-emerald-400/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1"
                                     >
                                       {isRemoting ? (

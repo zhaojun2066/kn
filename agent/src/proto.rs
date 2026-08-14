@@ -27,6 +27,18 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAccessStatus {
+    pub allowed: bool,
+    pub code: String,
+    pub message: String,
+    pub membership: Option<String>,
+    pub status: Option<String>,
+    pub expires_at: Option<String>,
+    pub server_time: String,
+}
+
 // ── Raw envelope (Phase 1 deserialization) ───────────────────
 
 /// 从云端接收的原始 JSON 信封。先解析为此结构，再按 type 分派。
@@ -51,6 +63,13 @@ pub enum AgentIncoming {
     /// 心跳响应
     Pong {
         ts: i64,
+        remote_access: Option<RemoteAccessStatus>,
+    },
+    /// CLI 心跳确认
+    CliHeartbeatAck {
+        remote_access: Option<RemoteAccessStatus>,
+        accepted_session_ids: Vec<String>,
+        blocked_session_ids: Vec<String>,
     },
     /// Cloud 已完成对移动端的交付，Agent 可删除本地待确认结果。
     ProjectDeliveryAck {
@@ -279,13 +298,36 @@ impl WsEnvelope {
     pub fn parse(&self) -> Result<AgentIncoming, String> {
         match self.msg_type.as_str() {
             "pong" => {
+                let data = self.data.as_ref();
                 let ts = self
                     .data
                     .as_ref()
                     .and_then(|d| d.get("ts"))
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
-                Ok(AgentIncoming::Pong { ts })
+                let remote_access = data
+                    .and_then(|d| d.get("remoteAccess"))
+                    .and_then(|v| serde_json::from_value::<RemoteAccessStatus>(v.clone()).ok());
+                Ok(AgentIncoming::Pong { ts, remote_access })
+            }
+            "cli_heartbeat_ack" => {
+                let data = self.data.as_ref();
+                let remote_access = data
+                    .and_then(|d| d.get("remoteAccess"))
+                    .and_then(|v| serde_json::from_value::<RemoteAccessStatus>(v.clone()).ok());
+                let accepted_session_ids = data
+                    .and_then(|d| d.get("acceptedSessionIds"))
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                    .unwrap_or_default();
+                let blocked_session_ids = data
+                    .and_then(|d| d.get("blockedSessionIds"))
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                    .unwrap_or_default();
+                Ok(AgentIncoming::CliHeartbeatAck {
+                    remote_access,
+                    accepted_session_ids,
+                    blocked_session_ids,
+                })
             }
             "connected" => {
                 let ws_session_id = self
@@ -1714,6 +1756,31 @@ mod tests {
                 assert!(message.is_empty());
             }
             _ => panic!("expected ErrorNotify"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_created_ack_preserves_cloud_error_message() {
+        let json = serde_json::json!({
+            "type": "session_created_ack",
+            "data": {
+                "sessionId": "s_abc123",
+                "status": "error",
+                "error": "membershipExpired: 会员已过期，无法开启远程会话"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::SessionCreatedAck { session_nid, status, error } => {
+                assert_eq!(session_nid, "s_abc123");
+                assert_eq!(status, "error");
+                assert_eq!(
+                    error.as_deref(),
+                    Some("membershipExpired: 会员已过期，无法开启远程会话")
+                );
+            }
+            other => panic!("expected SessionCreatedAck, got {other:?}"),
         }
     }
 

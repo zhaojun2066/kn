@@ -1100,7 +1100,23 @@ async fn handle_incoming(
     project_session_scan_gate: Arc<kn_agent::project_session_index::ProjectScanGate>,
 ) {
     match msg {
-        proto::AgentIncoming::Pong { .. } => {}
+        proto::AgentIncoming::Pong { remote_access, .. } => {
+            state.set_remote_access(remote_access).await;
+        }
+        proto::AgentIncoming::CliHeartbeatAck {
+            remote_access,
+            blocked_session_ids,
+            ..
+        } => {
+            state.set_remote_access(remote_access.clone()).await;
+            if let Some(status) = remote_access.filter(|s| !s.allowed) {
+                tracing::warn!(
+                    code = %status.code,
+                    blocked = blocked_session_ids.len(),
+                    "远程权限不可用，Cloud 已阻止远程会话通信"
+                );
+            }
+        }
         proto::AgentIncoming::ProjectDeliveryAck { request_id } => {
             if delivery_outbox.acknowledge(&request_id).await {
                 flush_delivery_outbox(&delivery_outbox, &outgoing).await;
@@ -2394,12 +2410,12 @@ async fn handle_incoming(
         proto::AgentIncoming::SessionCreatedAck {
             session_nid,
             status,
-            ..
+            error,
         } => {
             let result = if status == "ok" {
                 crate::ack::AckResult::Ok
             } else {
-                crate::ack::AckResult::Error(status.clone())
+                crate::ack::AckResult::Error(error.unwrap_or(status.clone()))
             };
             let resolved = ack_registry.resolve(&session_nid, result).await;
             tracing::info!(nid = %session_nid, status = %status, resolved = resolved, "收到 session_created_ack");

@@ -24,6 +24,17 @@ export interface AgentStatus {
   version?: string;
   environment?: "development" | "production";
   binding?: AgentBindingStatus;
+  remote_access?: RemoteAccessStatus;
+}
+
+export interface RemoteAccessStatus {
+  allowed: boolean;
+  code: "ok" | "membershipExpired" | "membershipGracePeriod" | "membershipInactive" | "userNotFound" | "serviceUnavailable" | string;
+  message: string;
+  membership?: string | null;
+  status?: string | null;
+  expiresAt?: string | null;
+  serverTime?: string | null;
 }
 
 export interface AgentBindingStatus {

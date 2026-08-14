@@ -291,6 +291,7 @@ fn read_only_project_request_id(message: &AgentIncoming) -> Option<&str> {
 fn variant_name(msg: &AgentIncoming) -> &'static str {
     match msg {
         AgentIncoming::Pong { .. } => "pong",
+        AgentIncoming::CliHeartbeatAck { .. } => "cli_heartbeat_ack",
         AgentIncoming::ProjectDeliveryAck { .. } => "project_delivery_ack",
         AgentIncoming::Connected { .. } => "connected",
         AgentIncoming::StartSession { .. } => "start_session",

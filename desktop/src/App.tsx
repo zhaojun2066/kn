@@ -1290,7 +1290,15 @@ export function App() {
       } else if (errStr.includes("WSS_ACK_TIMEOUT")) {
         addToast("error", "云端确认超时，请检查网络后重试");
       } else if (errStr.includes("WSS_ACK_ERROR")) {
-        addToast("error", "云端拒绝远程连接，请稍后重试");
+        if (errStr.includes("membershipExpired")) {
+          addToast("error", "会员已过期，无法开启远程会话");
+        } else if (errStr.includes("membershipGracePeriod")) {
+          addToast("error", "会员已到期，缓冲期内无法开启远程会话");
+        } else if (errStr.includes("membershipInactive")) {
+          addToast("error", "会员已过期或账号已禁用，无法开启远程会话");
+        } else {
+          addToast("error", "云端拒绝远程连接，请稍后重试");
+        }
       } else {
         addToast("error", `${enabled ? "开启" : "关闭"}远程会话失败：${errStr.slice(0, 120)}`);
       }

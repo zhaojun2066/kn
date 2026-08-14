@@ -84,6 +84,7 @@ pub struct StateMachine {
     crash_count: AtomicU32,
     started_at: Instant,
     notify: broadcast::Sender<AgentState>,
+    remote_access: RwLock<Option<crate::proto::RemoteAccessStatus>>,
 }
 
 impl StateMachine {
@@ -96,6 +97,7 @@ impl StateMachine {
             crash_count: AtomicU32::new(crash_count),
             started_at: Instant::now(),
             notify: tx,
+            remote_access: RwLock::new(None),
         }
     }
 
@@ -203,6 +205,14 @@ impl StateMachine {
     /// 运行时长（秒）。
     pub fn uptime_secs(&self) -> u64 {
         self.started_at.elapsed().as_secs()
+    }
+
+    pub async fn set_remote_access(&self, status: Option<crate::proto::RemoteAccessStatus>) {
+        *self.remote_access.write().await = status;
+    }
+
+    pub async fn remote_access(&self) -> Option<crate::proto::RemoteAccessStatus> {
+        self.remote_access.read().await.clone()
     }
 
     /// 从磁盘加载崩溃计数。

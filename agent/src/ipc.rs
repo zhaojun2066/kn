@@ -475,6 +475,7 @@ impl IpcHandle {
                 "version": env!("CARGO_PKG_VERSION"),
                 "environment": crate::health::normalized_environment(std::env::var("KN_RUNTIME_ENV").ok().as_deref()),
                 "binding": binding,
+                "remote_access": self.state.remote_access().await,
             }),
         )
     }
