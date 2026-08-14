@@ -16,4 +16,5 @@ pub mod project_session_index;
 pub mod proto;
 pub mod session;
 pub mod state;
+pub mod task_events;
 pub mod ws_client;

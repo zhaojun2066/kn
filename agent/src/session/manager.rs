@@ -625,6 +625,12 @@ impl SessionManager {
                 cmd.env(k, v);
             }
         }
+        cmd.env("KN_SESSION_ID", nid);
+        cmd.env("KN_CLI_TOOL", tool);
+        if let Some(profile) = profile {
+            cmd.env("KN_PROFILE", profile);
+        }
+        cmd.env("KN_WORKING_DIR", cwd);
         // PATH 补齐 + TERM
         if cfg!(target_os = "macos") {
             let current_path = std::env::var("PATH").unwrap_or_default();

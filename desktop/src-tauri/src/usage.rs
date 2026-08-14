@@ -494,6 +494,7 @@ pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
             let home = crate::home_dir().to_string_lossy().to_string();
             let hooks_dir = crate::config_dir().join("hooks");
             fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
+            crate::profile_cmd::write_builtin_hook_scripts(&hooks_dir);
 
             let python = "python3";
             let hooks_dir_str = hooks_dir.to_string_lossy().replace('\\', "/");
@@ -525,6 +526,30 @@ pub fn ensure_usage_hooks() -> Result<(), String> {
     set_usage_tracking_enabled(false)?; // clean up any old-path hooks
     set_usage_tracking_enabled(true)?; // inject with correct current path
     Ok(())
+}
+
+#[tauri::command]
+pub fn ensure_task_complete_hooks() -> Result<(), String> {
+    with_write_lock(|| {
+        with_cross_process_lock(|| {
+            let home = crate::home_dir().to_string_lossy().to_string();
+            let hooks_dir = crate::config_dir().join("hooks");
+            fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
+            crate::profile_cmd::write_builtin_hook_scripts(&hooks_dir);
+
+            let python = "python3";
+            let hooks_dir_str = hooks_dir.to_string_lossy().replace('\\', "/");
+            let hook_cmd = format!("{} {}/notify-task-complete.py", python, hooks_dir_str);
+
+            let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
+            inject_json_hook(&claude_settings, "Stop", &hook_cmd)?;
+            let qoder_settings = PathBuf::from(&home).join(".qoder-cn").join("settings.json");
+            inject_json_hook(&qoder_settings, "Stop", &hook_cmd)?;
+            let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
+            inject_codex_named_hook(&codex_config, "Stop", &hook_cmd, "notify-task-complete.py")?;
+            Ok(())
+        })
+    })
 }
 
 fn inject_json_hook(path: &Path, event_name: &str, hook_cmd: &str) -> Result<(), String> {
@@ -559,10 +584,12 @@ fn inject_json_hook(path: &Path, event_name: &str, hook_cmd: &str) -> Result<(),
     if let Some(arr) = event_hooks.as_array_mut() {
         // Clean up any old-path hooks left over from previous installs
         arr.retain(|h| {
-            !h["hooks"][0]["command"]
-                .as_str()
-                .unwrap_or("")
-                .contains(".claude-profiles/record-usage.py")
+            let command = h["hooks"][0]["command"].as_str().unwrap_or("");
+            if hook_cmd.contains("notify-task-complete.py") {
+                !command.contains("notify-task-complete.py")
+            } else {
+                !command.contains(".claude-profiles/record-usage.py")
+            }
         });
 
         let cmd_str = hook_cmd.to_string();
@@ -613,6 +640,15 @@ fn remove_claude_hook(path: &Path) -> Result<(), String> {
 }
 
 fn inject_codex_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
+    inject_codex_named_hook(path, "Stop", hook_cmd, "record-usage.py")
+}
+
+fn inject_codex_named_hook(
+    path: &Path,
+    event_name: &str,
+    hook_cmd: &str,
+    marker: &str,
+) -> Result<(), String> {
     let mut doc: toml_edit::DocumentMut = if path.exists() {
         let content = fs::read_to_string(path).map_err(|e| format!("read codex config: {}", e))?;
         if content.trim().is_empty() {
@@ -634,17 +670,17 @@ fn inject_codex_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
     let hooks = doc["hooks"]
         .as_table_mut()
         .ok_or("hooks field is not a table")?;
-    if !hooks.contains_key("Stop") {
+    if !hooks.contains_key(event_name) {
         hooks.insert(
-            "Stop",
+            event_name,
             toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()),
         );
     }
-    let stop = hooks["Stop"]
+    let stop = hooks[event_name]
         .as_array_of_tables_mut()
-        .ok_or("hooks.Stop is not an array")?;
+        .ok_or("hooks event is not an array")?;
 
-    if upsert_codex_usage_hook_in_place(stop, hook_cmd) {
+    if upsert_codex_hook_in_place(stop, hook_cmd, marker) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("create codex config dir: {}", e))?;
         }
@@ -666,12 +702,16 @@ fn inject_codex_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
     fs::write(path, doc.to_string()).map_err(|e| format!("write codex config: {}", e))
 }
 
-fn upsert_codex_usage_hook_in_place(stop: &mut toml_edit::ArrayOfTables, hook_cmd: &str) -> bool {
+fn upsert_codex_hook_in_place(
+    stop: &mut toml_edit::ArrayOfTables,
+    hook_cmd: &str,
+    marker: &str,
+) -> bool {
     for group in stop.iter_mut() {
         let flat_usage_hook = group
             .get("command")
             .and_then(|v| v.as_str())
-            .is_some_and(|cmd| cmd.contains("record-usage.py"));
+            .is_some_and(|cmd| cmd.contains(marker));
         if flat_usage_hook {
             group.clear();
             let mut inner = toml_edit::ArrayOfTables::new();
@@ -693,7 +733,7 @@ fn upsert_codex_usage_hook_in_place(stop: &mut toml_edit::ArrayOfTables, hook_cm
             let nested_usage_hook = hook
                 .get("command")
                 .and_then(|v| v.as_str())
-                .is_some_and(|cmd| cmd.contains("record-usage.py"));
+                .is_some_and(|cmd| cmd.contains(marker));
             if nested_usage_hook {
                 hook.insert("type", toml_edit::value("command"));
                 hook.insert("command", toml_edit::value(hook_cmd));

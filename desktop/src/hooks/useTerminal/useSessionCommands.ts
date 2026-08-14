@@ -79,7 +79,7 @@ export function useSessionCommands(
     pane: PaneLeaf,
     parsed: { tool: string; profile: string },
     workDir: string,
-  ) => {
+  ): Promise<string | null> => {
     try {
       const pid = ctx.childPidRef.current.get(pane.paneId) || 0;
       const result = await invoke<{ nid?: string; created_at?: string }>("agent_ipc", {
@@ -92,7 +92,7 @@ export function useSessionCommands(
           pid,
         },
       });
-      if (!result?.nid) return;
+      if (!result?.nid) return null;
 
       const term = ctx.termRefs.current.get(pane.paneId);
       if (term && term.cols > 0 && term.rows > 0) {
@@ -130,10 +130,17 @@ export function useSessionCommands(
         }),
       );
       window.dispatchEvent(new CustomEvent("kn-agent-sessions-changed"));
+      return result.nid;
     } catch {
       // Agent may be stopped/unbound; local terminal startup should still work.
+      return null;
     }
   }, [ctx.agentSessionsRef, ctx.childPidRef, ctx.termRefs, setTabs]);
+
+  const withSessionEnv = useCallback((cmd: string, nid: string | null) => {
+    if (!nid) return cmd;
+    return `KN_SESSION_ID=${JSON.stringify(nid)} ${cmd}`;
+  }, []);
 
   const attachOrOpenAgentSession = useCallback(async (session: AgentSession, label?: string) => {
     ctx.dismissedAgentNidsRef.current.delete(session.nid);
@@ -228,21 +235,21 @@ export function useSessionCommands(
 
       saveCommandHistory(cmd, workDir, label, parsed);
 
-      if (policy.registerRelay && parsed) {
-        registerRelaySession(tab.id, activeLeaf, parsed, workDir);
-      }
+      const relayNid = policy.registerRelay && parsed
+        ? await registerRelaySession(tab.id, activeLeaf, parsed, workDir)
+        : null;
 
       await new Promise((r) => setTimeout(r, PTY_COMMAND_SETTLE_MS));
       invoke("write_pty", {
         sessionId: activeLeaf.sessionId,
-        data: cmd + "\r",
+        data: withSessionEnv(cmd, relayNid) + "\r",
       }).catch(() => {});
 
     } catch (e) {
       reportTerminalError("运行终端命令失败", e);
     }
   }, [isOpen, setIsOpen, setTabs, setActiveTabId, spawnPty, waitForReady, reportTerminalError,
-      saveCommandHistory, registerRelaySession]);
+      saveCommandHistory, registerRelaySession, withSessionEnv]);
 
   const runInTerminal = useCallback(async (cmd: string, workDir: string) => {
     await runInNewTab(cmd, workDir, cmd.slice(0, 30));

@@ -884,6 +884,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 tokio::spawn(async move {
                     cli_heartbeat_loop(hb_sessions, hb_outgoing, hb_shutdown).await;
                 });
+                let task_event_sessions = sessions.clone();
+                let task_event_outgoing = outgoing_tx_ref.clone();
+                let task_event_shutdown = shutdown.clone();
+                tokio::spawn(async move {
+                    task_complete_queue_loop(task_event_sessions, task_event_outgoing, task_event_shutdown).await;
+                });
             }
 
             // ── 处理 WSS 入站消息 ──
@@ -994,6 +1000,21 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 // ── Message handling ────────────────────────────────────────
+
+async fn task_complete_queue_loop(
+    sessions: Arc<session::SessionManager>,
+    outgoing: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    shutdown: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                kn_agent::task_events::flush_task_complete_queue(sessions.clone(), outgoing.clone()).await;
+            }
+            _ = shutdown.cancelled() => return,
+        }
+    }
+}
 
 /// CLI 心跳循环：每 15s 检查所有活跃会话的进程存活状态，上报给 cloud。
 ///
@@ -1120,6 +1141,14 @@ async fn handle_incoming(
         proto::AgentIncoming::ProjectDeliveryAck { request_id } => {
             if delivery_outbox.acknowledge(&request_id).await {
                 flush_delivery_outbox(&delivery_outbox, &outgoing).await;
+            }
+        }
+        proto::AgentIncoming::TaskCompletedAck { event_id, status } => {
+            kn_agent::task_events::acknowledge_task_complete_event(&event_id);
+            if status == "ok" {
+                tracing::debug!(event_id = %event_id, "本轮回复完成事件已入库或去重");
+            } else {
+                tracing::warn!(event_id = %event_id, status = %status, "本轮回复完成事件被 Cloud 拒收，本地队列已丢弃");
             }
         }
         proto::AgentIncoming::DeviceHealth {

@@ -32,6 +32,7 @@
 //! | set_remote_enabled | nid, enabled                       | Toggle iOS visibility/control            |
 //! | relay_output       | nid, data                          | Forward desktop-owned PTY output         |
 //! | poll_relay_input   | nid                                | Drain queued iOS input for Relay session |
+//! | task_complete_event| Stop hook payload                  | Report completed remote AI turn          |
 //! | get_version        | —                                  | Return agent version                 |
 //! | redeem             | code                               | Redeem card code (requires binding)  |
 
@@ -443,6 +444,7 @@ impl IpcHandle {
             "relay_exit" => self.handle_relay_exit(req).await,
             "relay_output" => self.handle_relay_output(req).await,
             "poll_relay_input" => self.handle_poll_relay_input(req).await,
+            "task_complete_event" => self.handle_task_complete_event(req).await,
             "set_remote_enabled" => self.handle_set_remote_enabled(req).await,
             "get_version" => self.handle_get_version(req).await,
             "redeem" => self.handle_redeem(req).await,
@@ -1517,6 +1519,88 @@ impl IpcHandle {
             Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }
+    }
+
+    async fn handle_task_complete_event(&self, req: &IpcRequest) -> String {
+        let mut event =
+            match serde_json::from_value::<crate::proto::TaskCompleteEvent>(req.params.clone()) {
+                Ok(event) => event,
+                Err(e) => return err_response(&req.id, "INVALID_PARAMS", &e.to_string()),
+            };
+
+        let session = if !event.session_id.trim().is_empty() {
+            match self.sessions.get(event.session_id.trim()).await {
+                Ok(value) => value,
+                Err(e) => return err_response(&req.id, "INTERNAL", &e.to_string()),
+            }
+        } else {
+            match self.find_matching_remote_session(&event).await {
+                Ok(value) => value,
+                Err(e) => return err_response(&req.id, "INTERNAL", &e.to_string()),
+            }
+        };
+
+        let Some(session) = session else {
+            return ok_response(
+                &req.id,
+                serde_json::json!({"ok": true, "reported": false, "reason": "session_not_found"}),
+            );
+        };
+        if session.status == crate::session::SessionStatus::Ended
+            || !session
+                .remote_enabled
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return ok_response(
+                &req.id,
+                serde_json::json!({"ok": true, "reported": false, "reason": "not_remote"}),
+            );
+        }
+
+        event.session_id = session.nid.clone();
+        if event.tool.trim().is_empty() {
+            event.tool = session.tool;
+        }
+        if event.profile.as_ref().is_none_or(|v| v.trim().is_empty()) {
+            event.profile = session.profile;
+        }
+        if event.project_path.trim().is_empty() {
+            event.project_path = session.cwd;
+        }
+
+        let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref().cloned() else {
+            return ok_response(
+                &req.id,
+                serde_json::json!({"ok": true, "reported": false, "reason": "wss_not_connected"}),
+            );
+        };
+        match tx.send(crate::proto::WsMessageBuilder::task_completed(&event)) {
+            Ok(()) => ok_response(
+                &req.id,
+                serde_json::json!({"ok": true, "reported": true, "sessionId": event.session_id}),
+            ),
+            Err(e) => err_response(&req.id, "WSS_SEND_FAILED", &e.to_string()),
+        }
+    }
+
+    async fn find_matching_remote_session(
+        &self,
+        event: &crate::proto::TaskCompleteEvent,
+    ) -> Result<Option<crate::session::ManagedSession>> {
+        let sessions = self.sessions.list().await?;
+        let profile = event.profile.as_deref().unwrap_or("").trim();
+        let tool = event.tool.trim();
+        let project_path = event.project_path.trim();
+        let Some(summary) = sessions.into_iter().find(|session| {
+            session.status != crate::session::SessionStatus::Ended
+                && session.remote_enabled
+                && (tool.is_empty() || session.tool == tool)
+                && (profile.is_empty() || session.profile.as_deref() == Some(profile))
+                && (project_path.is_empty() || session.cwd == project_path)
+        }) else {
+            return Ok(None);
+        };
+        self.sessions.get(&summary.nid).await
     }
 
     /// `poll_relay_input` — desktop polls remote input queued for a Relay session.

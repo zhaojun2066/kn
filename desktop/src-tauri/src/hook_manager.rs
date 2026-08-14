@@ -111,6 +111,10 @@ fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
     }) // with_write_lock
 }
 
+fn is_system_hook_command(command: &str) -> bool {
+    command.contains("record-usage.py") || command.contains("notify-task-complete.py")
+}
+
 // ── Claude / Qoder hooks (JSON in settings.json) ──────────────
 
 /// Scan hooks from a Claude/Qoder settings.json file.
@@ -503,13 +507,19 @@ pub fn scan_hooks(project_path: Option<String>) -> HookManagerData {
 
         // Mark system-managed hooks (e.g., token usage tracking) as read-only.
         // These are hooks installed by the profile manager itself — not user/store hooks.
-        if hook.command.contains("record-usage.py") {
+        if hook.command.contains("record-usage.py")
+            || hook.command.contains("notify-task-complete.py")
+        {
             hook.source = "system".into();
-            // Default name/description for the built-in token tracking hook.
+            // Default name/description for built-in system hooks.
             // User-defined metadata from hook-meta.yaml takes precedence (merged above).
-            if hook.name.is_none() {
+            if hook.command.contains("record-usage.py") && hook.name.is_none() {
                 hook.name = Some("Token 用量追踪".into());
                 hook.description = Some("会话结束时自动记录 token 用量（输入/输出）到 SQLite 数据库，用于费用统计和控制台仪表盘展示。".into());
+            } else if hook.command.contains("notify-task-complete.py") && hook.name.is_none() {
+                hook.name = Some("本轮回复完成通知".into());
+                hook.description =
+                    Some("本轮 AI 回复完成时自动通知消息中心，用于 iOS 和 APNs 提醒。".into());
             }
         }
     }
@@ -565,6 +575,13 @@ fn toggle_json_hook(
         .and_then(|v| v.as_array_mut())
         .and_then(|arr| arr.get_mut(hook_idx))
         .ok_or("hook 不存在")?;
+    if hook
+        .get("command")
+        .and_then(|v| v.as_str())
+        .is_some_and(is_system_hook_command)
+    {
+        return Err("系统 Hook 不能禁用".to_string());
+    }
 
     if enabled {
         hook.as_object_mut().map(|o| o.remove("_disabled"));
@@ -629,6 +646,13 @@ fn toggle_codex_hook_at(
             .and_then(|v| v.as_array_of_tables_mut())
             .ok_or("hooks 子数组不存在")?;
         let hook_table = inner_arr.get_mut(hook_idx).ok_or("hook 不存在")?;
+        if hook_table
+            .get("command")
+            .and_then(|v| v.as_str())
+            .is_some_and(is_system_hook_command)
+        {
+            return Err("系统 Hook 不能禁用".to_string());
+        }
 
         if enabled {
             let backup = hook_table
@@ -660,6 +684,13 @@ fn toggle_codex_hook_at(
         // Flat: [[hooks.EventType]] { command, type } — each entry IS a hook
         // group_idx is always 0, hook_idx is the real index
         let hook_table = event_arr.get_mut(hook_idx).ok_or("hook 不存在")?;
+        if hook_table
+            .get("command")
+            .and_then(|v| v.as_str())
+            .is_some_and(is_system_hook_command)
+        {
+            return Err("系统 Hook 不能禁用".to_string());
+        }
 
         if enabled {
             let backup = hook_table
@@ -750,6 +781,14 @@ fn delete_json_hook(
     if hook_idx >= hook_arr.len() {
         return Err("hook 索引超出范围".to_string());
     }
+    if hook_arr
+        .get(hook_idx)
+        .and_then(|hook| hook.get("command"))
+        .and_then(|v| v.as_str())
+        .is_some_and(is_system_hook_command)
+    {
+        return Err("系统 Hook 不能删除".to_string());
+    }
     hook_arr.remove(hook_idx);
 
     // If the group's inner hooks array is now empty, remove the group from the event type array
@@ -817,6 +856,14 @@ fn delete_codex_hook_at(
         if hook_idx >= inner_arr.len() {
             return Err("hook 索引超出范围".to_string());
         }
+        if inner_arr
+            .get(hook_idx)
+            .and_then(|hook| hook.get("command"))
+            .and_then(|v| v.as_str())
+            .is_some_and(is_system_hook_command)
+        {
+            return Err("系统 Hook 不能删除".to_string());
+        }
         inner_arr.remove(hook_idx);
 
         if inner_arr.is_empty() {
@@ -826,6 +873,14 @@ fn delete_codex_hook_at(
         // Flat: each [[hooks.EventType]] IS a hook
         if hook_idx >= event_arr.len() {
             return Err("hook 索引超出范围".to_string());
+        }
+        if event_arr
+            .get(hook_idx)
+            .and_then(|hook| hook.get("command"))
+            .and_then(|v| v.as_str())
+            .is_some_and(is_system_hook_command)
+        {
+            return Err("系统 Hook 不能删除".to_string());
         }
         event_arr.remove(hook_idx);
     }

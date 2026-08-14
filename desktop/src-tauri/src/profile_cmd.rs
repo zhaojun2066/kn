@@ -4,7 +4,7 @@
 //! Desktop-specific code (shell RC management, embedded resources) lives here.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // Re-export everything from the common library
 pub use kn_common::profile::*;
@@ -38,6 +38,10 @@ const COMPLETION_BASH: &str = include_str!(concat!(
 const HOOK_RECORDER: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../shell/hooks/record-usage.py"
+));
+const TASK_COMPLETE_HOOK: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../shell/hooks/notify-task-complete.py"
 ));
 
 pub fn ensure_shell_rc() -> Result<String, String> {
@@ -119,16 +123,19 @@ pub fn ensure_shell_rc() -> Result<String, String> {
         fs::write(&bash_path, COMPLETION_BASH).ok();
     }
 
-    // Write token usage hook recorder script
+    // Write built-in hook scripts
     let hooks_dir = dir.join("hooks");
-    fs::create_dir_all(&hooks_dir).ok();
-    fs::write(hooks_dir.join("record-usage.py"), HOOK_RECORDER).ok();
+    write_builtin_hook_scripts(&hooks_dir);
 
     // Write hook execution log wrapper script
     let _ = crate::hook_logs::write_run_with_log_script();
 
     // Repair any missing hook store scripts
     crate::hook_store::repair_missing_hook_scripts();
+
+    // System hooks are part of the product runtime and should self-heal when
+    // users edit CLI config files by hand.
+    let _ = crate::usage::ensure_task_complete_hooks();
 
     // ── add source line to ~/.zshrc (idempotent) ──
     let zshrc = PathBuf::from(&home).join(".zshrc");
@@ -224,6 +231,16 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     }
 
     Ok(dir.display().to_string())
+}
+
+pub fn write_builtin_hook_scripts(hooks_dir: &Path) {
+    fs::create_dir_all(hooks_dir).ok();
+    fs::write(hooks_dir.join("record-usage.py"), HOOK_RECORDER).ok();
+    fs::write(
+        hooks_dir.join("notify-task-complete.py"),
+        TASK_COMPLETE_HOOK,
+    )
+    .ok();
 }
 
 // ── Helpers ──────────────────────────────────────────────────

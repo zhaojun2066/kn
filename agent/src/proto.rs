@@ -75,6 +75,11 @@ pub enum AgentIncoming {
     ProjectDeliveryAck {
         request_id: String,
     },
+    /// Cloud 已接收本轮回复完成事件，Agent 可推进本地队列。
+    TaskCompletedAck {
+        event_id: String,
+        status: String,
+    },
     /// WSS 连接确认
     Connected {
         ws_session_id: String,
@@ -369,6 +374,20 @@ impl WsEnvelope {
                 } else {
                     Ok(AgentIncoming::ProjectDeliveryAck { request_id })
                 }
+            }
+            "task_completed_ack" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "task_completed_ack 缺少 data 字段".to_string())?;
+                let event_id = data["eventId"].as_str().unwrap_or("").trim().to_string();
+                if event_id.is_empty() {
+                    return Err("task_completed_ack 缺少 eventId".to_string());
+                }
+                Ok(AgentIncoming::TaskCompletedAck {
+                    event_id,
+                    status: data["status"].as_str().unwrap_or("ok").to_string(),
+                })
             }
             "start_session" => {
                 let data = self
@@ -1006,6 +1025,14 @@ impl WsMessageBuilder {
         .to_string()
     }
 
+    pub fn task_completed(event: &TaskCompleteEvent) -> String {
+        serde_json::json!({
+            "type": "task_completed",
+            "data": event
+        })
+        .to_string()
+    }
+
     /// 上报可用 Profile 列表。
     pub fn profile_list(profiles: &[ProfileInfo]) -> String {
         serde_json::json!({
@@ -1128,6 +1155,27 @@ pub struct HeartbeatSession {
     pub session_nid: String,
     pub pid: u32,
     pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCompleteEvent {
+    pub event_id: String,
+    pub event_name: String,
+    pub tool: String,
+    pub profile: Option<String>,
+    pub project_path: String,
+    pub native_session_id: Option<String>,
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub model: Option<String>,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub duration_ms: Option<u64>,
+    pub finished_at: String,
+    pub last_assistant_message: String,
+    pub summary: String,
 }
 
 /// Profile 信息（上报给云端）。
@@ -1492,9 +1540,15 @@ mod tests {
                 "projectKey": "42:/repo", "deviceId": 42, "projectPath": "/repo",
                 "offset": 100, "limit": 100, "snapshotId": "snapshot"
             }
-        })).unwrap();
+        }))
+        .unwrap();
         match status.parse().unwrap() {
-            AgentIncoming::ProjectGitStatus { offset, limit, snapshot_id, .. } => {
+            AgentIncoming::ProjectGitStatus {
+                offset,
+                limit,
+                snapshot_id,
+                ..
+            } => {
                 assert_eq!(offset, 100);
                 assert_eq!(limit, 100);
                 assert_eq!(snapshot_id.as_deref(), Some("snapshot"));
@@ -1508,7 +1562,8 @@ mod tests {
                 "projectKey": "42:/repo", "deviceId": 42, "projectPath": "/repo",
                 "message": "feat: include all", "scope": "allWorkingTree", "paths": []
             }
-        })).unwrap();
+        }))
+        .unwrap();
         match commit.parse().unwrap() {
             AgentIncoming::ProjectGitCommit { scope, paths, .. } => {
                 assert_eq!(scope, "allWorkingTree");
@@ -1772,7 +1827,11 @@ mod tests {
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
         let msg = env.parse().unwrap();
         match msg {
-            AgentIncoming::SessionCreatedAck { session_nid, status, error } => {
+            AgentIncoming::SessionCreatedAck {
+                session_nid,
+                status,
+                error,
+            } => {
                 assert_eq!(session_nid, "s_abc123");
                 assert_eq!(status, "error");
                 assert_eq!(
