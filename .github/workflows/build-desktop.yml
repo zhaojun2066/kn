@@ -188,11 +188,32 @@ jobs:
             NOTARY_KEY_PATH=$(mktemp)
             printf '%s' "$APPLE_NOTARY_KEY" > "$NOTARY_KEY_PATH"
             chmod 600 "$NOTARY_KEY_PATH"
+            SUBMIT_RESULT=$(mktemp)
+            set +e
             xcrun notarytool submit "$DMG" \
               --key "$NOTARY_KEY_PATH" \
               --key-id "$APPLE_NOTARY_KEY_ID" \
               --issuer "$APPLE_NOTARY_ISSUER_ID" \
-              --wait
+              --wait \
+              --output-format json > "$SUBMIT_RESULT"
+            SUBMIT_EXIT=$?
+            set -e
+            cat "$SUBMIT_RESULT"
+            SUBMISSION_ID=$(/usr/bin/python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("id", ""))' "$SUBMIT_RESULT")
+            SUBMISSION_STATUS=$(/usr/bin/python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("status", ""))' "$SUBMIT_RESULT")
+            if [ -n "$SUBMISSION_ID" ]; then
+              NOTARY_LOG=$(mktemp)
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --key "$NOTARY_KEY_PATH" \
+                --key-id "$APPLE_NOTARY_KEY_ID" \
+                --issuer "$APPLE_NOTARY_ISSUER_ID" \
+                "$NOTARY_LOG" || true
+              cat "$NOTARY_LOG" || true
+            fi
+            if [ "$SUBMIT_EXIT" -ne 0 ] || [ "$SUBMISSION_STATUS" != "Accepted" ]; then
+              echo "::error::Notarization failed with status: ${SUBMISSION_STATUS:-unknown}"
+              exit 1
+            fi
             xcrun stapler staple "$DMG"
             echo "✅ Notarized and stapled: $DMG"
           else
