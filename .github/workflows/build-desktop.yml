@@ -141,6 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           CERTIFICATE_PATH=$(mktemp -d)/certificate.p12
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
           if ! printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"; then
             echo "::error::APPLE_CERTIFICATE must be a base64-encoded .p12 certificate export"
             exit 1
@@ -149,19 +150,24 @@ jobs:
             echo "::error::Decoded APPLE_CERTIFICATE is empty"
             exit 1
           fi
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security list-keychains -d user -s build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import "$CERTIFICATE_PATH" -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/pkgbuild
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          security find-identity -v -p codesigning build.keychain
-          SIGNING_IDENTITY=$(security find-identity -v -p codesigning build.keychain | awk -F '"' '/Developer ID Application/ { print $2; exit }')
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk '/Developer ID Application/ { print $2; exit }')
           if [ -z "$SIGNING_IDENTITY" ]; then
             echo "::error::No Developer ID Application signing identity found in APPLE_CERTIFICATE. Export a .p12 that includes the certificate and private key."
             exit 1
           fi
           echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          SIGNING_PROBE=$(mktemp -d)/codesign-probe
+          cp /usr/bin/true "$SIGNING_PROBE"
+          codesign --force --sign "$SIGNING_IDENTITY" "$SIGNING_PROBE"
+          codesign --verify --strict --verbose=2 "$SIGNING_PROBE"
           echo "✅ Certificate imported"
 
       - name: Build Tauri
