@@ -185,8 +185,11 @@ jobs:
           DMG=$(find target/${{ matrix.target }}/release/bundle -name "*.dmg" | head -1)
           if [ -f "$DMG" ]; then
             echo "Notarizing: $DMG"
+            NOTARY_KEY_PATH=$(mktemp)
+            printf '%s' "$APPLE_NOTARY_KEY" > "$NOTARY_KEY_PATH"
+            chmod 600 "$NOTARY_KEY_PATH"
             xcrun notarytool submit "$DMG" \
-              --key <(echo "$APPLE_NOTARY_KEY") \
+              --key "$NOTARY_KEY_PATH" \
               --key-id "$APPLE_NOTARY_KEY_ID" \
               --issuer "$APPLE_NOTARY_ISSUER_ID" \
               --wait
