@@ -56,6 +56,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Python test dependencies
+        run: python3 -m pip install --disable-pip-version-check pytest
+
       - name: Run Python tests
         run: PYTHONPATH=lib python3 -m pytest tests/ -v
 
