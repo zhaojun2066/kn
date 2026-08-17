@@ -3,7 +3,9 @@
 //! Uses `/usr/sbin/ioreg` to query the hardware UUID stored in NVRAM.
 //! This UUID only changes on full disk wipe (macOS reinstall).
 
-use crate::error::{CommonError, Result};
+use crate::error::Result;
+#[cfg(target_os = "macos")]
+use crate::error::CommonError;
 
 /// Get the machine's unique hardware identifier (IOPlatformUUID).
 ///

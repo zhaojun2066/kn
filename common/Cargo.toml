@@ -19,3 +19,4 @@ security-framework.workspace = true
 hex.workspace = true
 libc.workspace = true
 portable-pty.workspace = true
+hostname.workspace = true
