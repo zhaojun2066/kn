@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ProjectInfo, SessionInfo, ProfileSummary, ProjectOverviewData } from "../lib/types";
+import type { ProjectInfo, SessionInfo, ProfileSummary, ProjectOverviewData, ProjectVerifyConfig } from "../lib/types";
 import { ProjectOverview } from "./ProjectOverview";
 import { SessionList } from "./SessionList";
 import { FileTree, type FileTreeNode } from "./FileTree";
@@ -30,11 +30,11 @@ import { CliBadge } from "./common/CliBadge";
 type ProjectTab = "overview" | "sessions" | "resource" | "hooks" | "files";
 
 const TABS: { key: ProjectTab; label: string }[] = [
-  { key: "overview", label: "Overview" },
-  { key: "sessions", label: "Sessions" },
-  { key: "resource", label: "Resource" },
+  { key: "overview", label: "总览（Overview）" },
+  { key: "sessions", label: "会话（Sessions）" },
+  { key: "resource", label: "扩展（Extensions）" },
   { key: "hooks", label: "Hooks" },
-  { key: "files", label: "Files" },
+  { key: "files", label: "文件（Files）" },
 ];
 
 interface ProjectWorkspaceProps {
@@ -46,8 +46,10 @@ interface ProjectWorkspaceProps {
   onRunProfile: (profileName: string, cliType: string) => void;
   onSplitProfile?: (profileName: string, cliType: string) => void;
   onSetDefaultProfile: (profileName: string) => void | Promise<void>;
+  onUpdateVerifyConfig?: (verify: ProjectVerifyConfig | null) => void | Promise<void>;
+  onPreviewVerifyConfig?: (projectName: string) => Promise<ProjectVerifyConfig | null>;
   onScanSessions: (projectPath: string) => void;
-  onResumeSession: (session: SessionInfo) => void;
+  onResumeSession: (session: SessionInfo, profileName: string) => void;
   // Toast integration for resource operations
   addToast: (type: "error" | "success", message: string) => void;
   setToasts: React.Dispatch<React.SetStateAction<any[]>>;
@@ -107,6 +109,8 @@ export function ProjectWorkspace({
   onRunProfile,
   onSplitProfile,
   onSetDefaultProfile,
+  onUpdateVerifyConfig,
+  onPreviewVerifyConfig,
   onScanSessions,
   onResumeSession,
   addToast,
@@ -1092,7 +1096,7 @@ export function ProjectWorkspace({
               onClick={() => { setShowHeaderDefaultPicker((v) => !v); setShowHeaderRunPicker(false); }}
               className="h-7 w-[180px] flex items-center gap-2 px-2 border border-app-border
                 bg-app-sidebar text-xs font-mono hover:bg-[var(--app-hover)] transition-colors"
-              title={defaultProfile ? `默认 Profile: ${defaultProfile}` : "设置默认 Profile"}
+              title={defaultProfile ? `默认运行配置: ${defaultProfile}` : "设置默认运行配置"}
             >
               <span className="text-app-text-muted shrink-0">默认</span>
               {defaultProfile ? (
@@ -1132,10 +1136,10 @@ export function ProjectWorkspace({
                 onClick={handleHeaderRunDefault}
                 className="h-7 flex items-center gap-1.5 px-3 text-xs font-mono
                   bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity"
-                title={defaultProfile ? `Run with ${defaultProfile}` : "Select profile"}
+                title={defaultProfile ? `使用 ${defaultProfile} 运行` : "选择运行配置"}
               >
                 <span>▶</span>
-                <span>Run</span>
+                <span>运行</span>
               </button>
               <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 px-2 py-1
                 bg-[var(--app-panel)] text-[var(--app-text)] text-2xs
@@ -1209,6 +1213,8 @@ export function ProjectWorkspace({
           onRunProfile={onRunProfile}
           onSplitProfile={onSplitProfile}
           onSetDefaultProfile={onSetDefaultProfile}
+          onUpdateVerifyConfig={onUpdateVerifyConfig ?? (async () => {})}
+          onPreviewVerifyConfig={onPreviewVerifyConfig ?? (async () => null)}
         />
       )}
       {activeTab === "sessions" && (
@@ -1216,6 +1222,7 @@ export function ProjectWorkspace({
           <SessionList
             sessions={sessions}
             loading={sessionsLoading}
+            profiles={profiles}
             onResume={onResumeSession}
           />
         </div>

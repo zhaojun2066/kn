@@ -65,10 +65,10 @@ describe("ResourceDrawer", () => {
     expect(container.innerHTML).toBe("");
   });
 
-  it("renders with Resource title when open", () => {
-    // Just verify the drawer renders — "Resource" appears in both header and ResourceList
+  it("renders with Extensions title when open", () => {
+    // Just verify the drawer renders — "扩展" appears in the tab bar
     render(<ResourceDrawer open onClose={vi.fn()} />);
-    const elements = screen.getAllByText("Resource");
+    const elements = screen.getAllByText("扩展");
     expect(elements.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: "关闭资源管理" })).toBeTruthy();
   });

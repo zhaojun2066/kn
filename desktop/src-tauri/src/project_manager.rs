@@ -12,19 +12,9 @@ use std::path::{Path, PathBuf};
 
 // ── Types ──────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectInfo {
-    pub name: String,
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_profile: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    #[serde(default)]
-    pub pinned: bool,
-}
+pub use kn_common::project::{
+    ProjectInfo, ProjectVerifyCommand, ProjectVerifyConfig, ProjectVerifyEnvironment,
+};
 
 /// Lightweight session stats for a project (fast, no title extraction).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,34 +65,34 @@ fn load_projects() -> ProjectList {
 
 fn save_projects(projects: &ProjectList) -> Result<(), String> {
     with_write_lock(|| {
-    with_cross_process_lock(|| {
-    let path = projects_file();
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
-    }
-    let text =
-        serde_json::to_string_pretty(projects).map_err(|e| format!("序列化失败: {}", e))?;
-    // Backup before overwriting
-    if path.exists() {
-        let bak = path.with_extension("json.bak");
-        let _ = fs::copy(&path, &bak);
-    }
-    // Atomic write: tmp → fsync → rename
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &text).map_err(|e| format!("写入失败: {}", e))?;
-    #[cfg(unix)]
-    {
-        if let Ok(file) = fs::File::open(&tmp) {
-            use std::os::unix::io::AsRawFd;
-            unsafe {
-                libc::fsync(file.as_raw_fd());
+        with_cross_process_lock(|| {
+            let path = projects_file();
+            // Ensure parent directory exists
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
             }
-        }
-    }
-    atomic_rename(&tmp, &path)?;
-    Ok(())
-    }) // with_cross_process_lock
+            let text =
+                serde_json::to_string_pretty(projects).map_err(|e| format!("序列化失败: {}", e))?;
+            // Backup before overwriting
+            if path.exists() {
+                let bak = path.with_extension("json.bak");
+                let _ = fs::copy(&path, &bak);
+            }
+            // Atomic write: tmp → fsync → rename
+            let tmp = path.with_extension("json.tmp");
+            fs::write(&tmp, &text).map_err(|e| format!("写入失败: {}", e))?;
+            #[cfg(unix)]
+            {
+                if let Ok(file) = fs::File::open(&tmp) {
+                    use std::os::unix::io::AsRawFd;
+                    unsafe {
+                        libc::fsync(file.as_raw_fd());
+                    }
+                }
+            }
+            atomic_rename(&tmp, &path)?;
+            Ok(())
+        }) // with_cross_process_lock
     }) // with_write_lock
 }
 
@@ -160,7 +150,14 @@ pub fn add_project(name: String, path: String) -> Result<(), String> {
         return Err(format!("项目 '{}' 已存在", name));
     }
 
-    projects.push(ProjectInfo { name, path, default_profile: None, description: None, pinned: false });
+    projects.push(ProjectInfo {
+        name,
+        path,
+        default_profile: None,
+        description: None,
+        pinned: false,
+        verify: None,
+    });
     save_projects(&projects)
 }
 
@@ -178,9 +175,18 @@ pub fn remove_project(name: String) -> Result<(), String> {
 // ── Update project ─────────────────────────────────────────────
 
 #[tauri::command]
-pub fn update_project(name: String, new_name: Option<String>, new_path: Option<String>, default_profile: Option<String>, description: Option<String>, pinned: Option<bool>) -> Result<(), String> {
+pub fn update_project(
+    name: String,
+    new_name: Option<String>,
+    new_path: Option<String>,
+    default_profile: Option<String>,
+    description: Option<String>,
+    pinned: Option<bool>,
+) -> Result<(), String> {
     let mut projects = load_projects();
-    let idx = projects.iter().position(|p| p.name == name)
+    let idx = projects
+        .iter()
+        .position(|p| p.name == name)
         .ok_or_else(|| format!("项目 '{}' 不存在", name))?;
 
     if let Some(ref nn) = new_name {
@@ -212,16 +218,308 @@ pub fn update_project(name: String, new_name: Option<String>, new_path: Option<S
         projects[idx].pinned = p;
     }
     if default_profile.is_some() {
-        write_ai_profile_file(&projects[idx].path, projects[idx].default_profile.as_deref())?;
+        write_ai_profile_file(
+            &projects[idx].path,
+            projects[idx].default_profile.as_deref(),
+        )?;
     }
     save_projects(&projects)?;
     Ok(())
 }
 
 #[tauri::command]
+pub fn update_project_verify_config(
+    project_name: String,
+    verify: Option<ProjectVerifyConfig>,
+) -> Result<(), String> {
+    let mut projects = load_projects();
+    let idx = projects
+        .iter()
+        .position(|p| p.name == project_name)
+        .ok_or_else(|| format!("项目 '{}' 不存在", project_name))?;
+    projects[idx].verify = verify;
+    save_projects(&projects)
+}
+
+#[tauri::command]
+pub fn preview_project_verify_config(
+    project_name: String,
+) -> Result<Option<ProjectVerifyConfig>, String> {
+    let projects = load_projects();
+    let project = projects
+        .iter()
+        .find(|p| p.name == project_name)
+        .ok_or_else(|| format!("项目 '{}' 不存在", project_name))?;
+    Ok(project
+        .verify
+        .clone()
+        .or_else(|| auto_verify_config(Path::new(&project.path))))
+}
+
+fn auto_verify_config(project_path: &Path) -> Option<ProjectVerifyConfig> {
+    let root = nearest_project_root(project_path);
+    let environment = ProjectVerifyEnvironment {
+        build: auto_build_command(&root),
+        test: auto_test_command(&root),
+    };
+    if environment.build.is_none() && environment.test.is_none() {
+        return None;
+    }
+    Some(ProjectVerifyConfig {
+        default_environment: Some("default".to_string()),
+        environments: std::iter::once(("default".to_string(), environment)).collect(),
+    })
+}
+
+fn nearest_project_root(project_path: &Path) -> PathBuf {
+    let mut current = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
+    loop {
+        if has_project_marker(&current) {
+            return current;
+        }
+        if !current.pop() {
+            return project_path.to_path_buf();
+        }
+    }
+}
+
+fn has_project_marker(path: &Path) -> bool {
+    [
+        "package.json",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "go.mod",
+        "Cargo.toml",
+        "pyproject.toml",
+        "pytest.ini",
+        "requirements.txt",
+        "Package.swift",
+    ]
+    .iter()
+    .any(|marker| path.join(marker).exists())
+        || discover_xcode_project(path).is_some()
+}
+
+fn discover_xcode_project(root: &Path) -> Option<PathBuf> {
+    let mut projects: Vec<PathBuf> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("xcodeproj"))
+        .collect();
+    projects.sort();
+    projects.into_iter().next()
+}
+
+fn xcode_scheme(project: &Path) -> String {
+    let mut schemes: Vec<String> = std::fs::read_dir(project.join("xcshareddata/xcschemes"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .path()
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        })
+        .collect();
+    schemes.sort();
+    schemes.into_iter().next().unwrap_or_else(|| {
+        project
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("App")
+            .to_string()
+    })
+}
+
+fn shell_word(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn auto_build_command(root: &Path) -> Option<ProjectVerifyCommand> {
+    if root.join("package.json").exists() {
+        let scripts = package_scripts(root);
+        let manager = package_manager(root);
+        let mut commands = Vec::new();
+        if scripts.contains_key("typecheck") {
+            commands.push(package_run_command(&manager, "typecheck"));
+        }
+        if scripts.contains_key("build") {
+            commands.push(package_run_command(&manager, "build"));
+        }
+        return verify_command(commands.join(" && "), 300);
+    }
+    if let Some(project) = discover_xcode_project(root) {
+        let scheme = xcode_scheme(&project);
+        let project_name = project
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("App.xcodeproj");
+        return verify_command(
+            format!(
+                "xcodebuild -project {} -scheme {} build",
+                shell_word(project_name),
+                shell_word(&scheme)
+            ),
+            900,
+        );
+    }
+    if root.join("Package.swift").exists() {
+        return verify_command("swift build".to_string(), 600);
+    }
+    if root.join("pom.xml").exists() {
+        return verify_command("mvn -DskipTests compile".to_string(), 300);
+    }
+    if root.join("build.gradle").exists() || root.join("build.gradle.kts").exists() {
+        let gradle = if root.join("gradlew").exists() {
+            "./gradlew"
+        } else {
+            "gradle"
+        };
+        return verify_command(format!("{gradle} classes testClasses -x test"), 300);
+    }
+    if root.join("go.mod").exists() {
+        return verify_command("go test ./... -run '^$'".to_string(), 300);
+    }
+    if root.join("Cargo.toml").exists() {
+        return verify_command("cargo check".to_string(), 300);
+    }
+    if root.join("pyproject.toml").exists()
+        || root.join("pytest.ini").exists()
+        || root.join("requirements.txt").exists()
+    {
+        return verify_command("python -m compileall .".to_string(), 300);
+    }
+    None
+}
+
+fn auto_test_command(root: &Path) -> Option<ProjectVerifyCommand> {
+    if root.join("package.json").exists() {
+        let scripts = package_scripts(root);
+        let script = scripts.get("test").map(String::as_str).unwrap_or("");
+        if is_valid_test_script(script) {
+            return verify_command(package_run_command(&package_manager(root), "test"), 600);
+        }
+        return None;
+    }
+    if let Some(project) = discover_xcode_project(root) {
+        let scheme = xcode_scheme(&project);
+        let project_name = project
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("App.xcodeproj");
+        return verify_command(
+            format!(
+                "xcodebuild -project {} -scheme {} test",
+                shell_word(project_name),
+                shell_word(&scheme)
+            ),
+            1200,
+        );
+    }
+    if root.join("Package.swift").exists() {
+        return verify_command("swift test".to_string(), 900);
+    }
+    if root.join("pom.xml").exists() {
+        return verify_command("mvn test".to_string(), 600);
+    }
+    if root.join("build.gradle").exists() || root.join("build.gradle.kts").exists() {
+        let gradle = if root.join("gradlew").exists() {
+            "./gradlew"
+        } else {
+            "gradle"
+        };
+        return verify_command(format!("{gradle} test"), 600);
+    }
+    if root.join("go.mod").exists() {
+        return verify_command("go test ./...".to_string(), 600);
+    }
+    if root.join("Cargo.toml").exists() {
+        return verify_command("cargo test".to_string(), 600);
+    }
+    if root.join("pyproject.toml").exists()
+        || root.join("pytest.ini").exists()
+        || root.join("requirements.txt").exists()
+    {
+        return verify_command("python -m pytest".to_string(), 600);
+    }
+    None
+}
+
+fn verify_command(command: String, timeout_seconds: u64) -> Option<ProjectVerifyCommand> {
+    if command.trim().is_empty() {
+        return None;
+    }
+    Some(ProjectVerifyCommand {
+        command,
+        enabled: true,
+        timeout_seconds: Some(timeout_seconds),
+        parser_hint: None,
+        task_type_hint: None,
+        report_hints: None,
+    })
+}
+
+fn package_scripts(root: &Path) -> std::collections::HashMap<String, String> {
+    let text = fs::read_to_string(root.join("package.json")).unwrap_or_default();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    json.get("scripts")
+        .and_then(|v| v.as_object())
+        .map(|scripts| {
+            scripts
+                .iter()
+                .filter_map(|(key, value)| {
+                    value
+                        .as_str()
+                        .map(|script| (key.clone(), script.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn package_manager(root: &Path) -> String {
+    if root.join("pnpm-lock.yaml").exists() {
+        "pnpm".to_string()
+    } else if root.join("yarn.lock").exists() {
+        "yarn".to_string()
+    } else {
+        "npm".to_string()
+    }
+}
+
+fn package_run_command(manager: &str, script: &str) -> String {
+    if manager == "yarn" {
+        format!("yarn {script}")
+    } else {
+        format!("{manager} run {script}")
+    }
+}
+
+fn is_valid_test_script(script: &str) -> bool {
+    let normalized = script.trim().to_ascii_lowercase();
+    !normalized.is_empty() && !normalized.contains("no test specified")
+}
+
+#[tauri::command]
 pub fn toggle_pin_project(name: String, pinned: bool) -> Result<(), String> {
     let mut projects = load_projects();
-    let idx = projects.iter().position(|p| p.name == name)
+    let idx = projects
+        .iter()
+        .position(|p| p.name == name)
         .ok_or_else(|| format!("项目 '{}' 不存在", name))?;
     projects[idx].pinned = pinned;
     save_projects(&projects)
@@ -231,7 +529,9 @@ pub fn toggle_pin_project(name: String, pinned: bool) -> Result<(), String> {
 /// For each project, returns session count, latest timestamp, and CLI types present.
 /// Designed for fast sidebar display — stat-only for Claude/Qoder, first-line read for Codex.
 #[tauri::command]
-pub fn get_project_stats(project_paths: Vec<String>) -> std::collections::HashMap<String, ProjectStats> {
+pub fn get_project_stats(
+    project_paths: Vec<String>,
+) -> std::collections::HashMap<String, ProjectStats> {
     let home = crate::home_dir();
     let mut map = std::collections::HashMap::new();
 
@@ -252,14 +552,18 @@ pub fn get_project_stats(project_paths: Vec<String>) -> std::collections::HashMa
                         if let Ok(mtime) = meta.modified() {
                             if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
                                 let ts = dur.as_millis() as u64;
-                                if ts > latest { latest = ts; }
+                                if ts > latest {
+                                    latest = ts;
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        if claude_count > 0 { cli_types.push("claude".to_string()); }
+        if claude_count > 0 {
+            cli_types.push("claude".to_string());
+        }
 
         // ── Qoder ──
         let qoder_dir = home.join(".qoder-cn").join("projects").join(&encoded);
@@ -273,14 +577,18 @@ pub fn get_project_stats(project_paths: Vec<String>) -> std::collections::HashMa
                         if let Ok(mtime) = meta.modified() {
                             if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
                                 let ts = dur.as_millis() as u64;
-                                if ts > latest { latest = ts; }
+                                if ts > latest {
+                                    latest = ts;
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        if qoder_count > 0 { cli_types.push("qoder".to_string()); }
+        if qoder_count > 0 {
+            cli_types.push("qoder".to_string());
+        }
 
         // ── Codex: walk sessions tree, filter by cwd ──
         let codex_root = home.join(".codex").join("sessions");
@@ -288,28 +596,38 @@ pub fn get_project_stats(project_paths: Vec<String>) -> std::collections::HashMa
         let mut codex_latest = 0u64;
         collect_codex_stats(&codex_root, path, &mut codex_count, &mut codex_latest);
         if codex_count > 0 {
-            if codex_latest > latest { latest = codex_latest; }
+            if codex_latest > latest {
+                latest = codex_latest;
+            }
             cli_types.push("codex".to_string());
         }
 
         let total = claude_count + qoder_count + codex_count;
 
-        map.insert(path.clone(), ProjectStats {
-            project_path: path.clone(),
-            session_count: total,
-            latest_timestamp: latest,
-            cli_types,
-            claude_count,
-            codex_count,
-            qoder_count,
-        });
+        map.insert(
+            path.clone(),
+            ProjectStats {
+                project_path: path.clone(),
+                session_count: total,
+                latest_timestamp: latest,
+                cli_types,
+                claude_count,
+                codex_count,
+                qoder_count,
+            },
+        );
     }
 
     map
 }
 
 /// Walk Codex sessions directory and count sessions matching a project path.
-fn collect_codex_stats(root: &std::path::Path, project_path: &str, count: &mut u32, latest: &mut u64) {
+fn collect_codex_stats(
+    root: &std::path::Path,
+    project_path: &str,
+    count: &mut u32,
+    latest: &mut u64,
+) {
     let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if let Ok(entries) = fs::read_dir(&dir) {
@@ -329,7 +647,9 @@ fn collect_codex_stats(root: &std::path::Path, project_path: &str, count: &mut u
                                 if let Ok(mtime) = meta.modified() {
                                     if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
                                         let ts = dur.as_millis() as u64;
-                                        if ts > *latest { *latest = ts; }
+                                        if ts > *latest {
+                                            *latest = ts;
+                                        }
                                     }
                                 }
                             }
@@ -351,7 +671,10 @@ fn read_codex_session_cwd_fast(path: &std::path::Path) -> Option<String> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first_line) {
         if v.get("type").and_then(|t| t.as_str()) == Some("session_meta") {
             if let Some(payload) = v.get("payload") {
-                return payload.get("cwd").and_then(|c| c.as_str()).map(|s| s.to_string());
+                return payload
+                    .get("cwd")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string());
             }
         }
     }
@@ -400,16 +723,22 @@ pub fn read_ai_profile(project_path: String) -> Result<Option<String>, String> {
     // Try YAML-style "default_profile: <name>"
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
         if let Some(val) = trimmed.strip_prefix("default_profile:") {
             let profile = val.trim().trim_matches('"').trim_matches('\'');
-            if !profile.is_empty() { return Ok(Some(profile.to_string())); }
+            if !profile.is_empty() {
+                return Ok(Some(profile.to_string()));
+            }
         }
     }
     // Fallback: use the first non-empty, non-comment line as bare profile name
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
         return Ok(Some(trimmed.to_string()));
     }
     Ok(None)
@@ -430,6 +759,20 @@ fn encode_project_path(path: &str) -> String {
 /// 1. Stat all jsonl files to get timestamps (fast, no file content read)
 /// 2. Sort by timestamp, take the `max_sessions` most recent
 /// 3. Extract titles only for those top sessions
+
+/// Check if any process with the given CLI name is currently running.
+/// Uses `pgrep -x` which is fast and reliable on macOS.
+fn is_cli_running(cli_name: &str) -> bool {
+    std::process::Command::new("pgrep")
+        .arg("-x")
+        .arg(cli_name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn scan_claude_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionInfo> {
     let home = crate::home_dir();
     let encoded = encode_project_path(project_path);
@@ -447,7 +790,9 @@ fn scan_claude_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionI
                 continue;
             }
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            let timestamp = path.metadata().ok()
+            let timestamp = path
+                .metadata()
+                .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as u64)
@@ -466,10 +811,17 @@ fn scan_claude_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionI
         .unwrap_or_default()
         .as_millis() as u64;
 
+    // Check if any Claude process is currently running.
+    // If no Claude is alive, only sessions modified within the last 30s are "active"
+    // (grace period for the process to flush its final writes).
+    // If Claude IS running, use a 2-hour window to handle idle-but-alive sessions.
+    let cli_alive = is_cli_running("claude");
+    let active_window_ms: u64 = if cli_alive { 7_200_000 } else { 30_000 };
+
     let mut sessions: Vec<SessionInfo> = Vec::with_capacity(entries.len());
     for (session_id, path, timestamp) in entries {
         let title = extract_claude_title(&path).unwrap_or_else(|| "无标题".to_string());
-        let status = if timestamp > 0 && (now_ms - timestamp) < 3600_000 {
+        let status = if timestamp > 0 && (now_ms - timestamp) < active_window_ms {
             "active"
         } else {
             "ended"
@@ -566,12 +918,7 @@ fn scan_codex_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionIn
 
     // Walk the sessions directory tree and collect matching sessions
     let mut sessions: Vec<SessionInfo> = Vec::new();
-    walk_codex_sessions_dir(
-        &sessions_root,
-        project_path,
-        &index_titles,
-        &mut sessions,
-    );
+    walk_codex_sessions_dir(&sessions_root, project_path, &index_titles, &mut sessions);
 
     eprintln!(
         "[overview] Codex sessions found for project={}: {} total (before truncate to {})",
@@ -583,6 +930,20 @@ fn scan_codex_sessions(project_path: &str, max_sessions: usize) -> Vec<SessionIn
     // Sort by timestamp descending, take top
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     sessions.truncate(max_sessions);
+
+    // Post-process status: use process liveness + timestamp instead of always "ended"
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let codex_alive = is_cli_running("codex");
+    let active_window: u64 = if codex_alive { 7_200_000 } else { 30_000 };
+    for s in &mut sessions {
+        if s.timestamp > 0 && (now_ms - s.timestamp) < active_window {
+            s.status = "active".to_string();
+        }
+    }
+
     sessions
 }
 
@@ -630,7 +991,9 @@ fn walk_codex_sessions_dir(
                         return;
                     }
                     files_scanned += 1;
-                    if let Some(session) = read_codex_session_meta(&path, project_path, index_titles) {
+                    if let Some(session) =
+                        read_codex_session_meta(&path, project_path, index_titles)
+                    {
                         out.push(session);
                     }
                 }
@@ -679,7 +1042,11 @@ fn read_codex_session_meta(
             id,
             cwd,
             project_path,
-            if cwd == project_path { "exact" } else { "subdir" }
+            if cwd == project_path {
+                "exact"
+            } else {
+                "subdir"
+            }
         );
     }
     if !matches {
@@ -754,8 +1121,12 @@ fn read_codex_first_user_msg<R: std::io::BufRead>(reader: &mut R) -> Option<Stri
 
 fn parse_iso8601_to_ms(s: &str) -> Option<u64> {
     let cleaned = s.replace('T', " ").replace('Z', "");
-    let parts: Vec<&str> = cleaned.split(|c: char| c == '-' || c == ':' || c == ' ' || c == '.').collect();
-    if parts.len() < 6 { return None; }
+    let parts: Vec<&str> = cleaned
+        .split(|c: char| c == '-' || c == ':' || c == ' ' || c == '.')
+        .collect();
+    if parts.len() < 6 {
+        return None;
+    }
     let year: i64 = parts[0].parse().ok()?;
     let month: u32 = parts[1].parse().ok()?;
     let day: u32 = parts[2].parse().ok()?;
@@ -768,16 +1139,35 @@ fn parse_iso8601_to_ms(s: &str) -> Option<u64> {
     };
     let days_in_month = |m: u32, leap: bool| -> i64 {
         match m {
-            1 => 31, 2 => if leap { 29 } else { 28 }, 3 => 31, 4 => 30,
-            5 => 31, 6 => 30, 7 => 31, 8 => 31, 9 => 30, 10 => 31,
-            11 => 30, 12 => 31, _ => 0,
+            1 => 31,
+            2 => {
+                if leap {
+                    29
+                } else {
+                    28
+                }
+            }
+            3 => 31,
+            4 => 30,
+            5 => 31,
+            6 => 30,
+            7 => 31,
+            8 => 31,
+            9 => 30,
+            10 => 31,
+            11 => 30,
+            12 => 31,
+            _ => 0,
         }
     };
     let is_leap = |y: i64| -> bool { (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 };
     let epoch_days = days_before_year(1970);
     let total_days = days_before_year(year) - epoch_days
-        + (1..month).map(|m| days_in_month(m, is_leap(year))).sum::<i64>()
-        + (day as i64) - 1;
+        + (1..month)
+            .map(|m| days_in_month(m, is_leap(year)))
+            .sum::<i64>()
+        + (day as i64)
+        - 1;
     let total_secs = total_days * 86400 + hour as i64 * 3600 + min as i64 * 60 + sec as i64;
     Some(total_secs.max(0) as u64 * 1000)
 }
@@ -801,7 +1191,6 @@ fn scan_qoder_cli(project_path: &str) -> Option<Vec<SessionInfo>> {
         .current_dir(project_path)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        
         .spawn()
         .ok()?;
 
@@ -834,9 +1223,7 @@ fn scan_qoder_cli(project_path: &str) -> Option<Vec<SessionInfo>> {
 /// "  1. 帮我检查下 终端分屏 (11 hours ago) [f2b8d3d2-...]"
 fn parse_qoder_list_output(output: &str, project_path: &str) -> Option<Vec<SessionInfo>> {
     let mut sessions = Vec::new();
-    let re = regex_lite::Regex::new(
-        r"^\s*(\d+)\.\s+(.+?)\s+\((.+?)\)\s+\[([a-f0-9-]+)\]"
-    ).ok()?;
+    let re = regex_lite::Regex::new(r"^\s*(\d+)\.\s+(.+?)\s+\((.+?)\)\s+\[([a-f0-9-]+)\]").ok()?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -845,8 +1232,13 @@ fn parse_qoder_list_output(output: &str, project_path: &str) -> Option<Vec<Sessi
     for line in output.lines() {
         if let Some(caps) = re.captures(line) {
             let session_id = caps.get(4).map(|m| m.as_str()).unwrap_or("").to_string();
-            let title: String = caps.get(2).map(|m| m.as_str()).unwrap_or("无标题")
-                .chars().take(80).collect();
+            let title: String = caps
+                .get(2)
+                .map(|m| m.as_str())
+                .unwrap_or("无标题")
+                .chars()
+                .take(80)
+                .collect();
             let time_ago = caps.get(3).map(|m| m.as_str()).unwrap_or("");
             let timestamp = parse_qoder_time_ago(time_ago, now);
 
@@ -862,15 +1254,29 @@ fn parse_qoder_list_output(output: &str, project_path: &str) -> Option<Vec<Sessi
             });
         }
     }
-    if sessions.is_empty() { return None; }
+    if sessions.is_empty() {
+        return None;
+    }
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    // Post-process status: use process liveness + timestamp instead of always "ended"
+    let qoder_alive = is_cli_running("qoderclicn");
+    let active_window: u64 = if qoder_alive { 7_200_000 } else { 30_000 };
+    for s in &mut sessions {
+        if s.timestamp > 0 && (now - s.timestamp) < active_window {
+            s.status = "active".to_string();
+        }
+    }
+
     Some(sessions)
 }
 
 fn parse_qoder_time_ago(time_ago: &str, now_ms: u64) -> u64 {
     let ago = time_ago.trim();
     let parts: Vec<&str> = ago.split_whitespace().collect();
-    if parts.len() < 2 { return 0; }
+    if parts.len() < 2 {
+        return 0;
+    }
     let num: f64 = parts[0].parse().unwrap_or(0.0);
     let unit = parts[1].to_lowercase();
     let ms_per_unit: f64 = match unit.as_str() {
@@ -881,7 +1287,9 @@ fn parse_qoder_time_ago(time_ago: &str, now_ms: u64) -> u64 {
         "month" | "months" => 2_592_000_000.0,
         _ => 0.0,
     };
-    if ms_per_unit == 0.0 { return 0; }
+    if ms_per_unit == 0.0 {
+        return 0;
+    }
     let elapsed = (num * ms_per_unit) as u64;
     now_ms.saturating_sub(elapsed)
 }
@@ -903,7 +1311,9 @@ fn scan_qoder_filesystem(project_path: &str) -> Vec<SessionInfo> {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let session_id = stem.to_string();
             let title = extract_claude_title(&path).unwrap_or_else(|| "无标题".to_string());
-            let timestamp = path.metadata().ok()
+            let timestamp = path
+                .metadata()
+                .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as u64)
@@ -921,6 +1331,20 @@ fn scan_qoder_filesystem(project_path: &str) -> Vec<SessionInfo> {
         }
     }
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    // Post-process status: use process liveness + timestamp instead of always "ended"
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let qoder_alive = is_cli_running("qoderclicn");
+    let active_window: u64 = if qoder_alive { 7_200_000 } else { 30_000 };
+    for s in &mut sessions {
+        if s.timestamp > 0 && (now_ms - s.timestamp) < active_window {
+            s.status = "active".to_string();
+        }
+    }
+
     sessions
 }
 
@@ -950,65 +1374,71 @@ pub fn read_session_preview(cli: String, project_path: String, session_id: Strin
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
             let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
             let text = match ty {
-                "user" => {
-                    v.get("message")
-                        .and_then(|m| m.get("content"))
-                        .and_then(|c| c.as_str())
-                        .map(|s| s.to_string())
-                        .or_else(|| {
-                            v.get("message")
-                                .and_then(|m| m.get("content"))
-                                .and_then(|c| c.as_array())
-                                .and_then(|parts| {
-                                    parts.iter()
-                                        .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
-                                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                                        .collect::<Vec<_>>()
-                                        .join("")
-                                        .into()
-                                })
-                        })
-                }
-                "assistant" => {
-                    v.get("message")
-                        .and_then(|m| m.get("content"))
-                        .and_then(|c| c.as_array())
-                        .and_then(|parts| {
-                            let texts: Vec<&str> = parts.iter()
-                                .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
-                                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                                .collect();
-                            if texts.is_empty() { None } else { Some(texts.join(" ")) }
-                        })
-                        .or_else(|| {
-                            v.get("message")
-                                .and_then(|m| m.get("content"))
-                                .and_then(|c| c.as_str())
-                                .map(|s| s.to_string())
-                        })
-                }
-                // Codex format: messages are nested in response_item.payload
-                // payload = {type:"message", content:[{type:"input_text"|"output_text", text:"..."}]}
-                "response_item" => {
-                    v.get("payload").and_then(|payload| {
-                        if payload.get("type").and_then(|t| t.as_str()) != Some("message") {
-                            return None;
-                        }
-                        payload.get("content")
+                "user" => v
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        v.get("message")
+                            .and_then(|m| m.get("content"))
                             .and_then(|c| c.as_array())
-                            .map(|parts| {
-                                parts.iter()
+                            .and_then(|parts| {
+                                parts
+                                    .iter()
                                     .filter(|p| {
-                                        let t = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                        t == "input_text" || t == "output_text"
+                                        p.get("type").and_then(|t| t.as_str()) == Some("text")
                                     })
                                     .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                                     .collect::<Vec<_>>()
-                                    .join(" ")
+                                    .join("")
+                                    .into()
                             })
-                            .filter(|s| !s.is_empty())
+                    }),
+                "assistant" => v
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                    .and_then(|parts| {
+                        let texts: Vec<&str> = parts
+                            .iter()
+                            .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
+                            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                            .collect();
+                        if texts.is_empty() {
+                            None
+                        } else {
+                            Some(texts.join(" "))
+                        }
                     })
-                }
+                    .or_else(|| {
+                        v.get("message")
+                            .and_then(|m| m.get("content"))
+                            .and_then(|c| c.as_str())
+                            .map(|s| s.to_string())
+                    }),
+                // Codex format: messages are nested in response_item.payload
+                // payload = {type:"message", content:[{type:"input_text"|"output_text", text:"..."}]}
+                "response_item" => v.get("payload").and_then(|payload| {
+                    if payload.get("type").and_then(|t| t.as_str()) != Some("message") {
+                        return None;
+                    }
+                    payload
+                        .get("content")
+                        .and_then(|c| c.as_array())
+                        .map(|parts| {
+                            parts
+                                .iter()
+                                .filter(|p| {
+                                    let t = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                    t == "input_text" || t == "output_text"
+                                })
+                                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .filter(|s| !s.is_empty())
+                }),
                 _ => None,
             };
 
@@ -1019,7 +1449,9 @@ pub fn read_session_preview(cli: String, project_path: String, session_id: Strin
                     && !trimmed.starts_with("Filesystem")
                 {
                     messages.push(trimmed.chars().take(200).collect());
-                    if messages.len() >= 4 { break; }
+                    if messages.len() >= 4 {
+                        break;
+                    }
                 }
             }
         }
@@ -1029,13 +1461,22 @@ pub fn read_session_preview(cli: String, project_path: String, session_id: Strin
 }
 
 /// Find a session transcript file on disk.
-fn find_session_file(home: &Path, cli: &str, project_path: &str, session_id: &str) -> Option<PathBuf> {
+fn find_session_file(
+    home: &Path,
+    cli: &str,
+    project_path: &str,
+    session_id: &str,
+) -> Option<PathBuf> {
     match cli {
         "claude" => {
             let encoded = encode_project_path(project_path);
             let dir = home.join(".claude").join("projects").join(&encoded);
             let path = dir.join(format!("{}.jsonl", session_id));
-            if path.exists() { Some(path) } else { None }
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
         }
         "codex" => {
             // Walk sessions tree to find the file containing this session ID
@@ -1048,9 +1489,7 @@ fn find_session_file(home: &Path, cli: &str, project_path: &str, session_id: &st
                         if p.is_dir() {
                             stack.push(p);
                         } else if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                            let fname = p.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("");
+                            let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                             if fname.contains(session_id) {
                                 return Some(p);
                             }
@@ -1064,7 +1503,11 @@ fn find_session_file(home: &Path, cli: &str, project_path: &str, session_id: &st
             let encoded = encode_project_path(project_path);
             let dir = home.join(".qoder-cn").join("projects").join(&encoded);
             let path = dir.join(format!("{}.jsonl", session_id));
-            if path.exists() { Some(path) } else { None }
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -1120,7 +1563,12 @@ pub struct CliCounts {
 
 impl CliCounts {
     fn new() -> Self {
-        CliCounts { total: 0, claude: 0, codex: 0, qoder: 0 }
+        CliCounts {
+            total: 0,
+            claude: 0,
+            codex: 0,
+            qoder: 0,
+        }
     }
     fn compute_total(&mut self) {
         self.total = self.claude + self.codex + self.qoder;
@@ -1179,7 +1627,9 @@ fn count_dir_skills_claude(dir: &Path) -> u32 {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name.starts_with('.') { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
         if path.is_dir() {
             // Directory skill: count if SKILL.md or SKILL.md.disabled exists
             if path.join("SKILL.md").exists() || path.join("SKILL.md.disabled").exists() {
@@ -1204,7 +1654,9 @@ fn count_dir_skills_dir_based(dir: &Path) -> u32 {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name.starts_with('.') { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
         if path.is_dir()
             && (path.join("SKILL.md").exists() || path.join("SKILL.md.disabled").exists())
         {
@@ -1239,14 +1691,18 @@ fn count_claude_plugins(root: &Path) -> u32 {
     // otherwise project-scoped plugins from OTHER projects are counted for
     // every project.
     let home = crate::home_dir();
-    let installed_json = home.join(".claude").join("plugins").join("installed_plugins.json");
+    let installed_json = home
+        .join(".claude")
+        .join("plugins")
+        .join("installed_plugins.json");
     if let Ok(text) = fs::read_to_string(&installed_json) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(plugins_obj) = val.get("plugins").and_then(|v| v.as_object()) {
                 for (_name, installs) in plugins_obj {
                     if let Some(arr) = installs.as_array() {
                         for inst in arr {
-                            let scope = inst.get("scope").and_then(|v| v.as_str()).unwrap_or("user");
+                            let scope =
+                                inst.get("scope").and_then(|v| v.as_str()).unwrap_or("user");
                             if scope == "project" {
                                 // Only count if the plugin is installed within THIS project
                                 let belongs = inst
@@ -1305,7 +1761,9 @@ fn count_commands(root: &Path) -> CliCounts {
     if let Ok(entries) = fs::read_dir(&commands_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') { continue; }
+            if name.starts_with('.') {
+                continue;
+            }
             // Count .md (enabled) and .md.disabled
             if name.ends_with(".md") {
                 counts.claude += 1;
@@ -1343,7 +1801,9 @@ fn count_files_with_ext(dir: &Path, ext: &str) -> u32 {
     let target = format!(".{}", ext);
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
         // Count both .ext (enabled) and .ext.disabled
         if name.ends_with(&target) {
             count += 1;
@@ -1384,8 +1844,13 @@ fn count_hooks_json(settings_path: &Path) -> (u32, u32) {
             };
             for hook in inner_hooks {
                 total += 1;
-                let disabled = hook.get("_disabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                if !disabled { enabled += 1; }
+                let disabled = hook
+                    .get("_disabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if !disabled {
+                    enabled += 1;
+                }
             }
         }
     }
@@ -1422,15 +1887,17 @@ fn count_hooks_toml(config_path: &Path) -> (u32, u32) {
     let mut total = 0u32;
     let mut enabled = 0u32;
     for (event_type, event_value) in hooks_table {
-        if event_type == "state" { continue; }
+        if event_type == "state" {
+            continue;
+        }
         let arr = match event_value.as_array() {
             Some(a) => a,
             None => continue,
         };
 
-        let has_nested = arr.iter().any(
-            |entry| entry.get("hooks").and_then(|v| v.as_array()).is_some()
-        );
+        let has_nested = arr
+            .iter()
+            .any(|entry| entry.get("hooks").and_then(|v| v.as_array()).is_some());
 
         if has_nested {
             for group in arr {
@@ -1441,7 +1908,9 @@ fn count_hooks_toml(config_path: &Path) -> (u32, u32) {
                 total += inner.len() as u32;
                 for hook in inner {
                     let cmd = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                    if !cmd.is_empty() { enabled += 1; }
+                    if !cmd.is_empty() {
+                        enabled += 1;
+                    }
                 }
             }
         } else {
@@ -1449,7 +1918,9 @@ fn count_hooks_toml(config_path: &Path) -> (u32, u32) {
             total += arr.len() as u32;
             for hook in arr {
                 let cmd = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                if !cmd.is_empty() { enabled += 1; }
+                if !cmd.is_empty() {
+                    enabled += 1;
+                }
             }
         }
     }
@@ -1521,45 +1992,45 @@ fn scan_recent_sessions(project_path: &str, max: usize) -> Vec<SessionInfo> {
 #[tauri::command]
 pub async fn get_project_overview(project_path: String) -> Result<ProjectOverviewData, String> {
     tauri::async_runtime::spawn_blocking(move || {
-    let root = Path::new(&project_path);
-    if !root.is_dir() {
-        return Err("项目路径不存在或不是目录".into());
-    }
-
-    // 1. Session stats (reuses get_project_stats logic, fast stat-only scan)
-    let stats_map = get_project_stats(vec![project_path.clone()]);
-    let mut sessions = if let Some(s) = stats_map.get(&project_path) {
-        CliCounts {
-            total: s.session_count,
-            claude: s.claude_count,
-            codex: s.codex_count,
-            qoder: s.qoder_count,
+        let root = Path::new(&project_path);
+        if !root.is_dir() {
+            return Err("项目路径不存在或不是目录".into());
         }
-    } else {
-        CliCounts::new()
-    };
-    sessions.compute_total();
 
-    // 2. Resource counts (lightweight read_dir scans)
-    let resources = OverviewResources {
-        skills: count_standalone_skills(root),
-        plugins: count_plugins(root),
-        commands: count_commands(root),
-        agents: count_agents(root),
-    };
+        // 1. Session stats (reuses get_project_stats logic, fast stat-only scan)
+        let stats_map = get_project_stats(vec![project_path.clone()]);
+        let mut sessions = if let Some(s) = stats_map.get(&project_path) {
+            CliCounts {
+                total: s.session_count,
+                claude: s.claude_count,
+                codex: s.codex_count,
+                qoder: s.qoder_count,
+            }
+        } else {
+            CliCounts::new()
+        };
+        sessions.compute_total();
 
-    // 3. Config status matrix
-    let config_matrix = build_config_matrix(root);
+        // 2. Resource counts (lightweight read_dir scans)
+        let resources = OverviewResources {
+            skills: count_standalone_skills(root),
+            plugins: count_plugins(root),
+            commands: count_commands(root),
+            agents: count_agents(root),
+        };
 
-    // 4. Recent sessions (capped at 8 for the overview)
-    let recent_sessions = scan_recent_sessions(&project_path, 8);
+        // 3. Config status matrix
+        let config_matrix = build_config_matrix(root);
 
-    Ok(ProjectOverviewData {
-        sessions,
-        resources,
-        config_matrix,
-        recent_sessions,
-    })
+        // 4. Recent sessions (capped at 8 for the overview)
+        let recent_sessions = scan_recent_sessions(&project_path, 8);
+
+        Ok(ProjectOverviewData {
+            sessions,
+            resources,
+            config_matrix,
+            recent_sessions,
+        })
     })
     .await
     .map_err(|e| format!("后台任务失败: {}", e))?
@@ -1568,13 +2039,16 @@ pub async fn get_project_overview(project_path: String) -> Result<ProjectOvervie
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn temp_config_setup() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::env::set_var("KN_HOME", &config_dir);
         std::env::set_var(
             "CLAUDE_PROFILES_HOME",
-            dir.path().join("config").to_string_lossy().to_string(),
+            config_dir.to_string_lossy().to_string(),
         );
         (guard, dir)
     }
@@ -1597,12 +2071,17 @@ mod tests {
             default_profile: Some("stale-global-default".to_string()),
             description: None,
             pinned: false,
+            verify: None,
         }];
         fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
 
         assert_eq!(list_projects()[0].default_profile, None);
 
-        fs::write(project_dir.join(".ai-profile"), "default_profile: project-profile\n").unwrap();
+        fs::write(
+            project_dir.join(".ai-profile"),
+            "default_profile: project-profile\n",
+        )
+        .unwrap();
         assert_eq!(
             list_projects()[0].default_profile.as_deref(),
             Some("project-profile")
@@ -1623,6 +2102,7 @@ mod tests {
             default_profile: None,
             description: None,
             pinned: false,
+            verify: None,
         }];
         fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
 
@@ -1636,6 +2116,220 @@ mod tests {
         );
 
         assert!(result.is_err());
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn update_project_verify_config_writes_and_clears_verify_only() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "demo".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: Some("profile-a".to_string()),
+            description: Some("desc".to_string()),
+            pinned: true,
+            verify: None,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let mut environments = BTreeMap::new();
+        environments.insert(
+            "default".to_string(),
+            kn_common::project::ProjectVerifyEnvironment {
+                build: Some(kn_common::project::ProjectVerifyCommand {
+                    command: "cargo check".to_string(),
+                    enabled: true,
+                    timeout_seconds: Some(300),
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
+                }),
+                test: Some(kn_common::project::ProjectVerifyCommand {
+                    command: "cargo test".to_string(),
+                    enabled: false,
+                    timeout_seconds: Some(600),
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
+                }),
+            },
+        );
+        let verify = ProjectVerifyConfig {
+            default_environment: Some("default".to_string()),
+            environments,
+        };
+
+        update_project_verify_config("demo".to_string(), Some(verify)).unwrap();
+        let saved = load_projects();
+
+        assert_eq!(saved[0].default_profile.as_deref(), Some("profile-a"));
+        assert_eq!(saved[0].description.as_deref(), Some("desc"));
+        assert!(saved[0].pinned);
+        assert_eq!(
+            saved[0].verify.as_ref().unwrap().environments["default"]
+                .build
+                .as_ref()
+                .unwrap()
+                .command,
+            "cargo check"
+        );
+
+        update_project_verify_config("demo".to_string(), None).unwrap();
+        assert!(load_projects()[0].verify.is_none());
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn preview_project_verify_config_detects_auto_commands() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "demo".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+            verify: None,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let verify = preview_project_verify_config("demo".to_string())
+            .unwrap()
+            .unwrap();
+        let env = &verify.environments["default"];
+
+        assert_eq!(env.build.as_ref().unwrap().command, "cargo check");
+        assert_eq!(env.test.as_ref().unwrap().command, "cargo test");
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn preview_project_verify_config_detects_xcode_build_and_test_commands() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("kn-ios");
+        fs::create_dir_all(project_dir.join("kn.xcodeproj")).unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "kn-ios".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+            verify: None,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let verify = preview_project_verify_config("kn-ios".to_string())
+            .unwrap()
+            .unwrap();
+        let env = &verify.environments["default"];
+
+        assert_eq!(
+            env.build.as_ref().unwrap().command,
+            "xcodebuild -project kn.xcodeproj -scheme kn build"
+        );
+        assert_eq!(
+            env.test.as_ref().unwrap().command,
+            "xcodebuild -project kn.xcodeproj -scheme kn test"
+        );
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn preview_project_verify_config_detects_swiftpm_build_and_test_commands() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("swift-package");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("Package.swift"),
+            "// swift-tools-version:5.7\n",
+        )
+        .unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let projects = vec![ProjectInfo {
+            name: "swift-package".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+            verify: None,
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let verify = preview_project_verify_config("swift-package".to_string())
+            .unwrap()
+            .unwrap();
+        let env = &verify.environments["default"];
+
+        assert_eq!(env.build.as_ref().unwrap().command, "swift build");
+        assert_eq!(env.test.as_ref().unwrap().command, "swift test");
+
+        cleanup_config(dir);
+    }
+
+    #[test]
+    fn preview_project_verify_config_prefers_manual_config() {
+        let (_guard, dir) = temp_config_setup();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(crate::config_dir()).unwrap();
+        let mut environments = BTreeMap::new();
+        environments.insert(
+            "default".to_string(),
+            ProjectVerifyEnvironment {
+                build: Some(ProjectVerifyCommand {
+                    command: "cargo check --workspace".to_string(),
+                    enabled: true,
+                    timeout_seconds: Some(500),
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
+                }),
+                test: None,
+            },
+        );
+        let projects = vec![ProjectInfo {
+            name: "demo".to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            default_profile: None,
+            description: None,
+            pinned: false,
+            verify: Some(ProjectVerifyConfig {
+                default_environment: Some("default".to_string()),
+                environments,
+            }),
+        }];
+        fs::write(projects_file(), serde_json::to_string(&projects).unwrap()).unwrap();
+
+        let verify = preview_project_verify_config("demo".to_string())
+            .unwrap()
+            .unwrap();
+        let env = &verify.environments["default"];
+
+        assert_eq!(
+            env.build.as_ref().unwrap().command,
+            "cargo check --workspace"
+        );
+        assert!(env.test.is_none());
 
         cleanup_config(dir);
     }

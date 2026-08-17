@@ -3,6 +3,9 @@ import { useResizeHandle } from "./hooks/useResizeHandle";
 import { Toolbar } from "./components/Toolbar";
 import { MainPanel, ProjectGuide } from "./components/MainPanel";
 import { TerminalPanel } from "./components/TerminalPanel";
+import { AgentPanel } from "./components/AgentPanel";
+import { BindDialog } from "./components/BindDialog";
+import { RedeemDialog } from "./components/RedeemDialog";
 import { ProfileDialog } from "./components/ProfileDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { NameDialog } from "./components/NameDialog";
@@ -16,9 +19,11 @@ import { ToastViewport } from "./components/ToastViewport";
 import { ProfileDrawer } from "./components/ProfileDrawer";
 import { ResourceDrawer } from "./components/ResourceDrawer";
 import { OnboardingWizard } from "./components/OnboardingWizard";
+import { useUpdateCheck } from "./app/useUpdateCheck";
+import { useSkillOps } from "./app/useSkillOps";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
 import type { LocalCliUsageRow } from "./components/LocalCliUsage";
-import { ResourceList, type ResourceScanData, type SelectedItem, type BatchToggleItem } from "./components/ResourceList";
+import { ResourceList, type ResourceScanData, type SelectedItem } from "./components/ResourceList";
 import type { PluginUpdateInfo } from "./components/ResourceList";
 import type { AgentManagerData } from "./components/ResourceList";
 import { ResourceDetail } from "./components/ResourceDetail";
@@ -39,6 +44,7 @@ import { useProfiles } from "./hooks/useProfiles";
 import { useTerminal } from "./hooks/useTerminal";
 import { useToasts } from "./hooks/useToasts";
 import { useUsage } from "./hooks/useUsage";
+import { useAgent } from "./hooks/useAgent";
 import { useTheme } from "./hooks/useTheme";
 import { useProjects } from "./hooks/useProjects";
 import { useProjectContext } from "./hooks/useProjectContext";
@@ -48,25 +54,12 @@ import type { ProfileDetail, ProjectInfo, ScopeTab, SessionInfo } from "./lib/ty
 import { basename } from "./lib/path-utils";
 import { showProfile, setEnvVar as setProfileEnvVar, unsetEnvVar as unsetProfileEnvVar } from "./lib/tauri-api";
 import { buildDestDir, getResourceData, getResourceType, getSubdir, type ResourceData } from "./lib/resource-transfer";
+import { flattenPanes } from "./lib/pane-types";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { EnvCheckResult } from "./lib/types";
-
-/** Compare two semver strings. Returns <0 if a<b, 0 if equal, >0 if a>b. */
-function compareVersions(a: string, b: string): number {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const na = pa[i] ?? 0;
-    const nb = pb[i] ?? 0;
-    if (isNaN(na) || isNaN(nb)) return a.localeCompare(b);
-    if (na !== nb) return na - nb;
-  }
-  return 0;
-}
 
 export function App() {
   const ctx = useProfiles();
@@ -99,6 +92,28 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
+  const [showAgentPanel, setShowAgentPanel] = useState(false);
+  const [showBindDialog, setShowBindDialog] = useState(false);
+  const [showRedeemDialog, setShowRedeemDialog] = useState(false);
+  const [remoteToggleBusyNid, setRemoteToggleBusyNid] = useState<string | null>(null);
+  const agentHook = useAgent();
+  const { clearTokenRevoked } = agentHook;
+  const handleCloseBindDialog = useCallback(() => {
+    setShowBindDialog(false);
+    clearTokenRevoked();
+  }, [clearTokenRevoked]);
+  const handleCloseRedeemDialog = useCallback(() => setShowRedeemDialog(false), []);
+
+  // Auto-open BindDialog when token is revoked by the server
+  useEffect(() => {
+    if (agentHook.tokenRevoked) {
+      setShowBindDialog(true);
+    }
+  }, [agentHook.tokenRevoked]);
+
+  useEffect(() => {
+    rightTerminal.syncAgentSessions(agentHook.sessions);
+  }, [agentHook.sessions, rightTerminal.syncAgentSessions]);
   const [activeActivity, setActiveActivity] = useState<ActivityKey>("projects");
   const [skillData, setSkillData] = useState<ResourceScanData | null>(null);
   const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
@@ -124,6 +139,8 @@ export function App() {
     loadProjects,
     removeProject,
     updateProject,
+    updateVerifyConfig,
+    previewVerifyConfig,
     statsMap,
     setDescription,
     togglePin,
@@ -248,11 +265,7 @@ export function App() {
   const batchDeleteNamesRef = useRef<string[]>([]);
   // Platform info (fetched once, used for download path construction)
   const platformRef = useRef<{ os: string; arch: string }>({ os: "macos", arch: "x86_64" });
-  // Update dialog: store manifest + platform data when new version found
-  const [updateDialog, setUpdateDialog] = useState<{ version: string; notes: string; url: string; sha256: string } | null>(null);
-  const [downloadState, setDownloadState] = useState<{ phase: "idle" | "downloading" | "verifying"; progress: number; error: string | null }>({
-    phase: "idle", progress: 0, error: null,
-  });
+  const { updateDialog, downloadState, handleCheckUpdate, handleConfirmUpdate, handleCancelUpdate, setUpdateDialog, setDownloadState } = useUpdateCheck(addToast);
 
   // Load profiles + platform info on mount
   useEffect(() => {
@@ -298,11 +311,10 @@ export function App() {
     }
   }, [profileDrawerOpen, drawerSelectedName, ctx.selectedName, ctx.profiles, selectDrawerProfile]);
 
-  // Keep terminals aware of valid profile names (for history restore validation)
+  // Keep terminals aware of profile CLI types for safe local history restoration.
   useEffect(() => {
-    const names = ctx.profiles.map((p) => p.name);
-    rightTerminal.setValidProfileNames(names);
-    bottomTerminal.setValidProfileNames(names);
+    rightTerminal.setValidProfiles(ctx.profiles);
+    bottomTerminal.setValidProfiles(ctx.profiles);
   }, [ctx.profiles]);
 
   // Environment check — refresh on mount, on panel open, on dialog open
@@ -825,13 +837,17 @@ export function App() {
     rightTerminal.runInNewTab(cmd, projectPath, `${projectName} · ${profileName}`);
   }, [rightTerminal]);
 
-  const handleResumeSession = useCallback((session: SessionInfo) => {
+  const handleResumeSession = useCallback((session: SessionInfo, profileName: string) => {
     const cmdMap: Record<string, string> = {
-      claude: `ai claude ${session.profile || ""} --resume ${session.sessionId}`,
-      codex: `ai codex ${session.profile || ""} resume ${session.sessionId}`,
-      qoder: `ai qoderclicn ${session.profile || ""} -r ${session.sessionId}`,
+      claude: `ai claude ${profileName} --resume ${session.sessionId}`,
+      codex: `ai codex ${profileName} resume ${session.sessionId}`,
+      qoderclicn: `ai qoderclicn ${profileName} -r ${session.sessionId}`,
     };
-    const cmd = cmdMap[session.cli] || `ai claude --resume ${session.sessionId}`;
+    const cmd = cmdMap[session.cli];
+    if (!cmd) {
+      window.alert("该 CLI 暂不支持恢复会话");
+      return;
+    }
     const label = session.title.slice(0, 30);
     rightTerminal.runInNewTab(cmd.trim(), session.projectPath, label);
   }, [rightTerminal]);
@@ -926,7 +942,7 @@ export function App() {
     } catch (e) {
       addToast("error", `移动失败: ${String(e).slice(0, 120)}`);
     }
-  }, [activeProject, scanProjectPath, addToast, scanMultiProject]);
+  }, [activeProject, addToast, scanMultiProject]);
 
   const handleCopyResource = useCallback(async (item: SelectedItem, toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
     try {
@@ -954,11 +970,10 @@ export function App() {
     } catch (e) {
       addToast("error", `复制失败: ${String(e).slice(0, 120)}`);
     }
-  }, [activeProject, scanProjectPath, addToast, scanMultiProject]);
+  }, [activeProject, addToast, scanMultiProject]);
 
   // ── Batch Move / Copy ──
   const handleBatchMove = useCallback(async (items: SelectedItem[], toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
-    const total = items.length;
     let ok = 0;
     let failed = 0;
     for (const item of items) {
@@ -999,10 +1014,9 @@ export function App() {
     } else {
       addToast("error", `移动完成: ${ok} 成功, ${failed} 失败`);
     }
-  }, [activeProject, scanProjectPath, addToast, scanMultiProject]);
+  }, [activeProject, addToast, scanMultiProject]);
 
   const handleBatchCopy = useCallback(async (items: SelectedItem[], toScope: "user" | "project", targetProject?: import("./lib/types").ProjectInfo) => {
-    const total = items.length;
     let ok = 0;
     let failed = 0;
     for (const item of items) {
@@ -1038,7 +1052,7 @@ export function App() {
     } else {
       addToast("error", `复制完成: ${ok} 成功, ${failed} 失败`);
     }
-  }, [activeProject, scanProjectPath, addToast, scanMultiProject]);
+  }, [activeProject, addToast, scanMultiProject]);
 
   // After re-scanning, sync selectedSkillItem to the matching item in fresh data
   const syncSelection = useCallback((data: ResourceScanData, prev: SelectedItem | null) => {
@@ -1113,293 +1127,60 @@ export function App() {
     }
   }, [agentData]);
 
-  // Skill toggle handlers
-  const handleTogglePlugin = useCallback(
-    async (cli: string, pluginId: string, enabled: boolean) => {
-      try {
-        await invoke("toggle_plugin", { cli, pluginId, enabled });
-        setSkillDataLoading(true);
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem((prev) => syncSelection(skills, prev));
-        setSkillDataLoading(false);
-      } catch (e) {
-        addToast("error", `操作失败: ${e}`);
-      }
-    },
-    [addToast, syncSelection, scanMultiProject],
-  );
-
-  const handleToggleStandaloneSkill = useCallback(
-    async (cli: string, skillId: string, enabled: boolean, path?: string) => {
-      try {
-        await invoke("toggle_standalone_skill", { cli, skillId, enabled, path: path ?? null });
-        setSkillDataLoading(true);
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem((prev) => syncSelection(skills, prev));
-        setSkillDataLoading(false);
-      } catch (e) {
-        addToast("error", `操作失败: ${e}`);
-      }
-    },
-    [addToast, syncSelection, scanMultiProject],
-  );
-
-  // Agent toggle
-  const handleToggleAgent = useCallback(
-    async (cli: string, name: string, enabled: boolean, path?: string) => {
-      try {
-        await invoke("toggle_agent", { cli, name, enabled, path: path ?? null });
-        // Re-scan both agents and skills with full project paths
-        setSkillDataLoading(true);
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem((prev) => {
-          if (prev?.type === "agent" && prev.data.name === name) {
-            const found = agents.agents.find((a) => a.name === name && a.cli === cli);
-            return found ? { type: "agent", data: found } : null;
-          }
-          return prev;
-        });
-        setSkillDataLoading(false);
-      } catch (e) {
-        addToast("error", `操作失败: ${e}`);
-      }
-    },
-    [addToast, scanMultiProject],
-  );
-
-  // Agent delete = disable (rename to .disabled)
-  const handleDeleteAgent = useCallback(
-    async (cli: string, name: string, path?: string) => {
-      try {
-        await invoke("delete_agent", { cli, name, path: path ?? null });
-        // Re-scan with full project paths
-        setSkillDataLoading(true);
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem(null);
-        setSkillDataLoading(false);
-        addToast("success", `已删除 Agent "${name}"`);
-      } catch (e) {
-        addToast("error", `删除失败: ${e}`);
-      }
-    },
-    [addToast, scanMultiProject],
-  );
-
-  // Batch toggle: fires all toggles, then does ONE scan
-  const handleBatchToggle = useCallback(
-    async (items: BatchToggleItem[], enabled: boolean) => {
-      try {
-        for (const item of items) {
-          if (item.id.includes(":plugin:")) {
-            await invoke("toggle_plugin", { cli: item.cli, pluginId: item.id, enabled });
-          } else if (item.id.includes(":agent:")) {
-            const name = item.id.split(":").pop() || item.id;
-            await invoke("toggle_agent", { cli: item.cli, name, enabled, path: item.path ?? null });
-          } else if (item.id.includes(":command:") || item.id.includes("-command:")) {
-            const name = item.id.split(":").pop() || item.id;
-            await invoke("toggle_command", { cli: item.cli, name, enabled, path: item.path ?? null });
-          } else {
-            await invoke("toggle_standalone_skill", { cli: item.cli, skillId: item.id, enabled, path: item.path ?? null });
-          }
-        }
-        // Re-scan with full project paths so project tabs stay populated
-        setSkillDataLoading(true);
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem((prev) => syncSelection(skills, prev));
-        setSkillDataLoading(false);
-      } catch (e) {
-        addToast("error", `批量操作失败: ${e}`);
-      }
-    },
-    [addToast, syncSelection, scanMultiProject],
-  );
-
-  const handleBatchUninstall = useCallback(
-    async (items: BatchToggleItem[]) => {
-      try {
-        for (const item of items) {
-          // Detect command IDs: user-level "cli:command:name" or project-level "cli:project-command:hash:name"
-          const isCommand = item.id.includes(":command:") || item.id.includes("-command:");
-          if (item.id.includes(":plugin:")) {
-            await invoke("uninstall_plugin", { cli: item.cli, pluginId: item.id });
-          } else if (item.id.includes(":agent:")) {
-            const name = item.id.split(":").pop() || item.id;
-            await invoke("delete_agent", { cli: item.cli, name, path: item.path ?? null });
-          } else if (isCommand) {
-            const name = item.id.split(":").pop() || item.id;
-            await invoke("uninstall_command", { cli: item.cli, name, path: item.path ?? null });
-          } else {
-            // Extract name from ID (last segment) as fallback
-            const name = item.id.split(":").pop() || item.id;
-            await invoke("uninstall_standalone_skill", { cli: item.cli, skillId: item.id, skillPath: item.path ?? null, skillName: name });
-          }
-        }
-        // Re-scan with full project paths so project tabs stay populated
-        setSkillDataLoading(true);
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem(null);
-        setSkillDataLoading(false);
-        addToast("success", `已删除 ${items.length} 项`);
-      } catch (e) {
-        addToast("error", `批量删除失败: ${e}`);
-      }
-    },
-    [addToast, scanMultiProject],
-  );
-
-  // Track whether check was initiated by THIS component — only then show toast.
-  // Prevents duplicate toasts when sibling components also listen to the same event.
-  const checkRequestRef = useRef(false);
-  const checkSilentRef = useRef(false);
+  // Skill/Agent ops extracted to useSkillOps — see app/useSkillOps.ts
+  const skillOps = useSkillOps({
+    scanMultiProject, scanProjectPathsRef,
+    setSkillData, setAgentData, setSelectedSkillItem, setSkillDataLoading, addToast, syncSelection,
+  });
+  const {
+    handleTogglePlugin, handleToggleStandaloneSkill, handleToggleAgent, handleDeleteAgent,
+    handleBatchToggle, handleBatchUninstall, handleToggleCommand,
+    handleUninstallPlugin, handleUninstallStandaloneSkill, handleUninstallCommand,
+  } = skillOps;
 
   // Plugin update check — fires background thread, result arrives via event
+  const checkRequestRef = useRef(false);
+  const checkSilentRef = useRef(false);
   const handleCheckUpdates = useCallback(async () => {
-    if (checkingUpdates) return; // already running
+    if (checkingUpdates) return;
     checkRequestRef.current = true;
-    checkSilentRef.current = false; // user-initiated → show toast
+    checkSilentRef.current = false;
     setCheckingUpdates(true);
     setUpdateInfos([]);
-    try {
-      await invoke("check_updates");
-    } catch (e) {
-      addToast("error", `检查更新失败: ${e}`);
-      setCheckingUpdates(false);
-      checkRequestRef.current = false;
-    }
+    try { await invoke("check_updates"); } catch (e) { addToast("error", `检查更新失败: ${e}`); setCheckingUpdates(false); checkRequestRef.current = false; }
   }, [addToast, checkingUpdates]);
 
-  // Listen for update-check-complete event from background thread
   useEffect(() => {
     const unlisten = listen<PluginUpdateInfo[]>("update-check-complete", (event) => {
-      setUpdateInfos(event.payload);
-      setCheckingUpdates(false);
-      // Only toast when THIS component initiated the check AND it was user-initiated
+      setUpdateInfos(event.payload); setCheckingUpdates(false);
       if (checkRequestRef.current && !checkSilentRef.current) {
         const count = event.payload.filter((u) => u.hasUpdate).length;
-        if (count > 0) addToast("success", `发现 ${count} 个可用更新`);
-        else addToast("success", "所有插件均为最新版本");
+        addToast(count > 0 ? "success" : "success", count > 0 ? `发现 ${count} 个可用更新` : "所有插件均为最新版本");
       }
       checkRequestRef.current = false;
     });
     return () => { unlisten.then((fn) => fn()); };
   }, [addToast]);
 
-  const handleCancelCheckUpdates = useCallback(async () => {
-    try {
-      await invoke("cancel_check_updates");
-    } catch { /* ignore */ }
-  }, []);
-
+  const handleCancelCheckUpdates = useCallback(async () => { try { await invoke("cancel_check_updates"); } catch { /* */ } }, []);
   const handleUpdatePlugin = useCallback(async (cli: string, pluginId: string) => {
-    try {
-      await invoke("update_plugin", { cli, pluginId });
-      addToast("success", "正在后台更新...");
-    } catch (e) {
-      addToast("error", `更新失败: ${e}`);
-    }
+    try { await invoke("update_plugin", { cli, pluginId }); addToast("success", "正在后台更新..."); } catch (e) { addToast("error", `更新失败: ${e}`); }
   }, [addToast]);
 
-  // Listen for update-plugin-complete event from background thread
   useEffect(() => {
     const unlisten = listen<{ pluginId: string; success: boolean; message: string }>("update-plugin-complete", async (event) => {
       const { success, message } = event.payload;
       if (success) {
         addToast("success", message);
-        // Re-scan with full project paths so project tabs stay populated
         const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
+        setSkillData(skills); setAgentData(agents);
         setSelectedSkillItem((prev) => syncSelection(skills, prev));
-        // Re-check silently (no toast) — result arrives via update-check-complete event
-        checkRequestRef.current = true;
-        checkSilentRef.current = true;
+        checkRequestRef.current = true; checkSilentRef.current = true;
         invoke("check_updates").catch(() => { checkRequestRef.current = false; });
-      } else {
-        addToast("error", message);
-      }
+      } else { addToast("error", message); }
     });
     return () => { unlisten.then((fn) => fn()); };
   }, [addToast, syncSelection]);
-
-  // Plugin uninstall handler
-  const handleUninstallPlugin = useCallback(
-    async (cli: string, pluginId: string) => {
-      try {
-        const msg = await invoke<string>("uninstall_plugin", { cli, pluginId });
-        addToast("success", msg);
-        // Re-scan with full project paths so project tabs stay populated
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem((prev) => syncSelection(skills, prev));
-      } catch (e) {
-        addToast("error", `删除失败: ${e}`);
-      }
-    },
-    [addToast, syncSelection, scanMultiProject],
-  );
-
-  const handleUninstallStandaloneSkill = useCallback(
-    async (cli: string, skillId: string, path?: string, name?: string) => {
-      try {
-        const msg = await invoke<string>("uninstall_standalone_skill", { cli, skillId, skillPath: path ?? null, skillName: name ?? null });
-        addToast("success", msg);
-        // Re-scan with full project paths so project tabs stay populated
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem(null);
-      } catch (e) {
-        addToast("error", `删除失败: ${e}`);
-      }
-    },
-    [addToast, scanMultiProject],
-  );
-
-  // Command toggle handler
-  const handleToggleCommand = useCallback(
-    async (cli: string, name: string, enabled: boolean, path?: string) => {
-      try {
-        await invoke("toggle_command", { cli, name, enabled, path: path ?? null });
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem((prev) => syncSelection(skills, prev));
-      } catch (e) {
-        addToast("error", `操作失败: ${e}`);
-      }
-    },
-    [addToast, syncSelection, scanMultiProject],
-  );
-
-  // Command uninstall handler
-  const handleUninstallCommand = useCallback(
-    async (cli: string, name: string, path?: string) => {
-      try {
-        const msg = await invoke<string>("uninstall_command", { cli, name, path: path ?? null });
-        addToast("success", msg);
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills);
-        setAgentData(agents);
-        setSelectedSkillItem(null);
-      } catch (e) {
-        addToast("error", `删除失败: ${e}`);
-      }
-    },
-    [addToast, scanMultiProject],
-  );
 
   // Listen for plugin-install-complete event
   useEffect(() => {
@@ -1483,6 +1264,48 @@ export function App() {
     // Open bottom terminal and auto-execute the install command
     bottomTerminal.runInTerminal(cmd, "");
   }, [bottomTerminal]);
+
+  const handleToggleRightTerminalRemote = useCallback(async (tabId: string, enabled: boolean) => {
+    const tab = rightTerminal.tabs.find((item) => item.id === tabId);
+    if (!tab) return;
+    const activePane = flattenPanes(tab.rootNode).find((leaf) => leaf.paneId === tab.activePaneId);
+    const nid = activePane?.agentNid ?? tab.agentNid;
+    if (!nid) {
+      addToast("error", "当前会话暂时不能开启远程");
+      return;
+    }
+
+    setRemoteToggleBusyNid(nid);
+    try {
+      await invoke("agent_ipc", { method: "set_remote_enabled", params: { nid, enabled } });
+      const sessions = await agentHook.fetchSessions();
+      if (sessions) rightTerminal.syncAgentSessions(sessions);
+      addToast("success", enabled ? "已开启远程会话" : "已关闭远程会话");
+    } catch (e: unknown) {
+      const errStr = String(e);
+      if (errStr.includes("WSS_NOT_CONNECTED")) {
+        addToast("error", "电脑端未连接到云端，请先绑定设备");
+      } else if (errStr.includes("REMOTE_LIMIT")) {
+        addToast("error", "已达到远程控制上限（10个），请先关闭其他远程会话");
+      } else if (errStr.includes("WSS_ACK_TIMEOUT")) {
+        addToast("error", "云端确认超时，请检查网络后重试");
+      } else if (errStr.includes("WSS_ACK_ERROR")) {
+        if (errStr.includes("membershipExpired")) {
+          addToast("error", "会员已过期，无法开启远程会话");
+        } else if (errStr.includes("membershipGracePeriod")) {
+          addToast("error", "会员已到期，缓冲期内无法开启远程会话");
+        } else if (errStr.includes("membershipInactive")) {
+          addToast("error", "会员已过期或账号已禁用，无法开启远程会话");
+        } else {
+          addToast("error", "云端拒绝远程连接，请稍后重试");
+        }
+      } else {
+        addToast("error", `${enabled ? "开启" : "关闭"}远程会话失败：${errStr.slice(0, 120)}`);
+      }
+    } finally {
+      setRemoteToggleBusyNid((current) => current === nid ? null : current);
+    }
+  }, [rightTerminal, agentHook, addToast]);
 
   const handleQuickLaunchProfile = useCallback((name: string, command: string, workDir: string) => {
     ctx.selectProfile(name);
@@ -1630,105 +1453,7 @@ export function App() {
     addToast("success", `已导入 "${name}"`);
   }, [ctx, importData]);
 
-  // Check for updates
-  const handleCheckUpdate = useCallback(async (opts?: { silent?: boolean }) => {
-    try {
-      const config: { update_url?: string } = await invoke("read_app_config");
-      if (!config.update_url) {
-        if (!opts?.silent) addToast("error", "未配置更新地址。请编辑 update/update.json");
-        return;
-      }
-      const currentVersion: string = await invoke("get_app_version");
-
-      interface UpdatePlatform { url: string; sha256?: string; signature?: string; }
-      interface UpdateManifest { version: string; notes?: string; platforms: Record<string, UpdatePlatform>; }
-      let manifest: UpdateManifest;
-      try {
-        const text = (await invoke("fetch_url", { url: config.update_url })) as string;
-        if (!text.trim()) throw new Error("空响应");
-        manifest = JSON.parse(text) as UpdateManifest;
-      } catch (e: unknown) {
-        if (!opts?.silent) addToast("error", `无法获取更新清单: ${e}\n${config.update_url}`);
-        return;
-      }
-      if (!manifest.version || !manifest.platforms) {
-        if (!opts?.silent) addToast("error", "更新清单格式无效");
-        return;
-      }
-
-      if (compareVersions(manifest.version, currentVersion) <= 0) {
-        if (!opts?.silent) addToast("success", `已是最新版本 (${currentVersion})`);
-        return;
-      }
-
-      const platformInfo: { os: string; arch: string } = await invoke("get_platform_info");
-      const platform = `darwin-${platformInfo.arch}`;
-      const plat = manifest.platforms[platform] || Object.values(manifest.platforms)[0];
-      if (!plat?.url) { addToast("error", `无此平台的更新包 (${platform})`); return; }
-
-      // Show update dialog with release notes instead of auto-downloading
-      setUpdateDialog({
-        version: manifest.version,
-        notes: manifest.notes || "",
-        url: plat.url,
-        sha256: plat.sha256 || "",
-      });
-    } catch (e) {
-      if (!opts?.silent) addToast("error", `检查更新失败: ${e}`);
-    }
-  }, []);
-
-  // Confirm update: download, verify, and open installer
-  const handleConfirmUpdate = useCallback(async () => {
-    if (!updateDialog) return;
-    const { version, url, sha256 } = updateDialog;
-
-    // Kick off download — dialog stays open and shows progress
-    setDownloadState({ phase: "downloading", progress: 0, error: null });
-
-    // Listen for progress events from Rust
-    const unlisten = await listen<number>("download-progress", (event) => {
-      setDownloadState((prev) =>
-        prev.phase === "downloading" ? { ...prev, progress: event.payload } : prev
-      );
-    });
-
-    try {
-      const tmpDir: string = await invoke("temp_dir");
-      const pathPart = url.split('?')[0];
-      const urlExt = pathPart.split('.').pop() || "";
-      const ext = urlExt || "dmg";
-      const tmpPath = `${tmpDir}/kn-update-${Date.now()}.${ext}`;
-      await invoke("download_file", { url, path: tmpPath });
-
-      // Download complete — 100%
-      setDownloadState({ phase: "verifying", progress: 100, error: null });
-
-      if (sha256) {
-        const ok = (await invoke("verify_sha256", { path: tmpPath, expected: sha256 })) as boolean;
-        if (!ok) {
-          setDownloadState({ phase: "idle", progress: 0, error: "SHA256 校验失败，文件可能损坏" });
-          return;
-        }
-      }
-
-      // Done — show completion in dialog briefly, then open installer
-      setDownloadState({ phase: "idle", progress: 100, error: null });
-      await new Promise((r) => setTimeout(r, 800)); // brief pause so user sees "done"
-      setUpdateDialog(null);
-      setDownloadState({ phase: "idle", progress: 0, error: null });
-      addToast("success", `已下载 ${version}，正在打开安装包...`);
-      await invoke("open_file", { path: tmpPath });
-    } catch (e: any) {
-      setDownloadState({ phase: "idle", progress: 0, error: String(e) });
-    }
-    unlisten();
-  }, [updateDialog]);
-
-  // Auto-check for updates on startup (silent — only shows toast when update available)
-  useEffect(() => {
-    handleCheckUpdate({ silent: true });
-  }, []);
+  // Update flow extracted to useUpdateCheck — see app/useUpdateCheck.ts
 
   // ── Backup / Restore config ──────────────────────────────
   const handleBackup = useCallback(async () => {
@@ -1926,6 +1651,9 @@ export function App() {
         activeProject={activeProject}
         onOpenProfiles={() => setProfileDrawerOpen(true)}
         onOpenResources={() => setResourceDrawerOpen(true)}
+        onToggleAgent={() => setShowAgentPanel((v) => !v)}
+        agentPanelOpen={showAgentPanel}
+        agentStatusIcon={agentHook.statusIcon}
       />
 
       {/* Main content — ActivityBar | Sidebar/ResourceList | (MainPanel + BottomTerminal) | RightTerminal */}
@@ -2063,6 +1791,15 @@ export function App() {
                     addToast("error", `设置项目默认 Profile 失败: ${e}`);
                   }
                 }}
+                onUpdateVerifyConfig={async (verify) => {
+                  try {
+                    await updateVerifyConfig(activeProject.name, verify);
+                    addToast("success", verify ? "验证配置已保存" : "已恢复自动识别");
+                  } catch (e) {
+                    addToast("error", `保存验证配置失败: ${e}`);
+                  }
+                }}
+                onPreviewVerifyConfig={previewVerifyConfig}
                 onScanSessions={(path) => sessionScanner.scanSessions(path)}
                 onResumeSession={handleResumeSession}
                 addToast={addToast}
@@ -2109,6 +1846,8 @@ export function App() {
             size={rightMaximized ? undefined : rightTerminal.size}
             maximized={rightMaximized}
             onToggleMaximize={() => { setRightMaximized((v) => !v); setBottomMaximized(false); }}
+            onToggleRemoteSession={handleToggleRightTerminalRemote}
+            remoteToggleBusyNid={remoteToggleBusyNid}
             {...buildTerminalProps(rightTerminal)}
           />
         </div>
@@ -2292,6 +2031,29 @@ export function App() {
 
       <UsagePanel open={showUsage} onClose={() => setShowUsage(false)} />
 
+      {showAgentPanel && (
+        <AgentPanel
+          onClose={() => setShowAgentPanel(false)}
+          onBind={() => {
+            setShowAgentPanel(false);
+            setShowBindDialog(true);
+          }}
+          onRedeem={() => {
+            setShowAgentPanel(false);
+            setShowRedeemDialog(true);
+          }}
+          onUnbind={agentHook.selfUnbind}
+          onCheckUpdate={() => { setShowAgentPanel(false); void handleCheckUpdate(); }}
+          onOpenRemoteSession={(session) => {
+            rightTerminal.openRemoteSession(session);
+            setShowAgentPanel(false);
+          }}
+          agent={agentHook}
+        />
+      )}
+      {showBindDialog && <BindDialog onClose={handleCloseBindDialog} agent={agentHook} />}
+      {showRedeemDialog && <RedeemDialog onClose={handleCloseRedeemDialog} agent={agentHook} />}
+
       <AboutDialog open={showAbout} onClose={() => setShowAbout(false)} />
 
       <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
@@ -2338,14 +2100,16 @@ export function App() {
           open={true}
           version={updateDialog.version}
           notes={updateDialog.notes}
+          mandatory={updateDialog.mandatory}
           downloading={downloadState.phase === "downloading"}
           progress={downloadState.progress}
+          downloaded={downloadState.downloaded}
+          total={downloadState.total}
+          speedBytesPerSecond={downloadState.speedBytesPerSecond}
+          etaSeconds={downloadState.etaSeconds}
           downloadError={downloadState.error}
           onConfirm={handleConfirmUpdate}
-          onCancel={() => {
-            setUpdateDialog(null);
-            setDownloadState({ phase: "idle", progress: 0, error: null });
-          }}
+          onCancel={handleCancelUpdate}
         />
       )}
 

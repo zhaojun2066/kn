@@ -4,8 +4,7 @@
 .qoder/
 .superpowers/
 
-# ── Design / planning docs — not for release ──
-docs/
+
 
 # ── Python ──
 __pycache__/
@@ -20,6 +19,7 @@ node_modules/
 
 # ── Build output ──
 dist/
+target/
 *.tsbuildinfo
 
 # ── Environment / secrets ──

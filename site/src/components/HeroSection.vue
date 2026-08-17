@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import DesktopDemo from './DesktopDemo.vue'
-import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
+import { APP_VERSION } from '../config'
 </script>
 
 <template>
@@ -12,9 +12,9 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
       <div class="hero-grid">
         <!-- Left -->
         <div class="hero-text reveal">
-          <span class="section-label">AI CLI 工具的统一管理中心</span>
+          <span class="section-label">用手机继续电脑端 AI 会话</span>
           <h1 class="hero-title">
-            告别手动改配置，<span class="hero-highlight">一行命令</span>切换 AI 环境
+            电脑端开跑，<span class="hero-highlight">手机继续</span>推进 AI 工作
           </h1>
 
           <!-- Supported CLI tools -->
@@ -26,7 +26,7 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
 
           <div class="hero-features-wrap">
             <ul class="hero-features">
-              <li>多 Profile 管理，一键切换 API Key / Model / Base URL</li>
+              <li>多运行配置管理，一键切换 API Key / Model / Base URL</li>
               <li>会话级隔离，终端之间互不干扰，退出自动清除</li>
               <li>Quick Switcher (⌘K) 全局快速启动，按使用频率排序</li>
               <li>自动追踪 Token 用量，按模型 / 项目统计成本</li>
@@ -35,7 +35,7 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
           </div>
 
           <div class="hero-actions">
-            <a :href="DOWNLOAD_URL_ARM" class="btn btn-primary">
+            <a href="#download" class="btn btn-primary">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               下载 macOS 版
             </a>

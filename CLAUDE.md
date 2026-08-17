@@ -124,6 +124,53 @@ Key implementation details:
 - `install.sh` + `ensure_shell_rc()` — configures both `.zshrc` and `.bashrc` idempotently
 - `pty.rs` — spawns with `-i -l` (login + interactive); always ensures `TERM=xterm-256color`
 
+## Sibling Repositories
+
+Three repositories under `~/workspace/me/shark/` form the complete kn product:
+
+| Repo | Dir | Language | Role |
+|------|-----|----------|------|
+| **kn** | `./` | Python + TypeScript + Rust | Desktop app + CLI + Agent (this repo) |
+| **kn-cloud** | `../kn-cloud/` | Java 21 + Spring Boot 3.x | Cloud backend — REST API + WebSocket server |
+| **kn-ios** | `../kn-ios/` | Swift | iOS mobile app — remote control client |
+
+### kn-cloud (`../kn-cloud/`)
+
+Maven multi-module project providing the server-side backend:
+
+| Module | Port | Role |
+|--------|------|------|
+| `kn-cloud-common` | — | Shared infrastructure: JwtService, RedisKeys, ErrorCode, ApiResponse, BizException, LoginContext |
+| `kn-cloud-api` | `8080` | REST API — user auth, device binding, redeem, session queries |
+| `kn-cloud-ws` | `8081` | WebSocket server — agent/iOS connection orchestration, message relay |
+
+**Database**: MySQL 8.0 via MyBatis-Plus, Redis 7 for cache/session state.
+
+**Key API endpoints**:
+| Endpoint | Auth | Purpose |
+|----------|------|---------|
+| `POST /api/v1/device/bind-init` | Public | Request bind code (returns 6-digit code, 300s TTL) |
+| `GET /api/v1/device/bind-result?code=xxx` | Public | Poll bind confirmation status |
+| `POST /api/v1/device/redeem` | Bearer device_token | Redeem card code |
+| `GET /api/v1/config/purchase-url` | Public | Get purchase page URL |
+| `GET /api/v1/auth/*` | Mixed | Register, login, refresh, captcha, Apple login |
+
+**WebSocket protocol**: Agent connects to `wss://api.shark.kim/v1/ws` with headers `Authorization: Bearer <device_token>`, `X-KN-Role: kn-agent`, `X-KN-Machine-Id`, `X-KN-Protocol-Version: 1`. iOS connects with JWT access token.
+
+**Key files**:
+- `kn-cloud-api/src/main/java/dev/kn/cloud/api/controller/` — REST controllers
+- `kn-cloud-api/src/main/java/dev/kn/cloud/api/config/AuthFilter.java` — JWT auth filter with public path whitelist
+- `kn-cloud-api/src/main/resources/application-dev.yml` / `application-prod.yml` — environment configs
+- `kn-cloud-ws/src/main/java/dev/kn/cloud/ws/handler/KnWsHandler.java` — WebSocket message dispatch
+- `kn-cloud-ws/src/main/java/dev/kn/cloud/ws/service/ConnectionService.java` — Agent/iOS connection auth
+- `kn-cloud/deploy/init.sql` — Database schema
+
+### kn-ios (`../kn-ios/`)
+
+Swift iOS app for remote Mac control. Communicates with kn-cloud via REST + WebSocket, scans QR codes from desktop BindDialog to complete device binding.
+
+**Note**: When changes are made to kn (desktop/agent) that affect the binding protocol, QR code data format, or WebSocket message types, the kn-ios repo must be checked for compatibility.
+
 ## Key Conventions
 
 - **Profile names**: `[a-z0-9]([a-z0-9-]*[a-z0-9])?` — enforced by `add_profile_cmd` to prevent shell injection in `sed`/regex parsing

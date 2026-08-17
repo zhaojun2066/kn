@@ -1,21 +1,34 @@
 import React, { useState, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { CLIIcon } from "./common/CLIIcon";
 import { Circle, Loader, ChevronDown } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { CLI_TYPES, type CliKind, type SessionInfo } from "../lib/types";
+import { CLI_TYPES, type CliKind, type ProfileSummary, type SessionInfo } from "../lib/types";
 import { relativeTime } from "../lib/time-utils";
 
 interface SessionListProps {
   sessions: SessionInfo[];
   loading: boolean;
-  onResume: (session: SessionInfo) => void;
+  profiles: ProfileSummary[];
+  onResume: (session: SessionInfo, profileName: string) => void;
 }
 
-export function SessionList({ sessions, loading, onResume }: SessionListProps) {
+export function SessionList({ sessions, loading, profiles, onResume }: SessionListProps) {
   const [cliFilter, setCliFilter] = useState<CliKind | "all">("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [preview, setPreview] = useState<string[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [sessionToResume, setSessionToResume] = useState<SessionInfo | null>(null);
+  const [selectedProfile, setSelectedProfile] = useState("");
+
+  const compatibleProfiles = sessionToResume
+    ? profiles.filter((profile) => profile.cli_type === sessionToResume.cli)
+    : [];
+
+  const openResumePicker = useCallback((session: SessionInfo) => {
+    setSessionToResume(session);
+    setSelectedProfile("");
+  }, []);
 
   const filtered = useMemo(() => {
     if (cliFilter === "all") return sessions;
@@ -143,7 +156,7 @@ export function SessionList({ sessions, loading, onResume }: SessionListProps) {
               </div>
 
               <button
-                onClick={(e) => { e.stopPropagation(); onResume(s); }}
+                onClick={(e) => { e.stopPropagation(); openResumePicker(s); }}
                 className="shrink-0 px-2 py-0.5 text-3xs font-mono
                   text-[var(--app-accent)] border border-[var(--app-accent-dim)]
                   hover:bg-[var(--app-accent)] hover:text-[var(--app-bg)]
@@ -196,6 +209,33 @@ export function SessionList({ sessions, loading, onResume }: SessionListProps) {
           </div>
           ))}
         </div>
+      )}
+      {sessionToResume && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
+          <div className="w-[360px] border border-app-border bg-app-panel p-5 shadow-dialog">
+            <h3 className="text-sm font-medium text-app-text">选择运行配置</h3>
+            <p className="mt-2 text-xs text-app-text-muted">恢复会话前请选择 {sessionToResume.cli} 的运行配置。</p>
+            <select
+              value={selectedProfile}
+              onChange={(event) => setSelectedProfile(event.target.value)}
+              className="mt-4 w-full border border-app-border bg-app-input px-2 py-2 text-sm text-app-text"
+            >
+              <option value="">请选择运行配置</option>
+              {compatibleProfiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
+            </select>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setSessionToResume(null)} className="px-3 py-1.5 text-xs text-app-text-muted">取消</button>
+              <button
+                disabled={!selectedProfile}
+                onClick={() => { onResume(sessionToResume, selectedProfile); setSessionToResume(null); }}
+                className="px-3 py-1.5 text-xs text-app-bg bg-app-accent disabled:opacity-40"
+              >
+                恢复会话
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

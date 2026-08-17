@@ -202,7 +202,7 @@ export function ProfileDrawer({
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
       <button
-        aria-label="关闭 Profile 管理遮罩"
+        aria-label="关闭运行配置管理遮罩"
         className="absolute inset-0 bg-black/45 animate-[fadeIn_160ms_ease-out]"
         onClick={onClose}
       />
@@ -221,10 +221,10 @@ export function ProfileDrawer({
       >
         {/* ── Header ── */}
         <div className="h-[44px] shrink-0 flex items-center gap-3 px-4 border-b border-app-border bg-app-toolbar">
-          <div className="text-sm font-mono text-app-text font-semibold">环境管理</div>
-          <div className="text-2xs font-mono text-app-text-muted">全局环境</div>
+          <div className="text-sm font-mono text-app-text font-semibold">运行配置管理</div>
+          <div className="text-2xs font-mono text-app-text-muted">全局运行配置</div>
           <button
-            aria-label="关闭 Profile 管理"
+            aria-label="关闭运行配置管理"
             onClick={onClose}
             className="ml-auto text-app-text-muted hover:text-app-text p-1 hover:bg-[var(--app-hover)] transition-colors"
           >

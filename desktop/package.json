@@ -1,7 +1,6 @@
 {
   "name": "kn",
   "private": true,
-  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,11 +9,11 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build:debug": "node -e \"require('fs').copyFileSync('update/update.prod.json','update/update.json')\" && tauri build --debug",
-    "tauri:build:prod": "node -e \"require('fs').copyFileSync('update/update.prod.json','update/update.json')\" && tauri build",
-    "tauri:build:prod:intel": "node -e \"require('fs').copyFileSync('update/update.prod.json','update/update.json')\" && tauri build --target x86_64-apple-darwin",
-    "tauri:build:prod:arm": "node -e \"require('fs').copyFileSync('update/update.prod.json','update/update.json')\" && tauri build --target aarch64-apple-darwin",
-    "tauri:build:staging": "node -e \"require('fs').copyFileSync('update/update.staging.json','update/update.json')\" && tauri build --debug"
+    "tauri:build:debug": "tauri build --debug",
+    "tauri:build:prod": "tauri build",
+    "tauri:build:prod:intel": "tauri build --target x86_64-apple-darwin",
+    "tauri:build:prod:arm": "tauri build --target aarch64-apple-darwin",
+    "tauri:build:staging": "tauri build --debug"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -30,6 +29,7 @@
     "highlight.js": "^11.11.1",
     "lucide-react": "^1.17.0",
     "marked": "^18.0.5",
+    "qrcode": "^1.5.4",
     "react": "^18.3",
     "react-dom": "^18.3",
     "simple-icons": "^16.22.0"

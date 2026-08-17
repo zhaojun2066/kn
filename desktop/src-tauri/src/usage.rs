@@ -197,10 +197,11 @@ pub fn load_pricing() -> HashMap<String, ModelPricing> {
 
 pub fn save_pricing(pricing: &HashMap<String, ModelPricing>) -> Result<(), String> {
     crate::with_write_lock_exclusive(|| {
-    let dir = crate::config_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("create dir: {}", e))?;
-    let json = serde_json::to_string_pretty(pricing).map_err(|e| format!("serialize: {}", e))?;
-    fs::write(pricing_file(), json).map_err(|e| format!("write: {}", e))
+        let dir = crate::config_dir();
+        fs::create_dir_all(&dir).map_err(|e| format!("create dir: {}", e))?;
+        let json =
+            serde_json::to_string_pretty(pricing).map_err(|e| format!("serialize: {}", e))?;
+        fs::write(pricing_file(), json).map_err(|e| format!("write: {}", e))
     })
 }
 
@@ -347,7 +348,11 @@ pub fn get_usage_by_project(days: u32) -> Result<Vec<ProjectUsage>, String> {
             let tin = rec.tokens_in;
             let tout = rec.tokens_out;
             grand_total += tin + tout;
-            let model = if rec.model.is_empty() { "unknown".to_string() } else { rec.model.clone() };
+            let model = if rec.model.is_empty() {
+                "unknown".to_string()
+            } else {
+                rec.model.clone()
+            };
 
             if let Some(ref pp) = rec.project_path {
                 let entry = projects.entry(pp.clone()).or_insert_with(|| Agg {
@@ -426,9 +431,8 @@ pub fn get_usage_by_project(days: u32) -> Result<Vec<ProjectUsage>, String> {
                 },
             })
             .collect();
-        unlinked_model_list.sort_by(|a, b| {
-            (b.tokens_in + b.tokens_out).cmp(&(a.tokens_in + a.tokens_out))
-        });
+        unlinked_model_list
+            .sort_by(|a, b| (b.tokens_in + b.tokens_out).cmp(&(a.tokens_in + a.tokens_out)));
         result.push(ProjectUsage {
             project_path: None,
             project_name: Some("未关联项目".to_string()),
@@ -486,29 +490,30 @@ pub fn get_usage_tracking_enabled() -> Result<bool, String> {
 #[tauri::command]
 pub fn set_usage_tracking_enabled(enabled: bool) -> Result<String, String> {
     with_write_lock(|| {
-    with_cross_process_lock(|| {
-    let home = crate::home_dir().to_string_lossy().to_string();
-    let hooks_dir = crate::config_dir().join("hooks");
-    fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
+        with_cross_process_lock(|| {
+            let home = crate::home_dir().to_string_lossy().to_string();
+            let hooks_dir = crate::config_dir().join("hooks");
+            fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
+            crate::profile_cmd::write_builtin_hook_scripts(&hooks_dir);
 
-    let python = "python3";
-    let hooks_dir_str = hooks_dir.to_string_lossy().replace('\\', "/");
-    let hook_cmd = format!("{} {}/record-usage.py", python, hooks_dir_str);
+            let python = "python3";
+            let hooks_dir_str = hooks_dir.to_string_lossy().replace('\\', "/");
+            let hook_cmd = format!("{} {}/record-usage.py", python, hooks_dir_str);
 
-    if enabled {
-        let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
-        inject_claude_hook(&claude_settings, &hook_cmd)?;
-        let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
-        inject_codex_hook(&codex_config, &hook_cmd)?;
-    } else {
-        let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
-        remove_claude_hook(&claude_settings)?;
-        let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
-        remove_codex_hook(&codex_config)?;
-    }
+            if enabled {
+                let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
+                inject_claude_hook(&claude_settings, &hook_cmd)?;
+                let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
+                inject_codex_hook(&codex_config, &hook_cmd)?;
+            } else {
+                let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
+                remove_claude_hook(&claude_settings)?;
+                let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
+                remove_codex_hook(&codex_config)?;
+            }
 
-    Ok("ok".into())
-    }) // with_cross_process_lock
+            Ok("ok".into())
+        }) // with_cross_process_lock
     }) // with_write_lock
 }
 
@@ -519,8 +524,32 @@ pub fn ensure_usage_hooks() -> Result<(), String> {
     // both first-time setup (no hooks → remove is a no-op) and migration
     // from the old ~/.claude-profiles/hooks/ path.
     set_usage_tracking_enabled(false)?; // clean up any old-path hooks
-    set_usage_tracking_enabled(true)?;  // inject with correct current path
+    set_usage_tracking_enabled(true)?; // inject with correct current path
     Ok(())
+}
+
+#[tauri::command]
+pub fn ensure_task_complete_hooks() -> Result<(), String> {
+    with_write_lock(|| {
+        with_cross_process_lock(|| {
+            let home = crate::home_dir().to_string_lossy().to_string();
+            let hooks_dir = crate::config_dir().join("hooks");
+            fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
+            crate::profile_cmd::write_builtin_hook_scripts(&hooks_dir);
+
+            let python = "python3";
+            let hooks_dir_str = hooks_dir.to_string_lossy().replace('\\', "/");
+            let hook_cmd = format!("{} {}/notify-task-complete.py", python, hooks_dir_str);
+
+            let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
+            inject_json_hook(&claude_settings, "Stop", &hook_cmd)?;
+            let qoder_settings = PathBuf::from(&home).join(".qoder-cn").join("settings.json");
+            inject_json_hook(&qoder_settings, "Stop", &hook_cmd)?;
+            let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
+            inject_codex_named_hook(&codex_config, "Stop", &hook_cmd, "notify-task-complete.py")?;
+            Ok(())
+        })
+    })
 }
 
 fn inject_json_hook(path: &Path, event_name: &str, hook_cmd: &str) -> Result<(), String> {
@@ -555,10 +584,12 @@ fn inject_json_hook(path: &Path, event_name: &str, hook_cmd: &str) -> Result<(),
     if let Some(arr) = event_hooks.as_array_mut() {
         // Clean up any old-path hooks left over from previous installs
         arr.retain(|h| {
-            !h["hooks"][0]["command"]
-                .as_str()
-                .unwrap_or("")
-                .contains(".claude-profiles/record-usage.py")
+            let command = h["hooks"][0]["command"].as_str().unwrap_or("");
+            if hook_cmd.contains("notify-task-complete.py") {
+                !command.contains("notify-task-complete.py")
+            } else {
+                !command.contains(".claude-profiles/record-usage.py")
+            }
         });
 
         let cmd_str = hook_cmd.to_string();
@@ -609,6 +640,15 @@ fn remove_claude_hook(path: &Path) -> Result<(), String> {
 }
 
 fn inject_codex_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
+    inject_codex_named_hook(path, "Stop", hook_cmd, "record-usage.py")
+}
+
+fn inject_codex_named_hook(
+    path: &Path,
+    event_name: &str,
+    hook_cmd: &str,
+    marker: &str,
+) -> Result<(), String> {
     let mut doc: toml_edit::DocumentMut = if path.exists() {
         let content = fs::read_to_string(path).map_err(|e| format!("read codex config: {}", e))?;
         if content.trim().is_empty() {
@@ -630,17 +670,17 @@ fn inject_codex_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
     let hooks = doc["hooks"]
         .as_table_mut()
         .ok_or("hooks field is not a table")?;
-    if !hooks.contains_key("Stop") {
+    if !hooks.contains_key(event_name) {
         hooks.insert(
-            "Stop",
+            event_name,
             toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()),
         );
     }
-    let stop = hooks["Stop"]
+    let stop = hooks[event_name]
         .as_array_of_tables_mut()
-        .ok_or("hooks.Stop is not an array")?;
+        .ok_or("hooks event is not an array")?;
 
-    if upsert_codex_usage_hook_in_place(stop, hook_cmd) {
+    if upsert_codex_hook_in_place(stop, hook_cmd, marker) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("create codex config dir: {}", e))?;
         }
@@ -662,15 +702,16 @@ fn inject_codex_hook(path: &Path, hook_cmd: &str) -> Result<(), String> {
     fs::write(path, doc.to_string()).map_err(|e| format!("write codex config: {}", e))
 }
 
-fn upsert_codex_usage_hook_in_place(
+fn upsert_codex_hook_in_place(
     stop: &mut toml_edit::ArrayOfTables,
     hook_cmd: &str,
+    marker: &str,
 ) -> bool {
     for group in stop.iter_mut() {
         let flat_usage_hook = group
             .get("command")
             .and_then(|v| v.as_str())
-            .is_some_and(|cmd| cmd.contains("record-usage.py"));
+            .is_some_and(|cmd| cmd.contains(marker));
         if flat_usage_hook {
             group.clear();
             let mut inner = toml_edit::ArrayOfTables::new();
@@ -682,14 +723,17 @@ fn upsert_codex_usage_hook_in_place(
             return true;
         }
 
-        let Some(inner) = group.get_mut("hooks").and_then(|v| v.as_array_of_tables_mut()) else {
+        let Some(inner) = group
+            .get_mut("hooks")
+            .and_then(|v| v.as_array_of_tables_mut())
+        else {
             continue;
         };
         for hook in inner.iter_mut() {
             let nested_usage_hook = hook
                 .get("command")
                 .and_then(|v| v.as_str())
-                .is_some_and(|cmd| cmd.contains("record-usage.py"));
+                .is_some_and(|cmd| cmd.contains(marker));
             if nested_usage_hook {
                 hook.insert("type", toml_edit::value("command"));
                 hook.insert("command", toml_edit::value(hook_cmd));

@@ -12,7 +12,7 @@ interface ProjectDetailProps {
   profiles: ProfileSummary[];
   sessions: SessionInfo[];
   sessionsLoading: boolean;
-  onResumeSession: (session: SessionInfo) => void;
+  onResumeSession: (session: SessionInfo, profileName: string) => void;
   onRunProfile: (profileName: string, cliType: string) => void;
   onScanSessions: (projectPath: string) => void;
 }
@@ -239,6 +239,7 @@ export function ProjectDetail({
           <SessionList
             sessions={sessions}
             loading={sessionsLoading}
+            profiles={profiles}
             onResume={onResumeSession}
           />
         </div>
@@ -252,7 +253,7 @@ export function ProjectDetail({
             style={{ left: pickerPosition.x, top: pickerPosition.y }}
           >
             <div className="px-2 py-1 text-3xs text-[var(--app-text-muted)] font-mono uppercase">
-              选择 Profile
+              选择运行配置
             </div>
             <div className="border-t border-[var(--app-border)]" />
             {project.defaultProfile && (

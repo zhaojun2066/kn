@@ -1,4 +1,6 @@
+mod agent_ipc;
 mod agent_manager;
+mod agent_runtime;
 mod commands;
 mod hook_logs;
 mod hook_manager;
@@ -11,24 +13,61 @@ mod skill_manager;
 mod usage;
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use tauri::Manager;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tauri::Manager;
 
 use fs2::FileExt;
 
+// Re-export path utilities from common (used widely across the desktop crate)
+pub(crate) use kn_common::path::{
+    atomic_rename, config_dir, hash_path, home_dir, project_name_from_root,
+};
 
 /// Global write lock — serializes all config file writes to prevent
 /// data corruption when multiple Tauri commands run concurrently.
 /// (The Python CLI already uses fcntl.flock for its own writes.)
-static WRITE_LOCK: std::sync::LazyLock<Mutex<()>> =
-    std::sync::LazyLock::new(|| Mutex::new(()));
+static WRITE_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: std::sync::LazyLock<Mutex<()>> =
     std::sync::LazyLock::new(|| Mutex::new(()));
+
+fn files_differ(left: &Path, right: &Path) -> bool {
+    let left_meta = match left.metadata() {
+        Ok(meta) => meta,
+        Err(_) => return true,
+    };
+    let right_meta = match right.metadata() {
+        Ok(meta) => meta,
+        Err(_) => return true,
+    };
+    if left_meta.len() != right_meta.len() {
+        return true;
+    }
+    fn sha256(path: &Path) -> Result<[u8; 32], std::io::Error> {
+        use sha2::Digest;
+        let mut file = std::fs::File::open(path)?;
+        let mut hasher = sha2::Sha256::new();
+        std::io::copy(&mut file, &mut hasher)?;
+        Ok(hasher.finalize().into())
+    }
+    match (sha256(left), sha256(right)) {
+        (Ok(left_hash), Ok(right_hash)) => left_hash != right_hash,
+        _ => true,
+    }
+}
+
+fn agent_version_differs(agent: &Path, expected: &str) -> bool {
+    let output = match std::process::Command::new(agent).arg("--version").output() {
+        Ok(output) if output.status.success() => output,
+        _ => return true,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout.split_whitespace().last().unwrap_or_default();
+    version != expected
+}
 
 /// Acquire the global write lock and run the closure.
 /// All file-write operations should pass through this to avoid races.
@@ -78,8 +117,7 @@ where
 {
     let lock_path = config_dir().join(".config.lock");
     if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建锁目录失败: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建锁目录失败: {}", e))?;
     }
     let lock_fh = std::fs::OpenOptions::new()
         .create(true)
@@ -104,54 +142,6 @@ where
     let result = f();
     let _ = lock_fh.unlock();
     result
-}
-
-/// Atomically rename `src` to `dst`, overwriting `dst` if it exists.
-pub(crate) fn atomic_rename(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
-    std::fs::rename(src, dst).map_err(|e| format!("rename 失败: {} -> {}: {}", src.display(), dst.display(), e))
-}
-
-/// Generate a short (8-char hex) hash of a path string.
-/// Used to create unique scope keys for project-level skill/agent/command IDs
-/// and hook IDs to prevent collisions across projects.
-pub(crate) fn hash_path(path: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:08x}", hasher.finish())
-}
-
-/// Derive a project name from a project root directory path.
-/// Uses the last component of the path (the directory name).
-pub(crate) fn project_name_from_root(root: &Path) -> Option<String> {
-    root.file_name()
-        .and_then(|n| n.to_str())
-        .map(|s| s.to_string())
-}
-
-/// Shared config directory.
-///
-/// Respects `KN_HOME` env var first, then `CLAUDE_PROFILES_HOME` (legacy),
-/// falling back to `~/.kn` on all platforms.
-///
-/// Environment variable values are validated: must be absolute and
-/// must not contain `..` path-traversal components.
-pub(crate) fn config_dir() -> PathBuf {
-    // KN_HOME takes precedence (new name), CLAUDE_PROFILES_HOME for backward compat
-    for var in &["KN_HOME", "CLAUDE_PROFILES_HOME"] {
-        if let Ok(dir) = std::env::var(var) {
-            let p = PathBuf::from(&dir);
-            // Must be absolute AND must not contain path traversal
-            if p.is_absolute() && !p.components().any(|c| c == std::path::Component::ParentDir) {
-                return p;
-            }
-        }
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| {
-        std::env::temp_dir()
-            .to_string_lossy()
-            .to_string()
-    });
-    PathBuf::from(&home).join(".kn")
 }
 
 /// One-time migration: if `~/.kn/` doesn't exist but `~/.claude-profiles/` does,
@@ -188,29 +178,6 @@ pub(crate) fn migrate_legacy_config_dir() {
     }
 }
 
-/// Resolve the user home directory.
-///
-/// Reads `HOME` first, falling back to `echo $HOME` via `sh`,
-/// and finally to temp dir as a last resort.
-pub(crate) fn home_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home);
-    }
-    // Fallback: try shell to resolve home directory
-    if let Ok(output) = std::process::Command::new("sh")
-        .args(["-c", "echo $HOME"])
-        .output()
-    {
-        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !s.is_empty() {
-            return PathBuf::from(s);
-        }
-    }
-    // Last resort: temp dir is always available and writable,
-    // unlike CWD which may be "/" in macOS .app bundles
-    std::env::temp_dir()
-}
-
 pub fn run() {
     let pty_state = Arc::new(Mutex::new(pty::PtyState {
         handles: HashMap::new(),
@@ -227,7 +194,295 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(pty_state)
         .manage(cancel_state)
+        .setup(|app| {
+            let agent_runtime = agent_runtime::AgentRuntime::current();
+            let agent_dir = agent_runtime.agent_dir();
+            let agent_bin = agent_dir.join("kn-agent");
+            let plist_dir = kn_common::path::home_dir().join("Library").join("LaunchAgents");
+            let plist_path = plist_dir.join(format!("{}.plist", agent_runtime.launchd_label));
+            let log_dir = agent_dir.join("logs");
+            let uid = unsafe { libc::getuid() };
+            let domain = format!("gui/{}", uid);
+            let service_name = format!("gui/{}/{}", uid, agent_runtime.launchd_label);
+
+            let _ = std::fs::create_dir_all(&agent_dir);
+
+            // ── Dev mode: normally restart agent with latest debug binary ──
+            // Set KN_NO_AGENT_RESTART=true to skip all desktop-side agent management
+            // (dev.sh/dev-ui.sh manage the launchd agent before starting Tauri).
+            if cfg!(debug_assertions) && std::env::var("KN_NO_AGENT_RESTART").is_ok() {
+                eprintln!("[kn] dev: KN_NO_AGENT_RESTART=true, skipping desktop agent management");
+            } else if cfg!(debug_assertions) {
+                let debug_agent = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/debug/kn-agent");
+
+                if debug_agent.exists() {
+                    // 1. Bootout old agent (ignore errors — may not be running)
+                    eprintln!("[kn] dev: stopping kn-agent...");
+                    let _ = std::process::Command::new("launchctl")
+                        .args(["bootout", &service_name])
+                        .output();
+                    // Wait for process to exit
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+
+                    // 2. Copy latest debug binary (atomic tmp+rename)
+                    let tmp = agent_dir.join("kn-agent.tmp");
+                    if std::fs::copy(&debug_agent, &tmp).is_ok() {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+                        }
+                        if let Ok(f) = std::fs::File::open(&tmp) {
+                            let _ = f.sync_all();
+                        }
+                        if std::fs::rename(&tmp, &agent_bin).is_ok() {
+                            eprintln!("[kn] dev: kn-agent updated from target/debug");
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "[kn] dev: target/debug/kn-agent 不存在，请先执行: cargo build --package kn-agent"
+                    );
+                }
+
+                // 3. Always write plist (ensures env vars match dev config)
+                let _ = std::fs::create_dir_all(&log_dir);
+                let agent_bin_plist = agent_runtime::escape_plist_value(&agent_bin.display().to_string());
+                let stdout_log_plist = agent_runtime::escape_plist_value(
+                    &log_dir.join("stdout.log").display().to_string(),
+                );
+                let stderr_log_plist = agent_runtime::escape_plist_value(
+                    &log_dir.join("stderr.log").display().to_string(),
+                );
+                let config_dir_plist =
+                    agent_runtime::escape_plist_value(&agent_runtime.config_dir.display().to_string());
+                let plist_content = format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{bin}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>{stdout_log}</string>
+    <key>StandardErrorPath</key>
+    <string>{stderr_log}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>RUST_LOG</key>
+        <string>info</string>
+        <key>KN_CLOUD_URL</key>
+        <string>ws://localhost:8081/v1/ws</string>
+        <key>KN_CLOUD_HTTP_URL</key>
+        <string>http://localhost:8080</string>
+        <key>KN_HOME</key>
+        <string>{config_dir}</string>
+        <key>KN_RUNTIME_ENV</key>
+        <string>{runtime_env}</string>
+    </dict>
+</dict>
+</plist>
+"#,
+                    bin = agent_bin_plist,
+                    stdout_log = stdout_log_plist,
+                    stderr_log = stderr_log_plist,
+                    label = agent_runtime.launchd_label,
+                    config_dir = config_dir_plist,
+                    runtime_env = agent_runtime.environment_name(),
+                );
+                let _ = std::fs::create_dir_all(&plist_dir);
+                let _ = std::fs::write(&plist_path, plist_content);
+
+                // 4. Bootstrap agent
+                eprintln!("[kn] dev: bootstrapping kn-agent...");
+                match std::process::Command::new("launchctl")
+                    .args(["bootstrap", &domain, &plist_path.display().to_string()])
+                    .output()
+                {
+                    Ok(out) if out.status.success() => {
+                        eprintln!("[kn] dev: kn-agent started via launchd");
+                    }
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        if stderr.contains("already bootstrapped") {
+                            eprintln!("[kn] dev: kn-agent already bootstrapped (OK)");
+                        } else {
+                            eprintln!("[kn] dev: launchctl bootstrap 失败: {}", stderr.trim());
+                        }
+                    }
+                    Err(e) => eprintln!("[kn] dev: 无法启动 launchctl: {}", e),
+                }
+            } else {
+                // ── Production: copy from app bundle, only start if needed ──
+                let mut agent_updated = false;
+                let app_version = app.package_info().version.to_string();
+                let (cloud_ws_url, cloud_http_url) = commands::app_config::production_cloud_urls();
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    let bundled = resource_dir.join("resources").join("kn-agent");
+                    if bundled.exists() {
+                        if files_differ(&bundled, &agent_bin) || agent_version_differs(&agent_bin, &app_version) {
+                            let tmp = agent_dir.join("kn-agent.tmp");
+                            if std::fs::copy(&bundled, &tmp).is_ok() {
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::fs::PermissionsExt;
+                                    let _ = std::fs::set_permissions(
+                                        &tmp,
+                                        std::fs::Permissions::from_mode(0o755),
+                                    );
+                                }
+                                if let Ok(f) = std::fs::File::open(&tmp) {
+                                    let _ = f.sync_all();
+                                }
+                                if std::fs::rename(&tmp, &agent_bin).is_ok() {
+                                    agent_updated = true;
+                                    eprintln!("[kn] kn-agent binary installed/updated");
+                                }
+                            }
+                        }
+                    } else {
+                        eprintln!("[kn] bundled kn-agent not found at {}", bundled.display());
+                    }
+                }
+
+                if agent_bin.exists() {
+                    // Existing installations may predate the PATH entry required for
+                    // package-manager-installed tools such as gh. Rewriting the plist
+                    // changes Agent environment variables, so it must restart the
+                    // running service before bootstrapping it again.
+                    let config_dir_plist = agent_runtime::escape_plist_value(
+                        &agent_runtime.config_dir.display().to_string(),
+                    );
+                    let plist_needs_update = std::fs::read_to_string(&plist_path)
+                        .map(|content| {
+                            !content.contains("<key>PATH</key>")
+                                || !content.contains(&format!("<string>{}</string>", config_dir_plist))
+                                || !content.contains(&format!("<string>{}</string>", agent_runtime.environment_name()))
+                                || !content.contains(&format!("<string>{}</string>", agent_runtime.launchd_label))
+                                || !content.contains(&format!("<string>{}</string>", cloud_ws_url))
+                                || !content.contains(&format!("<string>{}</string>", cloud_http_url))
+                        })
+                        .unwrap_or(true);
+                    if agent_runtime::should_restart_agent(agent_updated, plist_needs_update) {
+                        eprintln!("[kn] kn-agent configuration updated, restarting launchd service...");
+                        let _ = std::process::Command::new("launchctl")
+                            .args(["bootout", &service_name])
+                            .output();
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+
+                    if plist_needs_update {
+                        let _ = std::fs::create_dir_all(&log_dir);
+                        let agent_bin_plist =
+                            agent_runtime::escape_plist_value(&agent_bin.display().to_string());
+                        let stdout_log_plist = agent_runtime::escape_plist_value(
+                            &log_dir.join("stdout.log").display().to_string(),
+                        );
+                        let stderr_log_plist = agent_runtime::escape_plist_value(
+                            &log_dir.join("stderr.log").display().to_string(),
+                        );
+                        let agent_env_vars = format!(
+                            r#"<key>KN_CLOUD_URL</key>
+        <string>{}</string>
+        <key>KN_CLOUD_HTTP_URL</key>
+        <string>{}</string>
+        <key>KN_HOME</key>
+        <string>{}</string>
+        <key>KN_RUNTIME_ENV</key>
+        <string>{}</string>"#,
+                            agent_runtime::escape_plist_value(&cloud_ws_url),
+                            agent_runtime::escape_plist_value(&cloud_http_url),
+                            config_dir_plist,
+                            agent_runtime.environment_name(),
+                        );
+                        let plist_content = format!(
+                            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{bin}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>{stdout_log}</string>
+    <key>StandardErrorPath</key>
+    <string>{stderr_log}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>RUST_LOG</key>
+        <string>info</string>
+        {env_vars}
+    </dict>
+</dict>
+</plist>
+"#,
+                            bin = agent_bin_plist,
+                            stdout_log = stdout_log_plist,
+                            stderr_log = stderr_log_plist,
+                            env_vars = agent_env_vars,
+                            label = agent_runtime.launchd_label,
+                        );
+                        let _ = std::fs::create_dir_all(&plist_dir);
+                        let _ = std::fs::write(&plist_path, plist_content);
+                    }
+
+                    let agent_running = std::process::Command::new("launchctl")
+                        .args(["print", &service_name])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+
+                    if !agent_running {
+                        match std::process::Command::new("launchctl")
+                            .args(["bootstrap", &domain, &plist_path.display().to_string()])
+                            .output()
+                        {
+                            Ok(out) => {
+                                if out.status.success() {
+                                    eprintln!("[kn] kn-agent bootstrapped via launchd");
+                                } else {
+                                    let stderr = String::from_utf8_lossy(&out.stderr);
+                                    if !stderr.contains("already bootstrapped") {
+                                        eprintln!("[kn] launchctl bootstrap 失敗: {}", stderr.trim());
+                                    }
+                                }
+                            }
+                            Err(e) => eprintln!("[kn] 无法启动 launchctl: {}", e),
+                        }
+                    }
+                }
+            }
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            agent_ipc::agent_ipc,
+            commands::restart_agent,
+            commands::repair_agent,
             commands::list_profiles,
             commands::show_profile,
             commands::get_env,
@@ -253,6 +508,9 @@ pub fn run() {
             commands::get_app_version,
             commands::fetch_url,
             commands::download_file,
+            commands::cancel_download,
+            commands::delete_download_file,
+            commands::check_desktop_release,
             commands::verify_sha256,
             commands::open_in_terminal,
             commands::open_file,
@@ -264,6 +522,7 @@ pub fn run() {
             commands::batch_export_profiles,
             commands::batch_delete_profiles,
             pty::start_pty,
+            pty::attach_agent_pty,
             pty::write_pty,
             pty::resize_pty,
             pty::kill_pty,
@@ -276,6 +535,7 @@ pub fn run() {
             usage::get_usage_tracking_enabled,
             usage::set_usage_tracking_enabled,
             usage::ensure_usage_hooks,
+            usage::ensure_task_complete_hooks,
             skill_manager::scan_skills,
             skill_manager::toggle_plugin,
             skill_manager::toggle_standalone_skill,
@@ -305,6 +565,8 @@ pub fn run() {
             project_manager::add_project,
             project_manager::remove_project,
             project_manager::update_project,
+            project_manager::update_project_verify_config,
+            project_manager::preview_project_verify_config,
             project_manager::toggle_pin_project,
             project_manager::get_project_stats,
             project_manager::get_project_overview,
@@ -351,8 +613,13 @@ mod tests {
         assert!(has_parent, "test input should contain '..'");
 
         let p2 = std::path::PathBuf::from("/tmp/valid");
-        let has_parent2 = p2.components().any(|c| c == std::path::Component::ParentDir);
-        assert!(!has_parent2, "clean path should not have parent dir components");
+        let has_parent2 = p2
+            .components()
+            .any(|c| c == std::path::Component::ParentDir);
+        assert!(
+            !has_parent2,
+            "clean path should not have parent dir components"
+        );
     }
 
     #[test]
@@ -385,7 +652,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
         let _ = fs::remove_dir_all(&dir);
     }
-
 
     #[test]
     fn test_hash_path_deterministic() {

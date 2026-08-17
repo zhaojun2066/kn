@@ -8,17 +8,17 @@ const mod = modKey();
 const alt = altKey();
 
 const appShortcuts: ShortcutItem[] = [
-  { keys: [mod, "N"], desc: "新建 Profile" },
-  { keys: [mod, "P"], desc: "快速切换 Profile" },
+  { keys: [mod, "N"], desc: "新建运行配置" },
+  { keys: [mod, "P"], desc: "快速切换运行配置" },
   { keys: [mod, "⇧", "P"], desc: "会话历史" },
-  { keys: [mod, "⇧", "G"], desc: "Profile 管理面板" },
+  { keys: [mod, "⇧", "G"], desc: "运行配置管理面板" },
   { keys: [mod, "⇧", "Y"], desc: "资源管理面板" },
   { keys: [mod, "B"], desc: "切换侧边栏" },
   { keys: ["Ctrl", "`"], desc: "切换底部终端" },
   { keys: [mod, "J"], desc: "切换底部终端（备选）" },
   { keys: [mod, "K"], desc: "快捷键帮助" },
   { keys: ["Esc"], desc: "关闭弹窗 / 取消选中" },
-  { keys: ["Backspace"], desc: "删除选中的 Profile" },
+  { keys: ["Backspace"], desc: "删除选中的运行配置" },
 ];
 
 const terminalShortcuts: ShortcutItem[] = [

@@ -170,10 +170,10 @@ export function Sidebar({ className, profiles, selectedName, searchQuery, onSele
         <div className="flex items-center gap-1.5 mb-2.5">
           <Hash size={13} className="text-[var(--app-accent)] shrink-0" />
           <span className="text-2xs text-[var(--app-text)] font-mono tracking-[0.15em] uppercase flex-1">
-            Profiles
+            运行配置
           </span>
         </div>
-        <SearchInput value={searchQuery} onChange={onSearch} placeholder="搜索 profile..." />
+        <SearchInput value={searchQuery} onChange={onSearch} placeholder="搜索运行配置..." />
       </div>
       <div className="mx-2.5 border-b border-app-border-light" />
 
@@ -205,7 +205,7 @@ export function Sidebar({ className, profiles, selectedName, searchQuery, onSele
 
       <div className="flex items-center gap-1 px-3 pt-2.5 pb-1.5">
         <span className="text-2xs text-app-text-muted uppercase tracking-[0.2em] font-mono flex-1">
-          Profiles
+          运行配置
         </span>
         <span className="text-2xs text-app-text-muted tabular-nums">[{profiles.length}]</span>
         <button

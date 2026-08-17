@@ -4,8 +4,8 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 // Scenes to cycle through
 const scenes = [
   {
-    title: '可视化 Profile 管理',
-    desc: '图形界面创建、编辑、复制 Profile，告别手写 YAML',
+    title: '可视化运行配置管理',
+    desc: '图形界面创建、编辑、复制运行配置，告别手写 YAML',
     sidebar: ['deepseek', 'anthropic', 'codex-work', 'openai-dev'],
     activeProfile: 'deepseek',
     mainType: 'detail',
@@ -17,7 +17,7 @@ const scenes = [
   },
   {
     title: '智能扫描导入',
-    desc: '自动检测现有配置，一键导入为 Profile',
+    desc: '自动检测现有配置，一键导入为运行配置',
     sidebar: ['deepseek', 'anthropic', 'codex-work'],
     activeProfile: null,
     mainType: 'scan',
@@ -34,7 +34,7 @@ const scenes = [
     mainType: 'terminal',
     terminalLines: [
       { text: 'ai claude deepseek', cls: 'cmd', delay: 0 },
-      { text: '✓ Profile \'deepseek\' 已激活 (deepseek-v4-pro)', cls: 'info', delay: 0 },
+      { text: '✓ 运行配置 \'deepseek\' 已激活 (deepseek-v4-pro)', cls: 'info', delay: 0 },
       { text: '', cls: 'empty', delay: 0 },
       { text: '┌─────────────────────────────────────────┐', cls: 'ui', delay: 0 },
       { text: '│  ✨ Claude Code · deepseek-v4-pro       │', cls: 'ui', delay: 0 },
@@ -184,7 +184,7 @@ onUnmounted(() => {
         <!-- Sidebar -->
         <div class="win-sidebar">
           <div class="sidebar-head">
-            <span class="sidebar-label">Profiles</span>
+            <span class="sidebar-label">运行配置</span>
             <span class="sidebar-count">{{ scene.sidebar.length }}</span>
           </div>
           <div
@@ -276,7 +276,7 @@ onUnmounted(() => {
               <div class="switcher-box">
                 <div class="switcher-input-row">
                   <span class="switcher-prompt">❯</span>
-                  <span class="switcher-placeholder">搜索 Profile 或项目...</span>
+                  <span class="switcher-placeholder">搜索运行配置或项目...</span>
                   <span class="switcher-hint">⌘K</span>
                 </div>
                 <div class="switcher-list">

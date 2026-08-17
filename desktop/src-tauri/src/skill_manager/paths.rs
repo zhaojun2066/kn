@@ -21,7 +21,11 @@ pub(super) fn home_dir() -> Option<PathBuf> {
     let temp = std::env::temp_dir();
     // If home_dir() returned the temp dir, it means resolution failed —
     // treat as None so callers skip scanning rather than reading wrong paths.
-    if h == temp { None } else { Some(h) }
+    if h == temp {
+        None
+    } else {
+        Some(h)
+    }
 }
 
 pub(super) fn claude_skills_dir() -> Option<PathBuf> {

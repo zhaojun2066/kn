@@ -378,7 +378,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled, projectPath, pr
           <Globe size={16} className="text-[var(--app-accent)] shrink-0" />
           <div className="flex-1 min-w-0">
             <div className="text-sm font-mono text-[var(--app-text)] truncate">
-              Plugin Marketplace
+              扩展市场
             </div>
             {projectPath && projectName && (
               <div className="text-2xs font-mono text-[var(--app-text-muted)] truncate" title={projectName}>

@@ -1,0 +1,1886 @@
+//! WSS 消息协议类型 — 两阶段反序列化匹配 kn-cloud 信封格式。
+//!
+//! 权威来源：`kn-cloud/kn-cloud-ws/.../MessageTypes.java` (15 种消息类型)
+//!            + `KnWsHandler.java` 角色白名单 (ALLOWED_MESSAGES)
+//!
+//! ```text
+//! 信封: {"type": "...", "ts": <epoch_ms>, "sessionId"?: "s_nanoid", "data": {...}}
+//! ```
+//!
+//! ## Agent 出站 (agent → cloud) — 对齐 Java ALLOWED_MESSAGES:
+//! - ping, session_created, session_start_failed, session_ended, output, profile_list, project_list
+//! - project_change_summary_result, project_change_file_diff_result, project_verify_plan_result
+//! - project_verify_changes_result, project_verify_changes_progress
+//!
+//! ## Agent 入站 (cloud → agent):
+//! - 心跳: pong
+//! - 连接: connected
+//! - 会话 (iOS→cloud→agent 转发): start_session, input, ctrl
+//! - 确认: profile_list_ack
+//! - 错误: error_notify (Java sendError 可向任意客户端发送)
+//! - 结束: kill_session
+//! - 项目工作台: project_change_summary, project_change_file_diff, project_verify_plan, project_verify_changes
+//!
+//! 不在 agent 白名单/不需要 agent 关注的消息:
+//! - start_session_ack, ack (仅 mobile)
+//! - agent_error (Java 代码中未实现)
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAccessStatus {
+    pub allowed: bool,
+    pub code: String,
+    pub message: String,
+    pub membership: Option<String>,
+    pub status: Option<String>,
+    pub expires_at: Option<String>,
+    pub server_time: String,
+}
+
+// ── Raw envelope (Phase 1 deserialization) ───────────────────
+
+/// 从云端接收的原始 JSON 信封。先解析为此结构，再按 type 分派。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WsEnvelope {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    #[serde(default)]
+    pub ts: Option<i64>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+// ── Parsed incoming messages (Phase 2) ──────────────────────
+
+/// Agent 接收的消息（类型安全，已分派）。
+#[derive(Debug, Clone)]
+pub enum AgentIncoming {
+    /// 心跳响应
+    Pong {
+        ts: i64,
+        remote_access: Option<RemoteAccessStatus>,
+    },
+    /// CLI 心跳确认
+    CliHeartbeatAck {
+        remote_access: Option<RemoteAccessStatus>,
+        accepted_session_ids: Vec<String>,
+        blocked_session_ids: Vec<String>,
+    },
+    /// Cloud 已完成对移动端的交付，Agent 可删除本地待确认结果。
+    ProjectDeliveryAck {
+        request_id: String,
+    },
+    /// Cloud 已接收本轮回复完成事件，Agent 可推进本地队列。
+    TaskCompletedAck {
+        event_id: String,
+        status: String,
+    },
+    /// WSS 连接确认
+    Connected {
+        ws_session_id: String,
+        node_id: Option<String>,
+        protocol_version: Option<u32>,
+    },
+    /// 启动新会话（来自 iOS/Desktop 用户）
+    /// sessionId 由 Agent 自行生成（"s_" + nanoid(12)），cloud 不再预分配。
+    StartSession {
+        /// Profile 名称
+        profile: String,
+        /// 工作目录
+        cwd: Option<String>,
+        /// 发起用户 ID
+        from_user_id: u64,
+        /// 初始终端列数
+        cols: u16,
+        /// 初始终端行数
+        rows: u16,
+        /// 本地历史恢复时 Cloud 声明的 CLI；普通新会话为 None。
+        expected_cli: Option<String>,
+        /// 仅由受校验的本地历史恢复生成的原生 CLI 参数。
+        cli_args: Vec<String>,
+    },
+    /// 用户输入文本（session 由 data.sessionId 标识）
+    Input {
+        session_nid: String,
+        seq: u64,
+        content: String,
+        from_user_id: u64,
+    },
+    /// 控制信号（Ctrl+C、Ctrl+D 等）
+    Ctrl {
+        session_nid: String,
+        signal: serde_json::Value,
+    },
+    /// 终端尺寸变化
+    Resize {
+        session_nid: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// 云端错误通知（对齐 Java MessageTypes.ERROR_NOTIFY + sendError()）
+    ErrorNotify {
+        code: String,
+        message: String,
+    },
+    /// 配置文件列表确认
+    ProfileListAck,
+    /// 请求回放会话输出日志（iOS 恢复会话时发送）
+    ReplayOutput {
+        session_nid: String,
+    },
+    /// WSS 对 session_created 的确认
+    SessionCreatedAck {
+        session_nid: String,
+        status: String,
+        error: Option<String>,
+    },
+    /// iOS 恢复会话请求（cloud 已查 Redis，agent 做本地验证）
+    ResumeSession {
+        session_nid: String,
+    },
+    /// iOS/Cloud 请求强制结束远程会话
+    KillSession {
+        session_nid: String,
+        reason: String,
+    },
+    ProjectChangeSummary {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+    },
+    ProjectChangeFileDiff {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        path: String,
+    },
+    ProjectGitStatus {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+        offset: i64,
+        limit: i64,
+        snapshot_id: Option<String>,
+    },
+    ProjectGitCommit {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        message: String,
+        paths: Vec<String>,
+        scope: String,
+        request_id: Option<String>,
+    },
+    ProjectGitPush {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+    },
+    ProjectPrStatus {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+    },
+    ProjectPrDetails {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+    },
+    ProjectPrCreate {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        base: String,
+        title: String,
+        body: String,
+        request_id: Option<String>,
+    },
+    ProjectVerifyPlan {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        environment: String,
+        request_id: Option<String>,
+    },
+    ProjectVerifyChanges {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        environment: String,
+        target: String,
+        request_id: Option<String>,
+    },
+    ProjectCancelVerify {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        run_id: String,
+    },
+    ProjectVerifyStatus {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+    },
+    /// 项目列表的轻量本地 Git 与最近验证摘要。
+    ProjectListStatus {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+    },
+    ProjectVerifyLogWindow {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+        run_id: String,
+        stage: String,
+        center_line: usize,
+        before: usize,
+        after: usize,
+    },
+    ProjectVerifyLogIssues {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+        run_id: String,
+        stages: Vec<String>,
+        rules_version: String,
+        matchers: Vec<serde_json::Value>,
+        limit: usize,
+    },
+    DeviceHealth {
+        device_id: u64,
+        request_id: String,
+    },
+    /// 未知消息类型
+    Unknown {
+        msg_type: String,
+        raw: serde_json::Value,
+    },
+}
+
+fn parse_project_scope(
+    data: &serde_json::Value,
+    msg_type: &str,
+) -> Result<(String, u64, String), String> {
+    let project_key = data["projectKey"].as_str().unwrap_or("").to_string();
+    if project_key.is_empty() {
+        return Err(format!("{msg_type} projectKey 为空"));
+    }
+    let device_id = data["deviceId"].as_u64().unwrap_or(0);
+    if device_id == 0 {
+        return Err(format!("{msg_type} deviceId 为空"));
+    }
+    let project_path = data["projectPath"].as_str().unwrap_or("").to_string();
+    if project_path.is_empty() {
+        return Err(format!("{msg_type} projectPath 为空"));
+    }
+    Ok((project_key, device_id, project_path))
+}
+
+fn parse_delivery_request_id(data: &serde_json::Value) -> Option<String> {
+    data.get("requestId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
+impl WsEnvelope {
+    /// 将原始信封解析为类型化的 AgentIncoming。
+    pub fn parse(&self) -> Result<AgentIncoming, String> {
+        match self.msg_type.as_str() {
+            "pong" => {
+                let data = self.data.as_ref();
+                let ts = self
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("ts"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let remote_access = data
+                    .and_then(|d| d.get("remoteAccess"))
+                    .and_then(|v| serde_json::from_value::<RemoteAccessStatus>(v.clone()).ok());
+                Ok(AgentIncoming::Pong { ts, remote_access })
+            }
+            "cli_heartbeat_ack" => {
+                let data = self.data.as_ref();
+                let remote_access = data
+                    .and_then(|d| d.get("remoteAccess"))
+                    .and_then(|v| serde_json::from_value::<RemoteAccessStatus>(v.clone()).ok());
+                let accepted_session_ids = data
+                    .and_then(|d| d.get("acceptedSessionIds"))
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                    .unwrap_or_default();
+                let blocked_session_ids = data
+                    .and_then(|d| d.get("blockedSessionIds"))
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                    .unwrap_or_default();
+                Ok(AgentIncoming::CliHeartbeatAck {
+                    remote_access,
+                    accepted_session_ids,
+                    blocked_session_ids,
+                })
+            }
+            "connected" => {
+                let ws_session_id = self
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("ws_session_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let node_id = self
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("node_id"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let protocol_version = self
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("protocol_version"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
+                Ok(AgentIncoming::Connected {
+                    ws_session_id,
+                    node_id,
+                    protocol_version,
+                })
+            }
+            "project_delivery_ack" => {
+                let request_id = self
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("requestId"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if request_id.is_empty() {
+                    Err("project_delivery_ack 缺少 requestId".to_string())
+                } else {
+                    Ok(AgentIncoming::ProjectDeliveryAck { request_id })
+                }
+            }
+            "task_completed_ack" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "task_completed_ack 缺少 data 字段".to_string())?;
+                let event_id = data["eventId"].as_str().unwrap_or("").trim().to_string();
+                if event_id.is_empty() {
+                    return Err("task_completed_ack 缺少 eventId".to_string());
+                }
+                Ok(AgentIncoming::TaskCompletedAck {
+                    event_id,
+                    status: data["status"].as_str().unwrap_or("ok").to_string(),
+                })
+            }
+            "start_session" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "start_session 缺少 data 字段".to_string())?;
+                // sessionId 由 Agent 自行生成，cloud 不再预分配
+                let profile = data["profile"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "start_session 缺少 profile 字段".to_string())?
+                    .to_string();
+                Ok(AgentIncoming::StartSession {
+                    profile,
+                    cwd: data["cwd"].as_str().map(String::from),
+                    from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
+                    cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
+                    rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
+                    expected_cli: None,
+                    cli_args: Vec::new(),
+                })
+            }
+            "input" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "input 缺少 data 字段".to_string())?;
+                // session 由 data.sessionId 标识，与 ctrl/resize/replay_output 一致。
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("input sessionId 为空".to_string());
+                }
+                Ok(AgentIncoming::Input {
+                    session_nid,
+                    seq: data["seq"].as_u64().unwrap_or(0),
+                    content: data["content"].as_str().unwrap_or("").to_string(),
+                    from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
+                })
+            }
+            "ctrl" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "ctrl 缺少 data 字段".to_string())?;
+                // session 由 data.sessionId 标识
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                Ok(AgentIncoming::Ctrl {
+                    session_nid,
+                    signal: data.clone(),
+                })
+            }
+            "resize" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "resize 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                Ok(AgentIncoming::Resize {
+                    session_nid,
+                    cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
+                    rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
+                })
+            }
+            "error_notify" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "error_notify 缺少 data 字段".to_string())?;
+                Ok(AgentIncoming::ErrorNotify {
+                    code: data["code"].as_str().unwrap_or("UNKNOWN").to_string(),
+                    message: data["message"].as_str().unwrap_or("").to_string(),
+                })
+            }
+            "profile_list_ack" => Ok(AgentIncoming::ProfileListAck),
+            "replay_output" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "replay_output 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("replay_output sessionId 为空".to_string());
+                }
+                Ok(AgentIncoming::ReplayOutput { session_nid })
+            }
+            "session_created_ack" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "session_created_ack 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("session_created_ack sessionId 为空".to_string());
+                }
+                let status = data["status"].as_str().unwrap_or("error").to_string();
+                let error = data["error"].as_str().map(String::from);
+                Ok(AgentIncoming::SessionCreatedAck {
+                    session_nid,
+                    status,
+                    error,
+                })
+            }
+            "resume_session" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "resume_session 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("resume_session sessionId 为空".to_string());
+                }
+                Ok(AgentIncoming::ResumeSession { session_nid })
+            }
+            "resume_local_history_session" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "resume_local_history_session 缺少 data 字段".to_string())?;
+                let required = |field: &str| {
+                    data[field]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("resume_local_history_session {} 为空", field))
+                };
+                let cli = required("cli")?;
+                let native_session_id = required("nativeSessionId")?;
+                let cli_args = crate::session::env::history_resume_args(&cli, &native_session_id)
+                    .map_err(|_| "resume_local_history_session 参数无效".to_string())?;
+                Ok(AgentIncoming::StartSession {
+                    profile: required("profile")?,
+                    cwd: Some(required("cwd")?),
+                    from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
+                    expected_cli: Some(cli),
+                    cli_args,
+                    cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
+                    rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
+                })
+            }
+            "kill_session" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "kill_session 缺少 data 字段".to_string())?;
+                let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                if session_nid.is_empty() {
+                    return Err("kill_session sessionId 为空".to_string());
+                }
+                Ok(AgentIncoming::KillSession {
+                    session_nid,
+                    reason: data["reason"]
+                        .as_str()
+                        .unwrap_or("process_killed")
+                        .to_string(),
+                })
+            }
+            "project_change_summary" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_change_summary 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_change_summary")?;
+                Ok(AgentIncoming::ProjectChangeSummary {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_change_file_diff" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_change_file_diff 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_change_file_diff")?;
+                let path = data["path"].as_str().unwrap_or("").to_string();
+                if path.is_empty() {
+                    return Err("project_change_file_diff path 为空".to_string());
+                }
+                Ok(AgentIncoming::ProjectChangeFileDiff {
+                    project_key,
+                    device_id,
+                    project_path,
+                    path,
+                })
+            }
+            "project_git_status" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_git_status 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_git_status")?;
+                Ok(AgentIncoming::ProjectGitStatus {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                    offset: data["offset"].as_i64().unwrap_or(0),
+                    limit: data["limit"].as_i64().unwrap_or(100),
+                    snapshot_id: data["snapshotId"].as_str().map(str::to_string),
+                })
+            }
+            "project_list_status" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_list_status 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_list_status")?;
+                Ok(AgentIncoming::ProjectListStatus {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_git_commit" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_git_commit 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_git_commit")?;
+                let message = data["message"].as_str().unwrap_or("").to_string();
+                let paths = data["paths"]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(AgentIncoming::ProjectGitCommit {
+                    project_key,
+                    device_id,
+                    project_path,
+                    message,
+                    paths,
+                    scope: data["scope"].as_str().unwrap_or("selected").to_string(),
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_git_push" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_git_push 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_git_push")?;
+                Ok(AgentIncoming::ProjectGitPush {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_pr_status" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_pr_status 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_pr_status")?;
+                Ok(AgentIncoming::ProjectPrStatus {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_pr_details" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_pr_details 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_pr_details")?;
+                Ok(AgentIncoming::ProjectPrDetails {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_pr_create" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_pr_create 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_pr_create")?;
+                let base = data
+                    .get("base")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "project_pr_create 缺少 base 字段".to_string())?
+                    .to_string();
+                let title = data
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "project_pr_create 缺少 title 字段".to_string())?
+                    .to_string();
+                let body = data
+                    .get("body")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(AgentIncoming::ProjectPrCreate {
+                    project_key,
+                    device_id,
+                    project_path,
+                    base,
+                    title,
+                    body,
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_verify_plan" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_verify_plan 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_plan")?;
+                Ok(AgentIncoming::ProjectVerifyPlan {
+                    project_key,
+                    device_id,
+                    project_path,
+                    environment: data["environment"]
+                        .as_str()
+                        .unwrap_or("default")
+                        .to_string(),
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_verify_changes" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_verify_changes 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_changes")?;
+                Ok(AgentIncoming::ProjectVerifyChanges {
+                    project_key,
+                    device_id,
+                    project_path,
+                    environment: data["environment"]
+                        .as_str()
+                        .unwrap_or("default")
+                        .to_string(),
+                    target: data["target"].as_str().unwrap_or("all").to_string(),
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_cancel_verify" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_cancel_verify 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_cancel_verify")?;
+                let run_id = data["runId"].as_str().unwrap_or("").to_string();
+                if run_id.is_empty() {
+                    return Err("project_cancel_verify runId 为空".to_string());
+                }
+                Ok(AgentIncoming::ProjectCancelVerify {
+                    project_key,
+                    device_id,
+                    project_path,
+                    run_id,
+                })
+            }
+            "project_verify_status" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_verify_status 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_status")?;
+                Ok(AgentIncoming::ProjectVerifyStatus {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                })
+            }
+            "project_verify_log_window" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_verify_log_window 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_log_window")?;
+                let run_id = data["runId"].as_str().unwrap_or("").to_string();
+                let stage = data["stage"].as_str().unwrap_or("").to_string();
+                if run_id.is_empty() || stage.is_empty() {
+                    return Err("project_verify_log_window runId/stage 为空".to_string());
+                }
+                Ok(AgentIncoming::ProjectVerifyLogWindow {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                    run_id,
+                    stage,
+                    center_line: data["centerLine"].as_u64().unwrap_or(1) as usize,
+                    before: data["before"].as_u64().unwrap_or(100) as usize,
+                    after: data["after"].as_u64().unwrap_or(100) as usize,
+                })
+            }
+            "project_verify_log_issues" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "project_verify_log_issues 缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "project_verify_log_issues")?;
+                let run_id = data["runId"].as_str().unwrap_or("").to_string();
+                if run_id.is_empty() {
+                    return Err("project_verify_log_issues runId 为空".to_string());
+                }
+                let stages = data["stages"]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(AgentIncoming::ProjectVerifyLogIssues {
+                    project_key,
+                    device_id,
+                    project_path,
+                    request_id: parse_delivery_request_id(data),
+                    run_id,
+                    stages,
+                    rules_version: data["rulesVersion"].as_str().unwrap_or("").to_string(),
+                    matchers: data["matchers"].as_array().cloned().unwrap_or_default(),
+                    limit: data["limit"].as_u64().unwrap_or(300) as usize,
+                })
+            }
+            "device_health" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "device_health 缺少 data 字段".to_string())?;
+                let device_id = data["deviceId"].as_u64().unwrap_or(0);
+                let request_id = data["requestId"].as_str().unwrap_or("").trim();
+                if device_id == 0 || request_id.is_empty() {
+                    return Err("device_health deviceId/requestId 为空".to_string());
+                }
+                Ok(AgentIncoming::DeviceHealth {
+                    device_id,
+                    request_id: request_id.to_string(),
+                })
+            }
+            other => Ok(AgentIncoming::Unknown {
+                msg_type: other.to_string(),
+                raw: self.data.clone().unwrap_or(serde_json::Value::Null),
+            }),
+        }
+    }
+}
+
+// ── Outbound messages ──────────────────────────────────────
+
+/// Agent 发送给云端的消息构建器。每个方法返回预序列化的 JSON 字符串。
+pub struct WsMessageBuilder;
+
+impl WsMessageBuilder {
+    /// 心跳 ping。
+    pub fn ping() -> String {
+        r#"{"type":"ping"}"#.to_string()
+    }
+
+    /// 会话创建确认。sessionId 已由 Agent 生成。
+    /// 携带 tool/cwd/cols/rows/source 供 cloud 写入 Redis Hash，pid 由后续 heartbeat 更新。
+    /// `source`: "ios" | "desktop" — 区分发起方，cloud 据此走不同注册逻辑。
+    /// `msg_id`: 可选 ACK 关联 ID，cloud 在 session_created_ack 中原样返回。
+    pub fn session_created(
+        session_nid: &str,
+        tool: &str,
+        cwd: &str,
+        profile: Option<&str>,
+        cols: u16,
+        rows: u16,
+        source: &str,
+    ) -> String {
+        Self::session_created_with_msg_id(session_nid, tool, cwd, profile, cols, rows, source, None)
+    }
+
+    /// 带 msg_id 的 session_created，用于 ACK 关联。
+    pub fn session_created_with_msg_id(
+        session_nid: &str,
+        tool: &str,
+        cwd: &str,
+        profile: Option<&str>,
+        cols: u16,
+        rows: u16,
+        source: &str,
+        msg_id: Option<&str>,
+    ) -> String {
+        Self::session_created_with_msg_id_and_version(
+            session_nid,
+            tool,
+            cwd,
+            profile,
+            cols,
+            rows,
+            source,
+            msg_id,
+            None,
+        )
+    }
+
+    /// Session creation message with the CLI version used by Cloud command
+    /// catalog matching. The version is optional for unknown/custom tools.
+    pub fn session_created_with_msg_id_and_version(
+        session_nid: &str,
+        tool: &str,
+        cwd: &str,
+        profile: Option<&str>,
+        cols: u16,
+        rows: u16,
+        source: &str,
+        msg_id: Option<&str>,
+        cli_version: Option<&str>,
+    ) -> String {
+        let mut data = serde_json::json!({
+            "sessionId": session_nid,
+            "tool": tool,
+            "cwd": cwd,
+            "cols": cols,
+            "rows": rows,
+            "source": source
+        });
+        if let Some(p) = profile {
+            data["profile"] = serde_json::Value::String(p.to_string());
+        }
+        if let Some(mid) = msg_id {
+            data["msgId"] = serde_json::Value::String(mid.to_string());
+        }
+        if let Some(version) = cli_version {
+            data["cliVersion"] = serde_json::Value::String(version.to_string());
+        }
+        serde_json::json!({
+            "type": "session_created",
+            "data": data
+        })
+        .to_string()
+    }
+
+    /// 会话启动失败通知。Cloud 消费并映射成 iOS 稳定错误语义。
+    pub fn session_start_failed(profile: &str, reason: &str) -> String {
+        serde_json::json!({
+            "type": "session_start_failed",
+            "data": {
+                "profile": profile,
+                "reason": reason
+            }
+        })
+        .to_string()
+    }
+
+    /// 会话结束通知。
+    pub fn session_ended(session_nid: &str, reason: &str) -> String {
+        serde_json::json!({
+            "type": "session_ended",
+            "data": {
+                "sessionId": session_nid,
+                "reason": reason
+            }
+        })
+        .to_string()
+    }
+
+    /// PTY 输出数据。session 由 sessionId 标识。
+    pub fn output(session_nid: &str, ansi_text: &str) -> String {
+        serde_json::json!({
+            "type": "output",
+            "data": {
+                "sessionId": session_nid,
+                "ansi_text": ansi_text
+            }
+        })
+        .to_string()
+    }
+
+    /// 会话输出回放完成通知。Cloud 转发给 iOS，用于区分“无历史输出”和“仍在等待输出”。
+    pub fn replay_output_done(
+        session_nid: &str,
+        status: &str,
+        bytes: usize,
+        chunks: usize,
+        message: Option<&str>,
+    ) -> String {
+        serde_json::json!({
+            "type": "replay_output_done",
+            "data": {
+                "sessionId": session_nid,
+                "status": status,
+                "bytes": bytes,
+                "chunks": chunks,
+                "message": message
+            }
+        })
+        .to_string()
+    }
+
+    /// 错误通知（Agent → Cloud → iOS）。
+    pub fn error_notify(code: &str, message: &str) -> String {
+        serde_json::json!({
+            "type": "error_notify",
+            "data": { "code": code, "message": message }
+        })
+        .to_string()
+    }
+
+    /// CLI 进程心跳（每 15s，替代 session_interrupted 崩溃恢复）。
+    pub fn cli_heartbeat(sessions: &[HeartbeatSession]) -> String {
+        serde_json::json!({
+            "type": "cli_heartbeat",
+            "data": {
+                "sessions": sessions
+            }
+        })
+        .to_string()
+    }
+
+    pub fn task_completed(event: &TaskCompleteEvent) -> String {
+        serde_json::json!({
+            "type": "task_completed",
+            "data": event
+        })
+        .to_string()
+    }
+
+    /// 上报可用 Profile 列表。
+    pub fn profile_list(profiles: &[ProfileInfo]) -> String {
+        serde_json::json!({
+            "type": "profile_list",
+            "profiles": profiles
+        })
+        .to_string()
+    }
+
+    /// 上报项目列表。
+    pub fn project_list(projects: &[ProjectInfoOut]) -> String {
+        serde_json::json!({
+            "type": "project_list",
+            "data": {
+                "projects": projects
+            }
+        })
+        .to_string()
+    }
+
+    /// 上报某项目的本地 CLI 会话索引快照。历史正文永不经此消息传输。
+    pub fn project_session_index(
+        project_path: &str,
+        revision: u64,
+        complete: bool,
+        sessions: &[ProjectSessionIndexEntry],
+    ) -> String {
+        serde_json::json!({
+            "type": "project_session_index",
+            "data": {
+                "projectPath": project_path,
+                "revision": revision,
+                "complete": complete,
+                "sessions": sessions
+            }
+        })
+        .to_string()
+    }
+
+    /// 上报崩溃恢复——中断的会话列表。
+    pub fn sessions_interrupted(sessions: &[InterruptedSession]) -> String {
+        serde_json::json!({
+            "type": "session_interrupted",
+            "data": {
+                "sessions": sessions
+            }
+        })
+        .to_string()
+    }
+
+    pub fn project_result(
+        msg_type: &str,
+        project_key: &str,
+        device_id: u64,
+        project_path: &str,
+        mut data: serde_json::Value,
+    ) -> String {
+        data["projectKey"] = serde_json::Value::String(project_key.to_string());
+        data["deviceId"] = serde_json::Value::Number(device_id.into());
+        data["projectPath"] = serde_json::Value::String(project_path.to_string());
+        serde_json::json!({
+            "type": msg_type,
+            "data": data
+        })
+        .to_string()
+    }
+
+    /// 交付 Git/PR 请求的结果。requestId 仅在请求携带时回传，保证旧客户端兼容。
+    pub fn project_delivery_result(
+        msg_type: &str,
+        project_key: &str,
+        device_id: u64,
+        project_path: &str,
+        request_id: Option<&str>,
+        mut data: serde_json::Value,
+    ) -> String {
+        if let Some(request_id) = request_id {
+            data["requestId"] = serde_json::Value::String(request_id.to_string());
+        }
+        Self::project_result(msg_type, project_key, device_id, project_path, data)
+    }
+
+    /// 设备能力与健康摘要：没有项目范围、凭证或原始探测输出。
+    pub fn device_health_result(
+        device_id: u64,
+        request_id: &str,
+        summary: serde_json::Value,
+    ) -> String {
+        serde_json::json!({
+            "type": "device_health_result",
+            "data": {
+                "deviceId": device_id,
+                "requestId": request_id,
+                "summary": summary,
+            }
+        })
+        .to_string()
+    }
+}
+
+/// 中断会话信息（崩溃恢复时上报给云端）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterruptedSession {
+    pub nid: String,
+    pub tool: String,
+    pub profile: Option<String>,
+    pub cwd: String,
+    #[serde(rename = "lastInput")]
+    pub last_input: String,
+    #[serde(rename = "lastOutputSnippet")]
+    pub last_output_snippet: String,
+}
+
+/// CLI 进程心跳信息（每 15s 上报给云端）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeartbeatSession {
+    #[serde(rename = "sessionId")]
+    pub session_nid: String,
+    pub pid: u32,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCompleteEvent {
+    pub event_id: String,
+    pub event_name: String,
+    pub tool: String,
+    pub profile: Option<String>,
+    pub project_path: String,
+    pub native_session_id: Option<String>,
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub model: Option<String>,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub duration_ms: Option<u64>,
+    pub finished_at: String,
+    pub last_assistant_message: String,
+    pub summary: String,
+}
+
+/// Profile 信息（上报给云端）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileInfo {
+    pub name: String,
+    pub tool: Option<String>,
+    pub description: String,
+}
+
+impl From<&kn_common::profile::ProfileSummary> for ProfileInfo {
+    fn from(p: &kn_common::profile::ProfileSummary) -> Self {
+        Self {
+            name: p.name.clone(),
+            tool: p.cli_type.clone(),
+            description: p.desc.clone(),
+        }
+    }
+}
+
+// ── Outgoing message enum (type-safe) ──────────────────────
+
+/// Agent 发送给云端的类型化消息。
+/// 在 channel 边界携带结构化数据，序列化延迟到发送时。
+#[derive(Debug, Clone)]
+pub enum OutgoingMessage {
+    /// 会话结束通知（session/manager.rs → main loop → WSS）
+    SessionEnded { session_nid: String, reason: String },
+}
+
+impl OutgoingMessage {
+    /// 序列化为 JSON 字符串（对齐 WsMessageBuilder 的 envelope 格式）。
+    pub fn to_json(&self) -> String {
+        match self {
+            Self::SessionEnded {
+                session_nid,
+                reason,
+            } => WsMessageBuilder::session_ended(session_nid, reason),
+        }
+    }
+}
+
+// ── Project info (outgoing) ────────────────────────────────
+
+/// 项目信息（上报给云端）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInfoOut {
+    pub name: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// 可持久化到 Cloud 的本地 CLI 会话元信息；不含 transcript 或终端输出。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSessionIndexEntry {
+    pub native_session_id: String,
+    pub cli: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub last_active_at: u64,
+}
+
+// ── Tests ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_connected() {
+        let json = serde_json::json!({
+            "type": "connected",
+            "ts": 1234567890,
+            "data": {
+                "ws_session_id": "abc123",
+                "node_id": "node1",
+                "protocol_version": 1
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::Connected {
+                ws_session_id,
+                node_id,
+                protocol_version,
+            } => {
+                assert_eq!(ws_session_id, "abc123");
+                assert_eq!(node_id, Some("node1".into()));
+                assert_eq!(protocol_version, Some(1));
+            }
+            _ => panic!("expected Connected"),
+        }
+    }
+
+    #[test]
+    fn test_parse_start_session() {
+        let json = serde_json::json!({
+            "type": "start_session",
+            "ts": 1234567890,
+            "data": {
+                "profile": "my-profile",
+                "cwd": "/Users/test/project",
+                "fromUserId": 100,
+                "cols": 48,
+                "rows": 18
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::StartSession {
+                profile,
+                cwd,
+                from_user_id,
+                cols,
+                rows,
+                expected_cli,
+                cli_args,
+            } => {
+                assert_eq!(profile, "my-profile");
+                assert_eq!(cwd, Some("/Users/test/project".into()));
+                assert_eq!(from_user_id, 100);
+                assert_eq!(cols, 48);
+                assert_eq!(rows, 18);
+                assert_eq!(expected_cli, None);
+                assert!(cli_args.is_empty());
+            }
+            _ => panic!("expected StartSession"),
+        }
+    }
+
+    #[test]
+    fn test_parse_resume_local_history_session() {
+        let json = serde_json::json!({
+            "type": "resume_local_history_session",
+            "data": {
+                "profile": "work",
+                "cwd": "/Users/test/project",
+                "fromUserId": 100,
+                "nativeSessionId": "native_123",
+                "cli": "qoderclicn",
+                "cols": 48,
+                "rows": 18
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        match env.parse().unwrap() {
+            AgentIncoming::StartSession {
+                profile,
+                cwd,
+                from_user_id,
+                cols,
+                rows,
+                expected_cli,
+                cli_args,
+            } => {
+                assert_eq!(profile, "work");
+                assert_eq!(cwd, Some("/Users/test/project".to_string()));
+                assert_eq!(from_user_id, 100);
+                assert_eq!(expected_cli, Some("qoderclicn".to_string()));
+                assert_eq!(cli_args, vec!["-r", "native_123"]);
+                assert_eq!(cols, 48);
+                assert_eq!(rows, 18);
+            }
+            _ => panic!("expected history resume StartSession"),
+        }
+    }
+
+    #[test]
+    fn test_parse_resume_local_history_session_rejects_empty_native_session_id() {
+        let json = serde_json::json!({
+            "type": "resume_local_history_session",
+            "data": {
+                "profile": "work",
+                "cwd": "/Users/test/project",
+                "nativeSessionId": "  ",
+                "cli": "codex"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            env.parse().unwrap_err(),
+            "resume_local_history_session nativeSessionId 为空"
+        );
+    }
+
+    #[test]
+    fn test_parse_resize() {
+        let json = serde_json::json!({
+            "type": "resize",
+            "data": {
+                "sessionId": "s_abc123def456",
+                "seq": 7,
+                "cols": 52,
+                "rows": 20
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::Resize {
+                session_nid,
+                cols,
+                rows,
+            } => {
+                assert_eq!(session_nid, "s_abc123def456");
+                assert_eq!(cols, 52);
+                assert_eq!(rows, 20);
+            }
+            _ => panic!("expected Resize"),
+        }
+    }
+
+    #[test]
+    fn test_parse_input() {
+        let json = serde_json::json!({
+            "type": "input",
+            "data": {
+                "sessionId": "s_abc",
+                "seq": 5,
+                "content": "hello world",
+                "fromUserId": 100
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::Input {
+                session_nid,
+                seq,
+                content,
+                from_user_id,
+            } => {
+                assert_eq!(session_nid, "s_abc");
+                assert_eq!(seq, 5);
+                assert_eq!(content, "hello world");
+                assert_eq!(from_user_id, 100);
+            }
+            _ => panic!("expected Input"),
+        }
+    }
+
+    #[test]
+    fn test_parse_kill_session() {
+        let json = serde_json::json!({
+            "type": "kill_session",
+            "data": {
+                "sessionId": "s_abc",
+                "reason": "user_closed_tab"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::KillSession {
+                session_nid,
+                reason,
+            } => {
+                assert_eq!(session_nid, "s_abc");
+                assert_eq!(reason, "user_closed_tab");
+            }
+            _ => panic!("expected KillSession"),
+        }
+    }
+
+    #[test]
+    fn test_parse_kill_session_defaults_to_process_killed() {
+        let json = serde_json::json!({
+            "type": "kill_session",
+            "data": {
+                "sessionId": "s_abc"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::KillSession {
+                session_nid,
+                reason,
+            } => {
+                assert_eq!(session_nid, "s_abc");
+                assert_eq!(reason, "process_killed");
+            }
+            _ => panic!("expected KillSession"),
+        }
+    }
+
+    #[test]
+    fn test_parse_project_verify_changes() {
+        let json = serde_json::json!({
+            "type": "project_verify_changes",
+            "data": {
+                "projectKey": "42:/repo",
+                "deviceId": 42,
+                "projectPath": "/repo",
+                "environment": "ci",
+                "target": "build",
+                "requestId": "verify-request-1"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::ProjectVerifyChanges {
+                project_key,
+                device_id,
+                project_path,
+                environment,
+                target,
+                request_id,
+            } => {
+                assert_eq!(project_key, "42:/repo");
+                assert_eq!(device_id, 42);
+                assert_eq!(project_path, "/repo");
+                assert_eq!(environment, "ci");
+                assert_eq!(target, "build");
+                assert_eq!(request_id.as_deref(), Some("verify-request-1"));
+            }
+            _ => panic!("expected ProjectVerifyChanges"),
+        }
+    }
+
+    #[test]
+    fn test_parse_project_git_commit() {
+        let json = serde_json::json!({
+            "type": "project_git_commit",
+            "data": {
+                "projectKey": "42:/repo",
+                "deviceId": 42,
+                "projectPath": "/repo",
+                "message": "feat: delivery",
+                "paths": ["Sources/App.swift"]
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::ProjectGitCommit { message, paths, .. } => {
+                assert_eq!(message, "feat: delivery");
+                assert_eq!(paths, vec!["Sources/App.swift"]);
+            }
+            _ => panic!("expected ProjectGitCommit"),
+        }
+    }
+
+    #[test]
+    fn test_parse_git_pagination_and_all_working_tree_commit_scope() {
+        let status: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "project_git_status",
+            "data": {
+                "projectKey": "42:/repo", "deviceId": 42, "projectPath": "/repo",
+                "offset": 100, "limit": 100, "snapshotId": "snapshot"
+            }
+        }))
+        .unwrap();
+        match status.parse().unwrap() {
+            AgentIncoming::ProjectGitStatus {
+                offset,
+                limit,
+                snapshot_id,
+                ..
+            } => {
+                assert_eq!(offset, 100);
+                assert_eq!(limit, 100);
+                assert_eq!(snapshot_id.as_deref(), Some("snapshot"));
+            }
+            _ => panic!("expected ProjectGitStatus"),
+        }
+
+        let commit: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "project_git_commit",
+            "data": {
+                "projectKey": "42:/repo", "deviceId": 42, "projectPath": "/repo",
+                "message": "feat: include all", "scope": "allWorkingTree", "paths": []
+            }
+        }))
+        .unwrap();
+        match commit.parse().unwrap() {
+            AgentIncoming::ProjectGitCommit { scope, paths, .. } => {
+                assert_eq!(scope, "allWorkingTree");
+                assert!(paths.is_empty());
+            }
+            _ => panic!("expected ProjectGitCommit"),
+        }
+    }
+
+    #[test]
+    fn test_parse_project_verify_plan() {
+        let json = serde_json::json!({
+            "type": "project_verify_plan",
+            "data": {
+                "projectKey": "42:/repo",
+                "deviceId": 42,
+                "projectPath": "/repo",
+                "environment": "default"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::ProjectVerifyPlan {
+                project_key,
+                device_id,
+                project_path,
+                environment,
+                ..
+            } => {
+                assert_eq!(project_key, "42:/repo");
+                assert_eq!(device_id, 42);
+                assert_eq!(project_path, "/repo");
+                assert_eq!(environment, "default");
+            }
+            _ => panic!("expected ProjectVerifyPlan"),
+        }
+    }
+
+    #[test]
+    fn test_outbound_ping() {
+        let json = WsMessageBuilder::ping();
+        assert!(json.contains("ping"));
+    }
+
+    #[test]
+    fn test_outbound_session_created() {
+        let json = WsMessageBuilder::session_created(
+            "s_abc123",
+            "claude",
+            "/home/user/proj",
+            None,
+            80,
+            24,
+            "ios",
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "session_created");
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["data"]["tool"], "claude");
+        assert_eq!(parsed["data"]["cwd"], "/home/user/proj");
+        assert_eq!(parsed["data"]["cols"], 80);
+        assert_eq!(parsed["data"]["rows"], 24);
+        assert_eq!(parsed["data"]["source"], "ios");
+    }
+
+    #[test]
+    fn project_session_index_excludes_transcript_and_uses_camel_case_fields() {
+        let message = WsMessageBuilder::project_session_index(
+            "/workspace/kn",
+            7,
+            true,
+            &[ProjectSessionIndexEntry {
+                native_session_id: "native_1".into(),
+                cli: "codex".into(),
+                profile: Some("default".into()),
+                title: Some("fix login".into()),
+                summary: Some("short preview".into()),
+                last_active_at: 42,
+            }],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(parsed["type"], "project_session_index");
+        assert_eq!(parsed["data"]["sessions"][0]["nativeSessionId"], "native_1");
+        assert_eq!(parsed["data"]["complete"], true);
+        assert!(!parsed.to_string().contains("transcript"));
+    }
+
+    #[test]
+    fn test_outbound_session_created_with_msg_id_uses_string_s_prefixed_session_id() {
+        let json = WsMessageBuilder::session_created_with_msg_id(
+            "s_abc123def456",
+            "claude",
+            "/home/user/proj",
+            Some("default"),
+            52,
+            18,
+            "ios",
+            Some("s_abc123def456-0"),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let session_id = &parsed["data"]["sessionId"];
+
+        assert_eq!(parsed["type"], "session_created");
+        assert!(
+            session_id.is_string(),
+            "sessionId must be string, got: {session_id:?}"
+        );
+        assert_eq!(session_id.as_str().unwrap(), "s_abc123def456");
+        assert!(session_id.as_str().unwrap().starts_with("s_"));
+        assert!(parsed["data"].get("to_session_id").is_none());
+        assert_eq!(parsed["data"]["msgId"], "s_abc123def456-0");
+    }
+
+    #[test]
+    fn test_outbound_output() {
+        let json = WsMessageBuilder::output("s_abc123", "hello\x1b[0m");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "output");
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert!(parsed["data"].get("to_session_id").is_none());
+        assert_eq!(parsed["data"]["ansi_text"], "hello\x1b[0m");
+    }
+
+    #[test]
+    fn test_outbound_project_verify_changes_result() {
+        let json = WsMessageBuilder::project_result(
+            "project_verify_changes_result",
+            "42:/repo",
+            42,
+            "/repo",
+            serde_json::json!({
+                "status": "passed",
+                "target": "all",
+                "stages": [
+                    { "name": "build", "status": "passed", "outputTail": "ok" }
+                ]
+            }),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "project_verify_changes_result");
+        assert_eq!(parsed["data"]["projectKey"], "42:/repo");
+        assert_eq!(parsed["data"]["deviceId"], 42);
+        assert_eq!(parsed["data"]["projectPath"], "/repo");
+        assert_eq!(parsed["data"]["stages"][0]["outputTail"], "ok");
+    }
+
+    #[test]
+    fn test_outbound_project_verify_plan_result() {
+        let json = WsMessageBuilder::project_result(
+            "project_verify_plan_result",
+            "42:/repo",
+            42,
+            "/repo",
+            serde_json::json!({
+                "status": "ok",
+                "environment": "default",
+                "commandSource": "manual",
+                "build": { "available": true, "enabled": true, "command": "cargo check" }
+            }),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "project_verify_plan_result");
+        assert_eq!(parsed["data"]["projectKey"], "42:/repo");
+        assert_eq!(parsed["data"]["deviceId"], 42);
+        assert_eq!(parsed["data"]["projectPath"], "/repo");
+        assert_eq!(parsed["data"]["commandSource"], "manual");
+        assert_eq!(parsed["data"]["build"]["command"], "cargo check");
+    }
+
+    #[test]
+    fn test_outbound_replay_output_done() {
+        let json = WsMessageBuilder::replay_output_done("s_abc123", "ok", 12345, 2, None);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "replay_output_done");
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["data"]["status"], "ok");
+        assert_eq!(parsed["data"]["bytes"], 12345);
+        assert_eq!(parsed["data"]["chunks"], 2);
+        assert!(parsed["data"]["message"].is_null());
+    }
+
+    #[test]
+    fn test_outbound_replay_output_done_with_message() {
+        let json =
+            WsMessageBuilder::replay_output_done("s_abc123", "error", 0, 0, Some("read failed"));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "replay_output_done");
+        assert_eq!(parsed["data"]["sessionId"], "s_abc123");
+        assert_eq!(parsed["data"]["status"], "error");
+        assert_eq!(parsed["data"]["bytes"], 0);
+        assert_eq!(parsed["data"]["chunks"], 0);
+        assert_eq!(parsed["data"]["message"], "read failed");
+    }
+
+    #[test]
+    fn test_output_message_to_session_id_is_string() {
+        // 对齐新协议: sessionId 统一为 String
+        let msg = WsMessageBuilder::output("s_abc123", "hello");
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        let tsid = &parsed["data"]["sessionId"];
+        assert!(
+            tsid.is_string(),
+            "sessionId must be a string, got: {:?}",
+            tsid
+        );
+        assert_eq!(tsid.as_str().unwrap(), "s_abc123");
+    }
+
+    #[test]
+    fn test_parse_error_notify() {
+        let json = serde_json::json!({
+            "type": "error_notify",
+            "ts": 1234567890,
+            "data": {
+                "code": "SESSION_LIMIT",
+                "message": "Maximum 10 concurrent sessions allowed"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::ErrorNotify { code, message } => {
+                assert_eq!(code, "SESSION_LIMIT");
+                assert_eq!(message, "Maximum 10 concurrent sessions allowed");
+            }
+            _ => panic!("expected ErrorNotify, got {:?}", msg),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_notify_minimal() {
+        // error_notify with minimal fields (server could send just a code)
+        let json = serde_json::json!({
+            "type": "error_notify",
+            "data": {
+                "code": "INTERNAL_ERROR"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::ErrorNotify { code, message } => {
+                assert_eq!(code, "INTERNAL_ERROR");
+                assert!(message.is_empty());
+            }
+            _ => panic!("expected ErrorNotify"),
+        }
+    }
+
+    #[test]
+    fn test_parse_session_created_ack_preserves_cloud_error_message() {
+        let json = serde_json::json!({
+            "type": "session_created_ack",
+            "data": {
+                "sessionId": "s_abc123",
+                "status": "error",
+                "error": "membershipExpired: 会员已过期，无法开启远程会话"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+        let msg = env.parse().unwrap();
+        match msg {
+            AgentIncoming::SessionCreatedAck {
+                session_nid,
+                status,
+                error,
+            } => {
+                assert_eq!(session_nid, "s_abc123");
+                assert_eq!(status, "error");
+                assert_eq!(
+                    error.as_deref(),
+                    Some("membershipExpired: 会员已过期，无法开启远程会话")
+                );
+            }
+            other => panic!("expected SessionCreatedAck, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn device_health_requires_device_and_request_identifiers() {
+        let missing_request: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "device_health",
+            "data": { "deviceId": 42 }
+        }))
+        .unwrap();
+        assert!(missing_request.parse().is_err());
+
+        let envelope: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "device_health",
+            "data": { "deviceId": 42, "requestId": "health-42" }
+        }))
+        .unwrap();
+        match envelope.parse().unwrap() {
+            AgentIncoming::DeviceHealth {
+                device_id,
+                request_id,
+            } => {
+                assert_eq!(device_id, 42);
+                assert_eq!(request_id, "health-42");
+            }
+            other => panic!("expected DeviceHealth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn device_health_result_keeps_request_id_and_contains_no_scope_data() {
+        let json = WsMessageBuilder::device_health_result(
+            42,
+            "health-42",
+            serde_json::json!({ "schemaVersion": 1, "tools": [] }),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "device_health_result");
+        assert_eq!(parsed["data"]["deviceId"], 42);
+        assert_eq!(parsed["data"]["requestId"], "health-42");
+        assert!(parsed["data"].get("projectPath").is_none());
+        assert!(parsed["data"].get("deviceToken").is_none());
+    }
+}

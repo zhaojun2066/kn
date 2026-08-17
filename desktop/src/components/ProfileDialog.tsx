@@ -69,11 +69,11 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
     }
     const reserved = ["claude", "codex", "qoderclicn", "profile", "ai", "help"];
     if (reserved.includes(trimmed)) {
-      setError(`"${trimmed}" 是系统保留关键字，不能用作 Profile 名称`);
+      setError(`"${trimmed}" 是系统保留关键字，不能用作运行配置名称`);
       return false;
     }
     if (existingNames.includes(trimmed)) {
-      setError(`Profile "${trimmed}" 已存在，换个名字吧`);
+      setError(`运行配置 "${trimmed}" 已存在，换个名字吧`);
       return false;
     }
     setError("");
@@ -93,7 +93,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
 
   const goStep3 = () => {
     if (!isToolInstalled(toolId)) {
-      setError(`${getToolById(toolId)?.name ?? toolId} 尚未安装，请先安装后再创建 Profile`);
+      setError(`${getToolById(toolId)?.name ?? toolId} 尚未安装，请先安装后再创建运行配置`);
       return;
     }
     setError("");
@@ -194,7 +194,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
             <Terminal size={15} className="text-app-accent" />
             <h3 className="font-semibold text-sm font-mono">
               <span className="text-app-accent opacity-60">$ </span>
-              新建 Profile
+              新建运行配置
             </h3>
           </div>
           <button onClick={onClose} className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors">
@@ -223,7 +223,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
               <div>
                 <label className="block text-xs text-app-text-dim mb-1.5 font-mono">
                   <span className="text-app-text-muted"># </span>
-                  Profile 名称 <span className="text-app-red">*</span>
+                  运行配置名称 <span className="text-app-red">*</span>
                 </label>
                 <input
                   ref={nameRef}
@@ -502,7 +502,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
             <div className="w-10 h-10 rounded-full bg-app-green-bg border border-app-border flex items-center justify-center mx-auto mb-2">
               <Check size={20} className="text-app-green" />
             </div>
-            <div className="text-sm text-app-text font-mono font-semibold mb-0.5">Profile 创建成功</div>
+            <div className="text-sm text-app-text font-mono font-semibold mb-0.5">运行配置创建成功</div>
             <div className="text-xs text-app-text-dim font-mono mb-3">
               <span className="text-app-accent">$ </span>{name}
             </div>
@@ -575,7 +575,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
             )}
             {step === 4 && (
               <Button variant="primary" size="sm" onClick={handleCreate} disabled={saving}>
-                {saving ? "创建中..." : "创建 Profile"}
+                {saving ? "创建中..." : "创建运行配置"}
               </Button>
             )}
             {step === 5 && (

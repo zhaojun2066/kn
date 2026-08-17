@@ -65,7 +65,7 @@ describe("ProfileDrawer", () => {
   it("renders a bottom drawer with the full profile list UI", () => {
     renderDrawer();
 
-    expect(screen.getByText("Profile Management")).not.toBeNull();
+    expect(screen.getByText("运行配置管理")).not.toBeNull();
     expect(screen.getByText("全部标签")).not.toBeNull();
     expect(screen.getByTitle("更多操作")).not.toBeNull();
     expect(screen.queryByText("全局 Profile")).toBeNull();
@@ -80,7 +80,7 @@ describe("ProfileDrawer", () => {
 
     renderDrawer({ onSearch, onSelect, onRename, onAdd, onRefresh });
 
-    fireEvent.change(screen.getByPlaceholderText("搜索 profile..."), { target: { value: "work" } });
+    fireEvent.change(screen.getByPlaceholderText("搜索运行配置..."), { target: { value: "work" } });
     expect(onSearch).toHaveBeenCalledWith("work");
     fireEvent.click(screen.getByText("work"));
     expect(onSelect).toHaveBeenCalledWith("work");
@@ -89,7 +89,7 @@ describe("ProfileDrawer", () => {
     fireEvent.click(screen.getByText("重命名"));
     expect(onRename).toHaveBeenCalledWith("work");
 
-    fireEvent.click(screen.getByTitle("新增 Profile"));
+    fireEvent.click(screen.getByTitle("新增运行配置"));
     expect(onAdd).toHaveBeenCalled();
     fireEvent.click(screen.getByTitle("更多操作"));
     fireEvent.click(screen.getByTitle("刷新配置"));

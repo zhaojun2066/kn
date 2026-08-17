@@ -1,0 +1,5 @@
+{
+  "release_api_url": "https://api.shark.kim/api/v1/app-config/desktop-release",
+  "cloud_ws_url": "wss://api.shark.kim/v1/ws",
+  "cloud_http_url": "https://api.shark.kim"
+}

@@ -41,6 +41,26 @@ export interface ProjectInfo {
   defaultProfile?: string;
   description?: string;
   pinned: boolean;
+  verify?: ProjectVerifyConfig;
+}
+
+export interface ProjectVerifyConfig {
+  defaultEnvironment?: string;
+  environments: Record<string, ProjectVerifyEnvironment>;
+}
+
+export interface ProjectVerifyEnvironment {
+  build?: ProjectVerifyCommand;
+  test?: ProjectVerifyCommand;
+}
+
+export interface ProjectVerifyCommand {
+  command: string;
+  enabled: boolean;
+  timeoutSeconds?: number;
+  parserHint?: string;
+  taskTypeHint?: 'compile' | 'test' | 'package' | 'build' | 'run' | 'lint' | 'custom';
+  reportHints?: string[];
 }
 
 export interface ActiveProjectContext {

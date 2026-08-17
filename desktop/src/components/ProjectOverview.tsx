@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import type { ProjectInfo, SessionInfo, ProfileSummary, CliCounts, OverviewResources, CliConfigStatus, ProjectOverviewData } from "../lib/types";
+import { createPortal } from "react-dom";
+import type { ProjectInfo, SessionInfo, ProfileSummary, CliCounts, OverviewResources, CliConfigStatus, ProjectOverviewData, ProjectVerifyConfig, ProjectVerifyCommand } from "../lib/types";
 import { CliBadge } from "./common/CliBadge";
 import { CLI_HEX_COLORS } from "../lib/cli-constants";
 import { relativeTime } from "../lib/time-utils";
@@ -11,10 +12,12 @@ interface ProjectOverviewProps {
   overviewData: ProjectOverviewData | null;
   overviewLoading: boolean;
   profiles: ProfileSummary[];
-  onResumeSession: (session: SessionInfo) => void;
+  onResumeSession: (session: SessionInfo, profileName: string) => void;
   onRunProfile: (name: string, cli: string) => void;
   onSplitProfile?: (name: string, cli: string) => void;
   onSetDefaultProfile: (name: string) => void;
+  onUpdateVerifyConfig: (verify: ProjectVerifyConfig | null) => Promise<void> | void;
+  onPreviewVerifyConfig: (projectName: string) => Promise<ProjectVerifyConfig | null>;
 }
 
 // ── Shared helpers ───────────────────────────────────────────
@@ -36,7 +39,7 @@ interface MetricCardsProps {
 }
 
 const METRICS = [
-  { key: "sessions", label: "Sessions", icon: "◉" } as const,
+  { key: "sessions", label: "会话", icon: "◉" } as const,
   { key: "skills", label: "Skills", icon: "⬡" } as const,
   { key: "plugins", label: "Plugins", icon: "⬢" } as const,
   { key: "commands", label: "Commands", icon: "⌘" } as const,
@@ -132,10 +135,21 @@ function SectionHeader({ label }: { label: string }) {
 interface RecentSessionsProps {
   sessions: SessionInfo[];
   loading: boolean;
-  onResume: (session: SessionInfo) => void;
+  profiles: ProfileSummary[];
+  onResume: (session: SessionInfo, profileName: string) => void;
 }
 
-function OverviewRecentSessions({ sessions, loading, onResume }: RecentSessionsProps) {
+function OverviewRecentSessions({ sessions, loading, profiles, onResume }: RecentSessionsProps) {
+  const [sessionToResume, setSessionToResume] = useState<SessionInfo | null>(null);
+  const [selectedProfile, setSelectedProfile] = useState("");
+  const compatibleProfiles = sessionToResume
+    ? profiles.filter((profile) => profile.cli_type === sessionToResume.cli)
+    : [];
+
+  const openResumePicker = (session: SessionInfo) => {
+    setSessionToResume(session);
+    setSelectedProfile("");
+  };
   if (loading) {
     return (
       <div className="border border-app-border bg-app-sidebar">
@@ -193,7 +207,7 @@ function OverviewRecentSessions({ sessions, loading, onResume }: RecentSessionsP
             </span>
 
             <button
-              onClick={(e) => { e.stopPropagation(); onResume(s); }}
+              onClick={(e) => { e.stopPropagation(); openResumePicker(s); }}
               className="shrink-0 px-2 py-0.5 text-2xs font-mono text-app-accent
                 border border-app-border bg-transparent
                 opacity-0 group-hover:opacity-100 transition-opacity duration-fast
@@ -205,6 +219,22 @@ function OverviewRecentSessions({ sessions, loading, onResume }: RecentSessionsP
           </div>
         );
       })}
+      {sessionToResume && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
+          <div className="w-[360px] border border-app-border bg-app-panel p-5 shadow-dialog">
+            <h3 className="text-sm font-medium text-app-text">选择运行配置</h3>
+            <p className="mt-2 text-xs text-app-text-muted">恢复会话前请选择 {sessionToResume.cli} 的运行配置。</p>
+            <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value)} className="mt-4 w-full border border-app-border bg-app-input px-2 py-2 text-sm text-app-text">
+              <option value="">请选择运行配置</option>
+              {compatibleProfiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
+            </select>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setSessionToResume(null)} className="px-3 py-1.5 text-xs text-app-text-muted">取消</button>
+              <button disabled={!selectedProfile} onClick={() => { onResume(sessionToResume, selectedProfile); setSessionToResume(null); }} className="px-3 py-1.5 text-xs text-app-bg bg-app-accent disabled:opacity-40">恢复会话</button>
+            </div>
+          </div>
+        </div>, document.body,
+      )}
     </div>
   );
 }
@@ -295,6 +325,379 @@ function StatusDot({ ok }: { ok: boolean }) {
   );
 }
 
+function verifyCommandSummary(command?: ProjectVerifyCommand): string {
+  if (!command) return "未配置";
+  if (!command.enabled) return command.command ? `已禁用 · ${command.command}` : "已禁用";
+  return command.command || "未配置";
+}
+
+function resolveVerifyEnvironmentName(verify?: ProjectVerifyConfig): string {
+  if (!verify) return "default";
+  const preferred = verify.defaultEnvironment || "default";
+  if (verify.environments?.[preferred]) return preferred;
+  return verify.environments?.default ? "default" : preferred;
+}
+
+function normalizeVerifyConfig(verify: ProjectVerifyConfig | null): ProjectVerifyConfig | null {
+  if (!verify) return null;
+  const envName = resolveVerifyEnvironmentName(verify);
+  const env = verify.environments?.[envName] ?? {};
+  return {
+    defaultEnvironment: "default",
+    environments: {
+      default: {
+        ...(env.build ? { build: env.build } : {}),
+        ...(env.test ? { test: env.test } : {}),
+      },
+    },
+  };
+}
+
+function configsEqual(left: ProjectVerifyConfig | null, right: ProjectVerifyConfig | null): boolean {
+  return JSON.stringify(normalizeVerifyConfig(left)) === JSON.stringify(normalizeVerifyConfig(right));
+}
+
+function ProjectVerifyCard({
+  project,
+  onEdit,
+  onPreview,
+}: {
+  project: ProjectInfo;
+  onEdit: () => void;
+  onPreview: (projectName: string) => Promise<ProjectVerifyConfig | null>;
+}) {
+  const [autoPreview, setAutoPreview] = useState<ProjectVerifyConfig | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState(false);
+  const displayConfig = project.verify ?? autoPreview;
+  const envName = resolveVerifyEnvironmentName(displayConfig ?? undefined);
+  const env = displayConfig?.environments?.[envName];
+  const source = project.verify ? "电脑端配置" : "自动识别";
+
+  useEffect(() => {
+    if (project.verify) {
+      setAutoPreview(null);
+      setLoadingPreview(false);
+      setPreviewError(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingPreview(true);
+    setPreviewError(false);
+    onPreview(project.name)
+      .then((config) => {
+        if (cancelled) return;
+        setAutoPreview(config);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAutoPreview(null);
+        setPreviewError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingPreview(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onPreview, project.name, project.verify]);
+
+  const summary = (command?: ProjectVerifyCommand) => {
+    if (loadingPreview && !project.verify) return "正在自动识别...";
+    if (previewError && !project.verify) return "自动识别失败";
+    return verifyCommandSummary(command);
+  };
+
+  return (
+    <div className="border border-app-border bg-app-sidebar p-3 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-mono font-semibold text-app-text">验证</div>
+          <div className="text-2xs font-mono text-app-text-muted mt-0.5">
+            环境 {envName} · {source}
+          </div>
+        </div>
+        <button
+          onClick={onEdit}
+          className="px-2 py-1 text-2xs font-mono border border-app-border text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"
+        >
+          编辑配置
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="border border-app-border-light p-2">
+          <div className="text-2xs font-mono text-app-text-muted mb-1">构建</div>
+          <div className="text-2xs font-mono text-app-text truncate" title={env?.build?.command}>
+            {summary(env?.build)}
+          </div>
+        </div>
+        <div className="border border-app-border-light p-2">
+          <div className="text-2xs font-mono text-app-text-muted mb-1">测试</div>
+          <div className="text-2xs font-mono text-app-text truncate" title={env?.test?.command}>
+            {summary(env?.test)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectVerifyConfigEditor({
+  project,
+  onClose,
+  onSave,
+  onPreview,
+}: {
+  project: ProjectInfo;
+  onClose: () => void;
+  onSave: (verify: ProjectVerifyConfig | null) => Promise<void> | void;
+  onPreview: (projectName: string) => Promise<ProjectVerifyConfig | null>;
+}) {
+  const [previewConfig, setPreviewConfig] = useState<ProjectVerifyConfig | null>(project.verify ?? null);
+  const [buildEnabled, setBuildEnabled] = useState(true);
+  const [buildCommand, setBuildCommand] = useState("");
+  const [buildTimeout, setBuildTimeout] = useState("300");
+  const [buildParserHint, setBuildParserHint] = useState("");
+  const [buildTaskTypeHint, setBuildTaskTypeHint] = useState("");
+  const [buildReportHints, setBuildReportHints] = useState("");
+  const [testEnabled, setTestEnabled] = useState(true);
+  const [testCommand, setTestCommand] = useState("");
+  const [testTimeout, setTestTimeout] = useState("600");
+  const [testParserHint, setTestParserHint] = useState("");
+  const [testTaskTypeHint, setTestTaskTypeHint] = useState("");
+  const [testReportHints, setTestReportHints] = useState("");
+  const [loadingPlan, setLoadingPlan] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const source = project.verify ? "电脑端配置" : "自动识别";
+
+  const parseTimeout = (value: string, fallback: number) => {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(1, Math.min(900, parsed));
+  };
+  const parseTaskTypeHint = (value: string): ProjectVerifyCommand["taskTypeHint"] => {
+    const normalized = value.trim().toLowerCase();
+    return ["compile", "test", "package", "build", "run", "lint", "custom"].includes(normalized)
+      ? normalized as ProjectVerifyCommand["taskTypeHint"]
+      : undefined;
+  };
+
+  const applyConfig = useCallback((config: ProjectVerifyConfig | null) => {
+    const envName = resolveVerifyEnvironmentName(config ?? undefined);
+    const env = config?.environments?.[envName];
+    setBuildEnabled(env?.build?.enabled ?? true);
+    setBuildCommand(env?.build?.command ?? "");
+    setBuildTimeout(String(env?.build?.timeoutSeconds ?? 300));
+    setBuildParserHint(env?.build?.parserHint ?? "");
+    setBuildTaskTypeHint(env?.build?.taskTypeHint ?? "");
+    setBuildReportHints((env?.build?.reportHints ?? []).join(", "));
+    setTestEnabled(env?.test?.enabled ?? true);
+    setTestCommand(env?.test?.command ?? "");
+    setTestTimeout(String(env?.test?.timeoutSeconds ?? 600));
+    setTestParserHint(env?.test?.parserHint ?? "");
+    setTestTaskTypeHint(env?.test?.taskTypeHint ?? "");
+    setTestReportHints((env?.test?.reportHints ?? []).join(", "));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingPlan(true);
+    setError(null);
+    onPreview(project.name)
+      .then((config) => {
+        if (cancelled) return;
+        setPreviewConfig(config);
+        applyConfig(config);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setPreviewConfig(project.verify ?? null);
+        applyConfig(project.verify ?? null);
+        setError(`读取自动识别命令失败: ${e}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingPlan(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyConfig, onPreview, project.name, project.verify]);
+
+  const configFromForm = (): ProjectVerifyConfig | null => {
+    const build = buildCommand.trim()
+      ? { command: buildCommand.trim(), enabled: buildEnabled, timeoutSeconds: parseTimeout(buildTimeout, 300), parserHint: buildParserHint.trim() || undefined, taskTypeHint: parseTaskTypeHint(buildTaskTypeHint), reportHints: buildReportHints.split(",").map((v) => v.trim()).filter(Boolean) }
+      : undefined;
+    const test = testCommand.trim()
+      ? { command: testCommand.trim(), enabled: testEnabled, timeoutSeconds: parseTimeout(testTimeout, 600), parserHint: testParserHint.trim() || undefined, taskTypeHint: parseTaskTypeHint(testTaskTypeHint), reportHints: testReportHints.split(",").map((v) => v.trim()).filter(Boolean) }
+      : undefined;
+    if (!build && !test) return null;
+    return {
+      defaultEnvironment: "default",
+      environments: {
+        default: {
+          ...(build ? { build } : {}),
+          ...(test ? { test } : {}),
+        },
+      },
+    };
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const verify = configFromForm();
+      if (!verify) {
+        await onSave(null);
+        onClose();
+        return;
+      }
+      await onSave(!project.verify && configsEqual(verify, previewConfig) ? null : verify);
+      onClose();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(null);
+      onClose();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="w-[560px] max-w-[calc(100vw-32px)] border border-app-border bg-app-panel shadow-lg">
+        <div className="px-4 py-3 border-b border-app-border">
+          <div className="text-sm font-mono font-semibold text-app-text">验证配置</div>
+          <div className="text-2xs font-mono text-app-text-muted mt-1">
+            {project.name} · default · {loadingPlan ? "读取中" : source}
+          </div>
+        </div>
+        <div className="p-4 space-y-4">
+          <VerifyCommandEditor
+            title="构建"
+            enabled={buildEnabled}
+            command={buildCommand}
+            timeout={buildTimeout}
+            onEnabledChange={setBuildEnabled}
+            onCommandChange={setBuildCommand}
+            onTimeoutChange={setBuildTimeout}
+            parserHint={buildParserHint}
+            taskTypeHint={buildTaskTypeHint}
+            reportHints={buildReportHints}
+            onParserHintChange={setBuildParserHint}
+            onTaskTypeHintChange={setBuildTaskTypeHint}
+            onReportHintsChange={setBuildReportHints}
+            placeholder={loadingPlan ? "正在读取当前验证计划..." : "未识别到构建命令，可手动填写"}
+          />
+          <VerifyCommandEditor
+            title="测试"
+            enabled={testEnabled}
+            command={testCommand}
+            timeout={testTimeout}
+            onEnabledChange={setTestEnabled}
+            onCommandChange={setTestCommand}
+            onTimeoutChange={setTestTimeout}
+            parserHint={testParserHint}
+            taskTypeHint={testTaskTypeHint}
+            reportHints={testReportHints}
+            onParserHintChange={setTestParserHint}
+            onTaskTypeHintChange={setTestTaskTypeHint}
+            onReportHintsChange={setTestReportHints}
+            placeholder={loadingPlan ? "正在读取当前验证计划..." : "未识别到测试命令，可手动填写"}
+          />
+          {error && <div className="text-2xs font-mono text-red-400">{error}</div>}
+        </div>
+        <div className="px-4 py-3 border-t border-app-border flex items-center justify-between">
+          <button onClick={handleReset} disabled={saving} className="text-2xs font-mono text-app-text-muted hover:text-app-text">
+            恢复自动识别
+          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} disabled={saving} className="px-3 py-1.5 text-2xs font-mono border border-app-border text-app-text-muted hover:text-app-text">
+              取消
+            </button>
+            <button onClick={handleSave} disabled={saving} className="px-3 py-1.5 text-2xs font-mono bg-app-accent text-[var(--app-bg)]">
+              保存
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function VerifyCommandEditor({
+  title,
+  enabled,
+  command,
+  timeout,
+  onEnabledChange,
+  onCommandChange,
+  onTimeoutChange,
+  parserHint,
+  taskTypeHint,
+  reportHints,
+  onParserHintChange,
+  onTaskTypeHintChange,
+  onReportHintsChange,
+  placeholder,
+}: {
+  title: string;
+  enabled: boolean;
+  command: string;
+  timeout: string;
+  onEnabledChange: (value: boolean) => void;
+  onCommandChange: (value: string) => void;
+  onTimeoutChange: (value: string) => void;
+  parserHint: string;
+  taskTypeHint: string;
+  reportHints: string;
+  onParserHintChange: (value: string) => void;
+  onTaskTypeHintChange: (value: string) => void;
+  onReportHintsChange: (value: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <div className="border border-app-border p-3 space-y-2">
+      <label className="flex items-center gap-2 text-xs font-mono text-app-text">
+        <input type="checkbox" checked={enabled} onChange={(e) => onEnabledChange(e.target.checked)} />
+        {title}
+      </label>
+      <input
+        value={command}
+        onChange={(e) => onCommandChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full px-2 py-1.5 bg-app-bg border border-app-border text-xs font-mono text-app-text"
+      />
+      <label className="flex items-center gap-2 text-2xs font-mono text-app-text-muted">
+        超时秒数
+        <input
+          value={timeout}
+          onChange={(e) => onTimeoutChange(e.target.value)}
+          className="w-20 px-2 py-1 bg-app-bg border border-app-border text-app-text"
+        />
+      </label>
+      <div className="grid grid-cols-2 gap-2">
+        <input value={parserHint} onChange={(e) => onParserHintChange(e.target.value)} placeholder="Parser 提示（可选）" className="px-2 py-1 bg-app-bg border border-app-border text-2xs font-mono text-app-text" />
+        <input value={taskTypeHint} onChange={(e) => onTaskTypeHintChange(e.target.value)} placeholder="任务类型（test/build…）" className="px-2 py-1 bg-app-bg border border-app-border text-2xs font-mono text-app-text" />
+      </div>
+      <input value={reportHints} onChange={(e) => onReportHintsChange(e.target.value)} placeholder="报告路径提示（逗号分隔，可选）" className="w-full px-2 py-1 bg-app-bg border border-app-border text-2xs font-mono text-app-text" />
+    </div>
+  );
+}
+
 // ── Main component ───────────────────────────────────────────
 
 export function ProjectOverview({
@@ -306,6 +709,8 @@ export function ProjectOverview({
   onRunProfile,
   onSplitProfile,
   onSetDefaultProfile,
+  onUpdateVerifyConfig,
+  onPreviewVerifyConfig,
 }: ProjectOverviewProps) {
 
   const defaultProfile = project.defaultProfile;
@@ -314,6 +719,7 @@ export function ProjectOverview({
   // ── Picker state (replicates ProjectWorkspace header controls) ──
   const [showRunPicker, setShowRunPicker] = useState(false);
   const [showDefaultPicker, setShowDefaultPicker] = useState(false);
+  const [showVerifyEditor, setShowVerifyEditor] = useState(false);
   const [focusedIdx, setFocusedIdx] = useState(0);
   const runRef = useRef<HTMLDivElement>(null);
   const defaultRef = useRef<HTMLDivElement>(null);
@@ -433,10 +839,10 @@ export function ProjectOverview({
                   onClick={handleRunDefault}
                   className="h-7 flex items-center gap-1.5 px-3 text-xs font-mono
                     bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity"
-                  title={defaultProfile ? `Run with ${defaultProfile}` : "Select profile"}
+                  title={defaultProfile ? `使用 ${defaultProfile} 运行` : "选择运行配置"}
                 >
                   <span>▶</span>
-                  <span>Run</span>
+                  <span>运行</span>
                 </button>
                 <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 px-2 py-1
                   bg-[var(--app-panel)] text-[var(--app-text)] text-2xs
@@ -488,7 +894,7 @@ export function ProjectOverview({
         <div className="h-px bg-app-border" />
 
         {/* ── Metrics ── */}
-        <SectionHeader label="Metrics" />
+        <SectionHeader label="指标" />
         {overviewLoading && !overviewData ? (
           <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
             {Array.from({ length: 5 }).map((_, i) => (
@@ -511,16 +917,33 @@ export function ProjectOverview({
           </div>
         )}
 
+        {/* ── Verification ── */}
+        <SectionHeader label="验证" />
+        <ProjectVerifyCard
+          project={project}
+          onEdit={() => setShowVerifyEditor(true)}
+          onPreview={onPreviewVerifyConfig}
+        />
+        {showVerifyEditor && (
+          <ProjectVerifyConfigEditor
+            project={project}
+            onClose={() => setShowVerifyEditor(false)}
+            onSave={onUpdateVerifyConfig}
+            onPreview={onPreviewVerifyConfig}
+          />
+        )}
+
         {/* ── Recent Sessions ── */}
-        <SectionHeader label="Recent Sessions" />
+        <SectionHeader label="最近会话" />
         <OverviewRecentSessions
           sessions={overviewData?.recentSessions ?? []}
           loading={overviewLoading}
+          profiles={profiles}
           onResume={onResumeSession}
         />
 
         {/* ── Config Status ── */}
-        <SectionHeader label="Config Status" />
+        <SectionHeader label="配置状态" />
         {overviewData ? (
           <OverviewConfigMatrix matrix={overviewData.configMatrix} />
         ) : (

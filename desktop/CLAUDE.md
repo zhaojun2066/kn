@@ -72,8 +72,7 @@ desktop/
 │   ├── tauri.conf.json     # Window config, shell scope (allowed commands), updater config
 │   └── capabilities/default.json  # Tauri v2 permissions (shell:allow-spawn/execute with cmd scoping)
 ├── update/
-│   ├── update.json         # User's update URL config
-│   └── demo.json           # Full-platform update manifest example
+│   └── runtime-config.json # Bundled Cloud and release API endpoints
 └── package.json
 ```
 
@@ -140,9 +139,9 @@ Font size changes force an XTerm remount (xterm.js doesn't support hot-reloading
 - `ensure_shell_rc` (Rust) writes the embedded shell-rc to disk on app startup, ensuring it's always up to date.
 
 ### Version & Updates
-- App version is in `tauri.conf.json` (both `version` field and `bundle.version`)
-- Update check: reads `update/update.json` → fetches manifest from `update_url` → compares versions → downloads via curl → verifies SHA256 via shasum → opens installer
-- All update HTTP operations use absolute paths for system binaries: `/usr/bin/curl`, `/usr/bin/shasum`, `/usr/bin/open`
+- App version comes from the root `Cargo.toml` `[workspace.package] version`; `tauri.conf.json` does not duplicate it.
+- Update check: reads bundled `src-tauri/runtime-config.json` → requests the self-hosted release API → Rust verifies SemVer, architecture and SHA-256 → downloads with reqwest → opens the verified installer
+- Update HTTP and hashing use Rust libraries (`reqwest` and `sha2`), not system `curl` or `shasum` binaries
 
 ## CLI Config Directory Conventions
 

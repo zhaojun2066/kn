@@ -136,7 +136,7 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
             </div>
             <div className="px-3 py-1.5 space-y-0.5 text-2xs font-mono">
               {[
-                [formatShortcut("mod+N"), "新建 Profile"], ["Esc", "关闭弹窗 / 取消选中"], [formatShortcut("mod+F"), "搜索"],
+                [formatShortcut("mod+N"), "新建运行配置"], ["Esc", "关闭弹窗 / 取消选中"], [formatShortcut("mod+F"), "搜索"],
                 ["Ctrl+`", "开关终端"], [formatShortcut("mod+K"), "快捷键帮助"], ["↑↓", "终端历史命令"],
               ].map(([key, desc]) => (
                 <div key={key} className="flex justify-between">
@@ -165,10 +165,10 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
 
         {/* What is a profile */}
         <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
-          <div className="text-app-text-muted font-semibold">什么是 Profile？</div>
+          <div className="text-app-text-muted font-semibold">什么是运行配置？</div>
           <div className="leading-relaxed">
-            Profile 是一组<b className="text-app-text">环境变量</b>的集合，用于快速切换 AI 工具的服务商和配置。
-            每个 profile 对应一套 API Key、Base URL、模型名等参数。
+            运行配置是一组<b className="text-app-text">环境变量</b>的集合，用于快速切换 AI 工具的服务商和配置。
+            每个运行配置对应一套 API Key、Base URL、模型名等参数。
           </div>
         </div>
 
@@ -180,7 +180,7 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
               <span className="inline-flex items-center justify-center w-[18px] h-[18px] shrink-0 mt-px text-2xs font-mono font-bold
                 bg-app-accent/10 text-app-accent border border-app-accent/20 rounded-full">1</span>
               <div>
-                <span className="text-app-text font-semibold">新建 Profile</span>
+                <span className="text-app-text font-semibold">新建运行配置</span>
                 <span className="text-app-text-muted"> — 按 {formatShortcut("mod+N")} 或点击侧边栏 + 按钮</span>
               </div>
             </div>
@@ -212,7 +212,7 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
               hover:bg-[var(--app-active)] transition-colors"
           >
             <span className="text-app-accent opacity-70">+</span>
-            新建 Profile
+            新建运行配置
           </button>
           {onInit && (
             <button onClick={onInit}
@@ -232,9 +232,9 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
           </div>
           <div className="px-3 py-2 space-y-1 text-2xs font-mono">
             {[
-              [formatShortcut("mod+N"), "新建 Profile"],
-              [formatShortcut("mod+F"), "搜索 Profile"],
-              ["Enter", "运行选中 Profile"],
+              [formatShortcut("mod+N"), "新建运行配置"],
+              [formatShortcut("mod+F"), "搜索运行配置"],
+              ["Enter", "运行选中运行配置"],
               ["Ctrl+`", "开关底部终端"],
               [formatShortcut("mod+K"), "快捷键帮助"],
               ["Esc", "取消选中"],
@@ -272,7 +272,7 @@ export function ProjectGuide({
         <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
           <div className="text-app-text-muted">快速开始：</div>
           <div>1. 点击下方「注册项目」选择项目目录</div>
-          <div>2. 为项目设置默认 Profile，一键启动 AI 工具</div>
+          <div>2. 为项目设置默认运行配置，一键启动 AI 工具</div>
           <div>3. 在项目中集中管理 Skills、Hooks、会话记录</div>
         </div>
         {/* CTA */}
@@ -293,7 +293,7 @@ export function ProjectGuide({
             项目是一个<b className="text-app-text">本地目录</b>，通常对应一个 Git 仓库或工作空间。
             注册后，kn 会自动扫描项目中的{" "}
             <b className="text-app-text">Skills、Agents、Hooks</b>{" "}
-            等 AI 工具配置，并提供统一的会话管理和资源浏览。
+            等 AI 工具扩展，并提供统一的会话管理和扩展浏览。
           </div>
         </div>
 
@@ -304,7 +304,7 @@ export function ProjectGuide({
             {[
               { icon: "📂", label: "文件浏览", desc: "浏览项目文件结构，预览代码内容" },
               { icon: "💬", label: "会话管理", desc: "查看和恢复项目中的 AI 会话记录" },
-              { icon: "🧩", label: "资源管理", desc: "管理项目级 Skills、Agents、Commands" },
+              { icon: "🧩", label: "扩展管理", desc: "管理项目级 Skills、Agents、Commands 扩展" },
               { icon: "🪝", label: "Hooks", desc: "配置项目级事件钩子，自动化工作流" },
             ].map(({ icon, label, desc }) => (
               <div key={label} className="flex gap-2">
@@ -513,7 +513,7 @@ function CommandBlock({
                 <span className="text-app-text-muted shrink-0 select-none">╰─</span>
                 <span className="inline-flex items-center px-1.5 py-px text-[10px] font-mono
                   bg-[var(--app-selected)] text-app-amber border border-app-amber/20 shrink-0">
-                  Profile 名
+                  运行配置名
                 </span>
                 <span>加载此 profile 的环境变量（API Key、Base URL 等）</span>
               </div>

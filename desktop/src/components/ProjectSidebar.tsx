@@ -448,7 +448,7 @@ export function ProjectSidebar({
           <div className="overflow-y-auto flex-1 py-1">
             {profiles.length === 0 ? (
               <div className="px-4 py-6 text-center text-xs text-[var(--app-text-muted)] font-mono">
-                暂无 Profile，请先创建
+                暂无运行配置，请先创建
               </div>
             ) : (
               profiles.map((p, idx) => {

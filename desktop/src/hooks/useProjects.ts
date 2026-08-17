@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ProjectInfo, ProjectStats } from "../lib/types";
+import type { ProjectInfo, ProjectStats, ProjectVerifyConfig } from "../lib/types";
 
 const STORAGE_KEY = "kn-active-project";
 
@@ -14,6 +14,8 @@ export interface UseProjectsReturn {
   addProject: (name: string, path: string) => Promise<void>;
   removeProject: (name: string) => Promise<void>;
   updateProject: (name: string, newName?: string, newPath?: string, defaultProfile?: string, description?: string, pinned?: boolean) => Promise<void>;
+  updateVerifyConfig: (projectName: string, verify: ProjectVerifyConfig | null) => Promise<void>;
+  previewVerifyConfig: (projectName: string) => Promise<ProjectVerifyConfig | null>;
   setDefaultProfile: (projectName: string, profile: string | null) => Promise<void>;
   setDescription: (projectName: string, description: string) => Promise<void>;
   togglePin: (projectName: string, pinned: boolean) => Promise<void>;
@@ -100,6 +102,20 @@ export function useProjects(): UseProjectsReturn {
     await loadProjects();
   }, [loadProjects]);
 
+  const updateVerifyConfig = useCallback(async (projectName: string, verify: ProjectVerifyConfig | null) => {
+    await invoke("update_project_verify_config", {
+      projectName,
+      verify,
+    });
+    await loadProjects();
+  }, [loadProjects]);
+
+  const previewVerifyConfig = useCallback(async (projectName: string) => {
+    return await invoke<ProjectVerifyConfig | null>("preview_project_verify_config", {
+      projectName,
+    });
+  }, []);
+
   const setDefaultProfile = useCallback(async (projectName: string, profile: string | null) => {
     await invoke("update_project", {
       name: projectName,
@@ -143,6 +159,8 @@ export function useProjects(): UseProjectsReturn {
     addProject,
     removeProject,
     updateProject,
+    updateVerifyConfig,
+    previewVerifyConfig,
     setDefaultProfile,
     setDescription,
     togglePin,
