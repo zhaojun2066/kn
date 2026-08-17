@@ -25,6 +25,7 @@ pub enum AgentState {
     Idle,
     Running,
     Reconnecting,
+    UpgradeRequired,
 }
 
 impl AgentState {
@@ -39,6 +40,7 @@ impl AgentState {
             Self::Idle => "idle",
             Self::Running => "running",
             Self::Reconnecting => "reconnecting",
+            Self::UpgradeRequired => "upgrade_required",
         }
     }
 }
@@ -51,7 +53,9 @@ pub enum StateEvent {
     /// Agent 启动
     Start,
     /// WSS 连接建立（has_token: 是否有 device_token）
-    WsConnected { has_token: bool },
+    WsConnected {
+        has_token: bool,
+    },
     /// WSS 断开，开始重连
     WsDisconnected,
     /// 重连成功
@@ -72,6 +76,10 @@ pub enum StateEvent {
     Pause,
     /// 恢复
     Resume,
+    /// 本机主动解绑或设备凭证被服务端撤销。
+    /// 与临时网络断开不同：必须清除所有远控能力并回到未绑定状态。
+    TokenRevoked,
+    UpgradeRequired,
     /// 停止
     Stop,
 }
@@ -153,6 +161,23 @@ impl StateMachine {
             (Idle, WsDisconnected) => Ok(Reconnecting),
             (Reconnecting, WsReconnected) => Ok(Connected),
             (Reconnecting, WsConnected { has_token: true }) => Ok(Connected),
+
+            // 主动解绑/凭证撤销。无论当前是否有远程会话，都不再允许继续暴露。
+            (Starting, TokenRevoked)
+            | (Unbound, TokenRevoked)
+            | (Binding, TokenRevoked)
+            | (BoundOffline, TokenRevoked)
+            | (Connected, TokenRevoked)
+            | (Idle, TokenRevoked)
+            | (Running, TokenRevoked)
+            | (Reconnecting, TokenRevoked) => Ok(Unbound),
+
+            (Starting, StateEvent::UpgradeRequired)
+            | (BoundOffline, StateEvent::UpgradeRequired)
+            | (Connected, StateEvent::UpgradeRequired)
+            | (Idle, StateEvent::UpgradeRequired)
+            | (Running, StateEvent::UpgradeRequired)
+            | (Reconnecting, StateEvent::UpgradeRequired) => Ok(AgentState::UpgradeRequired),
 
             // 暂停/恢复（恢复前应由调用方验证 WSS 状态）
             (Connected, Pause) => Ok(Idle),
@@ -500,6 +525,19 @@ mod tests {
         m.transition(StateEvent::WsConnected { has_token: false })
             .await
             .unwrap();
+        assert_eq!(m.current().await, AgentState::Unbound);
+    }
+
+    #[tokio::test]
+    async fn test_token_revoked_stops_running_remote_access() {
+        let m = sm(0);
+        m.transition(StateEvent::Start).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
+        m.transition(StateEvent::SessionStarted).await.unwrap();
+
+        m.transition(StateEvent::TokenRevoked).await.unwrap();
         assert_eq!(m.current().await, AgentState::Unbound);
     }
 }

@@ -1,10 +1,19 @@
 //! HTTP fetch, file download, SHA256 verification, binary resolution.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::command;
 use tauri::Emitter;
 
 use super::file_io::is_safe_path;
+
+static DOWNLOADS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+fn downloads() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    DOWNLOADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Find a system binary across common macOS paths.
 pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
@@ -32,10 +41,15 @@ pub async fn fetch_url(url: String) -> Result<String, String> {
 pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> Result<(), String> {
     let safe_path = is_safe_path(std::path::Path::new(&path))
         .ok_or_else(|| "不允许下载到此路径".to_string())?;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    downloads()
+        .lock()
+        .map_err(|_| "下载状态锁失败".to_string())?
+        .insert(path.clone(), Arc::clone(&cancelled));
     tauri::async_runtime::spawn_blocking(move || {
         use std::io::{Read, Write};
-
-        let mut response = reqwest::blocking::Client::builder()
+        let result = (|| {
+            let mut response = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(3600))
             .build()
@@ -43,8 +57,8 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
             .get(&url)
             .send()
             .map_err(|e| format!("请求失败: {}", e))?
-            .error_for_status()
-            .map_err(|e| format!("HTTP 错误: {}", e))?;
+                .error_for_status()
+                .map_err(|e| format!("HTTP 错误: {}", e))?;
 
         let total = response.content_length();
         let mut file =
@@ -54,6 +68,9 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
         let mut buf = [0u8; 8192];
 
         loop {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err("下载已取消".to_string());
+                }
             let n = response
                 .read(&mut buf)
                 .map_err(|e| format!("下载失败: {}", e))?;
@@ -68,7 +85,7 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
                     let pct = ((downloaded as f64 / total as f64) * 100.0).min(99.0) as u8;
                     if pct != last_pct {
                         last_pct = pct;
-                        let _ = app.emit("download-progress", pct);
+                        let _ = app.emit("download-progress", serde_json::json!({"downloaded": downloaded, "total": total, "percent": pct}));
                     }
                 }
             }
@@ -77,11 +94,42 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
         file.flush().map_err(|e| format!("刷新文件失败: {}", e))?;
         file.sync_all()
             .map_err(|e| format!("同步文件失败: {}", e))?;
-        let _ = app.emit("download-progress", 100u8);
+        let _ = app.emit("download-progress", serde_json::json!({"downloaded": downloaded, "total": total, "percent": 100}));
         Ok(())
+        })();
+        downloads().lock().ok().map(|mut active| active.remove(&path));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&safe_path);
+        }
+        result
     })
     .await
     .map_err(|e| format!("后台任务失败: {}", e))?
+}
+
+#[tauri::command]
+pub fn cancel_download(path: String) -> Result<(), String> {
+    let active = downloads()
+        .lock()
+        .map_err(|_| "下载状态锁失败".to_string())?;
+    if let Some(flag) = active.get(&path) {
+        flag.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_download_file(path: String) -> Result<(), String> {
+    let safe_path = is_safe_path(std::path::Path::new(&path))
+        .ok_or_else(|| "不允许删除此路径".to_string())?;
+    if !safe_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("kn-update-"))
+    {
+        return Err("只允许删除 KN 更新临时文件".to_string());
+    }
+    std::fs::remove_file(safe_path).map_err(|e| format!("删除临时下载文件失败: {}", e))
 }
 
 #[command]

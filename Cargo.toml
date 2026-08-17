@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.0"
+version = "1.2.0"
 edition = "2021"
 
 [workspace.dependencies]
@@ -77,6 +77,7 @@ tempfile = "3"
 toml = "0.8"
 toml_edit = "0.22"
 regex-lite = "0.1.9"
+semver = "1"
 
 # Cargo only honors profile settings at the workspace root. Keep release
 # settings here so agent and desktop builds share the same production profile.

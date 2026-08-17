@@ -10,7 +10,7 @@ kn — a monorepo with three components sharing one data file (`~/.kn/config.yam
 |-----------|-----|----------|------|
 | CLI + Shell Wrapper | `bin/`, `lib/`, `shell/` | Python 3 + Bash | `profile` CLI + `ai()` shell function for env injection |
 | Desktop App | `desktop/` | TypeScript + Rust (Tauri v2) | GUI with embedded PTY terminal |
-| Product Site | `site/` | Vue 3 + TypeScript + Vite | Landing page + docs, deployed to GitHub Pages |
+| Product Site | `site/` | Vue 3 + TypeScript + Vite | Landing page + docs, manually deployed behind Nginx |
 
 All three read/write the same `~/.kn/config.yaml`. The Python lib uses `fcntl.flock` for concurrent-write safety. The Rust backend reads/writes directly via `serde_yaml`.
 
@@ -70,33 +70,32 @@ See `desktop/AGENTS.md` for full desktop architecture, PTY data flow, terminal p
 - **Shell scope**: commands in `capabilities/default.json` must be declared in both `shell:allow-execute` and `shell:allow-spawn`
 
 ### Product Site
-- `site/` — Vue 3 + Vite + Tailwind, hash-router
+- `site/` — Vue 3 + Vite + Tailwind, hash-router; built and manually deployed to the self-hosted Nginx site root
 - `site/src/data/docs.ts` — documentation content as structured data
-- Deployed via `.github/workflows/deploy-site.yml` → GitHub Pages
+- Build locally with `npm run build`, then manually upload `site/dist/` to the server directory configured in `kn-cloud/deploy/nginx.conf`.
 
 ## CI/CD
 
-- `.github/workflows/build-desktop.yml` — **tag-push trigger** (`v1.0.7` → auto build + release) with `workflow_dispatch` fallback; validates version, builds macOS (ARM + Intel), auto-generates release notes via git-cliff
-- `.github/workflows/deploy-site.yml` — auto-deploys `site/` to GitHub Pages on push to main
+- `.github/workflows/build-desktop.yml` — tag/manual trigger; validates version, builds macOS ARM + Intel, signs/notarizes, validates the embedded Agent, and uploads only a release-candidate artifact
+- 官网、Cloud 和 Admin 不通过 GitHub Actions 部署；均由人工部署到自有服务器。
 
 ## Release Process
 
-发布由 Git tag 触发，构建和 release notes 完全自动化。**必须在 main 分支上操作，不要在功能分支上打 release tag。**
+发布候选包由 Git tag 或手动 workflow 触发，构建和 release notes 自动化；GitHub 不创建 Release。**必须在 main 分支上操作，不要在功能分支上打 release tag。**
 
 ```bash
 # 0. 确保在 main 分支且代码已合并
 git checkout main
 git pull origin main
 
-# 1. 更新版本号（两个文件同步修改）
-#    - desktop/src-tauri/tauri.conf.json  →  "version": "1.0.7"
-#    - desktop/src-tauri/Cargo.toml       →  version = "1.0.7"
+# 1. 只修改根 Cargo.toml 的 [workspace.package] version = "1.0.7"
+#    Agent、桌面 App、官网和 CI 都从这个版本源读取
 
 # 2. 提交版本升级
-git add desktop/src-tauri/tauri.conf.json desktop/src-tauri/Cargo.toml
+git add Cargo.toml
 git commit -m "release: v1.0.7"
 
-# 3. 打 annotated tag 并推送（推送 tag 即触发 CI 发布）
+# 3. 打 annotated tag 并推送（推送 tag 即触发候选包构建）
 git tag -a v1.0.7 -m "v1.0.7"
 git push origin main
 git push origin v1.0.7
@@ -104,7 +103,7 @@ git push origin v1.0.7
 # 4. 在 https://github.com/zhaojun2066/kn/actions 查看构建进度
 ```
 
-Release notes 由 [git-cliff](https://git-cliff.org) 根据 conventional commits 自动生成，按 Features / Bug Fixes / Refactoring / Miscellaneous 分组，每条带 commit 链接。
+Release notes 由 [git-cliff](https://git-cliff.org) 根据 conventional commits 自动生成，随候选包上传；DMG 之后通过 kn-admin 手动上传和发布。
 本地预览 release notes: `git cliff --unreleased`
 完整发布指南（含功能分支开发 → merge → 发布全流程）见 `RELEASE.md`。
 

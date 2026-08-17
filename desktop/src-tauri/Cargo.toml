@@ -26,6 +26,7 @@ toml.workspace = true
 toml_edit.workspace = true
 chrono.workspace = true
 regex-lite.workspace = true
+semver.workspace = true
 
 [build-dependencies]
 tauri-build.workspace = true

@@ -89,7 +89,7 @@ export const docPages: Record<string, DocPage> = {
 
 ### 1. 下载
 
-从 [GitHub Releases](https://github.com/zhaojun2066/kn/releases/latest) 下载对应平台的安装包：
+从官网首页的“下载”区域获取对应架构的正式安装包。下载链接由 KN 自有发布接口提供，并显示对应 SHA-256：
 
 | 平台 | 格式 |
 |------|------|
@@ -100,7 +100,7 @@ export const docPages: Record<string, DocPage> = {
 
 **macOS：** 打开 \`.dmg\`，将 \`KN.app\` 拖入 \`/Applications/\`。
 
-> 由于应用未经过 Apple 开发者签名，首次打开会提示「已损坏，无法打开」。参考 [Desktop 安装与启动](/docs/desktop-install) 中的解决方法。
+> 正式版本使用 Apple Developer ID 签名并完成公证。若系统仍提示风险，请先确认下载来源和 SHA-256，再参考 [Desktop 安装与启动](/docs/desktop-install)。
 
 ### 3. 安装后
 
@@ -548,7 +548,7 @@ profiles:
     id: 'desktop-install', group: 'desktop', groupIcon: '🖥️', title: '安装与启动', prev: 'desktop-overview', next: 'desktop-ui',
     content: `## 下载预构建包
 
-从 [GitHub Releases](https://github.com/zhaojun2066/kn/releases/latest) 下载对应平台的安装包：
+从官网首页的“下载”区域获取对应架构的正式安装包；页面展示当前正式版和 SHA-256：
 
 | 平台 | 格式 |
 |------|------|
@@ -557,7 +557,7 @@ profiles:
 
 ## macOS 首次打开
 
-由于应用未经过 Apple 开发者签名和公证，首次打开时会提示「已损坏，无法打开」或被阻止。
+正式安装包已使用 Apple Developer ID 签名并完成公证。若仍被阻止，请核对官网 SHA-256 后再重新下载。
 
 ### 解决方法一：清除隔离属性（推荐）
 
@@ -919,12 +919,11 @@ npm run tauri:build:debug
 
 ## 版本发布流程
 
-1. 修改 \`src-tauri/tauri.conf.json\` → \`version\`
+1. 只修改根目录 \`Cargo.toml\` → \`[workspace.package].version\`
 2. 用 GitHub Actions 构建 macOS 包
-3. 下载产物，计算 SHA256
-4. 将 SHA256 填入更新清单
-5. 上传安装包到服务器/CDN
-6. 更新服务器上的 \`update.json\`
+3. 下载 ARM/Intel DMG 和 Release Notes
+4. 在 kn-admin 填写版本并上传两个 DMG
+5. Admin 自动计算 SHA-256，发布后官网和桌面端读取发布接口
 
 ## 代码签名
 
@@ -936,12 +935,11 @@ npm run tauri:build:debug
 
 Desktop 应用内置自动更新功能：
 
-1. 应用启动时读取 \`update/update.json\` 中的 \`update_url\`
-2. 向更新服务器请求更新清单
-3. 比较版本号，若有新版本则弹出更新对话框
-4. 通过 \`curl\` 下载安装包
-5. \`shasum\` 校验 SHA256
-6. \`open\` 打开安装包
+1. 应用启动时读取包内 \`runtime-config.json\` 的 \`release_api_url\`
+2. 向 KN 自有发布接口请求当前架构的正式版本
+3. Rust 后端验证 API 信封、版本、架构、HTTPS 下载地址和 SHA-256
+4. 使用内置 HTTP 客户端下载并显示真实下载字节、速度和 ETA
+5. Rust 后端校验 SHA-256 后才打开 DMG
 
 ## 快捷键
 

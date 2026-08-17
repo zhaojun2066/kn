@@ -46,10 +46,27 @@ fn files_differ(left: &Path, right: &Path) -> bool {
     if left_meta.len() != right_meta.len() {
         return true;
     }
-    match (std::fs::read(left), std::fs::read(right)) {
-        (Ok(left_bytes), Ok(right_bytes)) => left_bytes != right_bytes,
+    fn sha256(path: &Path) -> Result<[u8; 32], std::io::Error> {
+        use sha2::Digest;
+        let mut file = std::fs::File::open(path)?;
+        let mut hasher = sha2::Sha256::new();
+        std::io::copy(&mut file, &mut hasher)?;
+        Ok(hasher.finalize().into())
+    }
+    match (sha256(left), sha256(right)) {
+        (Ok(left_hash), Ok(right_hash)) => left_hash != right_hash,
         _ => true,
     }
+}
+
+fn agent_version_differs(agent: &Path, expected: &str) -> bool {
+    let output = match std::process::Command::new(agent).arg("--version").output() {
+        Ok(output) if output.status.success() => output,
+        _ => return true,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout.split_whitespace().last().unwrap_or_default();
+    version != expected
 }
 
 /// Acquire the global write lock and run the closure.
@@ -311,10 +328,12 @@ pub fn run() {
             } else {
                 // ── Production: copy from app bundle, only start if needed ──
                 let mut agent_updated = false;
+                let app_version = app.package_info().version.to_string();
+                let (cloud_ws_url, cloud_http_url) = commands::app_config::production_cloud_urls();
                 if let Ok(resource_dir) = app.path().resource_dir() {
                     let bundled = resource_dir.join("resources").join("kn-agent");
                     if bundled.exists() {
-                        if files_differ(&bundled, &agent_bin) {
+                        if files_differ(&bundled, &agent_bin) || agent_version_differs(&agent_bin, &app_version) {
                             let tmp = agent_dir.join("kn-agent.tmp");
                             if std::fs::copy(&bundled, &tmp).is_ok() {
                                 #[cfg(unix)]
@@ -353,6 +372,8 @@ pub fn run() {
                                 || !content.contains(&format!("<string>{}</string>", config_dir_plist))
                                 || !content.contains(&format!("<string>{}</string>", agent_runtime.environment_name()))
                                 || !content.contains(&format!("<string>{}</string>", agent_runtime.launchd_label))
+                                || !content.contains(&format!("<string>{}</string>", cloud_ws_url))
+                                || !content.contains(&format!("<string>{}</string>", cloud_http_url))
                         })
                         .unwrap_or(true);
                     if agent_runtime::should_restart_agent(agent_updated, plist_needs_update) {
@@ -375,13 +396,15 @@ pub fn run() {
                         );
                         let agent_env_vars = format!(
                             r#"<key>KN_CLOUD_URL</key>
-        <string>wss://api.shark.kim/v1/ws</string>
+        <string>{}</string>
         <key>KN_CLOUD_HTTP_URL</key>
-        <string>https://api.shark.kim</string>
+        <string>{}</string>
         <key>KN_HOME</key>
         <string>{}</string>
         <key>KN_RUNTIME_ENV</key>
         <string>{}</string>"#,
+                            agent_runtime::escape_plist_value(&cloud_ws_url),
+                            agent_runtime::escape_plist_value(&cloud_http_url),
                             config_dir_plist,
                             agent_runtime.environment_name(),
                         );
@@ -458,6 +481,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             agent_ipc::agent_ipc,
+            commands::restart_agent,
+            commands::repair_agent,
             commands::list_profiles,
             commands::show_profile,
             commands::get_env,
@@ -483,6 +508,9 @@ pub fn run() {
             commands::get_app_version,
             commands::fetch_url,
             commands::download_file,
+            commands::cancel_download,
+            commands::delete_download_file,
+            commands::check_desktop_release,
             commands::verify_sha256,
             commands::open_in_terminal,
             commands::open_file,

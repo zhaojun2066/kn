@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import DesktopDemo from './DesktopDemo.vue'
-import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
+import { APP_VERSION } from '../config'
 </script>
 
 <template>
@@ -35,7 +35,7 @@ import { DOWNLOAD_URL_ARM, APP_VERSION } from '../config'
           </div>
 
           <div class="hero-actions">
-            <a :href="DOWNLOAD_URL_ARM" class="btn btn-primary">
+            <a href="#download" class="btn btn-primary">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               下载 macOS 版
             </a>

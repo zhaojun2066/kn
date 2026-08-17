@@ -113,6 +113,14 @@ pub async fn run_ws_loop(
             Err(e) => {
                 let err_msg = e.to_string();
                 // B12: token 被吊销/过期 — 不再重连，回到 Unbound
+                if err_msg.contains("upgrade_required") {
+                    tracing::warn!("远程服务要求升级 Agent 协议");
+                    let mut tx_ref = outgoing_tx_ref.lock().await;
+                    *tx_ref = None;
+                    drop(tx_ref);
+                    let _ = state.transition(StateEvent::UpgradeRequired).await;
+                    return Err(AgentError::Ws(err_msg));
+                }
                 if err_msg.contains("AUTH_REJECTED") {
                     tracing::warn!("device_token 已失效，进入未绑定状态");
                     // 清除 sender，防止后续 project watcher / heartbeat 向已关闭连接发送
@@ -441,7 +449,8 @@ mod tests {
                 "projectKey": "17:/repo", "deviceId": 17, "projectPath": "/repo",
                 "requestId": "r1", "files": ["x".repeat(800 * 1024)]
             }
-        }).to_string();
+        })
+        .to_string();
         let frames = outbound_frame::protect_outbound_text(original);
         assert_eq!(frames.len(), 1);
         let value: serde_json::Value = serde_json::from_str(&frames[0]).unwrap();
@@ -461,7 +470,8 @@ mod tests {
                 "requestId": "r-log", "runId": "run-1", "stage": "build",
                 "lines": ["x".repeat(800 * 1024)]
             }
-        }).to_string();
+        })
+        .to_string();
         let frames = outbound_frame::protect_outbound_text(original);
         let value: serde_json::Value = serde_json::from_str(&frames[0]).unwrap();
         let data = &value["data"];

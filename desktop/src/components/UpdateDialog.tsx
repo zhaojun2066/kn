@@ -1,57 +1,21 @@
-import React, { useState, useEffect } from "react";
-import { Download, X, CheckCircle, ShieldCheck, Zap, Clock, AlertTriangle, type LucideIcon } from "lucide-react";
+import React from "react";
+import { Download, X, CheckCircle, ShieldCheck, AlertTriangle } from "lucide-react";
 import { Button } from "./common/Button";
 
 interface UpdateDialogProps {
   open: boolean;
   version: string;
   notes: string;
+  mandatory: boolean;
   downloading: boolean;
   progress: number;
+  downloaded: number;
+  total: number | null;
+  speedBytesPerSecond: number | null;
+  etaSeconds: number | null;
   downloadError: string | null;
   onConfirm: () => void;
   onCancel: () => void;
-}
-
-// ── Simulated telemetry (derived from progress) ────────────────
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  return `${bytes} B`;
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-}
-
-function useTelemetry(progress: number, downloading: boolean) {
-  const [startTime] = useState(() => Date.now());
-  const [elapsed, setElapsed] = useState(0);
-  const totalBytes = 85_000_000; // ~85 MB simulated total
-
-  useEffect(() => {
-    if (!downloading) {
-      setElapsed(0);
-      return;
-    }
-    const timer = setInterval(() => {
-      setElapsed((Date.now() - startTime) / 1000);
-    }, 250);
-    return () => clearInterval(timer);
-  }, [downloading, startTime]);
-
-  if (!downloading && progress === 0) return null;
-
-  const downloaded = Math.round((progress / 100) * totalBytes);
-  const remaining = totalBytes - downloaded;
-  const speed = elapsed > 0.5 ? downloaded / elapsed : 0; // bytes/sec
-  const eta = speed > 0 ? remaining / speed : 0;
-
-  return { downloaded, total: totalBytes, speed, elapsed, eta };
 }
 
 // ── Segmented progress bar ────────────────────────────────────
@@ -92,18 +56,17 @@ function SegmentedBar({ pct, done }: { pct: number; done: boolean }) {
   );
 }
 
-// ── Telemetry row ─────────────────────────────────────────────
+function formatBytes(bytes: number): string {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
 
-function TelemetryRow({ label, value, icon: Icon }: { label: string; value: string; icon?: LucideIcon }) {
-  return (
-    <div className="flex items-center justify-between text-xs font-mono py-[2px]">
-      <span className="text-app-text-muted flex items-center gap-1.5">
-        {Icon && <Icon size={10} className="text-app-text-dim opacity-60" />}
-        {label}
-      </span>
-      <span className="text-app-text-dim tabular-nums">{value}</span>
-    </div>
-  );
+function formatEta(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) return "--";
+  if (seconds < 60) return `${Math.ceil(seconds)} 秒`;
+  return `${Math.ceil(seconds / 60)} 分钟`;
 }
 
 // ── Main component ────────────────────────────────────────────
@@ -112,8 +75,13 @@ export function UpdateDialog({
   open,
   version,
   notes,
+  mandatory,
   downloading,
   progress,
+  downloaded,
+  total,
+  speedBytesPerSecond,
+  etaSeconds,
   downloadError,
   onConfirm,
   onCancel,
@@ -121,8 +89,6 @@ export function UpdateDialog({
   if (!open) return null;
 
   const done = !downloading && progress >= 100;
-  const telemetry = useTelemetry(progress, downloading);
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-[fadeIn_100ms_ease-out]">
       <div className="bg-app-panel border border-app-border shadow-dialog w-[480px] max-h-[85vh] flex flex-col animate-[scaleIn_150ms_ease-out]">
@@ -151,7 +117,7 @@ export function UpdateDialog({
               </p>
             </div>
           </div>
-          {!downloading && (
+          {!downloading && !mandatory && (
             <button
               onClick={onCancel}
               className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors"
@@ -180,31 +146,13 @@ export function UpdateDialog({
                 </div>
 
                 <SegmentedBar pct={progress} done={done} />
-
-                {/* Telemetry grid */}
-                {telemetry && (
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 pt-1 border-t border-app-border-light">
-                    <TelemetryRow
-                      label="Downloaded"
-                      value={`${formatBytes(telemetry.downloaded)} / ${formatBytes(telemetry.total)}`}
-                      icon={Download}
-                    />
-                    <TelemetryRow
-                      label="Speed"
-                      value={`${formatBytes(telemetry.speed)}/s`}
-                      icon={Zap}
-                    />
-                    <TelemetryRow
-                      label="Elapsed"
-                      value={formatDuration(telemetry.elapsed)}
-                      icon={Clock}
-                    />
-                    <TelemetryRow
-                      label="ETA"
-                      value={progress >= 100 ? "—" : formatDuration(telemetry.eta)}
-                      icon={Clock}
-                    />
-                  </div>
+                <p className="text-2xs font-mono text-app-text-muted">
+                  {total && total > 0 ? `${formatBytes(downloaded)} / ${formatBytes(total)}` : `已下载 ${formatBytes(downloaded)}，正在获取总大小`}
+                </p>
+                {downloading && (
+                  <p className="text-2xs font-mono text-app-text-muted">
+                    {speedBytesPerSecond === null ? "正在计算下载速度" : `${formatBytes(speedBytesPerSecond)}/s · 剩余 ${formatEta(etaSeconds)}`}
+                  </p>
                 )}
 
                 {/* Scan-line overlay effect */}
@@ -220,7 +168,7 @@ export function UpdateDialog({
               {downloading && (
                 <div className="flex items-center gap-2 text-2xs text-app-text-muted font-mono">
                   <ShieldCheck size={11} className="shrink-0 opacity-50" />
-                  <span>SHA256 verification will run after download completes.</span>
+                  <span>正在下载；完成后将校验 SHA-256 完整性。</span>
                 </div>
               )}
 
@@ -228,7 +176,7 @@ export function UpdateDialog({
               {done && (
                 <div className="flex items-center gap-2 text-2xs text-app-accent font-mono">
                   <ShieldCheck size={11} className="shrink-0" />
-                  <span>SHA256 checksum verified — package integrity confirmed.</span>
+                  <span>SHA-256 校验通过，安装包完整。</span>
                 </div>
               )}
 
@@ -270,6 +218,12 @@ export function UpdateDialog({
                 <ShieldCheck size={11} className="shrink-0 opacity-50" />
                 <span>Download will be verified with SHA256 after completion.</span>
               </div>
+              {mandatory && (
+                <div className="flex items-center gap-2 text-xs text-app-red font-mono border border-app-red/40 bg-app-red/10 p-2">
+                  <AlertTriangle size={12} className="shrink-0" />
+                  <span>当前版本必须升级后才能继续使用远程控制。</span>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -277,14 +231,10 @@ export function UpdateDialog({
         {/* ── Footer: terminal prompt buttons ─────────────────── */}
         <div className="flex justify-end gap-2 px-4 py-3 bg-[var(--app-subtle)] border-t border-app-border shrink-0">
           {downloading ? (
-            <Button variant="secondary" size="sm" onClick={onCancel}>
-              取消
-            </Button>
+            !mandatory ? <Button variant="secondary" size="sm" onClick={onCancel}>取消</Button> : null
           ) : downloadError ? (
             <>
-              <Button variant="secondary" size="sm" onClick={onCancel}>
-                关闭
-              </Button>
+              {!mandatory && <Button variant="secondary" size="sm" onClick={onCancel}>关闭</Button>}
               <Button variant="primary" size="sm" onClick={onConfirm}>
                 重试
               </Button>
@@ -295,9 +245,7 @@ export function UpdateDialog({
             </Button>
           ) : (
             <>
-              <Button variant="secondary" size="sm" onClick={onCancel}>
-                稍后
-              </Button>
+              {!mandatory && <Button variant="secondary" size="sm" onClick={onCancel}>稍后</Button>}
               <Button variant="primary" size="sm" onClick={onConfirm}>
                 立即更新
               </Button>

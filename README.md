@@ -2,13 +2,13 @@
 
 用手机继续电脑端 AI 会话的远程控制工具，同时提供 AI CLI 运行配置管理。在不同会话中为 `claude` / `codex` / `qoder` 无缝切换 API key、Base URL 和模型配置。
 
-> 🌐 官网：[https://zhaojun2066.github.io/kn/](https://zhaojun2066.github.io/kn/)
+> 🌐 官网：部署到自有服务器的正式官网地址（以 `desktop/src-tauri/runtime-config.json` 和总手册配置为准）
 
 ---
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/zhaojun2066/kn/releases/latest) 下载安装包：
+从官网首页“下载”区域下载安装包。链接由 KN 自有发布服务按架构提供，并附带 SHA-256：
 
 | 平台 | 格式 |
 |------|------|

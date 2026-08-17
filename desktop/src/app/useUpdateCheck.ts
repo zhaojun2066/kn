@@ -1,69 +1,33 @@
 //! Update check + download + verify flow.
 //! Extracted from App.tsx to keep the main component focused on layout glue.
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-/** Compare two semver strings. */
-function compareVersions(a: string, b: string): number {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] ?? 0, nb = pb[i] ?? 0;
-    if (isNaN(na) || isNaN(nb)) return a.localeCompare(b);
-    if (na !== nb) return na - nb;
-  }
-  return 0;
-}
-
-interface UpdatePlatform { url: string; sha256?: string; }
-interface UpdateManifest { version: string; notes?: string; platforms: Record<string, UpdatePlatform>; }
-
 export interface UpdateDialogState {
-  version: string; notes: string; url: string; sha256: string;
+  version: string; notes: string; url: string; sha256: string; mandatory: boolean;
 }
 
 export interface DownloadState {
-  phase: "idle" | "downloading" | "verifying"; progress: number; error: string | null;
+  phase: "idle" | "downloading" | "verifying"; progress: number; downloaded: number; total: number | null; speedBytesPerSecond: number | null; etaSeconds: number | null; error: string | null;
 }
 
 type AddToast = (type: "error" | "success", msg: string) => void;
 
 export function useUpdateCheck(addToast: AddToast) {
   const [updateDialog, setUpdateDialog] = useState<UpdateDialogState | null>(null);
-  const [downloadState, setDownloadState] = useState<DownloadState>({ phase: "idle", progress: 0, error: null });
+  const [downloadState, setDownloadState] = useState<DownloadState>({ phase: "idle", progress: 0, downloaded: 0, total: null, speedBytesPerSecond: null, etaSeconds: null, error: null });
+  const activeDownload = useRef<{ path: string | null; cancelled: boolean } | null>(null);
 
   const handleCheckUpdate = useCallback(async (opts?: { silent?: boolean }) => {
     try {
-      const config: { update_url?: string } = await invoke("read_app_config");
-      if (!config.update_url) {
-        if (!opts?.silent) addToast("error", "未配置更新地址。请编辑 update/update.json");
+      const release = await invoke<UpdateDialogState | null>("check_desktop_release");
+      if (!release) {
+        if (!opts?.silent) addToast("success", "已是最新版本");
         return;
       }
-      const currentVersion: string = await invoke("get_app_version");
-      let manifest: UpdateManifest;
-      try {
-        const text = (await invoke("fetch_url", { url: config.update_url })) as string;
-        if (!text.trim()) throw new Error("空响应");
-        manifest = JSON.parse(text) as UpdateManifest;
-      } catch (e) {
-        if (!opts?.silent) addToast("error", `无法获取更新清单: ${e}\n${config.update_url}`);
-        return;
-      }
-      if (!manifest.version || !manifest.platforms) {
-        if (!opts?.silent) addToast("error", "更新清单格式无效");
-        return;
-      }
-      if (compareVersions(manifest.version, currentVersion) <= 0) {
-        if (!opts?.silent) addToast("success", `已是最新版本 (${currentVersion})`);
-        return;
-      }
-      const platformInfo: { os: string; arch: string } = await invoke("get_platform_info");
-      const platform = `darwin-${platformInfo.arch}`;
-      const plat = manifest.platforms[platform] || Object.values(manifest.platforms)[0];
-      if (!plat?.url) { addToast("error", `无此平台的更新包 (${platform})`); return; }
-      setUpdateDialog({ version: manifest.version, notes: manifest.notes || "", url: plat.url, sha256: plat.sha256 || "" });
+      setUpdateDialog(release);
     } catch (e) {
       if (!opts?.silent) addToast("error", `检查更新失败: ${e}`);
     }
@@ -72,36 +36,65 @@ export function useUpdateCheck(addToast: AddToast) {
   const handleConfirmUpdate = useCallback(async () => {
     if (!updateDialog) return;
     const { version, url, sha256 } = updateDialog;
-    setDownloadState({ phase: "downloading", progress: 0, error: null });
-    const unlisten = await listen<number>("download-progress", (event) => {
-      setDownloadState((prev) => prev.phase === "downloading" ? { ...prev, progress: event.payload } : prev);
+    const control = { path: null as string | null, cancelled: false };
+    activeDownload.current = control;
+    const startedAt = performance.now();
+    setDownloadState({ phase: "downloading", progress: 0, downloaded: 0, total: null, speedBytesPerSecond: null, etaSeconds: null, error: null });
+    const unlisten = await listen<{ downloaded: number; total: number | null; percent: number }>("download-progress", (event) => {
+      const elapsedSeconds = Math.max((performance.now() - startedAt) / 1000, 0.001);
+      const speedBytesPerSecond = event.payload.downloaded / elapsedSeconds;
+      const etaSeconds = event.payload.total && speedBytesPerSecond > 0
+        ? Math.max(0, (event.payload.total - event.payload.downloaded) / speedBytesPerSecond)
+        : null;
+      setDownloadState((prev) => prev.phase === "downloading" ? { ...prev, progress: event.payload.percent, downloaded: event.payload.downloaded, total: event.payload.total, speedBytesPerSecond, etaSeconds } : prev);
     });
+    let tmpPath = "";
     try {
       const tmpDir: string = await invoke("temp_dir");
       const pathPart = url.split('?')[0];
       const ext = pathPart.split('.').pop() || "dmg";
-      const tmpPath = `${tmpDir}/kn-update-${Date.now()}.${ext}`;
+      tmpPath = `${tmpDir}/kn-update-${Date.now()}.${ext}`;
+      control.path = tmpPath;
+      if (control.cancelled) throw new Error("下载已取消");
       await invoke("download_file", { url, path: tmpPath });
-      setDownloadState({ phase: "verifying", progress: 100, error: null });
+      setDownloadState((prev) => ({ ...prev, phase: "verifying", progress: 100, error: null }));
       if (sha256) {
         const ok = (await invoke("verify_sha256", { path: tmpPath, expected: sha256 })) as boolean;
-        if (!ok) { setDownloadState({ phase: "idle", progress: 0, error: "SHA256 校验失败，文件可能损坏" }); return; }
+        if (!ok) throw new Error("SHA256 校验失败，文件可能损坏");
       }
-      setDownloadState({ phase: "idle", progress: 100, error: null });
+      setDownloadState((prev) => ({ ...prev, phase: "idle", progress: 100, error: null }));
       await new Promise((r) => setTimeout(r, 800));
+      if (control.cancelled) throw new Error("下载已取消");
       setUpdateDialog(null);
-      setDownloadState({ phase: "idle", progress: 0, error: null });
+      setDownloadState({ phase: "idle", progress: 0, downloaded: 0, total: null, speedBytesPerSecond: null, etaSeconds: null, error: null });
       addToast("success", `已下载 ${version}，正在打开安装包...`);
       await invoke("open_file", { path: tmpPath });
-    } catch (e: any) {
-      setDownloadState({ phase: "idle", progress: 0, error: String(e) });
+    } catch (e: unknown) {
+      if (tmpPath) await invoke("delete_download_file", { path: tmpPath }).catch(() => undefined);
+      if (activeDownload.current === control) {
+        setDownloadState({ phase: "idle", progress: 0, downloaded: 0, total: null, speedBytesPerSecond: null, etaSeconds: null, error: String(e) });
+      }
     }
+    if (activeDownload.current === control) activeDownload.current = null;
     unlisten();
   }, [updateDialog, addToast]);
+
+  const handleCancelUpdate = useCallback(async () => {
+    const control = activeDownload.current;
+    if (!control) {
+      setUpdateDialog(null);
+      return;
+    }
+    control.cancelled = true;
+    const path = control.path;
+    if (path) await invoke("cancel_download", { path }).catch(() => undefined);
+    setUpdateDialog(null);
+    setDownloadState({ phase: "idle", progress: 0, downloaded: 0, total: null, speedBytesPerSecond: null, etaSeconds: null, error: null });
+  }, []);
 
   // Auto-check on startup (silent) — intentionally runs once; handleCheckUpdate is stable
   useEffect(() => { handleCheckUpdate({ silent: true }); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { updateDialog, downloadState, handleCheckUpdate, handleConfirmUpdate, setUpdateDialog, setDownloadState };
+  return { updateDialog, downloadState, handleCheckUpdate, handleConfirmUpdate, handleCancelUpdate, setUpdateDialog, setDownloadState };
 }

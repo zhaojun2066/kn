@@ -247,6 +247,26 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Revoke every locally persisted remote exposure after token revocation or self-unbind.
+    pub async fn disable_all_remote(&self) -> Result<usize> {
+        let sessions = self.list().await?;
+        let mut disabled = 0;
+        let mut first_error = None;
+        for session in sessions
+            .into_iter()
+            .filter(|session| session.remote_enabled)
+        {
+            match self.set_remote_enabled(&session.nid, false).await {
+                Ok(()) => disabled += 1,
+                Err(error) => {
+                    tracing::error!(nid = %session.nid, error = %error, "关闭远程会话失败");
+                    if first_error.is_none() { first_error = Some(error); }
+                }
+            }
+        }
+        first_error.map_or(Ok(disabled), Err)
+    }
+
     /// 存储 PTY writer + OutputFanout，供后续 `attach_pty` 使用。
     pub(crate) async fn store_attach_handle(&self, nid: &str, handle: PtyAttachHandle) {
         self.attach_handles

@@ -398,6 +398,21 @@ pub async fn redeem(http_url: &str, device_token: &str, code: &str) -> Result<(S
     Ok((data.plan, data.days))
 }
 
+/// Revoke the current machine binding before removing the local credential.
+pub async fn self_unbind(http_url: &str, device_token: &str) -> Result<()> {
+    let response = http()
+        .post(format!("{}/api/v1/device/self-unbind", http_url))
+        .header("Authorization", format!("Bearer {}", device_token))
+        .send()
+        .await
+        .map_err(AgentError::Http)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(AgentError::Http)?;
+    let envelope: CloudEnvelope<serde_json::Value> = serde_json::from_slice(&body)
+        .map_err(|_| AgentError::Protocol(format!("self-unbind 响应无效 (HTTP {})", status)))?;
+    envelope.into_data().map(|_| ())
+}
+
 /// 从磁盘加载 device_token。无 token 时返回 None。
 pub fn load_device_token() -> Option<String> {
     let path = device_token_path();
@@ -594,6 +609,17 @@ pub fn delete_device_token() {
             let _ = std::fs::remove_file(&path);
             tracing::warn!("device_token 删除失败，已尝试直接删除");
         }
+    }
+}
+
+/// Remove a production token only after Cloud has accepted a self-unbind.
+/// This intentionally has a separate name from the defensive test helper.
+pub fn clear_device_token_after_unbind() -> Result<()> {
+    let path = device_token_path();
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AgentError::Io(error)),
     }
 }
 

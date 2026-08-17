@@ -293,6 +293,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::Pong { .. } => "pong",
         AgentIncoming::CliHeartbeatAck { .. } => "cli_heartbeat_ack",
         AgentIncoming::ProjectDeliveryAck { .. } => "project_delivery_ack",
+        AgentIncoming::TaskCompletedAck { .. } => "task_completed_ack",
         AgentIncoming::Connected { .. } => "connected",
         AgentIncoming::StartSession { .. } => "start_session",
         AgentIncoming::Input { .. } => "input",

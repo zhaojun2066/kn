@@ -2,7 +2,6 @@
   "$schema": "https://raw.githubusercontent.com/nicepage/nicepage/refs/heads/main/schemas/tauri-conf.schema.json",
   "productName": "kn",
   "identifier": "com.kn.app",
-  "version": "0.0.0",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -22,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }
   },
   "plugins": {
@@ -47,7 +46,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "update.json",
+      "runtime-config.json",
       "resources/kn-agent"
     ]
   }

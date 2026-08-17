@@ -4,8 +4,7 @@
 .qoder/
 .superpowers/
 
-# ── Design / planning docs — not for release ──
-docs/
+
 
 # ── Python ──
 __pycache__/

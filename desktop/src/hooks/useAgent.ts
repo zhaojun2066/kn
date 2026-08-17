@@ -11,7 +11,8 @@ export type AgentStateName =
   | "connected"
   | "idle"
   | "running"
-  | "reconnecting";
+  | "reconnecting"
+  | "upgrade_required";
 
 export interface AgentStatus {
   state: AgentStateName;
@@ -64,6 +65,7 @@ export type StatusIcon =
   | "binding"
   | "connected"
   | "reconnecting"
+  | "upgrade_required"
   | "starting";
 
 export interface BindResult {
@@ -86,6 +88,11 @@ export interface RedeemResult {
   ok: boolean;
   plan?: string;
   days?: number;
+  error?: string;
+}
+
+export interface SelfUnbindResult {
+  ok: boolean;
   error?: string;
 }
 
@@ -267,8 +274,31 @@ export function useAgent() {
     }
   }, []);
 
+  const selfUnbind = useCallback(async (): Promise<SelfUnbindResult> => {
+    try {
+      await invoke("agent_ipc", { method: "self_unbind" });
+      setSessions([]);
+      await fetchStatus();
+      return { ok: true };
+    } catch (e: unknown) {
+      const msg = String(e);
+      setError(msg);
+      return { ok: false, error: msg };
+    }
+  }, [fetchStatus]);
+
+  const restartAgent = useCallback(async (): Promise<SelfUnbindResult> => {
+    try { await invoke("restart_agent"); await fetchStatus(); return { ok: true }; }
+    catch (e: unknown) { return { ok: false, error: String(e) }; }
+  }, [fetchStatus]);
+
+  const repairAgent = useCallback(async (): Promise<SelfUnbindResult> => {
+    try { await invoke("repair_agent"); await fetchStatus(); return { ok: true }; }
+    catch (e: unknown) { return { ok: false, error: String(e) }; }
+  }, [fetchStatus]);
+
   const isRunning = agentStatus !== null;
-  const isBound = agentStatus !== null && ["bound_offline", "connected", "idle", "running", "reconnecting"].includes(agentStatus.state);
+  const isBound = agentStatus !== null && ["bound_offline", "connected", "idle", "running", "reconnecting", "upgrade_required"].includes(agentStatus.state);
   const isBinding = agentStatus?.state === "binding";
   const isConnected =
     agentStatus?.state === "connected" ||
@@ -284,6 +314,8 @@ export function useAgent() {
         ? "binding"
         : isConnected
           ? "connected"
+          : agentStatus!.state === "upgrade_required"
+            ? "upgrade_required"
           : agentStatus!.state === "reconnecting" || agentStatus!.state === "bound_offline"
             ? "reconnecting"
             : "starting";
@@ -302,6 +334,9 @@ export function useAgent() {
     bindDevice,
     cancelBind,
     redeemCode,
+    selfUnbind,
+    restartAgent,
+    repairAgent,
     fetchStatus,
     fetchSessions,
     fetchHealth,

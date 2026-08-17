@@ -1,7 +1,7 @@
 name: Build Desktop App
 
 on:
-  # Tag push triggers automatic release (e.g., v1.0.7)
+  # Tag push triggers the build (e.g., v1.2.0); deployment remains manual.
   push:
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g., 1.0.7). Must match tauri.conf.json"
+        description: "Version to release (e.g., 1.0.7). Must match Cargo.toml"
         required: false
         type: string
       release_notes_override:
@@ -31,7 +31,8 @@ jobs:
       - name: Read and validate versions
         id: version
         run: |
-          APP_VERSION=$(grep '"version"' desktop/src-tauri/tauri.conf.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/')
+          ROOT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          APP_VERSION="$ROOT_VERSION"
           echo "app_version=$APP_VERSION" >> $GITHUB_OUTPUT
 
           # Determine the target version
@@ -44,9 +45,9 @@ jobs:
           fi
           echo "tag_version=$TAG_VERSION" >> $GITHUB_OUTPUT
 
-          # Validation 1: tag version matches tauri.conf.json version
+          # Validation 1: tag version matches the single Cargo workspace version
           if [ "$APP_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error:: tauri.conf.json version ($APP_VERSION) does not match tag/input version ($TAG_VERSION)"
+            echo "::error:: Cargo.toml version ($APP_VERSION) does not match tag/input version ($TAG_VERSION)"
             exit 1
           fi
 
@@ -102,18 +103,30 @@ jobs:
 
       - name: Build kn-agent
         run: |
-          cargo build --release --bin kn-agent
+          cargo build --release --target ${{ matrix.target }} --bin kn-agent
           mkdir -p desktop/src-tauri/resources
-          cp target/release/kn-agent desktop/src-tauri/resources/kn-agent
+          cp target/${{ matrix.target }}/release/kn-agent desktop/src-tauri/resources/kn-agent
           chmod +x desktop/src-tauri/resources/kn-agent
+          file desktop/src-tauri/resources/kn-agent
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) file desktop/src-tauri/resources/kn-agent | grep -q "arm64" ;;
+            x86_64-apple-darwin) file desktop/src-tauri/resources/kn-agent | grep -q "x86_64" ;;
+          esac
           echo "✅ kn-agent copied to desktop/src-tauri/resources/"
 
       - name: Import signing certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'temporary-keychain-password' }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_NOTARY_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required repository secret: $name"
+              exit 1
+            fi
+          done
           CERTIFICATE_PATH=$(mktemp -d)/certificate.p12
           echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
@@ -147,8 +160,37 @@ jobs:
             xcrun stapler staple "$DMG"
             echo "✅ Notarized and stapled: $DMG"
           else
-            echo "⚠️  No .dmg found, skipping notarization"
+            echo "::error:: No DMG found for ${{ matrix.target }}"
+            exit 1
           fi
+
+      - name: Verify signed and notarized package
+        run: |
+          DMG=$(find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -name "*.dmg" | head -1)
+          test -n "$DMG"
+          xcrun stapler validate "$DMG"
+          MOUNT=$(mktemp -d)
+          trap 'hdiutil detach "$MOUNT" -quiet || true' EXIT
+          hdiutil attach "$DMG" -nobrowse -mountpoint "$MOUNT"
+          APP=$(find "$MOUNT" -maxdepth 1 -name "*.app" | head -1)
+          test -n "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          AGENT="$APP/Contents/Resources/resources/kn-agent"
+          test -x "$AGENT"
+          codesign --verify --strict --verbose=2 "$AGENT"
+          AGENT_VERSION=$("$AGENT" --version | sed -n 's/.* \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
+          if [ "$AGENT_VERSION" != "${{ needs.validate.outputs.app_version }}" ]; then
+            echo "::error::Embedded Agent version ($AGENT_VERSION) does not match App version (${{ needs.validate.outputs.app_version }})"
+            exit 1
+          fi
+          echo "Embedded Agent version: $AGENT_VERSION"
+          file "$AGENT"
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) file "$AGENT" | grep -q "arm64" ;;
+            x86_64-apple-darwin) file "$AGENT" | grep -q "x86_64" ;;
+          esac
+          hdiutil detach "$MOUNT"
+          trap - EXIT
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -156,12 +198,10 @@ jobs:
           name: ${{ matrix.label }}
           path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
 
-  # ── Generate release notes, manifest, and publish ──
-  release:
+  # ── Assemble a manually uploadable release candidate ──
+  release-candidate:
     needs: [validate, build]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     env:
       APP_VERSION: ${{ needs.validate.outputs.app_version }}
 
@@ -213,47 +253,10 @@ jobs:
           echo "=== Generated Release Notes ==="
           cat release-notes.md
 
-      - name: Generate download.json manifest
-        run: |
-          echo '{"version":"","notes":"","platforms":{}}' > download.json
-
-          # darwin-aarch64
-          DMG=$(find assets/darwin-aarch64 -name "*.dmg" | head -1)
-          if [ -f "$DMG" ]; then
-            SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
-            FNAME=$(basename "$DMG" | sed 's/ /./g')
-            jq --arg url "https://github.com/zhaojun2066/kn/releases/download/v$APP_VERSION/$FNAME" \
-               --arg sha "$SHA" \
-               '.platforms["darwin-aarch64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
-          fi
-
-          # darwin-x86_64
-          DMG=$(find assets/darwin-x86_64 -name "*.dmg" | head -1)
-          if [ -f "$DMG" ]; then
-            SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
-            FNAME=$(basename "$DMG" | sed 's/ /./g')
-            jq --arg url "https://github.com/zhaojun2066/kn/releases/download/v$APP_VERSION/$FNAME" \
-               --arg sha "$SHA" \
-               '.platforms["darwin-x86_64"] = {url: $url, sha256: $sha}' download.json > tmp && mv tmp download.json
-          fi
-
-          # Embed release notes into download.json (for in-app update dialog)
-          jq --arg v "$APP_VERSION" --rawfile n release-notes.md \
-             '.version = $v | .notes = $n' download.json > tmp && mv tmp download.json
-
-          echo "=== download.json ==="
-          cat download.json
-
-      - name: Create Release and upload
-        uses: softprops/action-gh-release@v2
+      - name: Upload release candidate
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v${{ env.APP_VERSION }}
-          name: v${{ env.APP_VERSION }}
-          overwrite_files: true
-          fail_on_unmatched_files: false
-          body_path: release-notes.md
-          files: |
+          name: release-candidate-v${{ env.APP_VERSION }}
+          path: |
             assets/**/*.dmg
-            download.json
-          draft: false
-          prerelease: false
+            release-notes.md

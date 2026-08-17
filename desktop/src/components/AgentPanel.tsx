@@ -16,13 +16,16 @@ const stateLabelCn: Record<AgentStateName, string> = {
   idle: "空闲",
   running: "运行中",
   reconnecting: "重连中",
+  upgrade_required: "需要升级",
 };
 
 interface AgentPanelProps {
   onClose: () => void;
   onBind: () => void;
   onRedeem: () => void;
+  onUnbind: () => Promise<{ ok: boolean; error?: string }>;
   onOpenRemoteSession?: (session: AgentSession) => void;
+  onCheckUpdate?: () => void;
   agent: AgentState;
 }
 
@@ -41,6 +44,7 @@ const statusLabel: Record<StatusIcon, string> = {
   binding: "绑定中...",
   connected: "已连接",
   reconnecting: "重新连接中...",
+  upgrade_required: "需要升级桌面端",
   starting: "启动中...",
 };
 
@@ -50,6 +54,7 @@ const statusDot: Record<StatusIcon, string> = {
   binding: "bg-blue-400 animate-pulse",
   connected: "bg-emerald-400",
   reconnecting: "bg-amber-400 animate-pulse",
+  upgrade_required: "bg-app-red animate-pulse",
   starting: "bg-blue-400 animate-pulse",
 };
 
@@ -59,6 +64,7 @@ const statusIcon: Record<StatusIcon, React.ReactNode> = {
   binding: <Loader2 size={16} className="animate-spin" />,
   connected: <Wifi size={16} />,
   reconnecting: <Loader2 size={16} className="animate-spin" />,
+  upgrade_required: <AlertTriangle size={16} />,
   starting: <Loader2 size={16} className="animate-spin" />,
 };
 
@@ -172,14 +178,18 @@ function SessionRow({
 
 // ── AgentPanel ────────────────────────────────────────────────
 
-export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, agent }: AgentPanelProps) {
-  const { agentStatus, health, sessions, isRunning, isBound, isBinding, isConnected, statusIcon: icon, isPolling, fetchSessions, fetchHealth } = agent;
+export function AgentPanel({ onClose, onBind, onRedeem, onUnbind, onOpenRemoteSession, onCheckUpdate, agent }: AgentPanelProps) {
+  const { agentStatus, health, sessions, isRunning, isBound, isBinding, isConnected, statusIcon: icon, isPolling, fetchSessions, fetchHealth, restartAgent, repairAgent } = agent;
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sessionTab, setSessionTab] = useState<"local" | "remote">("local");
   const [selectedLocalNids, setSelectedLocalNids] = useState<Set<string>>(new Set());
   const [selectedRemoteNids, setSelectedRemoteNids] = useState<Set<string>>(new Set());
   const [remotingSessions, setRemotingSessions] = useState<Set<string>>(new Set());
   const [killConfirm, setKillConfirm] = useState<AgentSession[] | null>(null);
+  const [remoteEnableConfirm, setRemoteEnableConfirm] = useState<AgentSession[] | null>(null);
+  const [unbindConfirm, setUnbindConfirm] = useState(false);
+  const [isUnbinding, setIsUnbinding] = useState(false);
+  const [isRepairing, setIsRepairing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isHealthLoading, setIsHealthLoading] = useState(false);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -318,6 +328,33 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
     setSelectedLocalNids(new Set());
     fetchSessions();
   }, [localSessions, remoteSessions.length, selectedLocalNids, remotingSessions, fetchSessions, showError]);
+
+  const requestEnableRemote = useCallback(() => {
+    const targets = localSessions.filter((session) => selectedLocalNids.has(session.nid));
+    if (targets.length > 0) setRemoteEnableConfirm(targets);
+  }, [localSessions, selectedLocalNids]);
+
+  const handleUnbind = useCallback(async () => {
+    setIsUnbinding(true);
+    const result = await onUnbind();
+    setIsUnbinding(false);
+    setUnbindConfirm(false);
+    if (!result.ok) {
+      showError(`解除绑定失败：${result.error ?? "未知错误"}`);
+      return;
+    }
+    setSelectedLocalNids(new Set());
+    setSelectedRemoteNids(new Set());
+    await fetchSessions();
+  }, [fetchSessions, onUnbind, showError]);
+
+  const handleRecovery = useCallback(async (repair: boolean) => {
+    setIsRepairing(true);
+    const result = await (repair ? repairAgent() : restartAgent());
+    setIsRepairing(false);
+    if (!result.ok) showError(`${repair ? "修复安装" : "重启"}失败：${result.error ?? "未知错误"}`);
+  }, [repairAgent, restartAgent, showError]);
+
 
   // ── 远程会话操作（底层仍是 Agent session） ──
 
@@ -481,6 +518,12 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                 </div>
               </div>
             )}
+            {agentStatus?.state === "upgrade_required" && (
+              <div className="text-center space-y-2">
+                <div className="px-1 text-xs text-app-red font-mono">服务器要求升级后才能恢复远程控制</div>
+                <button onClick={onCheckUpdate} disabled={!onCheckUpdate} className="px-3 py-2 text-xs font-mono border border-app-red text-app-red hover:bg-app-red/10 disabled:opacity-50">检查并升级</button>
+              </div>
+            )}
 
             {isBinding && (
               <div className="w-full px-3 py-2 text-sm font-mono text-center text-app-text-dim bg-[var(--app-cmd-bg)] border border-app-border">
@@ -490,13 +533,22 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
 
             {/* Connected actions */}
             {isConnected && (
-              <button
-                onClick={onRedeem}
-                className="w-full px-3 py-2 text-sm font-mono border border-app-accent text-app-accent hover:bg-app-accent hover:text-[var(--app-bg)] transition-colors flex items-center justify-center gap-2"
-              >
-                <Gift size={14} />
-                兑换码
-              </button>
+              <>
+                <button
+                  onClick={onRedeem}
+                  className="w-full px-3 py-2 text-sm font-mono border border-app-accent text-app-accent hover:bg-app-accent hover:text-[var(--app-bg)] transition-colors flex items-center justify-center gap-2"
+                >
+                  <Gift size={14} />
+                  兑换码
+                </button>
+                <button
+                  onClick={() => setUnbindConfirm(true)}
+                  className="w-full px-3 py-2 text-sm font-mono border border-red-400/50 text-red-400 hover:bg-red-400/10 transition-colors flex items-center justify-center gap-2"
+                >
+                  <WifiOff size={14} />
+                  解除本机绑定
+                </button>
+              </>
             )}
 
             {/* Purchase link */}
@@ -592,7 +644,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
                                   const isRemoting = [...selectedLocalNids].some((nid) => remotingSessions.has(nid));
                                   return (
                                     <button
-                                      onClick={handleEnableRemote}
+                                      onClick={requestEnableRemote}
                                       disabled={selectedLocalNids.size === 0 || isRemoting || !canEnableRemoteByMembership}
                                       title={!canEnableRemoteByMembership ? remoteAccess?.message : undefined}
                                       className="px-2 py-0.5 text-[10px] border border-emerald-400/50 text-emerald-400 hover:bg-emerald-400/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1"
@@ -709,8 +761,9 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
 
           {/* Offline hint */}
           {!isRunning && (
-            <div className="px-1 py-2 text-xs text-app-text-muted font-mono text-center">
-              kn-agent 未运行，请确认后台服务已启动
+            <div className="space-y-2">
+              <div className="px-1 py-2 text-xs text-app-text-muted font-mono text-center">kn-agent 未运行，远程控制已禁用</div>
+              <div className="grid grid-cols-2 gap-2"><button disabled={isRepairing} onClick={() => void handleRecovery(false)} className="px-2 py-2 text-xs font-mono border border-app-border text-app-text-dim hover:text-app-text">重启 Agent</button><button disabled={isRepairing} onClick={() => void handleRecovery(true)} className="px-2 py-2 text-xs font-mono border border-app-accent text-app-accent">修复安装</button></div>
             </div>
           )}
         </div>
@@ -728,6 +781,28 @@ export function AgentPanel({ onClose, onBind, onRedeem, onOpenRemoteSession, age
         setKillConfirm(null);
       }}
       onCancel={() => setKillConfirm(null)}
+    />
+    <ConfirmDialog
+      open={remoteEnableConfirm !== null}
+      title="开启远程会话"
+      message={`将向手机共享 ${remoteEnableConfirm?.length ?? 0} 个选中终端的输出，并允许手机输入命令。仅这些会话会被开放；关闭远程、结束会话或解绑后会立即撤销。`}
+      confirmLabel="确认开启"
+      variant="primary"
+      onConfirm={() => {
+        setRemoteEnableConfirm(null);
+        void handleEnableRemote();
+      }}
+      onCancel={() => setRemoteEnableConfirm(null)}
+    />
+    <ConfirmDialog
+      open={unbindConfirm}
+      title="解除本机绑定"
+      message="这会立即关闭全部远程会话、撤销本机设备凭证，并使手机无法继续控制这台 Mac。本地配置和 CLI 不受影响。"
+      confirmLabel="解除绑定"
+      variant="danger"
+      loading={isUnbinding}
+      onConfirm={() => void handleUnbind()}
+      onCancel={() => setUnbindConfirm(false)}
     />
     </>
   );

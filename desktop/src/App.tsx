@@ -265,7 +265,7 @@ export function App() {
   const batchDeleteNamesRef = useRef<string[]>([]);
   // Platform info (fetched once, used for download path construction)
   const platformRef = useRef<{ os: string; arch: string }>({ os: "macos", arch: "x86_64" });
-  const { updateDialog, downloadState, handleCheckUpdate, handleConfirmUpdate, setUpdateDialog, setDownloadState } = useUpdateCheck(addToast);
+  const { updateDialog, downloadState, handleCheckUpdate, handleConfirmUpdate, handleCancelUpdate, setUpdateDialog, setDownloadState } = useUpdateCheck(addToast);
 
   // Load profiles + platform info on mount
   useEffect(() => {
@@ -2042,6 +2042,8 @@ export function App() {
             setShowAgentPanel(false);
             setShowRedeemDialog(true);
           }}
+          onUnbind={agentHook.selfUnbind}
+          onCheckUpdate={() => { setShowAgentPanel(false); void handleCheckUpdate(); }}
           onOpenRemoteSession={(session) => {
             rightTerminal.openRemoteSession(session);
             setShowAgentPanel(false);
@@ -2098,14 +2100,16 @@ export function App() {
           open={true}
           version={updateDialog.version}
           notes={updateDialog.notes}
+          mandatory={updateDialog.mandatory}
           downloading={downloadState.phase === "downloading"}
           progress={downloadState.progress}
+          downloaded={downloadState.downloaded}
+          total={downloadState.total}
+          speedBytesPerSecond={downloadState.speedBytesPerSecond}
+          etaSeconds={downloadState.etaSeconds}
           downloadError={downloadState.error}
           onConfirm={handleConfirmUpdate}
-          onCancel={() => {
-            setUpdateDialog(null);
-            setDownloadState({ phase: "idle", progress: 0, error: null });
-          }}
+          onCancel={handleCancelUpdate}
         />
       )}
 

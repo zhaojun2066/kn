@@ -697,6 +697,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // ── WSS outgoing channel（提前声明，IPC 模块需要引用） ──
     let outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>> =
         Arc::new(tokio::sync::Mutex::new(None));
+    let wss_cancel_ref: Arc<tokio::sync::Mutex<Option<CancellationToken>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
 
     // ── ACK 注册表（session_created → session_created_ack 关联） ──
     let ack_registry = Arc::new(ack::AckRegistry::new());
@@ -735,6 +737,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             input_merger.clone(),
             wss_trigger_tx.clone(),
             outgoing_tx_ref.clone(),
+            wss_cancel_ref.clone(),
             ack_registry.clone(),
         );
         let ipc_shutdown = shutdown.clone();
@@ -855,7 +858,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let ws_host = cfg.hostname.clone();
                 let ws_state = state_machine.clone();
                 let ws_outgoing = outgoing_tx_ref.clone();
-                let ws_shutdown = shutdown.clone();
+                let ws_shutdown = shutdown.child_token();
+                *wss_cancel_ref.lock().await = Some(ws_shutdown.clone());
 
                 // 在后台 spawn run_ws_loop（内部有无限重连逻辑）
                 wss_task = Some(tokio::spawn(async move {
@@ -964,7 +968,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     }
                     Some(Ok(Ok(()))) => {
                         tracing::info!("WSS 循环正常退出");
-                        break; // shutdown 触发的正常退出
+                        if shutdown.is_cancelled() {
+                            break;
+                        }
+                        let _ = state_machine
+                            .transition(state::StateEvent::WsConnected { has_token: false })
+                            .await;
                     }
                     Some(Ok(Err(e))) => {
                         tracing::error!("WSS 循环错误: {}", e);

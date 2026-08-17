@@ -151,6 +151,8 @@ pub struct IpcServer {
     wss_trigger: mpsc::UnboundedSender<()>,
     /// Global WSS outgoing channel, shared with main loop.
     outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    /// Current WSS cancellation token. Self-unbind cancels only WSS, not IPC.
+    wss_cancel_ref: Arc<Mutex<Option<CancellationToken>>>,
     /// ACK registry for session_created → session_created_ack correlation.
     ack_registry: Arc<AckRegistry>,
 }
@@ -168,6 +170,7 @@ impl IpcServer {
         input_merger: Arc<InputMerger>,
         wss_trigger: mpsc::UnboundedSender<()>,
         outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+        wss_cancel_ref: Arc<Mutex<Option<CancellationToken>>>,
         ack_registry: Arc<AckRegistry>,
     ) -> Self {
         Self {
@@ -183,6 +186,7 @@ impl IpcServer {
             bind_generation: Arc::new(AtomicU64::new(0)),
             wss_trigger,
             outgoing_tx_ref,
+            wss_cancel_ref,
             ack_registry,
         }
     }
@@ -287,6 +291,7 @@ impl IpcServer {
             bind_generation: self.bind_generation.clone(),
             wss_trigger: self.wss_trigger.clone(),
             outgoing_tx_ref: self.outgoing_tx_ref.clone(),
+            wss_cancel_ref: self.wss_cancel_ref.clone(),
             ack_registry: self.ack_registry.clone(),
         }
     }
@@ -307,6 +312,7 @@ struct IpcHandle {
     bind_generation: Arc<AtomicU64>,
     wss_trigger: mpsc::UnboundedSender<()>,
     outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    wss_cancel_ref: Arc<Mutex<Option<CancellationToken>>>,
     ack_registry: Arc<AckRegistry>,
 }
 
@@ -448,6 +454,7 @@ impl IpcHandle {
             "set_remote_enabled" => self.handle_set_remote_enabled(req).await,
             "get_version" => self.handle_get_version(req).await,
             "redeem" => self.handle_redeem(req).await,
+            "self_unbind" => self.handle_self_unbind(req).await,
             "cancel_bind" | "bindCancel" => self.handle_cancel_bind(req).await,
             _ => err_response(
                 &req.id,
@@ -1713,6 +1720,36 @@ impl IpcHandle {
                 }
             }
         }
+    }
+
+    async fn handle_self_unbind(&self, req: &IpcRequest) -> String {
+        let token = match crate::device::load_device_token() {
+            Some(token) if !token.is_empty() => token,
+            _ => return err_response(&req.id, "NOT_BOUND", "设备未绑定"),
+        };
+        if let Err(error) = crate::device::self_unbind(&self.bind_http_url, &token).await {
+            return err_response(&req.id, "SELF_UNBIND_FAILED", &error.to_string());
+        }
+        // Stop the active WSS loop before removing the local token. The loop
+        // must not enter its reconnect path after Cloud has revoked binding.
+        if let Some(cancel) = self.wss_cancel_ref.lock().await.take() {
+            cancel.cancel();
+        }
+        *self.outgoing_tx_ref.lock().await = None;
+        let local_cleanup_error = self.sessions.disable_all_remote().await.err();
+        let token_cleanup_error = crate::device::clear_device_token_after_unbind().err();
+        let _ = self
+            .state
+            .transition(crate::state::StateEvent::TokenRevoked)
+            .await;
+        if let Some(error) = token_cleanup_error {
+            return err_response(&req.id, "LOCAL_CLEANUP_FAILED", &error.to_string());
+        }
+        if let Some(error) = local_cleanup_error {
+            tracing::error!(error = %error, "解绑后未能持久化关闭全部本地远程会话");
+            return err_response(&req.id, "LOCAL_CLEANUP_FAILED", &error.to_string());
+        }
+        ok_response(&req.id, serde_json::json!({"status": "unbound"}))
     }
 }
 
