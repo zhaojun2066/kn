@@ -182,7 +182,7 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: |
-          DMG=$(find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -name "*.dmg" | head -1)
+          DMG=$(find target/${{ matrix.target }}/release/bundle -name "*.dmg" | head -1)
           if [ -f "$DMG" ]; then
             echo "Notarizing: $DMG"
             xcrun notarytool submit "$DMG" \
@@ -199,7 +199,7 @@ jobs:
 
       - name: Verify signed and notarized package
         run: |
-          DMG=$(find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -name "*.dmg" | head -1)
+          DMG=$(find target/${{ matrix.target }}/release/bundle -name "*.dmg" | head -1)
           test -n "$DMG"
           xcrun stapler validate "$DMG"
           MOUNT=$(mktemp -d)
@@ -229,7 +229,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}
-          path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+          path: target/${{ matrix.target }}/release/bundle/
 
   # ── Assemble a manually uploadable release candidate ──
   release-candidate:
