@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X } from "lucide-react";
+import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import type { ProfileDetail, ProfileSummary, ProjectInfo, EnvCheckResult } from "../lib/types";
 import type { SessionRecord } from "../hooks/useTerminal";
 import { useResizeHandle } from "../hooks/useResizeHandle";
@@ -145,7 +146,6 @@ export function ProfileDrawer({
   // Browse folder fallback
   const handleBrowseFolder = useCallback(async () => {
     if (!activeProfileForPicker) return;
-    const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
     const selected = await tauriOpen({ directory: true, multiple: false, title: "选择项目工作目录" });
     if (selected && typeof selected === "string") {
       onRunProfileInProject?.(activeProfileForPicker.name, activeProfileForPicker.cliType, selected, selected.split("/").pop() || selected);
@@ -179,12 +179,10 @@ export function ProfileDrawer({
         onClose();
       } else {
         // Browse folder fallback via Enter
-        import("@tauri-apps/plugin-dialog").then(({ open: tauriOpen }) => {
-          tauriOpen({ directory: true, multiple: false, title: "选择项目工作目录" }).then((selected) => {
-            if (selected && typeof selected === "string") {
-              onRunProfileInProject?.(profile.name, profile.cliType, selected, selected.split("/").pop() || selected);
-            }
-          }).catch(() => {});
+        tauriOpen({ directory: true, multiple: false, title: "选择项目工作目录" }).then((selected) => {
+          if (selected && typeof selected === "string") {
+            onRunProfileInProject?.(profile.name, profile.cliType, selected, selected.split("/").pop() || selected);
+          }
         }).catch(() => {});
         setShowProjectPicker(false);
         setActiveProfileForPicker(null);

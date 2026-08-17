@@ -24,7 +24,6 @@ import { useSkillOps } from "./app/useSkillOps";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
 import type { LocalCliUsageRow } from "./components/LocalCliUsage";
 import { ResourceList, type ResourceScanData, type SelectedItem } from "./components/ResourceList";
-import type { PluginUpdateInfo } from "./components/ResourceList";
 import type { AgentManagerData } from "./components/ResourceList";
 import { ResourceDetail } from "./components/ResourceDetail";
 import { DependencyGraph, type DependencyGraphData } from "./components/DependencyGraph";
@@ -257,8 +256,6 @@ export function App() {
   const [hookStoreOpen, setHookStoreOpen] = useState(false);
   const [skillDataLoading, setSkillDataLoading] = useState(false);
   const [selectedSkillItem, setSelectedSkillItem] = useState<SelectedItem | null>(null);
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [updateInfos, setUpdateInfos] = useState<PluginUpdateInfo[]>([]);
   const [marketplaceOpen, setMarketplaceOpen] = useState(false);
   const usage = useUsage();
   const { colorScheme } = useTheme();
@@ -1138,50 +1135,6 @@ export function App() {
     handleUninstallPlugin, handleUninstallStandaloneSkill, handleUninstallCommand,
   } = skillOps;
 
-  // Plugin update check — fires background thread, result arrives via event
-  const checkRequestRef = useRef(false);
-  const checkSilentRef = useRef(false);
-  const handleCheckUpdates = useCallback(async () => {
-    if (checkingUpdates) return;
-    checkRequestRef.current = true;
-    checkSilentRef.current = false;
-    setCheckingUpdates(true);
-    setUpdateInfos([]);
-    try { await invoke("check_updates"); } catch (e) { addToast("error", `检查更新失败: ${e}`); setCheckingUpdates(false); checkRequestRef.current = false; }
-  }, [addToast, checkingUpdates]);
-
-  useEffect(() => {
-    const unlisten = listen<PluginUpdateInfo[]>("update-check-complete", (event) => {
-      setUpdateInfos(event.payload); setCheckingUpdates(false);
-      if (checkRequestRef.current && !checkSilentRef.current) {
-        const count = event.payload.filter((u) => u.hasUpdate).length;
-        addToast(count > 0 ? "success" : "success", count > 0 ? `发现 ${count} 个可用更新` : "所有插件均为最新版本");
-      }
-      checkRequestRef.current = false;
-    });
-    return () => { unlisten.then((fn) => fn()); };
-  }, [addToast]);
-
-  const handleCancelCheckUpdates = useCallback(async () => { try { await invoke("cancel_check_updates"); } catch { /* */ } }, []);
-  const handleUpdatePlugin = useCallback(async (cli: string, pluginId: string) => {
-    try { await invoke("update_plugin", { cli, pluginId }); addToast("success", "正在后台更新..."); } catch (e) { addToast("error", `更新失败: ${e}`); }
-  }, [addToast]);
-
-  useEffect(() => {
-    const unlisten = listen<{ pluginId: string; success: boolean; message: string }>("update-plugin-complete", async (event) => {
-      const { success, message } = event.payload;
-      if (success) {
-        addToast("success", message);
-        const { skills, agents } = await scanMultiProject(scanProjectPathsRef.current);
-        setSkillData(skills); setAgentData(agents);
-        setSelectedSkillItem((prev) => syncSelection(skills, prev));
-        checkRequestRef.current = true; checkSilentRef.current = true;
-        invoke("check_updates").catch(() => { checkRequestRef.current = false; });
-      } else { addToast("error", message); }
-    });
-    return () => { unlisten.then((fn) => fn()); };
-  }, [addToast, syncSelection]);
-
   // Listen for plugin-install-complete event
   useEffect(() => {
     const unlisten = listen<{ name: string; cli: string; success: boolean; message: string }>("plugin-install-complete", (event) => {
@@ -1682,10 +1635,6 @@ export function App() {
                 onBatchToggle={handleBatchToggle}
                 onBatchUninstall={handleBatchUninstall}
                 onDeleteAgent={handleDeleteAgent}
-                checkingUpdates={checkingUpdates}
-                updateInfos={updateInfos}
-                onCheckUpdates={handleCheckUpdates}
-                onCancelCheckUpdates={handleCancelCheckUpdates}
                 onOpenMarketplace={() => setMarketplaceOpen(true)}
                 hideMarketplace
                 onOpenGraph={loadGraph}
@@ -1749,8 +1698,6 @@ export function App() {
                   graphData={graphData}
                   onTogglePlugin={handleTogglePlugin}
                   onToggleStandaloneSkill={handleToggleStandaloneSkill}
-                  updateInfos={updateInfos}
-                  onUpdatePlugin={handleUpdatePlugin}
                   onUninstallPlugin={handleUninstallPlugin}
                   onUninstallStandaloneSkill={handleUninstallStandaloneSkill}
                   onToggleAgent={handleToggleAgent}

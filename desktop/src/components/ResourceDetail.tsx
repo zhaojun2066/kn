@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   Bot, Box, Puzzle, FileText, Lock, Circle, ExternalLink,
-  Layers, FolderOpen, Link2, File, Cpu, ArrowUpCircle,
+  Layers, FolderOpen, Link2, File, Cpu,
   Play, Ban, Trash2, Wrench, Sparkles, ArrowUpRight, Terminal,
   FolderTree, List, Image,
 } from "lucide-react";
@@ -11,7 +11,7 @@ import { Button } from "./common/Button";
 import { AgentDetail } from "./AgentDetail";
 import { FileTree } from "./FileTree";
 import type { FileTreeNode } from "./FileTree";
-import type { SelectedItem, PluginUpdateInfo, CommandEntry } from "./ResourceList";
+import type { SelectedItem, CommandEntry } from "./ResourceList";
 import type { CliKind } from "../lib/types";
 import type { DependencyGraphData } from "./DependencyGraph";
 import { CLI_LABELS, CLI_CSS_COLORS } from "../lib/cli-constants";
@@ -35,8 +35,6 @@ interface ResourceDetailProps {
   graphData?: DependencyGraphData | null;
   onTogglePlugin: (cli: CliKind, pluginId: string, enabled: boolean) => void;
   onToggleStandaloneSkill: (cli: CliKind, skillId: string, enabled: boolean, path?: string) => void;
-  updateInfos: PluginUpdateInfo[];
-  onUpdatePlugin: (cli: CliKind, pluginId: string) => void;
   onUninstallPlugin: (cli: CliKind, pluginId: string) => void;
   onUninstallStandaloneSkill: (cli: CliKind, skillId: string, path?: string, name?: string) => void;
   onToggleAgent: (cli: CliKind, name: string, enabled: boolean, path?: string) => void;
@@ -83,8 +81,6 @@ function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }
 function PluginDetail({
   plugin,
   onToggle,
-  updateInfo,
-  onUpdate,
   onUninstall,
   onSkillClick,
   onAgentClick,
@@ -92,8 +88,6 @@ function PluginDetail({
 }: {
   plugin: NonNullable<ResourceDetailProps["item"]>["data"];
   onToggle: (enabled: boolean) => void;
-  updateInfo?: PluginUpdateInfo;
-  onUpdate: (cli: CliKind, pluginId: string) => void;
   onUninstall: (cli: CliKind, pluginId: string) => void;
   onSkillClick?: (skill: { name: string; path: string; description?: string }, cli: string) => void;
   onAgentClick?: (agent: any) => void;
@@ -258,25 +252,6 @@ function PluginDetail({
           </Button>
         </div>
 
-        {updateInfo?.hasUpdate && (
-          <div className="mt-3 p-3 border border-[var(--app-amber)] bg-[var(--app-amber-bg)]">
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <ArrowUpCircle size={12} className="text-[var(--app-amber)]" />
-              <span className="text-2xs text-[var(--app-amber)] font-mono">有可用更新</span>
-            </div>
-            <p className="text-2xs text-[var(--app-text-dim)] font-mono leading-relaxed">
-              {updateInfo.currentVersion} → <span className="text-[var(--app-amber)]">{updateInfo.latestSha}</span>
-            </p>
-            <button
-              onClick={() => onUpdate(p.cli as CliKind, p.id)}
-              className="mt-2 p-1.5 border border-[var(--app-amber)] text-[var(--app-amber)]
-                hover:bg-[var(--app-amber)] hover:text-[var(--app-bg)] transition-all duration-fast"
-              title="更新到最新版本"
-            >
-              <ArrowUpCircle size={14} />
-            </button>
-          </div>
-        )}
       </div>
 
       {viewMode === "list" && (
@@ -1204,20 +1179,17 @@ function EmptyState({ scope }: { scope?: "user" | "project" }) {
 
 /* ──────────────────── Main ──────────────────── */
 
-export function ResourceDetail({ item, graphData, onTogglePlugin, onToggleStandaloneSkill, updateInfos, onUpdatePlugin, onUninstallPlugin, onUninstallStandaloneSkill, onToggleAgent, onDeleteAgent, onToggleCommand, onUninstallCommand, onNodeClick, onSelect, scope }: ResourceDetailProps) {
+export function ResourceDetail({ item, graphData, onTogglePlugin, onToggleStandaloneSkill, onUninstallPlugin, onUninstallStandaloneSkill, onToggleAgent, onDeleteAgent, onToggleCommand, onUninstallCommand, onNodeClick, onSelect, scope }: ResourceDetailProps) {
   if (!item) return <EmptyState scope={scope} />;
 
   if (item.type === "plugin") {
     const plugin = item.data;
-    const updateInfo = updateInfos.find((u) => u.pluginId === plugin.id);
     return (
       <PluginDetail
         plugin={plugin}
         onToggle={(enabled) =>
           onTogglePlugin(plugin.cli, plugin.id, enabled)
         }
-        updateInfo={updateInfo}
-        onUpdate={onUpdatePlugin}
         onUninstall={onUninstallPlugin}
         onSkillClick={(skill, cli) => onSelect?.({ type: "plugin-skill", data: { skill, cli, parentPlugin: plugin } })}
         onAgentClick={(agent) => onSelect?.({ type: "plugin-agent", data: { ...agent, parentPlugin: plugin } })}

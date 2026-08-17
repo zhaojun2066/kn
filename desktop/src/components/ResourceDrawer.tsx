@@ -1,15 +1,14 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useResizeHandle } from "../hooks/useResizeHandle";
 import { Puzzle, Terminal, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import { ResourceList } from "./ResourceList";
 import { ResourceDetail } from "./ResourceDetail";
 import type {
   SelectedItem,
   ResourceScanData,
   AgentManagerData,
-  PluginUpdateInfo,
   BatchToggleItem,
 } from "./ResourceList";
 import type { CliKind } from "../lib/types";
@@ -22,6 +21,7 @@ import { useToasts } from "../hooks/useToasts";
 import { useOverwriteConfirm, describeOverwrite } from "../hooks/useOverwriteConfirm";
 import { useProjects } from "../hooks/useProjects";
 import type { ProjectInfo } from "../lib/types";
+import { basename } from "../lib/path-utils";
 import { getResourceData, getResourceType, getSubdir, buildDestDir, type ResourceData } from "../lib/resource-transfer";
 
 /* ──────────────────── Props ──────────────────── */
@@ -65,8 +65,6 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
   const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedItem, setSelectedItem] = useState<SelectedItem | null>(null);
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [updateInfos, setUpdateInfos] = useState<PluginUpdateInfo[]>([]);
 
   /* ── Hooks state ── */
   const [hookData, setHookData] = useState<HookManagerData | null>(null);
@@ -85,9 +83,6 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
     storageKey: "kn-resource-drawer-width",
   });
 
-  // Track whether update check was initiated by THIS component — only then show toast.
-  const checkRequestRef = useRef(false);
-  const checkSilentRef = useRef(false);
   // Overwrite confirmation (shared hook)
   const { requestOverwrite, overwriteDialog } = useOverwriteConfirm();
 
@@ -171,51 +166,11 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
       loadData();
       // Reset to resources tab on open
       setActiveTab("resources");
-      // Also trigger update check on open (silent)
-      checkRequestRef.current = true;
-      checkSilentRef.current = true;
-      setCheckingUpdates(true);
-      setUpdateInfos([]);
-      invoke("check_updates").catch(() => { setCheckingUpdates(false); checkRequestRef.current = false; });
     } else {
       setSelectedItem(null);
       setSelectedHook(null);
     }
   }, [open, loadData]);
-
-  // Listen for update-check-complete event
-  useEffect(() => {
-    const unlisten = listen<PluginUpdateInfo[]>("update-check-complete", (event) => {
-      setUpdateInfos(event.payload);
-      setCheckingUpdates(false);
-      if (checkRequestRef.current && !checkSilentRef.current) {
-        const count = event.payload.filter((u) => u.hasUpdate).length;
-        if (count > 0) addToast("success", `发现 ${count} 个可用更新`);
-        else addToast("success", "所有插件均为最新版本");
-      }
-      checkRequestRef.current = false;
-    });
-    return () => { unlisten.then((fn) => fn()); };
-  }, []);
-
-  // Listen for update-plugin-complete event
-  useEffect(() => {
-    const unlisten = listen<{ pluginId: string; success: boolean; message: string }>(
-      "update-plugin-complete",
-      async (event) => {
-        const { success, message } = event.payload;
-        if (success) {
-          addToast("success", message);
-          const { skills, agents } = await scanResources();
-          setSkillData(skills);
-          setAgentData(agents);
-        } else {
-          addToast("error", message);
-        }
-      },
-    );
-    return () => { unlisten.then((fn) => fn()); };
-  }, []);
 
   /* ── Handler functions ── */
 
@@ -344,36 +299,6 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
     },
     [addToast],
   );
-
-  const handleCheckUpdates = useCallback(async () => {
-    if (checkingUpdates) return;
-    checkRequestRef.current = true;
-    checkSilentRef.current = false;
-    setCheckingUpdates(true);
-    setUpdateInfos([]);
-    try {
-      await invoke("check_updates");
-    } catch (e) {
-      addToast("error", `检查更新失败: ${e}`);
-      setCheckingUpdates(false);
-      checkRequestRef.current = false;
-    }
-  }, [addToast, checkingUpdates]);
-
-  const handleCancelCheckUpdates = useCallback(async () => {
-    try {
-      await invoke("cancel_check_updates");
-    } catch { /* ignore */ }
-  }, []);
-
-  const handleUpdatePlugin = useCallback(async (cli: string, pluginId: string) => {
-    try {
-      await invoke("update_plugin", { cli, pluginId });
-      addToast("success", "正在后台更新...");
-    } catch (e) {
-      addToast("error", `更新失败: ${e}`);
-    }
-  }, [addToast]);
 
   const handleUninstallPlugin = useCallback(
     async (cli: CliKind, pluginId: string) => {
@@ -628,14 +553,12 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
 
   const handleAddProject = useCallback(async () => {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const selectedPath = await open({
+      const selectedPath = await tauriOpen({
         directory: true,
         multiple: false,
         title: "选择项目目录",
       });
       if (!selectedPath) return;
-      const { basename } = await import("../lib/path-utils");
       const name = basename(selectedPath as string) || (selectedPath as string);
       await addProject(name, selectedPath as string);
       addToast("success", `项目 "${name}" 已注册`);
@@ -825,10 +748,6 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
               onBatchToggle={handleBatchToggle}
               onBatchUninstall={handleBatchUninstall}
               onDeleteAgent={handleDeleteAgent}
-              checkingUpdates={checkingUpdates}
-              updateInfos={updateInfos}
-              onCheckUpdates={handleCheckUpdates}
-              onCancelCheckUpdates={handleCancelCheckUpdates}
               onOpenMarketplace={handleOpenMarketplace}
               hideMarketplace
               onToast={addToast}
@@ -853,8 +772,6 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
               data={skillData}
               onTogglePlugin={handleTogglePlugin}
               onToggleStandaloneSkill={handleToggleStandaloneSkill}
-              updateInfos={updateInfos}
-              onUpdatePlugin={handleUpdatePlugin}
               onUninstallPlugin={handleUninstallPlugin}
               onUninstallStandaloneSkill={handleUninstallStandaloneSkill}
               onToggleAgent={handleToggleAgent}

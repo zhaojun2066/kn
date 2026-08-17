@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import type { ProjectInfo, SessionInfo, ProfileSummary, ProjectOverviewData, ProjectVerifyConfig } from "../lib/types";
 import { ProjectOverview } from "./ProjectOverview";
 import { SessionList } from "./SessionList";
@@ -14,7 +13,6 @@ import {
   type AgentManagerData,
   type SelectedItem,
   type BatchToggleItem,
-  type PluginUpdateInfo,
 } from "./ResourceList";
 import type { CliKind } from "../lib/types";
 import { ResourceDetail } from "./ResourceDetail";
@@ -194,10 +192,6 @@ export function ProjectWorkspace({
   const [agentData, setAgentData] = useState<AgentManagerData | null>(null);
   const [resourceLoading, setResourceLoading] = useState(false);
   const [selectedResource, setSelectedResource] = useState<SelectedItem | null>(null);
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [updateInfos, setUpdateInfos] = useState<PluginUpdateInfo[]>([]);
-  const checkRequestRef = useRef(false);
-  const checkSilentRef = useRef(false);
   // Overwrite confirmation (shared hook for Resources)
   const { requestOverwrite, overwriteDialog } = useOverwriteConfirm();
 
@@ -289,13 +283,6 @@ export function ProjectWorkspace({
       setSelectedResource(null);
       return;
     }
-    // Update check runs once per activation
-    checkRequestRef.current = true;
-    checkSilentRef.current = true;
-    setCheckingUpdates(true);
-    setUpdateInfos([]);
-    invoke("check_updates").catch(() => { setCheckingUpdates(false); checkRequestRef.current = false; });
-
     const pathChanged = settledPathRef.current !== project.path;
     settledPathRef.current = project.path;
 
@@ -390,41 +377,6 @@ export function ProjectWorkspace({
       .then((dir) => { homeDirRef.current = dir; })
       .catch(() => {});
   }, []);
-
-  // ── Event listeners ──
-  useEffect(() => {
-    const unlisten = listen<PluginUpdateInfo[]>("update-check-complete", (event) => {
-      setUpdateInfos(event.payload);
-      setCheckingUpdates(false);
-      if (checkRequestRef.current && !checkSilentRef.current) {
-        const count = event.payload.filter((u) => u.hasUpdate).length;
-        if (count > 0) addToast("success", `发现 ${count} 个可用更新`);
-        else addToast("success", "所有插件均为最新版本");
-      }
-      checkRequestRef.current = false;
-    });
-    return () => { unlisten.then((fn) => fn()); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    const unlisten = listen<{ pluginId: string; success: boolean; message: string }>(
-      "update-plugin-complete",
-      async (event) => {
-        const { success, message } = event.payload;
-        if (success) {
-          addToast("success", message);
-          if (project?.path) {
-            const { skills, agents } = await scanProjectResources(project.path);
-            setResourceData(skills);
-            setAgentData(agents);
-          }
-        } else {
-          addToast("error", message);
-        }
-      },
-    );
-    return () => { unlisten.then((fn) => fn()); };
-  }, [project?.path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Resource handlers ──
   const rescan = useCallback(async () => {
@@ -533,34 +485,6 @@ export function ProjectWorkspace({
       addToast("error", `批量删除失败: ${e}`);
     }
   }, [addToast, rescan]);
-
-  const handleCheckUpdates = useCallback(async () => {
-    if (checkingUpdates) return;
-    checkRequestRef.current = true;
-    checkSilentRef.current = false;
-    setCheckingUpdates(true);
-    setUpdateInfos([]);
-    try {
-      await invoke("check_updates");
-    } catch (e) {
-      addToast("error", `检查更新失败: ${e}`);
-      setCheckingUpdates(false);
-      checkRequestRef.current = false;
-    }
-  }, [addToast, checkingUpdates]);
-
-  const handleCancelCheckUpdates = useCallback(async () => {
-    try { await invoke("cancel_check_updates"); } catch { /* ignore */ }
-  }, []);
-
-  const handleUpdatePlugin = useCallback(async (cli: string, pluginId: string) => {
-    try {
-      await invoke("update_plugin", { cli, pluginId });
-      addToast("success", "正在后台更新...");
-    } catch (e) {
-      addToast("error", `更新失败: ${e}`);
-    }
-  }, [addToast]);
 
   const handleUninstallPlugin = useCallback(async (cli: CliKind, pluginId: string) => {
     try {
@@ -1284,10 +1208,6 @@ export function ProjectWorkspace({
               onBatchToggle={handleBatchToggle}
               onBatchUninstall={handleBatchUninstall}
               onDeleteAgent={handleDeleteAgent}
-              checkingUpdates={checkingUpdates}
-              updateInfos={updateInfos}
-              onCheckUpdates={handleCheckUpdates}
-              onCancelCheckUpdates={handleCancelCheckUpdates}
               onOpenMarketplace={() => setMarketplaceOpen(true)}
               hideMarketplace
               activeScope="project"
@@ -1314,8 +1234,6 @@ export function ProjectWorkspace({
               graphData={null}
               onTogglePlugin={handleTogglePlugin}
               onToggleStandaloneSkill={handleToggleStandaloneSkill}
-              updateInfos={updateInfos}
-              onUpdatePlugin={handleUpdatePlugin}
               onUninstallPlugin={handleUninstallPlugin}
               onUninstallStandaloneSkill={handleUninstallStandaloneSkill}
               onToggleAgent={handleToggleAgent}

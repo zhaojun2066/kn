@@ -1,5 +1,5 @@
 /// <reference types="vitest" />
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -55,6 +55,19 @@ vi.mock("../../hooks/useToasts", () => ({
 
 import { ResourceDrawer } from "../ResourceDrawer";
 
+async function settleEffects() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function renderOpenDrawer() {
+  const utils = render(<ResourceDrawer open onClose={vi.fn()} />);
+  await settleEffects();
+  return utils;
+}
+
 describe("ResourceDrawer", () => {
   beforeEach(() => {
     mockDefaultInvoke();
@@ -65,9 +78,9 @@ describe("ResourceDrawer", () => {
     expect(container.innerHTML).toBe("");
   });
 
-  it("renders with Extensions title when open", () => {
+  it("renders with Extensions title when open", async () => {
     // Just verify the drawer renders — "扩展" appears in the tab bar
-    render(<ResourceDrawer open onClose={vi.fn()} />);
+    await renderOpenDrawer();
     const elements = screen.getAllByText("扩展");
     expect(elements.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: "关闭资源管理" })).toBeTruthy();
@@ -176,7 +189,7 @@ describe("ResourceDrawer", () => {
       return {};
     });
 
-    render(<ResourceDrawer open onClose={vi.fn()} />);
+    await renderOpenDrawer();
 
     expect(await screen.findByText("user-plugin")).toBeTruthy();
     expect(await screen.findByText("user-skill")).toBeTruthy();
@@ -236,7 +249,7 @@ describe("ResourceDrawer", () => {
       return {};
     });
 
-    render(<ResourceDrawer open onClose={vi.fn()} />);
+    await renderOpenDrawer();
 
     expect(await screen.findByText("claude-user")).toBeTruthy();
     expect(await screen.findByText("codex-user")).toBeTruthy();

@@ -43,10 +43,17 @@ beforeEach(() => {
   mockInvoke.mockRejectedValue(new Error("Agent not running"));
 });
 
+async function settleAgentPoll() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 describe("useAgent", () => {
   // ── Initial state ──────────────────────────────────────────
 
-  it("initial state: agentStatus is null before any invoke", () => {
+  it("initial state: agentStatus is null before any invoke", async () => {
     const { result } = renderHook(() => useAgent());
 
     expect(result.current.agentStatus).toBeNull();
@@ -55,6 +62,8 @@ describe("useAgent", () => {
     expect(result.current.isBinding).toBe(false);
     expect(result.current.isConnected).toBe(false);
     expect(result.current.statusIcon).toBe("offline");
+
+    await settleAgentPoll();
   });
 
   // ── fetchStatus ────────────────────────────────────────────
@@ -327,11 +336,13 @@ describe("useAgent", () => {
     expect(result.current.statusIcon).toBe(expectedIcon);
   });
 
-  it("statusIcon is 'offline' when agent is not running", () => {
+  it("statusIcon is 'offline' when agent is not running", async () => {
     const { result } = renderHook(() => useAgent());
 
     // agentStatus is null (agent not running)
     expect(result.current.isRunning).toBe(false);
     expect(result.current.statusIcon).toBe("offline");
+
+    await settleAgentPoll();
   });
 });

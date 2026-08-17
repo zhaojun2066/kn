@@ -1,6 +1,4 @@
-import type { Config } from "tailwindcss";
-
-export default {
+module.exports = {
   content: ["./src/**/*.{ts,tsx}", "./index.html"],
   darkMode: "class",
   theme: {
@@ -8,40 +6,40 @@ export default {
       colors: {
         app: {
           // All colors driven by CSS variables — theme switching is pure CSS
-          bg:           "var(--app-bg)",
-          panel:        "var(--app-panel)",
-          sidebar:      "var(--app-sidebar)",
-          input:        "var(--app-input)",
-          hover:        "var(--app-hover)",
-          active:       "var(--app-active)",
-          selected:     "var(--app-selected)",
-          focus:        "var(--app-focus)",
-          border:       "var(--app-border)",
+          bg: "var(--app-bg)",
+          panel: "var(--app-panel)",
+          sidebar: "var(--app-sidebar)",
+          input: "var(--app-input)",
+          hover: "var(--app-hover)",
+          active: "var(--app-active)",
+          selected: "var(--app-selected)",
+          focus: "var(--app-focus)",
+          border: "var(--app-border)",
           "border-light": "var(--app-border-light)",
-          text:         "var(--app-text)",
-          "text-dim":   "var(--app-text-dim)",
+          text: "var(--app-text)",
+          "text-dim": "var(--app-text-dim)",
           "text-muted": "var(--app-text-muted)",
-          accent:       "var(--app-accent)",
+          accent: "var(--app-accent)",
           "accent-dim": "var(--app-accent-dim)",
-          amber:        "var(--app-amber)",
+          amber: "var(--app-amber)",
           "amber-glow": "var(--app-amber-glow)",
-          green:        "var(--app-green)",
-          "green-bg":   "var(--app-green-bg)",
-          red:          "var(--app-red)",
-          "red-bg":     "var(--app-red-bg)",
-          orange:       "var(--app-orange)",
-          "orange-bg":  "var(--app-orange-bg)",
-          blue:         "var(--app-blue)",
-          purple:       "var(--app-purple)",
-          teal:         "var(--app-teal)",
-          toolbar:      "var(--app-toolbar)",
-          statusbar:    "var(--app-statusbar)",
-          subtle:       "var(--app-subtle)",
-          "cmd-bg":     "var(--app-cmd-bg)",
+          green: "var(--app-green)",
+          "green-bg": "var(--app-green-bg)",
+          red: "var(--app-red)",
+          "red-bg": "var(--app-red-bg)",
+          orange: "var(--app-orange)",
+          "orange-bg": "var(--app-orange-bg)",
+          blue: "var(--app-blue)",
+          purple: "var(--app-purple)",
+          teal: "var(--app-teal)",
+          toolbar: "var(--app-toolbar)",
+          statusbar: "var(--app-statusbar)",
+          subtle: "var(--app-subtle)",
+          "cmd-bg": "var(--app-cmd-bg)",
           "cmd-header": "var(--app-cmd-header)",
-          glow:         "var(--app-glow)",
+          glow: "var(--app-glow)",
           "glow-amber": "var(--app-glow-amber)",
-          "glow-red":   "var(--app-glow-red)",
+          "glow-red": "var(--app-glow-red)",
         },
       },
       fontFamily: {
@@ -50,27 +48,27 @@ export default {
       },
       // 使用 rem 单位（基准 13px），配合 useFontScale 实现全局字体缩放
       fontSize: {
-        "3xs":  ["0.692rem", "1rem"],       // 9px / 13px @13px base
-        "2xs":  ["0.769rem", "1.077rem"],   // 10px / 14px @13px base
-        xs:     ["0.846rem", "1.231rem"],   // 11px / 16px
-        sm:     ["0.923rem", "1.385rem"],   // 12px / 18px
-        base:   ["1rem",    "1.538rem"],    // 13px / 20px
-        lg:     ["1.077rem", "1.538rem"],   // 14px / 20px
-        xl:     ["1.231rem", "1.846rem"],   // 16px / 24px
-        "2xl":  ["1.385rem", "2rem"],       // 18px / 26px
+        "3xs": ["0.692rem", "1rem"],
+        "2xs": ["0.769rem", "1.077rem"],
+        xs: ["0.846rem", "1.231rem"],
+        sm: ["0.923rem", "1.385rem"],
+        base: ["1rem", "1.538rem"],
+        lg: ["1.077rem", "1.538rem"],
+        xl: ["1.231rem", "1.846rem"],
+        "2xl": ["1.385rem", "2rem"],
       },
       spacing: {
         "0.5": "2px",
-        "1":   "4px",
+        "1": "4px",
         "1.5": "6px",
-        "2":   "8px",
+        "2": "8px",
         "2.5": "10px",
-        "3":   "12px",
+        "3": "12px",
         "3.5": "14px",
-        "4":   "16px",
-        "5":   "20px",
-        "6":   "24px",
-        "8":   "32px",
+        "4": "16px",
+        "5": "20px",
+        "6": "24px",
+        "8": "32px",
       },
       borderRadius: {
         DEFAULT: "2px",
@@ -96,7 +94,7 @@ export default {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0" },
         },
-        "scanline": {
+        scanline: {
           "0%": { transform: "translateY(0)" },
           "100%": { transform: "translateY(4px)" },
         },
@@ -111,11 +109,11 @@ export default {
       },
       animation: {
         "cursor-blink": "cursor-blink 1s step-end infinite",
-        "scanline": "scanline 0.1s linear infinite",
+        scanline: "scanline 0.1s linear infinite",
         "glow-pulse": "glow-pulse 2s ease-in-out infinite",
         "scan-blink": "scan-blink 2.5s ease-in-out infinite",
       },
     },
   },
   plugins: [],
-} satisfies Config;
+};

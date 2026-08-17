@@ -6,8 +6,10 @@
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
+    "allowJs": true,
+    "checkJs": false,
     "strict": true,
     "composite": true
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.mjs"]
 }

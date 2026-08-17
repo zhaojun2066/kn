@@ -14,7 +14,7 @@ import type { ProjectInfo, ScopeTab, CliKind } from "../lib/types";
 import {
   ChevronRight, Circle, Filter, Puzzle,
   FileText, Lock, CheckSquare, Square, Play, Ban, X,
-  RefreshCw, ArrowUpCircle, Ellipsis, Trash2, Bot, Terminal,
+  Ellipsis, Trash2, Bot, Terminal,
   Folder, Plus, Copy, ArrowRight, ArrowLeft,
 } from "lucide-react";
 
@@ -109,14 +109,6 @@ export interface BatchToggleItem {
   path?: string;
 }
 
-export interface PluginUpdateInfo {
-  pluginId: string;
-  currentVersion: string;
-  currentSha: string;
-  latestSha: string;
-  hasUpdate: boolean;
-}
-
 export interface MarketplacePluginEntry {
   name: string;
   marketplace: string;
@@ -145,10 +137,6 @@ interface ResourceListProps {
   onBatchToggle: (items: BatchToggleItem[], enabled: boolean) => void;
   onBatchUninstall: (items: BatchToggleItem[]) => void;
   onDeleteAgent?: (cli: CliKind, name: string, path?: string) => void;
-  checkingUpdates: boolean;
-  updateInfos: PluginUpdateInfo[];
-  onCheckUpdates: () => void;
-  onCancelCheckUpdates: () => void;
   onOpenMarketplace: () => void;
   onOpenGraph?: () => void;
   // Scope management
@@ -219,10 +207,6 @@ export function ResourceList({
   onBatchToggle,
   onBatchUninstall,
   onDeleteAgent,
-  checkingUpdates,
-  updateInfos,
-  onCheckUpdates,
-  onCancelCheckUpdates,
   onOpenMarketplace,
   onOpenGraph,
   activeScope,
@@ -846,30 +830,6 @@ export function ResourceList({
         </button>
         )}
 
-        {/* Update check — always visible */}
-        {checkingUpdates ? (
-          <div className="flex items-center gap-1 shrink-0">
-            <RefreshCw size={11} className="text-[var(--app-accent)] animate-spin" />
-            <button
-              onClick={onCancelCheckUpdates}
-              className="text-2xs text-[var(--app-text-muted)] hover:text-[var(--app-text)] font-mono"
-            >
-              取消
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={onCheckUpdates}
-            className="p-0.5 text-[var(--app-text-muted)] hover:text-[var(--app-accent)] hover:bg-[var(--app-hover)] transition-colors relative shrink-0"
-            title="检查更新"
-          >
-            <ArrowUpCircle size={13} />
-            {updateInfos.filter((u) => u.hasUpdate).length > 0 && (
-              <span className="absolute -top-0.5 -right-1 w-2 h-2 bg-[var(--app-amber)] rounded-full border border-[var(--app-bg)]" />
-            )}
-          </button>
-        )}
-
         {/* Divider */}
         <div className={`h-4 border-l border-[var(--app-border)] mx-0.5 shrink-0 transition-opacity duration-200 ${toolbarExpanded ? "opacity-100" : "opacity-0"}`} />
 
@@ -1019,23 +979,16 @@ export function ResourceList({
                   collapsed={collapsed.has("plugins")}
                   onToggle={() => toggleSection("plugins")}
                 />
-		              {!collapsed.has("plugins") && filtered.plugins.map((p) => {
-		                  const pUpdate = updateInfos.find((u) => u.pluginId === p.id && u.hasUpdate);
-		                  const sourceLabel = getPluginSourceLabel(p);
-		                  const sourceScope = getPluginSourceScope(p);
-		                  return (
+                {!collapsed.has("plugins") && filtered.plugins.map((p) => {
+                    const sourceLabel = getPluginSourceLabel(p);
+                    const sourceScope = getPluginSourceScope(p);
+                    return (
 		                <ListRow
 	                  key={p.id}
 	                  label={p.name}
 	                  badge={
 	                    <div className="flex items-center gap-1 shrink-0">
-                        {pUpdate && (
-                          <span
-                            className="text-2xs text-[var(--app-amber)] font-mono"
-                            title={`${pUpdate.currentVersion} → ${pUpdate.latestSha}`}
-                          >↑</span>
-	                      )}
-		                      <span
+                      <span
 		                        className={`text-2xs font-mono px-1 py-px border leading-none ${
 		                          p.inherited
 		                            ? "text-[var(--app-text-dim)] border-[var(--app-border)]"

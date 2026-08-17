@@ -1,5 +1,5 @@
 /// <reference types="vitest" />
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -29,34 +29,73 @@ const project: ProjectInfo = {
   pinned: false,
 };
 
+const zeroCounts = { total: 0, claude: 0, codex: 0, qoder: 0 };
+const emptyOverview = {
+  sessions: zeroCounts,
+  resources: {
+    skills: zeroCounts,
+    plugins: zeroCounts,
+    commands: zeroCounts,
+    agents: zeroCounts,
+  },
+  configMatrix: [
+    { cli: "claude", dirName: ".claude", dirExists: false, hasConfig: false, hooksTotal: 0, hooksEnabled: 0, skillsCount: 0, agentsCount: 0 },
+    { cli: "codex", dirName: ".codex", dirExists: false, hasConfig: false, hooksTotal: 0, hooksEnabled: 0, skillsCount: 0, agentsCount: 0 },
+    { cli: "qoder", dirName: ".qoder", dirExists: false, hasConfig: false, hooksTotal: 0, hooksEnabled: 0, skillsCount: 0, agentsCount: 0 },
+  ],
+  recentSessions: [],
+};
+
+async function settleEffects() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function renderWorkspace() {
+  const utils = render(
+    <ProjectWorkspace
+      project={project}
+      sessions={[]}
+      sessionsLoading={false}
+      cliUsageRows={[]}
+      profiles={[]}
+      onRunProfile={vi.fn()}
+      onSetDefaultProfile={vi.fn()}
+      onScanSessions={vi.fn()}
+      onResumeSession={vi.fn()}
+      addToast={vi.fn()}
+      setToasts={vi.fn()}
+      toastIdRef={{ current: 0 }}
+      projects={[]}
+      onAddProject={vi.fn()}
+    />,
+  );
+  await settleEffects();
+  return utils;
+}
+
+async function clickAndSettle(element: Element) {
+  await act(async () => {
+    fireEvent.click(element);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 describe("ProjectWorkspace", () => {
   beforeEach(() => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "scan_hooks") return Promise.resolve({ hooks: [] });
       if (cmd === "get_home_dir") return Promise.resolve("/home/test");
+      if (cmd === "get_project_overview") return Promise.resolve(emptyOverview);
       return Promise.resolve({ plugins: [], standaloneSkills: [], systemSkills: [], commands: [] });
     });
   });
 
-  it("shows project tabs without a Profiles tab", () => {
-    render(
-      <ProjectWorkspace
-        project={project}
-        sessions={[]}
-        sessionsLoading={false}
-        cliUsageRows={[]}
-        profiles={[]}
-        onRunProfile={vi.fn()}
-        onSetDefaultProfile={vi.fn()}
-        onScanSessions={vi.fn()}
-        onResumeSession={vi.fn()}
-        addToast={vi.fn()}
-        setToasts={vi.fn()}
-        toastIdRef={{ current: 0 }}
-        projects={[]}
-        onAddProject={vi.fn()}
-      />,
-    );
+  it("shows project tabs without a Profiles tab", async () => {
+    await renderWorkspace();
 
     expect(screen.getByText("总览（Overview）")).not.toBeNull();
     expect(screen.getByText("会话（Sessions）")).not.toBeNull();
@@ -64,27 +103,10 @@ describe("ProjectWorkspace", () => {
     expect(screen.queryByText("Profiles")).toBeNull();
   });
 
-  it("switches to Project Hooks tab", () => {
-    render(
-      <ProjectWorkspace
-        project={project}
-        sessions={[]}
-        sessionsLoading={false}
-        cliUsageRows={[]}
-        profiles={[]}
-        onRunProfile={vi.fn()}
-        onSetDefaultProfile={vi.fn()}
-        onScanSessions={vi.fn()}
-        onResumeSession={vi.fn()}
-        addToast={vi.fn()}
-        setToasts={vi.fn()}
-        toastIdRef={{ current: 0 }}
-        projects={[]}
-        onAddProject={vi.fn()}
-      />,
-    );
+  it("switches to Project Hooks tab", async () => {
+    await renderWorkspace();
 
-    fireEvent.click(screen.getByText("Hooks"));
+    await clickAndSettle(screen.getByText("Hooks"));
 
     // After switching to hooks tab, HookDetail renders its empty state
     // (HookList + HookDetail layout replaces the old placeholder)
@@ -95,6 +117,7 @@ describe("ProjectWorkspace", () => {
   it("shows inherited user hooks in the project Hooks tab", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_home_dir") return Promise.resolve("/home/test");
+      if (cmd === "get_project_overview") return Promise.resolve(emptyOverview);
       if (cmd === "scan_skills") return Promise.resolve({ plugins: [], standaloneSkills: [], systemSkills: [], commands: [] });
       if (cmd === "scan_agents") return Promise.resolve({ agents: [] });
       if (cmd === "scan_hooks") {
@@ -133,39 +156,22 @@ describe("ProjectWorkspace", () => {
       return Promise.resolve({});
     });
 
-    render(
-      <ProjectWorkspace
-        project={project}
-        sessions={[]}
-        sessionsLoading={false}
-        cliUsageRows={[]}
-        profiles={[]}
-        onRunProfile={vi.fn()}
-        onSetDefaultProfile={vi.fn()}
-        onScanSessions={vi.fn()}
-        onResumeSession={vi.fn()}
-        addToast={vi.fn()}
-        setToasts={vi.fn()}
-        toastIdRef={{ current: 0 }}
-        projects={[]}
-        onAddProject={vi.fn()}
-      />,
-    );
+    await renderWorkspace();
 
-    fireEvent.click(screen.getByText("Hooks"));
+    await clickAndSettle(screen.getByText("Hooks"));
 
     expect(await screen.findByText("user-hook")).not.toBeNull();
     expect(await screen.findByText("project-hook")).not.toBeNull();
     expect(screen.queryAllByTitle("kn")).toHaveLength(0);
 
-    fireEvent.click(screen.getByText("全部来源"));
-    fireEvent.click(screen.getByText("本项目"));
+    await clickAndSettle(screen.getByText("全部来源"));
+    await clickAndSettle(screen.getByText("本项目"));
 
     expect(screen.queryByText("user-hook")).toBeNull();
     expect(await screen.findByText("project-hook")).not.toBeNull();
 
-    fireEvent.click(screen.getByText("本项目"));
-    fireEvent.click(screen.getByText("继承"));
+    await clickAndSettle(screen.getByText("本项目"));
+    await clickAndSettle(screen.getByText("继承"));
 
     expect(await screen.findByText("user-hook")).not.toBeNull();
     expect(screen.queryByText("project-hook")).toBeNull();
@@ -175,6 +181,7 @@ describe("ProjectWorkspace", () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "scan_hooks") return Promise.resolve({ hooks: [] });
       if (cmd === "get_home_dir") return Promise.resolve("/home/test");
+      if (cmd === "get_project_overview") return Promise.resolve(emptyOverview);
       if (cmd === "scan_agents") return Promise.resolve({ agents: [] });
       if (cmd === "scan_skills") {
         return Promise.resolve({
@@ -210,26 +217,9 @@ describe("ProjectWorkspace", () => {
       return Promise.resolve({});
     });
 
-    render(
-      <ProjectWorkspace
-        project={project}
-        sessions={[]}
-        sessionsLoading={false}
-        cliUsageRows={[]}
-        profiles={[]}
-        onRunProfile={vi.fn()}
-        onSetDefaultProfile={vi.fn()}
-        onScanSessions={vi.fn()}
-        onResumeSession={vi.fn()}
-        addToast={vi.fn()}
-        setToasts={vi.fn()}
-        toastIdRef={{ current: 0 }}
-        projects={[]}
-        onAddProject={vi.fn()}
-      />,
-    );
+    await renderWorkspace();
 
-    fireEvent.click(screen.getByText("扩展（Extensions）"));
+    await clickAndSettle(screen.getByText("扩展（Extensions）"));
 
     expect(await screen.findByText("chrome")).not.toBeNull();
     expect(await screen.findByText("browser")).not.toBeNull();
@@ -240,6 +230,7 @@ describe("ProjectWorkspace", () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "scan_hooks") return Promise.resolve({ hooks: [] });
       if (cmd === "get_home_dir") return Promise.resolve("/home/test");
+      if (cmd === "get_project_overview") return Promise.resolve(emptyOverview);
       if (cmd === "scan_agents") return Promise.resolve({ agents: [] });
       if (cmd === "scan_skills") {
         return Promise.resolve({
@@ -286,33 +277,16 @@ describe("ProjectWorkspace", () => {
       return Promise.resolve({});
     });
 
-    render(
-      <ProjectWorkspace
-        project={project}
-        sessions={[]}
-        sessionsLoading={false}
-        cliUsageRows={[]}
-        profiles={[]}
-        onRunProfile={vi.fn()}
-        onSetDefaultProfile={vi.fn()}
-        onScanSessions={vi.fn()}
-        onResumeSession={vi.fn()}
-        addToast={vi.fn()}
-        setToasts={vi.fn()}
-        toastIdRef={{ current: 0 }}
-        projects={[]}
-        onAddProject={vi.fn()}
-      />,
-    );
+    await renderWorkspace();
 
-    fireEvent.click(screen.getByText("扩展（Extensions）"));
+    await clickAndSettle(screen.getByText("扩展（Extensions）"));
 
     expect(await screen.findByText("chrome")).not.toBeNull();
     expect(await screen.findByText("browser")).not.toBeNull();
     expect(await screen.findByText("lint")).not.toBeNull();
 
-    fireEvent.click(screen.getByText("全部来源"));
-    fireEvent.click(screen.getByText("本项目"));
+    await clickAndSettle(screen.getByText("全部来源"));
+    await clickAndSettle(screen.getByText("本项目"));
 
     expect(screen.queryByText("chrome")).toBeNull();
     expect(await screen.findByText("browser")).not.toBeNull();
@@ -323,6 +297,7 @@ describe("ProjectWorkspace", () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "scan_hooks") return Promise.resolve({ hooks: [] });
       if (cmd === "get_home_dir") return Promise.resolve("/home/test");
+      if (cmd === "get_project_overview") return Promise.resolve(emptyOverview);
       if (cmd === "scan_agents") {
         return Promise.resolve({
           agents: [
@@ -399,26 +374,9 @@ describe("ProjectWorkspace", () => {
       return Promise.resolve({});
     });
 
-    render(
-      <ProjectWorkspace
-        project={project}
-        sessions={[]}
-        sessionsLoading={false}
-        cliUsageRows={[]}
-        profiles={[]}
-        onRunProfile={vi.fn()}
-        onSetDefaultProfile={vi.fn()}
-        onScanSessions={vi.fn()}
-        onResumeSession={vi.fn()}
-        addToast={vi.fn()}
-        setToasts={vi.fn()}
-        toastIdRef={{ current: 0 }}
-        projects={[]}
-        onAddProject={vi.fn()}
-      />,
-    );
+    await renderWorkspace();
 
-    fireEvent.click(screen.getByText("扩展（Extensions）"));
+    await clickAndSettle(screen.getByText("扩展（Extensions）"));
 
     expect(await screen.findByText("user-skill")).not.toBeNull();
     expect(await screen.findByText("project-skill")).not.toBeNull();
@@ -428,8 +386,8 @@ describe("ProjectWorkspace", () => {
     expect(await screen.findByText("project-agent")).not.toBeNull();
     expect(screen.queryAllByTitle("kn")).toHaveLength(0);
 
-    fireEvent.click(screen.getByText("全部来源"));
-    fireEvent.click(screen.getByText("本项目"));
+    await clickAndSettle(screen.getByText("全部来源"));
+    await clickAndSettle(screen.getByText("本项目"));
 
     expect(screen.queryByText("user-skill")).toBeNull();
     expect(screen.queryByText("/user-command")).toBeNull();
@@ -443,6 +401,7 @@ describe("ProjectWorkspace", () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "scan_hooks") return Promise.resolve({ hooks: [] });
       if (cmd === "get_home_dir") return Promise.resolve("/home/test");
+      if (cmd === "get_project_overview") return Promise.resolve(emptyOverview);
       if (cmd === "scan_agents") return Promise.resolve({ agents: [] });
       if (cmd === "scan_skills") {
         return Promise.resolve({ plugins: [], standaloneSkills: [], systemSkills: [], commands: [] });
@@ -453,26 +412,9 @@ describe("ProjectWorkspace", () => {
       return Promise.resolve({});
     });
 
-    render(
-      <ProjectWorkspace
-        project={project}
-        sessions={[]}
-        sessionsLoading={false}
-        cliUsageRows={[]}
-        profiles={[]}
-        onRunProfile={vi.fn()}
-        onSetDefaultProfile={vi.fn()}
-        onScanSessions={vi.fn()}
-        onResumeSession={vi.fn()}
-        addToast={vi.fn()}
-        setToasts={vi.fn()}
-        toastIdRef={{ current: 0 }}
-        projects={[]}
-        onAddProject={vi.fn()}
-      />,
-    );
+    await renderWorkspace();
 
-    fireEvent.click(screen.getByText("扩展（Extensions）"));
+    await clickAndSettle(screen.getByText("扩展（Extensions）"));
 
     expect(screen.queryByTitle("浏览 Marketplace")).toBeNull();
     expect(screen.queryByText("扩展市场")).toBeNull();

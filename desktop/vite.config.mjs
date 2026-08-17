@@ -12,6 +12,9 @@ export default defineConfig({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    chunkSizeWarningLimit: 3000,
+  },
   test: {
     environment: "jsdom",
     globals: true,
