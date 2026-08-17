@@ -170,6 +170,14 @@ jobs:
           codesign --verify --strict --verbose=2 "$SIGNING_PROBE"
           echo "✅ Certificate imported"
 
+      - name: Sign kn-agent
+        run: |
+          set -euo pipefail
+          AGENT=desktop/src-tauri/resources/kn-agent
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp --options runtime "$AGENT"
+          codesign --verify --strict --verbose=2 "$AGENT"
+          echo "✅ kn-agent signed"
+
       - name: Build Tauri
         working-directory: desktop
         env:
