@@ -46,18 +46,33 @@ pub async fn resolve_cli_version(tool: &str) -> Option<String> {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    stdout.split_whitespace().chain(stderr.split_whitespace())
+    stdout
+        .split_whitespace()
+        .chain(stderr.split_whitespace())
         .find(|token| looks_like_semver(token))
-        .map(|token| token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '+').to_string())
+        .map(|token| {
+            token
+                .trim_matches(|c: char| {
+                    !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '+'
+                })
+                .to_string()
+        })
 }
 
 fn looks_like_semver(value: &str) -> bool {
-    let value = value.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '+');
+    let value = value
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '+');
     let value = value.strip_prefix('v').unwrap_or(value);
     let mut parts = value.splitn(3, '.');
-    parts.next().is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
-        && parts.next().is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
-        && parts.next().is_some_and(|part| !part.is_empty() && part.chars().next().is_some_and(|c| c.is_ascii_digit()))
+    parts
+        .next()
+        .is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        && parts
+            .next()
+            .is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        && parts.next().is_some_and(|part| {
+            !part.is_empty() && part.chars().next().is_some_and(|c| c.is_ascii_digit())
+        })
 }
 
 /// Normalizes supported CLI identifiers without merging distinct products.

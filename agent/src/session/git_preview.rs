@@ -80,7 +80,8 @@ pub async fn summary(session_id: &str, cwd: &str) -> serde_json::Value {
     .await
     .unwrap_or_default();
     let stat_text = stat_text.trim();
-    let bounded_stat_text = crate::session::response_limits::truncate_utf8(stat_text, MAX_STAT_TEXT_BYTES);
+    let bounded_stat_text =
+        crate::session::response_limits::truncate_utf8(stat_text, MAX_STAT_TEXT_BYTES);
     truncated |= bounded_stat_text.len() < stat_text.len();
     json!({
         "sessionId": session_id,

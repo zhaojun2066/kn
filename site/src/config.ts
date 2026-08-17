@@ -2,5 +2,5 @@
 export const APP_VERSION = import.meta.env.VITE_APP_VERSION || 'dev'
 export const APP_NAME = 'KN'
 
-export const RELEASE_API_URL = 'https://api.shark.kim/api/v1/app-config/desktop-release'
-export const IOS_APP_URL = 'https://apps.apple.com/'
+export const RELEASE_API_URL = 'https://api.knshark.com/api/v1/app-config/desktop-release'
+export const IOS_APP_URL = import.meta.env.VITE_IOS_APP_URL || ''

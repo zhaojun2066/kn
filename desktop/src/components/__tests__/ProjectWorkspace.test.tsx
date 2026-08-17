@@ -439,7 +439,7 @@ describe("ProjectWorkspace", () => {
     expect(await screen.findByText("project-agent")).not.toBeNull();
   });
 
-  it("shows the project name in the project marketplace dialog title", async () => {
+  it("keeps the deferred Marketplace entry hidden in project resources", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "scan_hooks") return Promise.resolve({ hooks: [] });
       if (cmd === "get_home_dir") return Promise.resolve("/home/test");
@@ -473,9 +473,8 @@ describe("ProjectWorkspace", () => {
     );
 
     fireEvent.click(screen.getByText("扩展（Extensions）"));
-    fireEvent.click(await screen.findByTitle("浏览 Marketplace"));
 
-    expect(await screen.findByText("扩展市场")).not.toBeNull();
-    expect(await screen.findByText("项目 · kn")).not.toBeNull();
+    expect(screen.queryByTitle("浏览 Marketplace")).toBeNull();
+    expect(screen.queryByText("扩展市场")).toBeNull();
   });
 });

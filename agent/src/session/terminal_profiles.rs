@@ -78,16 +78,23 @@ static ACTIVE_PROFILES: OnceLock<RwLock<Option<TerminalParserProfiles>>> = OnceL
 
 pub fn set_active(profiles: Option<TerminalParserProfiles>) {
     let lock = ACTIVE_PROFILES.get_or_init(|| RwLock::new(None));
-    if let Ok(mut current) = lock.write() { *current = profiles; }
+    if let Ok(mut current) = lock.write() {
+        *current = profiles;
+    }
 }
 
 pub fn active() -> Option<TerminalParserProfiles> {
-    ACTIVE_PROFILES.get().and_then(|lock| lock.read().ok().and_then(|value| value.clone()))
+    ACTIVE_PROFILES
+        .get()
+        .and_then(|lock| lock.read().ok().and_then(|value| value.clone()))
 }
 
 impl TerminalProfileStore {
     pub fn new(cache_path: impl Into<PathBuf>) -> Self {
-        Self { cache_path: cache_path.into(), profiles: None }
+        Self {
+            cache_path: cache_path.into(),
+            profiles: None,
+        }
     }
 
     pub fn load_cached(&mut self) -> Result<Option<TerminalParserProfiles>, ProfileError> {
@@ -101,7 +108,11 @@ impl TerminalProfileStore {
         Ok(Some(profiles))
     }
 
-    pub fn accept_remote(&mut self, bytes: &[u8], expected_sha256: &str) -> Result<(), ProfileError> {
+    pub fn accept_remote(
+        &mut self,
+        bytes: &[u8],
+        expected_sha256: &str,
+    ) -> Result<(), ProfileError> {
         let actual = sha256_hex(bytes);
         if !actual.eq_ignore_ascii_case(expected_sha256) {
             return Err(ProfileError::HashMismatch);
@@ -122,7 +133,9 @@ impl TerminalProfileStore {
         Ok(())
     }
 
-    pub fn current(&self) -> Option<&TerminalParserProfiles> { self.profiles.as_ref() }
+    pub fn current(&self) -> Option<&TerminalParserProfiles> {
+        self.profiles.as_ref()
+    }
 
     /// Refreshes the public Cloud profile only after obtaining its advertised
     /// SHA-256. Network or validation failures leave the current cache intact.
@@ -132,21 +145,37 @@ impl TerminalProfileStore {
         cloud_http_url: &str,
     ) -> Result<(), ProfileError> {
         #[derive(Deserialize)]
-        struct Envelope<T> { data: T }
+        struct Envelope<T> {
+            data: T,
+        }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct Version { sha256: String }
+        struct Version {
+            sha256: String,
+        }
         let base = cloud_http_url.trim_end_matches('/');
         let version: Envelope<Version> = client
-            .get(format!("{base}/api/v1/app-config/terminal-parser-profiles/version"))
-            .send().await.map_err(|error| ProfileError::Io(error.to_string()))?
-            .error_for_status().map_err(|error| ProfileError::Io(error.to_string()))?
-            .json().await.map_err(|error| ProfileError::Io(error.to_string()))?;
+            .get(format!(
+                "{base}/api/v1/app-config/terminal-parser-profiles/version"
+            ))
+            .send()
+            .await
+            .map_err(|error| ProfileError::Io(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| ProfileError::Io(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| ProfileError::Io(error.to_string()))?;
         let bytes = client
             .get(format!("{base}/api/v1/app-config/terminal-parser-profiles"))
-            .send().await.map_err(|error| ProfileError::Io(error.to_string()))?
-            .error_for_status().map_err(|error| ProfileError::Io(error.to_string()))?
-            .bytes().await.map_err(|error| ProfileError::Io(error.to_string()))?;
+            .send()
+            .await
+            .map_err(|error| ProfileError::Io(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| ProfileError::Io(error.to_string()))?
+            .bytes()
+            .await
+            .map_err(|error| ProfileError::Io(error.to_string()))?;
         let envelope: Envelope<TerminalParserProfiles> =
             serde_json::from_slice(&bytes).map_err(|_| ProfileError::InvalidJson)?;
         let profiles_bytes = serde_json::to_vec(&envelope.data)
@@ -159,9 +188,15 @@ impl TerminalProfileStore {
         self.accept_remote(&profiles_bytes, &sha256_hex(&profiles_bytes))
     }
 
-    pub fn parse(bytes: &[u8], _expected_sha256: Option<&str>) -> Result<TerminalParserProfiles, ProfileError> {
-        if bytes.len() > MAX_PROFILE_BYTES { return Err(ProfileError::TooLarge); }
-        let profiles: TerminalParserProfiles = serde_json::from_slice(bytes).map_err(|_| ProfileError::InvalidJson)?;
+    pub fn parse(
+        bytes: &[u8],
+        _expected_sha256: Option<&str>,
+    ) -> Result<TerminalParserProfiles, ProfileError> {
+        if bytes.len() > MAX_PROFILE_BYTES {
+            return Err(ProfileError::TooLarge);
+        }
+        let profiles: TerminalParserProfiles =
+            serde_json::from_slice(bytes).map_err(|_| ProfileError::InvalidJson)?;
         validate(&profiles)?;
         Ok(profiles)
     }
@@ -171,36 +206,58 @@ fn validate(value: &TerminalParserProfiles) -> Result<(), ProfileError> {
     if value.schema_version != SUPPORTED_SCHEMA_VERSION {
         return Err(ProfileError::UnsupportedSchema(value.schema_version));
     }
-    if value.profiles_version.trim().is_empty() || value.profiles.is_empty() || value.profiles.len() > MAX_PROFILES {
+    if value.profiles_version.trim().is_empty()
+        || value.profiles.is_empty()
+        || value.profiles.len() > MAX_PROFILES
+    {
         return Err(ProfileError::Invalid("invalid profile set metadata".into()));
     }
     let mut ids = std::collections::HashSet::<String>::new();
     for profile in &value.profiles {
         if profile.id.trim().is_empty() || !ids.insert(profile.id.clone()) {
-            return Err(ProfileError::Invalid("duplicate or empty profile id".into()));
+            return Err(ProfileError::Invalid(
+                "duplicate or empty profile id".into(),
+            ));
         }
-        if profile.command_matchers.len() > MAX_PATTERNS || profile.summary_patterns.len() > MAX_PATTERNS
-            || profile.success_patterns.len() > MAX_PATTERNS || profile.failure_patterns.len() > MAX_PATTERNS
-            || profile.ignore_patterns.len() > MAX_PATTERNS || profile.stack_trace_patterns.len() > MAX_PATTERNS
-            || profile.artifact_collectors.len() > MAX_PATTERNS {
+        if profile.command_matchers.len() > MAX_PATTERNS
+            || profile.summary_patterns.len() > MAX_PATTERNS
+            || profile.success_patterns.len() > MAX_PATTERNS
+            || profile.failure_patterns.len() > MAX_PATTERNS
+            || profile.ignore_patterns.len() > MAX_PATTERNS
+            || profile.stack_trace_patterns.len() > MAX_PATTERNS
+            || profile.artifact_collectors.len() > MAX_PATTERNS
+        {
             return Err(ProfileError::Invalid(profile.id.clone()));
         }
-        if profile.fixture_version.as_deref().is_some_and(|version| version.len() > 64)
-            || profile.artifact_collectors.iter().any(|collector| serde_json::to_vec(collector).map(|bytes| bytes.len() > 16 * 1024).unwrap_or(true)) {
+        if profile
+            .fixture_version
+            .as_deref()
+            .is_some_and(|version| version.len() > 64)
+            || profile.artifact_collectors.iter().any(|collector| {
+                serde_json::to_vec(collector)
+                    .map(|bytes| bytes.len() > 16 * 1024)
+                    .unwrap_or(true)
+            })
+        {
             return Err(ProfileError::Invalid(profile.id.clone()));
         }
-        for pattern in profile.command_matchers.iter()
+        for pattern in profile
+            .command_matchers
+            .iter()
             .chain(profile.summary_patterns.iter())
             .chain(profile.success_patterns.iter())
             .chain(profile.failure_patterns.iter())
             .chain(profile.ignore_patterns.iter())
-            .chain(profile.stack_trace_patterns.iter()) {
+            .chain(profile.stack_trace_patterns.iter())
+        {
             if pattern.len() > MAX_PATTERN_BYTES || Regex::new(pattern).is_err() {
                 return Err(ProfileError::Invalid(profile.id.clone()));
             }
         }
     }
-    if !ids.contains("generic-exit") { return Err(ProfileError::MissingGeneric); }
+    if !ids.contains("generic-exit") {
+        return Err(ProfileError::MissingGeneric);
+    }
     Ok(())
 }
 
@@ -211,11 +268,21 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
-    let parse = |value: &str| value.split(['.', '-', '_']).map(|part| part.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    let parse = |value: &str| {
+        value
+            .split(['.', '-', '_'])
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
     let left = parse(left);
     let right = parse(right);
     (0..left.len().max(right.len()))
-        .map(|index| (left.get(index).copied().unwrap_or(0), right.get(index).copied().unwrap_or(0)))
+        .map(|index| {
+            (
+                left.get(index).copied().unwrap_or(0),
+                right.get(index).copied().unwrap_or(0),
+            )
+        })
         .find_map(|(l, r)| (l != r).then(|| l.cmp(&r)))
         .unwrap_or(std::cmp::Ordering::Equal)
 }
@@ -226,9 +293,16 @@ fn canonical_json(value: &TerminalParserProfiles) -> Vec<u8> {
             serde_json::Value::Object(map) => {
                 let mut entries: Vec<_> = map.into_iter().collect();
                 entries.sort_by(|left, right| left.0.cmp(&right.0));
-                serde_json::Value::Object(entries.into_iter().map(|(key, value)| (key, sort(value))).collect())
+                serde_json::Value::Object(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (key, sort(value)))
+                        .collect(),
+                )
             }
-            serde_json::Value::Array(values) => serde_json::Value::Array(values.into_iter().map(sort).collect()),
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(sort).collect())
+            }
             other => other,
         }
     }
@@ -245,8 +319,13 @@ mod tests {
 
     #[test]
     fn rejects_profiles_without_generic_fallback() {
-        let value = String::from_utf8(json()).unwrap().replace("generic-exit", "missing");
-        assert_eq!(TerminalProfileStore::parse(value.as_bytes(), None), Err(ProfileError::MissingGeneric));
+        let value = String::from_utf8(json())
+            .unwrap()
+            .replace("generic-exit", "missing");
+        assert_eq!(
+            TerminalProfileStore::parse(value.as_bytes(), None),
+            Err(ProfileError::MissingGeneric)
+        );
     }
 
     #[test]
@@ -268,8 +347,13 @@ mod tests {
         let bytes = json();
         let mut store = TerminalProfileStore::new(&path);
         store.accept_remote(&bytes, &sha256_hex(&bytes)).unwrap();
-        let older = String::from_utf8(bytes).unwrap().replace("\"profilesVersion\":\"1\"", "\"profilesVersion\":\"0\"");
-        assert_eq!(store.accept_remote(older.as_bytes(), &sha256_hex(older.as_bytes())), Err(ProfileError::Downgrade));
+        let older = String::from_utf8(bytes)
+            .unwrap()
+            .replace("\"profilesVersion\":\"1\"", "\"profilesVersion\":\"0\"");
+        assert_eq!(
+            store.accept_remote(older.as_bytes(), &sha256_hex(older.as_bytes())),
+            Err(ProfileError::Downgrade)
+        );
     }
 
     #[test]
@@ -278,7 +362,8 @@ mod tests {
         let mut parsed: serde_json::Value = serde_json::from_slice(&value).unwrap();
         parsed["profiles"][1]["successPatterns"] = serde_json::json!(["BUILD SUCCESS"]);
         parsed["profiles"][1]["failurePatterns"] = serde_json::json!(["BUILD FAILURE"]);
-        parsed["profiles"][1]["artifactCollectors"] = serde_json::json!([{"kind":"junit","root":"target"}]);
+        parsed["profiles"][1]["artifactCollectors"] =
+            serde_json::json!([{"kind":"junit","root":"target"}]);
         let bytes = serde_json::to_vec(&parsed).unwrap();
         assert!(TerminalProfileStore::parse(&bytes, None).is_ok());
     }
@@ -286,8 +371,12 @@ mod tests {
     #[test]
     fn rejects_oversized_artifact_collector_definition() {
         let mut parsed: serde_json::Value = serde_json::from_slice(&json()).unwrap();
-        parsed["profiles"][1]["artifactCollectors"] = serde_json::json!([{"pattern": "x".repeat(20 * 1024)}]);
+        parsed["profiles"][1]["artifactCollectors"] =
+            serde_json::json!([{"pattern": "x".repeat(20 * 1024)}]);
         let bytes = serde_json::to_vec(&parsed).unwrap();
-        assert_eq!(TerminalProfileStore::parse(&bytes, None), Err(ProfileError::Invalid("maven".into())));
+        assert_eq!(
+            TerminalProfileStore::parse(&bytes, None),
+            Err(ProfileError::Invalid("maven".into()))
+        );
     }
 }

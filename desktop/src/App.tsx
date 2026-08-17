@@ -1687,6 +1687,7 @@ export function App() {
                 onCheckUpdates={handleCheckUpdates}
                 onCancelCheckUpdates={handleCancelCheckUpdates}
                 onOpenMarketplace={() => setMarketplaceOpen(true)}
+                hideMarketplace
                 onOpenGraph={loadGraph}
                 activeScope={activeScope}
                 onScopeChange={setActiveScope}
@@ -2160,7 +2161,10 @@ export function App() {
         />
       )}
 
-      {/* Marketplace Browser */}
+      {/*
+       * Marketplace 暂缓：第三方 CLI、插件格式和供应链安全策略仍在变化。
+       * 保留组件代码和状态，完成兼容性与安全方案后再重新开放入口。
+       */}
       <MarketplaceBrowser
         open={marketplaceOpen}
         onClose={() => setMarketplaceOpen(false)}

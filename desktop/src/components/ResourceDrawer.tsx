@@ -830,6 +830,7 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
               onCheckUpdates={handleCheckUpdates}
               onCancelCheckUpdates={handleCancelCheckUpdates}
               onOpenMarketplace={handleOpenMarketplace}
+              hideMarketplace
               onToast={addToast}
               hideProjectFeatures
               activeScope="user"

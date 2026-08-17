@@ -15,7 +15,9 @@ mod tests {
         let input = (1..=100).map(|line| (line, "界".repeat(2_000))).collect();
         let (lines, truncated) = bounded_log_lines(input);
         assert!(truncated);
-        assert!(lines.iter().all(|line| line["text"].as_str().unwrap().len() <= LOG_LINE_MAX_BYTES));
+        assert!(lines
+            .iter()
+            .all(|line| line["text"].as_str().unwrap().len() <= LOG_LINE_MAX_BYTES));
         assert!(serde_json::to_vec(&lines).unwrap().len() <= LOG_WINDOW_MAX_BYTES);
     }
 
@@ -60,7 +62,10 @@ mod tests {
         assert!(issues[0]["preview"].as_str().unwrap().len() <= ISSUE_CONTEXT_MAX_BYTES);
 
         for _ in 0..100 {
-            let _ = append_bounded_issue(&mut issues, serde_json::json!({"preview": "x".repeat(4096)}));
+            let _ = append_bounded_issue(
+                &mut issues,
+                serde_json::json!({"preview": "x".repeat(4096)}),
+            );
         }
         assert!(serde_json::to_vec(&issues).unwrap().len() < ISSUE_RESULT_MAX_BYTES);
     }
@@ -149,7 +154,8 @@ pub fn bounded_log_lines_around_center(
         let mut candidate = selected.clone();
         candidate.push((*line_number, value));
         candidate.sort_by_key(|(line_number, _)| *line_number);
-        let candidate_values: Vec<&serde_json::Value> = candidate.iter().map(|(_, value)| value).collect();
+        let candidate_values: Vec<&serde_json::Value> =
+            candidate.iter().map(|(_, value)| value).collect();
         if serde_json::to_vec(&candidate_values)
             .map(|bytes| bytes.len() <= LOG_LINES_JSON_BUDGET)
             .unwrap_or(false)
@@ -178,7 +184,10 @@ pub fn bounded_log_lines_around_center(
     if selected.len() < lines.len() {
         omitted = true;
     }
-    (selected.into_iter().map(|(_, value)| value).collect(), omitted)
+    (
+        selected.into_iter().map(|(_, value)| value).collect(),
+        omitted,
+    )
 }
 
 /// Adds an issue only if the response remains bounded. The returned flags are

@@ -154,7 +154,7 @@ Maven multi-module project providing the server-side backend:
 | `GET /api/v1/config/purchase-url` | Public | Get purchase page URL |
 | `GET /api/v1/auth/*` | Mixed | Register, login, refresh, captcha, Apple login |
 
-**WebSocket protocol**: Agent connects to `wss://api.shark.kim/v1/ws` with headers `Authorization: Bearer <device_token>`, `X-KN-Role: kn-agent`, `X-KN-Machine-Id`, `X-KN-Protocol-Version: 1`. iOS connects with JWT access token.
+**WebSocket protocol**: Agent connects to `wss://api.knshark.com/v1/ws` with headers `Authorization: Bearer <device_token>`, `X-KN-Role: kn-agent`, `X-KN-Machine-Id`, `X-KN-Protocol-Version: 1`. iOS connects with JWT access token.
 
 **Key files**:
 - `kn-cloud-api/src/main/java/dev/kn/cloud/api/controller/` — REST controllers

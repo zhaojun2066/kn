@@ -330,13 +330,7 @@ async fn send_project_session_indexes(
     let projects = load_projects().await;
     for project in projects {
         let project_path = project.path;
-        send_project_session_index(
-            outgoing,
-            revisions,
-            activity,
-            scan_gate,
-            project_path,
-        ).await;
+        send_project_session_index(outgoing, revisions, activity, scan_gate, project_path).await;
     }
 }
 
@@ -352,22 +346,37 @@ async fn send_project_session_index(
     }
 
     loop {
-        let allow_qoderclicn_fallback = activity.lock().await.claim_qoderclicn_fallback(
-            &project_path, unix_millis(),
-        );
+        let allow_qoderclicn_fallback = activity
+            .lock()
+            .await
+            .claim_qoderclicn_fallback(&project_path, unix_millis());
         let scan_path = project_path.clone();
         let scan = tokio::task::spawn_blocking(move || {
-            kn_agent::project_session_index::scan_project_history(&scan_path, allow_qoderclicn_fallback)
-        }).await.unwrap_or_else(|error| {
+            kn_agent::project_session_index::scan_project_history(
+                &scan_path,
+                allow_qoderclicn_fallback,
+            )
+        })
+        .await
+        .unwrap_or_else(|error| {
             tracing::warn!(project_path = %project_path, %error, "会话索引扫描任务失败");
-            kn_agent::project_session_index::ProjectSessionScan { sessions: Vec::new(), complete: false }
+            kn_agent::project_session_index::ProjectSessionScan {
+                sessions: Vec::new(),
+                complete: false,
+            }
         });
         let revision = match revisions.lock().await.next(&project_path) {
             Ok(revision) => revision,
-            Err(error) => { tracing::warn!(project_path = %project_path, %error, "会话索引 revision 未持久化，跳过发送"); continue; }
+            Err(error) => {
+                tracing::warn!(project_path = %project_path, %error, "会话索引 revision 未持久化，跳过发送");
+                continue;
+            }
         };
         let message = proto::WsMessageBuilder::project_session_index(
-            &project_path, revision, scan.complete, &scan.sessions,
+            &project_path,
+            revision,
+            scan.complete,
+            &scan.sessions,
         );
         if let Some(tx) = outgoing.lock().await.as_ref() {
             if tx.send(message).is_err() {
@@ -476,19 +485,23 @@ fn start_project_session_history_watcher(
         home.join(".qoder-cn/projects"),
     ];
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<std::path::PathBuf>>();
-    let mut watcher = match notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
-        if let Ok(event) = result {
-            if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)) {
-                let _ = tx.send(event.paths);
+    let mut watcher =
+        match notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
+            if let Ok(event) = result {
+                if matches!(
+                    event.kind,
+                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                ) {
+                    let _ = tx.send(event.paths);
+                }
             }
-        }
-    }) {
-        Ok(watcher) => watcher,
-        Err(error) => {
-            tracing::warn!(%error, "创建会话历史文件监听器失败");
-            return None;
-        }
-    };
+        }) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                tracing::warn!(%error, "创建会话历史文件监听器失败");
+                return None;
+            }
+        };
 
     let mut watched_root_count = 0usize;
     for root in roots {
@@ -498,7 +511,9 @@ fn start_project_session_history_watcher(
         }
         match watcher.watch(&root, RecursiveMode::Recursive) {
             Ok(()) => watched_root_count += 1,
-            Err(error) => tracing::warn!(path = %root.display(), %error, "注册会话历史目录监听失败"),
+            Err(error) => {
+                tracing::warn!(path = %root.display(), %error, "注册会话历史目录监听失败")
+            }
         }
     }
     if watched_root_count == 0 {
@@ -512,20 +527,25 @@ fn start_project_session_history_watcher(
                 paths.append(&mut more_paths);
             }
             let projects = load_projects().await;
-            let project_paths: Vec<String> = projects.into_iter().map(|project| project.path).collect();
+            let project_paths: Vec<String> =
+                projects.into_iter().map(|project| project.path).collect();
             let affected = kn_agent::project_session_index::projects_affected_by_history_paths(
                 &paths,
                 &project_paths,
             );
             for project_path in affected {
-                activity.lock().await.mark_active(&project_path, unix_millis());
+                activity
+                    .lock()
+                    .await
+                    .mark_active(&project_path, unix_millis());
                 send_project_session_index(
                     &outgoing,
                     &revisions,
                     &activity,
                     &scan_gate,
                     project_path,
-                ).await;
+                )
+                .await;
             }
         }
     });
@@ -614,10 +634,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             parser_profiles.refresh_from_cloud(&client, &profile_http_url),
-        ).await.unwrap_or_else(|_| Err(session::terminal_profiles::ProfileError::Io("profile refresh timeout".into())));
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(session::terminal_profiles::ProfileError::Io(
+                "profile refresh timeout".into(),
+            ))
+        });
         match result {
             Ok(()) => session::terminal_profiles::set_active(parser_profiles.current().cloned()),
-            Err(error) => tracing::debug!(?error, "parser profile refresh skipped; using cached or built-in rules"),
+            Err(error) => tracing::debug!(
+                ?error,
+                "parser profile refresh skipped; using cached or built-in rules"
+            ),
         }
     });
 
@@ -766,7 +795,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let project_session_activity = Arc::new(tokio::sync::Mutex::new(
         kn_agent::project_session_index::ProjectActivityTracker::default(),
     ));
-    let project_session_scan_gate = Arc::new(kn_agent::project_session_index::ProjectScanGate::default());
+    let project_session_scan_gate =
+        Arc::new(kn_agent::project_session_index::ProjectScanGate::default());
     start_qoderclicn_history_fallback_loop(
         outgoing_tx_ref.clone(),
         project_session_revisions.clone(),
@@ -1125,8 +1155,12 @@ async fn handle_incoming(
     ack_registry: Arc<ack::AckRegistry>, // Phase 3 开始使用
     project_delivery_gate: Arc<kn_agent::project_delivery::ProjectOperationGate>,
     delivery_outbox: Arc<DeliveryOutbox>,
-    project_session_revisions: Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectRevisionClock>>,
-    project_session_activity: Arc<tokio::sync::Mutex<kn_agent::project_session_index::ProjectActivityTracker>>,
+    project_session_revisions: Arc<
+        tokio::sync::Mutex<kn_agent::project_session_index::ProjectRevisionClock>,
+    >,
+    project_session_activity: Arc<
+        tokio::sync::Mutex<kn_agent::project_session_index::ProjectActivityTracker>,
+    >,
     project_session_scan_gate: Arc<kn_agent::project_session_index::ProjectScanGate>,
 ) {
     match msg {
@@ -1220,7 +1254,8 @@ async fn handle_incoming(
                 &project_session_revisions,
                 &project_session_activity,
                 &project_session_scan_gate,
-            ).await;
+            )
+            .await;
 
             // WSS 重连后，重新同步所有开启远程的会话到云端。
             // agent 是会话状态的权威来源：即使云端因心跳超时把会话标为 ended，
@@ -1359,7 +1394,10 @@ async fn handle_incoming(
                 Ok(session) => {
                     // iOS 远程会话：显式开启 remote_enabled（create 默认 false）
                     let _ = sessions.set_remote_enabled(&session_nid, true).await;
-                    project_session_activity.lock().await.mark_active(&cwd_resolved, unix_millis());
+                    project_session_activity
+                        .lock()
+                        .await
+                        .mark_active(&cwd_resolved, unix_millis());
 
                     // A newly created session may cause the native CLI to
                     // persist a history file shortly after launch. Refresh in
@@ -1375,7 +1413,8 @@ async fn handle_incoming(
                             &index_revisions,
                             &index_activity,
                             &index_scan_gate,
-                        ).await;
+                        )
+                        .await;
                     });
 
                     // Spawn PTY + CLI process (before ACK — process needs to be running)
@@ -1481,17 +1520,18 @@ async fn handle_incoming(
 
                         for attempt in 0..MAX_RETRIES {
                             let msg_id = format!("{}-{}", ack_nid, attempt);
-                            let msg = proto::WsMessageBuilder::session_created_with_msg_id_and_version(
-                                &ack_nid,
-                                &ack_tool,
-                                &ack_cwd,
-                                Some(ack_profile.as_str()),
-                                ack_cols,
-                                ack_rows,
-                                "ios",
-                                Some(&msg_id),
-                                ack_cli_version.as_deref(),
-                            );
+                            let msg =
+                                proto::WsMessageBuilder::session_created_with_msg_id_and_version(
+                                    &ack_nid,
+                                    &ack_tool,
+                                    &ack_cwd,
+                                    Some(ack_profile.as_str()),
+                                    ack_cols,
+                                    ack_rows,
+                                    "ios",
+                                    Some(&msg_id),
+                                    ack_cli_version.as_deref(),
+                                );
 
                             let send_ok = {
                                 let guard = ack_outgoing.lock().await;
@@ -2011,17 +2051,23 @@ async fn handle_incoming(
                 let operation_project_key = canonical_project_key(device_id, &registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
                 match scope.as_str() {
-                    "selected" => crate::session::git_delivery::commit(
-                        &project_key,
-                        &registered_path,
-                        &message,
-                        &paths,
-                    ).await,
-                    "allWorkingTree" => crate::session::git_delivery::commit_all_working_tree(
-                        &project_key,
-                        &registered_path,
-                        &message,
-                    ).await,
+                    "selected" => {
+                        crate::session::git_delivery::commit(
+                            &project_key,
+                            &registered_path,
+                            &message,
+                            &paths,
+                        )
+                        .await
+                    }
+                    "allWorkingTree" => {
+                        crate::session::git_delivery::commit_all_working_tree(
+                            &project_key,
+                            &registered_path,
+                            &message,
+                        )
+                        .await
+                    }
                     _ => serde_json::json!({"projectKey": &project_key, "status": "invalidScope"}),
                 }
             } else {

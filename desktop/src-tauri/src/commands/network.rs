@@ -120,8 +120,8 @@ pub fn cancel_download(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn delete_download_file(path: String) -> Result<(), String> {
-    let safe_path = is_safe_path(std::path::Path::new(&path))
-        .ok_or_else(|| "不允许删除此路径".to_string())?;
+    let safe_path =
+        is_safe_path(std::path::Path::new(&path)).ok_or_else(|| "不允许删除此路径".to_string())?;
     if !safe_path
         .file_name()
         .and_then(|name| name.to_str())

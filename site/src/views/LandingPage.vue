@@ -4,6 +4,7 @@ import { useScrollReveal } from '../composables/useScrollReveal'
 import NavBar from '../components/NavBar.vue'
 import HeroSection from '../components/HeroSection.vue'
 import FeaturesSection from '../components/FeaturesSection.vue'
+import MobileRemoteSection from '../components/MobileRemoteSection.vue'
 import ComparisonSection from '../components/ComparisonSection.vue'
 import DownloadSection from '../components/DownloadSection.vue'
 import SiteFooter from '../components/SiteFooter.vue'
@@ -16,6 +17,7 @@ useScrollReveal(appRef)
   <div ref="appRef" class="landing">
     <NavBar />
     <HeroSection />
+    <MobileRemoteSection />
     <FeaturesSection />
     <ComparisonSection />
     <DownloadSection />

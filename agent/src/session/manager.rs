@@ -260,7 +260,9 @@ impl SessionManager {
                 Ok(()) => disabled += 1,
                 Err(error) => {
                     tracing::error!(nid = %session.nid, error = %error, "关闭远程会话失败");
-                    if first_error.is_none() { first_error = Some(error); }
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
                 }
             }
         }

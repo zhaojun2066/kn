@@ -12,9 +12,9 @@ import { APP_VERSION } from '../config'
       <div class="hero-grid">
         <!-- Left -->
         <div class="hero-text reveal">
-          <span class="section-label">用手机继续电脑端 AI 会话</span>
+          <span class="section-label">电脑端 + 手机端的 AI CLI 控制台</span>
           <h1 class="hero-title">
-            电脑端开跑，<span class="hero-highlight">手机继续</span>推进 AI 工作
+            电脑端运行，<span class="hero-highlight">手机遥控</span>
           </h1>
 
           <!-- Supported CLI tools -->
@@ -26,6 +26,7 @@ import { APP_VERSION } from '../config'
 
           <div class="hero-features-wrap">
             <ul class="hero-features">
+              <li>手机绑定电脑端后，可远程发起 Claude Code / Codex / Qoder 会话并查看实时输出</li>
               <li>多运行配置管理，一键切换 API Key / Model / Base URL</li>
               <li>会话级隔离，终端之间互不干扰，退出自动清除</li>
               <li>Quick Switcher (⌘K) 全局快速启动，按使用频率排序</li>
@@ -39,6 +40,7 @@ import { APP_VERSION } from '../config'
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               下载 macOS 版
             </a>
+            <a href="#mobile" class="btn btn-outline">查看移动端</a>
             <a href="#/docs" class="btn btn-outline">查看文档</a>
           </div>
           <p class="hero-meta">v{{ APP_VERSION }} · macOS 12+ · 开源免费</p>
@@ -195,6 +197,12 @@ import { APP_VERSION } from '../config'
   .hero {
     padding: 110px 16px 56px;
     min-height: auto;
+  }
+  .hero .container {
+    padding: 0;
+  }
+  .hero-glow {
+    display: none;
   }
   .hero-grid {
     grid-template-columns: 1fr;

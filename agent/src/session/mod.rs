@@ -17,11 +17,11 @@ pub mod pr_delivery;
 pub mod project_list_status;
 pub mod response_limits;
 pub mod store;
+pub mod terminal_parser;
+pub mod terminal_profiles;
 pub mod types;
 pub mod verification_history;
 pub mod verify_changes;
-pub mod terminal_parser;
-pub mod terminal_profiles;
 
 /// 存储 PTY writer + OutputFanout，供 `attach_pty` 桥接。
 /// 放在 mod.rs 以避免 types.rs ↔ output.rs 循环依赖。

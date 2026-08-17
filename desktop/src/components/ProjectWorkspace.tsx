@@ -1289,6 +1289,7 @@ export function ProjectWorkspace({
               onCheckUpdates={handleCheckUpdates}
               onCancelCheckUpdates={handleCancelCheckUpdates}
               onOpenMarketplace={() => setMarketplaceOpen(true)}
+              hideMarketplace
               activeScope="project"
               onScopeChange={() => {}}
               projects={projects}
@@ -1381,7 +1382,10 @@ export function ProjectWorkspace({
         }}
       />
 
-      {/* MarketplaceBrowser — project-scoped */}
+      {/*
+       * Marketplace 暂缓：项目级安装涉及多套 CLI 配置，当前版本不开放入口。
+       * 组件保留，后续完成兼容性和安全门禁后再启用。
+       */}
       <MarketplaceBrowser
         open={marketplaceOpen}
         onClose={() => setMarketplaceOpen(false)}

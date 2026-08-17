@@ -4,6 +4,7 @@ export const docGroups: DocGroup[] = [
   { id: 'getting-started', icon: '🚀', label: '入门指南', pages: ['introduction', 'installation', 'cli-vs-desktop'] },
   { id: 'cli-reference', icon: '📋', label: 'CLI 使用', pages: ['quickstart', 'config-management', 'shell-wrapper', 'command-reference', 'ai-tips', 'config-structure'] },
   { id: 'desktop', icon: '🖥️', label: 'Desktop 应用', pages: ['desktop-overview', 'desktop-install', 'desktop-ui', 'desktop-features', 'desktop-architecture', 'desktop-development'] },
+  { id: 'mobile', icon: '📱', label: '手机 App', pages: ['mobile-overview', 'mobile-devices', 'mobile-terminal', 'mobile-projects', 'mobile-account'] },
   { id: 'scenarios', icon: '📖', label: '场景示例', pages: ['scenario-multi-account', 'scenario-project-keys', 'scenario-openai-proxy', 'scenario-qoder-cn'] },
   { id: 'more', icon: '💡', label: '更多', pages: ['faq', 'troubleshooting', 'uninstall'] },
 ]
@@ -13,7 +14,9 @@ export const docPages: Record<string, DocPage> = {
 
   introduction: {
     id: 'introduction', group: 'getting-started', groupIcon: '🚀', title: '简介', next: 'installation',
-    content: `KN 通过环境变量注入，让你在不同终端会话中为 \`claude\` / \`codex\` / \`qoderclicn\` 无缝切换 API 配置。任何兼容 Claude Code、Codex CLI 或 Qoder CN 的 API 提供商都可以——官方服务、第三方中转、自部署网关，一个 profile 搞定。
+    content: `KN 是 AI CLI 的电脑端控制台与远程控制工具。它通过环境变量注入，让你在不同终端会话中为 \`claude\` / \`codex\` / \`qoderclicn\` 无缝切换 API 配置；同时通过电脑端 Agent 和手机 App，把远程启动、输入和终端输出中继串起来。
+
+任何兼容 Claude Code、Codex CLI 或 Qoder CN 的 API 提供商都可以——官方服务、第三方中转、自部署网关，一个 profile 搞定。
 
 :::tip
 **核心理念：** 每个终端会话独立注入环境变量，退出后自动清除，不影响其他窗口。
@@ -24,6 +27,7 @@ export const docPages: Record<string, DocPage> = {
 - 同时使用**多个 API 提供商**（如官方 Anthropic + DeepSeek 中转 + Qoder CN），不想手动改配置
 - 不同项目用**不同的 API Key**，进目录自动切换（\`.ai-profile\` 文件）
 - 用**第三方兼容 API**（任何支持 Anthropic/OpenAI 协议的服务）
+- 用**手机远程发起和跟进 AI CLI 会话**，不用一直守在电脑前
 - 多个团队成员共用一台机器，各自有独立配置
 
 ## 核心设计
@@ -54,7 +58,8 @@ export const docPages: Record<string, DocPage> = {
 |------|------|------|
 | \`profile\` CLI | Python 3 | 命令行增删改查 profile |
 | Shell Wrapper | Bash | 拦截 \`claude\`/\`codex\`/\`qoderclicn\`，注入环境变量到子进程 |
-| Desktop GUI | TypeScript + Rust (Tauri v2) | 可视化管理 + 内置 PTY 终端 |
+| Desktop GUI | TypeScript + Rust (Tauri v2) | 可视化管理 + 内置 PTY 终端 + 远程控制面板 |
+| kn-agent | Rust | 设备绑定、WebSocket 连接、远程会话和 PTY 输出中继 |
 
 ## Desktop 亮点功能
 
@@ -62,6 +67,7 @@ export const docPages: Record<string, DocPage> = {
 - **Hook 可视化管理** — 创建/编辑 Hook，支持 Stop、PreTool、PostTool 等事件
 - **Agent 管理** — 浏览 Claude Code / Codex / Qoder 的 Agent 配置
 - **Token 用量仪表盘** — 按模型/项目统计，成本估算，趋势图
+- **手机远程控制** — 绑定电脑端后，在手机上发起会话、发送输入并查看实时输出
 
 ## 技术栈
 
@@ -71,6 +77,7 @@ export const docPages: Record<string, DocPage> = {
 | Shell Wrapper | Bash, \`sed\`-based YAML reading (zero-dependency) |
 | Desktop Frontend | React 18 + TypeScript + Tailwind CSS + Vite |
 | Desktop Backend | Rust (Tauri v2), \`portable-pty\`, \`serde_yaml\` |
+| Agent | Rust, WebSocket, IPC, PTY relay |
 | 终端模拟 | xterm.js + Canvas renderer + Fit addon |
 | 站点 | Vue 3 + TypeScript + Vite + Tailwind CSS |
 | 构建/发布 | GitHub Actions (macOS), Tauri bundler |`,
@@ -109,6 +116,7 @@ export const docPages: Record<string, DocPage> = {
 - 扫描已有配置，帮你导入为 profile
 - 初始化 \`~/.kn/\` 目录和默认 \`config.yaml\`
 - 确保 Shell Wrapper 已安装到 \`~/.zshrc\`
+- 启动电脑端 Agent，后续可在 [手机 App](/docs/mobile-overview) 中完成设备绑定和远程控制
 
 之后在终端执行 \`source ~/.zshrc\`，就可以用 \`ai claude <name>\` 命令了。
 
@@ -182,12 +190,12 @@ profile list
 | **会话历史** | 依赖 shell history | 自动记录，一键恢复 |
 | **配置备份** | 手动操作 | 自动备份 + 一键恢复 |
 | **Hook 管理** | 手动编辑配置文件 | 可视化管理，启用/禁用，日志追溯 |
-| **Agent 管理** | 手动浏览文件系统 | 图形界面浏览 + 搜索 |
 | **Token 用量** | 不支持 | 自动追踪，按模型/项目统计，成本估算 |
+| **手机远程控制** | 不支持 | 绑定电脑端后，在手机 App 里启动会话并查看实时输出 |
 | **Shell 补全** | zsh + bash 自动配置 | 不支持（Desktop 内终端独立） |
 | **适用场景** | SSH 远程、纯终端环境、脚本自动化 | 日常桌面使用、频繁切换配置 |
 | **Skills 管理** | 手动编辑文件 | 图形界面浏览 / 创建 / 编辑，三级来源 |
-| **Plugins & Commands** | 命令行安装 | Marketplace 浏览安装，一键启用 / 禁用 |
+| **Plugins & Commands** | 命令行安装 | 管理本机已安装资源，一键启用 / 禁用 |
 | **Agent 管理** | 手动浏览文件系统 | 图形界面浏览 + 搜索 + 来源过滤 |
 
 :::tip
@@ -707,11 +715,11 @@ Desktop 应用内置两个独立的 PTY 终端面板，各有独立 tab 和会�
 
 ## Plugins & Commands 管理
 
-统一管理 Marketplace 插件和自定义 Commands：
+统一管理本机已安装的插件和自定义 Commands：
 
-- **Marketplace 插件** — 浏览、安装、启用/禁用、更新插件
+- **本地插件资源** — 浏览、启用/禁用、卸载已安装插件
 - **自定义 Commands** — 管理快捷命令，按 CLI 类型分组
-- **一键操作** — 启用/禁用、卸载，插件版本信息一目了然
+- **Marketplace 暂缓** — 在线 Marketplace 浏览、安装和更新暂不开放，避免第三方 CLI 兼容性和供应链风险
 
 ## Agent 管理
 
@@ -720,6 +728,18 @@ Desktop 应用内置两个独立的 PTY 终端面板，各有独立 tab 和会�
 - **三级来源** — 用户级（\`~/.claude/agents/\`）、项目级、内置 Agent
 - **只读内置 Agent** — 系统内置 Agent 展示但不可修改，保证稳定性
 - **快速定位** — 按名称搜索，按来源过滤
+
+## 手机远程控制
+
+Desktop 应用通过内置 Agent 提供手机远程控制入口：
+
+- **设备绑定** — 二维码 + 6 位码两条路径，手机确认后建立安全连接
+- **远程会话** — 手机端可选择工具、运行配置和工作目录，远程启动 Claude Code / Codex 会话
+- **实时输出** — PTY 输出通过 WebSocket 中继到手机端，支持断线重连后的输出恢复
+- **会话管理** — 电脑端远程控制面板可查看本地会话和远程会话，按需开启 / 关闭远程访问
+- **并发上限** — 默认最多 10 个远程会话，避免误开太多后台任务
+
+手机端完整功能见 [手机 App](/docs/mobile-overview)。
 
 ## Token 用量仪表盘
 
@@ -764,6 +784,160 @@ Desktop 应用内置两个独立的 PTY 终端面板，各有独立 tab 和会�
 - **可视化编辑** — 表格直接编辑环境变量，支持添加自定义变量
 - **运行配置复制** — 一键复制运行配置作为模板
 - **右键操作** — 侧边栏右键菜单快速操作`,
+  },
+
+  // ─── 手机 App ─────────────────────────────────────────
+
+  'mobile-overview': {
+    id: 'mobile-overview', group: 'mobile', groupIcon: '📱', title: '概览', next: 'mobile-devices',
+    content: `KN 手机 App 是电脑端 AI CLI 的遥控器。它不替代电脑端开发环境，而是让你在手机上绑定电脑端、选择项目、启动远程终端，并查看任务输出。
+
+## 核心入口
+
+| 入口 | 作用 |
+|------|------|
+| 终端 | 新建 / 切换 / 关闭远程终端会话，查看实时输出并发送输入 |
+| 项目 | 按电脑端分组查看项目，进入项目工作区，启动终端或查看会话 |
+| 消息 | 查看需关注事件、工作结果和电脑端状态更新 |
+| 个人中心 | 管理账号、会员、兑换码、主题和设备列表 |
+
+## 主要能力
+
+- **设备绑定** — 扫码或输入 6 位码，把手机 App 与电脑端 Agent 绑定
+- **远程终端** — 在手机上选择项目和运行配置，启动 Claude Code / Codex / Qoder CN
+- **项目工作区** — 查看项目列表、状态摘要、会话入口和待处理工作
+- **消息通知** — 聚合工作结果、电脑端状态和需关注事件
+- **账号与权益** — 登录、注册、会员状态、兑换码、主题和密码管理
+
+:::tip
+手机 App 的定位是“遥控器”。AI CLI 仍然在电脑端运行，运行配置和 API Key 也由电脑端读取。
+:::`,
+  },
+
+  'mobile-devices': {
+    id: 'mobile-devices', group: 'mobile', groupIcon: '📱', title: '设备绑定', prev: 'mobile-overview', next: 'mobile-terminal',
+    content: `设备绑定用于把手机 App 和电脑端 Agent 建立可信连接。绑定完成后，手机端才能查看设备、项目、运行配置和远程会话入口。
+
+## 绑定方式
+
+- **扫码绑定** — 扫描电脑端显示的二维码
+- **绑定码** — 手动输入电脑端显示的 6 位码
+- **状态恢复** — 未完成的绑定可继续轮询状态，完成后自动刷新设备列表
+
+## 设备管理
+
+手机 App 的设备页会展示已绑定电脑端及其状态：
+
+- 电脑端名称、主机名、系统版本和 Agent 版本
+- 在线 / 离线 / 未知等连接状态
+- Agent 是否可启动远程会话
+- 解绑设备
+- 刷新设备和 Agent 状态
+
+## 运行配置与项目
+
+绑定设备后，手机 App 会按设备加载：
+
+- 电脑端可用运行配置
+- 电脑端项目列表
+- 每个项目的默认运行配置
+
+这些信息用于后续新建远程终端。`,
+  },
+
+  'mobile-terminal': {
+    id: 'mobile-terminal', group: 'mobile', groupIcon: '📱', title: '远程终端', prev: 'mobile-devices', next: 'mobile-projects',
+    content: `远程终端是手机 App 的核心功能。手机端负责选择项目和输入指令，电脑端负责启动真实 AI CLI 进程并返回 PTY 输出。
+
+## 新建会话
+
+新建远程终端时需要选择：
+
+| 项 | 说明 |
+|----|------|
+| 项目 | 会话在该项目目录中启动 |
+| 运行配置 | 默认使用项目配置，也可手动切换 profile |
+| 工具 | 由运行配置决定，支持 Claude Code / Codex / Qoder CN |
+
+如果电脑端 Agent 离线、未绑定、无可用项目或没有运行配置，手机端会阻止启动并提示原因。
+
+## 会话体验
+
+- **多会话 Tab** — 同时切换多个远程终端，默认最多 10 个
+- **实时输出** — xterm.js 渲染电脑端 PTY 输出
+- **输入栏** — 发送普通文本输入，也支持常用快捷键
+- **命令面板** — 从电脑端命令目录加载可用命令
+- **恢复会话** — 重连后刷新活跃远程终端列表，继续查看已有会话
+- **关闭会话** — 关闭活跃会话会结束对应远程进程
+
+## 语音输入
+
+当配置开启语音输入时，终端底部工具栏支持语音输入，把识别文本发送到当前会话。`,
+  },
+
+  'mobile-projects': {
+    id: 'mobile-projects', group: 'mobile', groupIcon: '📱', title: '项目与消息', prev: 'mobile-terminal', next: 'mobile-account',
+    content: `项目页和消息页用于快速回到正在处理的工作，而不是从终端输出里重新翻上下文。
+
+## 项目列表
+
+项目页按电脑端分组展示项目：
+
+- 查看项目名称、路径和默认运行配置
+- 按状态筛选项目
+- 刷新项目列表和电脑端 Agent 状态
+- 从项目直接打开远程终端
+- 查看项目相关的远程会话和本地历史会话
+
+## 项目工作区
+
+进入项目后，可以围绕当前项目继续操作：
+
+- 查看项目摘要和状态
+- 打开终端会话
+- 查看会话历史
+- 将项目上下文发送给 AI 会话
+- 查看需要处理的工作项
+
+## 消息中心
+
+消息页聚合来自电脑端和云端的事件：
+
+- **需关注** — 失败、异常或需要人工处理的事项
+- **工作结果** — 构建、测试、提交、推送、PR、AI 回复等结果
+- **电脑端** — Agent 在线、离线和设备状态更新
+
+消息支持未读 / 已读筛选，并可查看关联项目、电脑端、运行配置、模型、Token 和耗时等详情。`,
+  },
+
+  'mobile-account': {
+    id: 'mobile-account', group: 'mobile', groupIcon: '📱', title: '账号与设置', prev: 'mobile-projects',
+    content: `个人中心集中管理账号、权益和 App 偏好。
+
+## 账号
+
+- 邮箱登录 / 注册
+- Apple 登录（在配置开启时显示）
+- 登录过期提示和自动刷新 access token
+- 修改密码
+- 退出登录
+
+## 会员与兑换
+
+- 查看会员状态和有效期
+- 输入兑换码激活权益
+- 查看兑换记录
+- 根据账号权益判断远程访问是否可用
+
+## 通知与消息
+
+手机 App 会注册 APNs token，用于接收云端推送。收到通知后会进入消息中心或关联页面，帮助你回到对应工作。
+
+## 外观
+
+- 主题切换
+- 深色 / 浅色外观适配
+- 终端界面保持深色，提高输出可读性`,
   },
 
   'desktop-architecture': {

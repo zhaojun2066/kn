@@ -2970,19 +2970,24 @@ pub fn install_standalone_skill(
         return Err(format!("文件不存在: {}", source_path));
     }
     let overwrite = overwrite.unwrap_or(false);
+    // 项目级安装必须先确认目标是现有目录，避免把资源写入错误路径。
+    let project_dir = project_path
+        .as_deref()
+        .map(validate_project_dir)
+        .transpose()?;
 
     match cli.as_str() {
         "claude" => {
-            let skills_dir = if let Some(ref proj) = project_path {
-                PathBuf::from(proj).join(".claude").join("skills")
+            let skills_dir = if let Some(ref proj) = project_dir {
+                proj.join(".claude").join("skills")
             } else {
                 claude_skills_dir().ok_or("无法找到 Claude skills 目录")?
             };
             install_claude_standalone_skill_to(src, &skills_dir, overwrite)
         }
         "codex" => {
-            let skills_dir = if let Some(ref proj) = project_path {
-                PathBuf::from(proj).join(".codex").join("skills")
+            let skills_dir = if let Some(ref proj) = project_dir {
+                proj.join(".codex").join("skills")
             } else {
                 codex_skills_dir().ok_or("无法找到 Codex skills 目录")?
             };
@@ -2990,8 +2995,8 @@ pub fn install_standalone_skill(
         }
         "qoder" => {
             // Qoder: project-level uses .qoder (NOT .qoder-cn)
-            let skills_dir = if let Some(ref proj) = project_path {
-                PathBuf::from(proj).join(".qoder").join("skills")
+            let skills_dir = if let Some(ref proj) = project_dir {
+                proj.join(".qoder").join("skills")
             } else {
                 qoder_skills_dir().ok_or("无法找到 Qoder skills 目录")?
             };

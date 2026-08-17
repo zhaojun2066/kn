@@ -5,8 +5,8 @@
 //! failure.  A tool-specific final summary may do so only when it contains a
 //! parsed, non-zero failure counter.
 
-use serde::{Deserialize, Serialize};
 use regex_lite::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,11 +55,21 @@ pub struct CommandContext {
 
 impl CommandContext {
     pub fn new(argv: Vec<String>) -> Self {
-        Self { argv, working_dir: None, parser_hint: None, task_type_hint: None }
+        Self {
+            argv,
+            working_dir: None,
+            parser_hint: None,
+            task_type_hint: None,
+        }
     }
 
     pub fn with_working_dir(argv: Vec<String>, working_dir: impl Into<std::path::PathBuf>) -> Self {
-        Self { argv, working_dir: Some(working_dir.into()), parser_hint: None, task_type_hint: None }
+        Self {
+            argv,
+            working_dir: Some(working_dir.into()),
+            parser_hint: None,
+            task_type_hint: None,
+        }
     }
 
     pub fn with_parser_hint(mut self, parser_hint: impl Into<String>) -> Self {
@@ -119,7 +129,12 @@ pub struct TerminalOutputParser {
 }
 
 #[derive(Debug, Clone)]
-struct ProfileRules { summary: Vec<Regex>, success: Vec<Regex>, failure: Vec<Regex>, ignore: Vec<Regex> }
+struct ProfileRules {
+    summary: Vec<Regex>,
+    success: Vec<Regex>,
+    failure: Vec<Regex>,
+    ignore: Vec<Regex>,
+}
 
 const MAX_PENDING_LINE_BYTES: usize = 16 * 1024;
 
@@ -198,10 +213,19 @@ impl ParserKind {
 
 impl TerminalOutputParser {
     pub fn new(context: CommandContext) -> Self {
-        let (parser, detected_task) = identify(&context.argv, context.working_dir.as_deref(), context.parser_hint.as_deref());
-        let task_type = context.task_type_hint.as_deref().and_then(task_type_hint).unwrap_or(detected_task);
+        let (parser, detected_task) = identify(
+            &context.argv,
+            context.working_dir.as_deref(),
+            context.parser_hint.as_deref(),
+        );
+        let task_type = context
+            .task_type_hint
+            .as_deref()
+            .and_then(task_type_hint)
+            .unwrap_or(detected_task);
         let profile_rules = active_profile_rules(&context.argv, parser);
-        let secondary_parsers = node_script_secondary_parsers(&context.argv, context.working_dir.as_deref(), parser);
+        let secondary_parsers =
+            node_script_secondary_parsers(&context.argv, context.working_dir.as_deref(), parser);
         Self {
             parser,
             secondary_parsers,
@@ -243,7 +267,9 @@ impl TerminalOutputParser {
         let line = strip_ansi(line);
         self.apply_profile_rules(&line);
         self.parse_kind(self.parser, &line);
-        for parser in self.secondary_parsers.clone() { self.parse_kind(parser, &line); }
+        for parser in self.secondary_parsers.clone() {
+            self.parse_kind(parser, &line);
+        }
     }
 
     fn parse_kind(&mut self, parser: ParserKind, line: &str) {
@@ -251,7 +277,10 @@ impl TerminalOutputParser {
             ParserKind::Generic => self.parse_typescript(&line),
             ParserKind::Maven => self.parse_maven(&line),
             ParserKind::Gradle => self.parse_gradle(&line),
-            ParserKind::AndroidGradle => { self.parse_gradle(&line); self.parse_android_diagnostic(&line); }
+            ParserKind::AndroidGradle => {
+                self.parse_gradle(&line);
+                self.parse_android_diagnostic(&line);
+            }
             ParserKind::Pytest => self.parse_pytest(&line),
             ParserKind::Cargo => self.parse_cargo(&line),
             ParserKind::TypeScript => self.parse_typescript(&line),
@@ -280,9 +309,15 @@ impl TerminalOutputParser {
     }
 
     fn apply_profile_rules(&mut self, line: &str) {
-        let Some(rules) = self.profile_rules.as_ref() else { return; };
-        if rules.ignore.iter().any(|pattern| pattern.is_match(line)) { return; }
-        if rules.summary.iter().any(|pattern| pattern.is_match(line)) { self.summary = Some(line.to_string()); }
+        let Some(rules) = self.profile_rules.as_ref() else {
+            return;
+        };
+        if rules.ignore.iter().any(|pattern| pattern.is_match(line)) {
+            return;
+        }
+        if rules.summary.iter().any(|pattern| pattern.is_match(line)) {
+            self.summary = Some(line.to_string());
+        }
         if rules.failure.iter().any(|pattern| pattern.is_match(line)) {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
@@ -308,9 +343,19 @@ impl TerminalOutputParser {
         self.summary_failure = true;
         self.summary = Some(summary.into());
         let mut error = error;
-        if error.start_line == 0 { if let Some(line) = error.line { error.start_line = line; } }
-        if error.end_line == 0 { error.end_line = error.start_line; }
-        if !self.errors.iter().any(|existing| existing.message == error.message && existing.file == error.file && existing.line == error.line) {
+        if error.start_line == 0 {
+            if let Some(line) = error.line {
+                error.start_line = line;
+            }
+        }
+        if error.end_line == 0 {
+            error.end_line = error.start_line;
+        }
+        if !self.errors.iter().any(|existing| {
+            existing.message == error.message
+                && existing.file == error.file
+                && existing.line == error.line
+        }) {
             self.errors.push(error);
         }
     }
@@ -360,7 +405,11 @@ impl TerminalOutputParser {
         }
     }
 
-    fn result_with_terminal_reason(&self, status: ParseStatus, reason: ParseReason) -> TerminalParseResult {
+    fn result_with_terminal_reason(
+        &self,
+        status: ParseStatus,
+        reason: ParseReason,
+    ) -> TerminalParseResult {
         TerminalParseResult {
             status,
             reason,
@@ -397,7 +446,10 @@ impl TerminalOutputParser {
         } else if line.contains("BUILD SUCCESSFUL") {
             self.summary = Some(line.to_string());
         }
-        if let Some(task) = line.strip_prefix("> Task ").and_then(|value| value.strip_suffix(" FAILED")) {
+        if let Some(task) = line
+            .strip_prefix("> Task ")
+            .and_then(|value| value.strip_suffix(" FAILED"))
+        {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
             self.errors.push(TerminalParseError {
@@ -422,22 +474,41 @@ impl TerminalOutputParser {
             ("keystore was tampered", "Android signing/keystore error"),
             ("sdk location not found", "Android SDK environment error"),
             ("ndk not found", "Android NDK environment error"),
-            ("unsupported class file major version", "Android JDK/AGP compatibility error"),
+            (
+                "unsupported class file major version",
+                "Android JDK/AGP compatibility error",
+            ),
         ];
         let resource_missing = lower.contains("resource") && lower.contains("not found");
-        let dex_failure = lower.contains("dex") && (lower.contains("error") || lower.contains("failed"));
+        let dex_failure =
+            lower.contains("dex") && (lower.contains("error") || lower.contains("failed"));
         let match_item = fixed.iter().find(|(needle, _)| lower.contains(needle));
-        let (needle, label) = match_item.map(|(needle, label)| (*needle, *label)).unwrap_or_else(|| {
-            if resource_missing { ("resource missing", "Android resource missing") }
-            else if dex_failure { ("dex failure", "Android DEX processing error") }
-            else { ("", "") }
-        });
+        let (needle, label) = match_item
+            .map(|(needle, label)| (*needle, *label))
+            .unwrap_or_else(|| {
+                if resource_missing {
+                    ("resource missing", "Android resource missing")
+                } else if dex_failure {
+                    ("dex failure", "Android DEX processing error")
+                } else {
+                    ("", "")
+                }
+            });
         if !needle.is_empty() {
             // AAPT2 and the other tools emit stable prefixes; retain the full
             // line for the user while classifying it without global keywords.
             self.summary_failure = true;
             self.summary = Some(label.to_string());
-            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: Some((*needle).to_string()), test_name: None, start_line: self.line_number, end_line: self.line_number });
+            self.errors.push(TerminalParseError {
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: Some((*needle).to_string()),
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
         }
         if let Some(error) = android_location_diagnostic(line, self.line_number) {
             self.errors.push(error);
@@ -458,8 +529,12 @@ impl TerminalOutputParser {
                 end_line: self.line_number,
             });
         }
-        let failed = counter(line, "failed").unwrap_or(0).max(counter_before(line, "failed").unwrap_or(0));
-        let errors = counter(line, "errors").unwrap_or(0).max(counter_before(line, "errors").unwrap_or(0));
+        let failed = counter(line, "failed")
+            .unwrap_or(0)
+            .max(counter_before(line, "failed").unwrap_or(0));
+        let errors = counter(line, "errors")
+            .unwrap_or(0)
+            .max(counter_before(line, "errors").unwrap_or(0));
         if (line.contains(" passed") || line.contains(" failed") || line.contains(" errors"))
             && (failed > 0 || errors > 0)
         {
@@ -469,7 +544,9 @@ impl TerminalOutputParser {
     }
 
     fn parse_cargo(&mut self, line: &str) {
-        if self.parse_cargo_json(line) { return; }
+        if self.parse_cargo_json(line) {
+            return;
+        }
         if line.contains("test result: FAILED") || line.contains("could not compile") {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
@@ -517,7 +594,9 @@ impl TerminalOutputParser {
     }
 
     fn parse_go(&mut self, line: &str) {
-        if self.parse_go_json(line) { return; }
+        if self.parse_go_json(line) {
+            return;
+        }
         if line == "FAIL" || line.starts_with("FAIL\t") {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
@@ -529,7 +608,13 @@ impl TerminalOutputParser {
                 line: None,
                 column: None,
                 code: None,
-                test_name: Some(test_name.split_whitespace().next().unwrap_or(test_name).to_string()),
+                test_name: Some(
+                    test_name
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or(test_name)
+                        .to_string(),
+                ),
                 start_line: self.line_number,
                 end_line: self.line_number,
             });
@@ -537,8 +622,12 @@ impl TerminalOutputParser {
     }
 
     fn parse_go_json(&mut self, line: &str) -> bool {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { return false; };
-        let Some(action) = value.get("Action").and_then(|v| v.as_str()) else { return false; };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        let Some(action) = value.get("Action").and_then(|v| v.as_str()) else {
+            return false;
+        };
         let package = value.get("Package").and_then(|v| v.as_str()).unwrap_or("");
         match action {
             "pass" => self.summary = Some(format!("go test passed: {package}")),
@@ -546,7 +635,16 @@ impl TerminalOutputParser {
                 self.summary_failure = true;
                 self.summary = Some(format!("go test failed: {package}"));
                 if let Some(test) = value.get("Test").and_then(|v| v.as_str()) {
-                    self.errors.push(TerminalParseError { message: format!("failed test: {test}"), file: None, line: None, column: None, code: None, test_name: Some(test.to_string()), start_line: self.line_number, end_line: self.line_number });
+                    self.errors.push(TerminalParseError {
+                        message: format!("failed test: {test}"),
+                        file: None,
+                        line: None,
+                        column: None,
+                        code: None,
+                        test_name: Some(test.to_string()),
+                        start_line: self.line_number,
+                        end_line: self.line_number,
+                    });
                 }
             }
             "build-fail" => {
@@ -559,27 +657,61 @@ impl TerminalOutputParser {
     }
 
     fn parse_cargo_json(&mut self, line: &str) -> bool {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { return false; };
-        let Some(reason) = value.get("reason").and_then(|v| v.as_str()) else { return false; };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        let Some(reason) = value.get("reason").and_then(|v| v.as_str()) else {
+            return false;
+        };
         match reason {
             "compiler-message" => {
                 let message = value.get("message").cloned().unwrap_or_default();
                 let level = message.get("level").and_then(|v| v.as_str()).unwrap_or("");
                 if level == "error" {
-                    let rendered = message.get("rendered").and_then(|v| v.as_str()).unwrap_or("compiler error").trim().to_string();
-                    let code = message.get("code").and_then(|v| v.get("code")).and_then(|v| v.as_str()).map(str::to_string);
+                    let rendered = message
+                        .get("rendered")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("compiler error")
+                        .trim()
+                        .to_string();
+                    let code = message
+                        .get("code")
+                        .and_then(|v| v.get("code"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
                     self.summary_failure = true;
                     self.summary = Some(rendered.clone());
-                    self.errors.push(TerminalParseError { message: rendered, file: None, line: None, column: None, code, test_name: None, start_line: self.line_number, end_line: self.line_number });
+                    self.errors.push(TerminalParseError {
+                        message: rendered,
+                        file: None,
+                        line: None,
+                        column: None,
+                        code,
+                        test_name: None,
+                        start_line: self.line_number,
+                        end_line: self.line_number,
+                    });
                 }
             }
             "test" => {
                 let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
                 if event == "failed" {
                     self.summary_failure = true;
-                    let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("unknown test");
+                    let name = value
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown test");
                     self.summary = Some(format!("cargo test failed: {name}"));
-                    self.errors.push(TerminalParseError { message: format!("failed test: {name}"), file: None, line: None, column: None, code: None, test_name: Some(name.to_string()), start_line: self.line_number, end_line: self.line_number });
+                    self.errors.push(TerminalParseError {
+                        message: format!("failed test: {name}"),
+                        file: None,
+                        line: None,
+                        column: None,
+                        code: None,
+                        test_name: Some(name.to_string()),
+                        start_line: self.line_number,
+                        end_line: self.line_number,
+                    });
                 } else if event == "ok" {
                     self.summary = Some("cargo test passed".to_string());
                 }
@@ -608,7 +740,16 @@ impl TerminalOutputParser {
         }
         if line.contains("Test Case '-[") && line.contains("failed") {
             self.summary_failure = true;
-            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: Some(line.to_string()), start_line: self.line_number, end_line: self.line_number });
+            self.errors.push(TerminalParseError {
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+                test_name: Some(line.to_string()),
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
         }
     }
 
@@ -638,9 +779,16 @@ impl TerminalOutputParser {
 
     fn parse_js_test(&mut self, line: &str, _tool: &str) {
         let failed = counter(line, "failed").unwrap_or(0);
-        if line.contains("Tests:") || line.contains("Test Files") || line.contains("Test Suites") || line.contains("Tests ") || line.contains(" passed") {
+        if line.contains("Tests:")
+            || line.contains("Test Files")
+            || line.contains("Test Suites")
+            || line.contains("Tests ")
+            || line.contains(" passed")
+        {
             self.summary = Some(line.to_string());
-            if failed > 0 { self.summary_failure = true; }
+            if failed > 0 {
+                self.summary_failure = true;
+            }
         }
     }
 
@@ -652,8 +800,14 @@ impl TerminalOutputParser {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
             self.errors.push(TerminalParseError {
-                message: line.to_string(), file: None, line: None, column: None,
-                code: None, test_name: None, start_line: self.line_number, end_line: self.line_number,
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
             });
         }
     }
@@ -665,18 +819,38 @@ impl TerminalOutputParser {
             let source_line = parts.next().and_then(|v| v.parse().ok());
             let file = parts.next().map(str::to_string);
             self.errors.push(TerminalParseError {
-                message: message.trim().to_string(), file, line: source_line, column,
-                code: None, test_name: None, start_line: self.line_number, end_line: self.line_number,
+                message: message.trim().to_string(),
+                file,
+                line: source_line,
+                column,
+                code: None,
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
             });
         }
     }
 
     fn parse_language_summary(&mut self, line: &str, tool: &str) {
         let failure = match tool {
-            "ruby" => counter(line, "failure").unwrap_or(0).max(counter_before(line, "failure").unwrap_or(0)) > 0,
-            "php" => counter(line, "failures:").unwrap_or(0) > 0 || counter(line, "errors:").unwrap_or(0) > 0,
+            "ruby" => {
+                counter(line, "failure")
+                    .unwrap_or(0)
+                    .max(counter_before(line, "failure").unwrap_or(0))
+                    > 0
+            }
+            "php" => {
+                counter(line, "failures:").unwrap_or(0) > 0
+                    || counter(line, "errors:").unwrap_or(0) > 0
+            }
             "sbt" => line.starts_with("[error] Failed tests"),
-            "mix" => line.contains("failure") && counter(line, "failure").unwrap_or(0).max(counter_before(line, "failure").unwrap_or(0)) > 0,
+            "mix" => {
+                line.contains("failure")
+                    && counter(line, "failure")
+                        .unwrap_or(0)
+                        .max(counter_before(line, "failure").unwrap_or(0))
+                        > 0
+            }
             "haskell" => line.contains(": FAIL"),
             "bazel" => line.starts_with("FAILED:") || line.contains("unsuccessfully"),
             _ => false,
@@ -684,7 +858,10 @@ impl TerminalOutputParser {
         if failure {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
-        } else if (tool == "ruby" && line.contains("examples")) || (tool == "php" && line.contains("Tests:")) || (tool == "bazel" && line.contains("successfully")) {
+        } else if (tool == "ruby" && line.contains("examples"))
+            || (tool == "php" && line.contains("Tests:"))
+            || (tool == "bazel" && line.contains("successfully"))
+        {
             self.summary = Some(line.to_string());
         }
     }
@@ -693,31 +870,76 @@ impl TerminalOutputParser {
         // Web bundlers vary in wording; only their explicit terminal markers
         // are trusted. Warnings and module names containing "error" are not.
         let lower = line.to_ascii_lowercase();
-        if lower.contains("compiled successfully") || lower.contains("build complete") || lower.contains("built in ") || lower.contains("✓ built") || lower.contains("created ") {
+        if lower.contains("compiled successfully")
+            || lower.contains("build complete")
+            || lower.contains("built in ")
+            || lower.contains("✓ built")
+            || lower.contains("created ")
+        {
             self.summary = Some(line.to_string());
         }
         if lower.contains("failed to load config") {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
-            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+            self.errors.push(TerminalParseError {
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
         }
         if lower.contains("error during build:") {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
             self.web_build_error_context = true;
-            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+            self.errors.push(TerminalParseError {
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
         } else if self.web_build_error_context {
             let trimmed = line.trim_start();
             if trimmed.starts_with("Error:") || trimmed.starts_with("error:") {
                 self.summary_failure = true;
-                self.errors.push(TerminalParseError { message: trimmed.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+                self.errors.push(TerminalParseError {
+                    message: trimmed.to_string(),
+                    file: None,
+                    line: None,
+                    column: None,
+                    code: None,
+                    test_name: None,
+                    start_line: self.line_number,
+                    end_line: self.line_number,
+                });
             }
             self.web_build_error_context = false;
         }
-        if lower.contains("failed to compile") || lower.contains("compilation failed") || lower.contains("build failed") || lower.starts_with("error: failed to") {
+        if lower.contains("failed to compile")
+            || lower.contains("compilation failed")
+            || lower.contains("build failed")
+            || lower.starts_with("error: failed to")
+        {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
-            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+            self.errors.push(TerminalParseError {
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
         }
     }
 
@@ -732,46 +954,105 @@ impl TerminalOutputParser {
         } else if line.starts_with("error:") {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
-            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+            self.errors.push(TerminalParseError {
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
         }
     }
 
     fn parse_dart_flutter(&mut self, line: &str) {
         let lower = line.to_ascii_lowercase();
-        if lower.contains("all tests passed") || lower.contains("no issues found") || lower.contains("built successfully") {
+        if lower.contains("all tests passed")
+            || lower.contains("no issues found")
+            || lower.contains("built successfully")
+        {
             self.summary = Some(line.to_string());
-        } else if lower.contains("some tests failed") || lower.contains("issues found") || lower.contains("build failed") {
+        } else if lower.contains("some tests failed")
+            || lower.contains("issues found")
+            || lower.contains("build failed")
+        {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
-            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+            self.errors.push(TerminalParseError {
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
         }
     }
 
     fn parse_ctest(&mut self, line: &str) {
-        if line.contains("tests passed") && counter(line, "tests failed").unwrap_or(0).max(counter_before(line, "tests failed").unwrap_or(0)) == 0 {
+        if line.contains("tests passed")
+            && counter(line, "tests failed")
+                .unwrap_or(0)
+                .max(counter_before(line, "tests failed").unwrap_or(0))
+                == 0
+        {
             self.summary = Some(line.to_string());
-        } else if line.contains("tests failed") && counter(line, "tests failed").unwrap_or(0).max(counter_before(line, "tests failed").unwrap_or(0)) > 0 {
+        } else if line.contains("tests failed")
+            && counter(line, "tests failed")
+                .unwrap_or(0)
+                .max(counter_before(line, "tests failed").unwrap_or(0))
+                > 0
+        {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
         } else if line.starts_with("The following tests FAILED") {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
-            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+            self.errors.push(TerminalParseError {
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
         }
     }
 
     fn parse_tox_nox(&mut self, line: &str) {
-        if line.contains("congratulations :)" ) || line.contains("Sessions complete") {
+        if line.contains("congratulations :)") || line.contains("Sessions complete") {
             self.summary = Some(line.to_string());
-        } else if line.contains(": FAIL") || line.contains("evaluation failed") || line.contains("Session ") && line.ends_with("failed") {
+        } else if line.contains(": FAIL")
+            || line.contains("evaluation failed")
+            || line.contains("Session ") && line.ends_with("failed")
+        {
             self.summary_failure = true;
             self.summary = Some(line.to_string());
-            self.errors.push(TerminalParseError { message: line.to_string(), file: None, line: None, column: None, code: None, test_name: None, start_line: self.line_number, end_line: self.line_number });
+            self.errors.push(TerminalParseError {
+                message: line.to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+                test_name: None,
+                start_line: self.line_number,
+                end_line: self.line_number,
+            });
         }
     }
 }
 
-fn identify(argv: &[String], working_dir: Option<&std::path::Path>, parser_hint: Option<&str>) -> (ParserKind, TaskType) {
+fn identify(
+    argv: &[String],
+    working_dir: Option<&std::path::Path>,
+    parser_hint: Option<&str>,
+) -> (ParserKind, TaskType) {
     let program = argv.first().map(|value| basename(value)).unwrap_or("");
     let arguments = argv.join(" ").to_ascii_lowercase();
     if let Some(parser) = parser_hint.and_then(parser_hint_kind) {
@@ -800,8 +1081,15 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>, parser_hint:
     }
     if let Some(profiles) = crate::session::terminal_profiles::active() {
         let command = argv.join(" ");
-        if let Some(profile) = profiles.profiles.iter()
-            .filter(|profile| profile.command_matchers.iter().any(|pattern| profile_matches_command(pattern, &command)))
+        if let Some(profile) = profiles
+            .profiles
+            .iter()
+            .filter(|profile| {
+                profile
+                    .command_matchers
+                    .iter()
+                    .any(|pattern| profile_matches_command(pattern, &command))
+            })
             .max_by_key(|profile| profile.priority)
         {
             let known = match profile.id.as_str() {
@@ -852,7 +1140,11 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>, parser_hint:
             || arguments.contains("debug")
             || arguments.contains("release");
         return (
-            if android { ParserKind::AndroidGradle } else { ParserKind::Gradle },
+            if android {
+                ParserKind::AndroidGradle
+            } else {
+                ParserKind::Gradle
+            },
             gradle_task_type(&arguments),
         );
     }
@@ -869,19 +1161,47 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>, parser_hint:
         return (ParserKind::Dotnet, task_from_words(&arguments));
     }
     if matches!(program, "jest" | "vitest" | "playwright") {
-        return (match program { "jest" => ParserKind::Jest, "vitest" => ParserKind::Vitest, _ => ParserKind::Playwright }, TaskType::Test);
+        return (
+            match program {
+                "jest" => ParserKind::Jest,
+                "vitest" => ParserKind::Vitest,
+                _ => ParserKind::Playwright,
+            },
+            TaskType::Test,
+        );
     }
-    if program == "cmake" { return (ParserKind::Cmake, task_from_words(&arguments)); }
-    if matches!(program, "make" | "gmake" | "ninja") { return (ParserKind::MakeNinja, TaskType::Build); }
-    if matches!(program, "gcc" | "g++" | "clang" | "clang++" | "cc" | "c++" | "cl") {
+    if program == "cmake" {
+        return (ParserKind::Cmake, task_from_words(&arguments));
+    }
+    if matches!(program, "make" | "gmake" | "ninja") {
+        return (ParserKind::MakeNinja, TaskType::Build);
+    }
+    if matches!(
+        program,
+        "gcc" | "g++" | "clang" | "clang++" | "cc" | "c++" | "cl"
+    ) {
         return (ParserKind::CppCompiler, TaskType::Compile);
     }
-    if matches!(program, "rspec" | "rake") || (program == "bundle" && arguments.contains("rspec")) { return (ParserKind::Ruby, TaskType::Test); }
-    if matches!(program, "phpunit" | "pest") || (program == "composer" && arguments.contains("test")) { return (ParserKind::Php, TaskType::Test); }
-    if program == "sbt" { return (ParserKind::Sbt, task_from_words(&arguments)); }
-    if program == "mix" { return (ParserKind::Mix, task_from_words(&arguments)); }
-    if matches!(program, "cabal" | "stack") { return (ParserKind::Haskell, task_from_words(&arguments)); }
-    if program == "bazel" { return (ParserKind::Bazel, task_from_words(&arguments)); }
+    if matches!(program, "rspec" | "rake") || (program == "bundle" && arguments.contains("rspec")) {
+        return (ParserKind::Ruby, TaskType::Test);
+    }
+    if matches!(program, "phpunit" | "pest")
+        || (program == "composer" && arguments.contains("test"))
+    {
+        return (ParserKind::Php, TaskType::Test);
+    }
+    if program == "sbt" {
+        return (ParserKind::Sbt, task_from_words(&arguments));
+    }
+    if program == "mix" {
+        return (ParserKind::Mix, task_from_words(&arguments));
+    }
+    if matches!(program, "cabal" | "stack") {
+        return (ParserKind::Haskell, task_from_words(&arguments));
+    }
+    if program == "bazel" {
+        return (ParserKind::Bazel, task_from_words(&arguments));
+    }
     if program == "go" {
         return (ParserKind::Go, task_from_words(&arguments));
     }
@@ -891,105 +1211,220 @@ fn identify(argv: &[String], working_dir: Option<&std::path::Path>, parser_hint:
     if program == "xcodebuild" {
         return (ParserKind::Xcodebuild, task_from_words(&arguments));
     }
-    if program == "swift" && (arguments.contains(" build") || arguments.contains(" test") || arguments.contains(" package")) {
+    if program == "swift"
+        && (arguments.contains(" build")
+            || arguments.contains(" test")
+            || arguments.contains(" package"))
+    {
         return (ParserKind::SwiftPm, task_from_words(&arguments));
     }
-    if program == "swiftpm" { return (ParserKind::SwiftPm, task_from_words(&arguments)); }
-    if program == "dart" && (arguments.contains(" test") || arguments.contains(" analyze") || arguments.contains(" compile")) {
+    if program == "swiftpm" {
+        return (ParserKind::SwiftPm, task_from_words(&arguments));
+    }
+    if program == "dart"
+        && (arguments.contains(" test")
+            || arguments.contains(" analyze")
+            || arguments.contains(" compile"))
+    {
         return (ParserKind::DartFlutter, task_from_words(&arguments));
     }
-    if program == "flutter" { return (ParserKind::DartFlutter, task_from_words(&arguments)); }
+    if program == "flutter" {
+        return (ParserKind::DartFlutter, task_from_words(&arguments));
+    }
     if matches!(program, "vite" | "webpack" | "rollup" | "next" | "nuxt") {
         return (ParserKind::WebBuild, TaskType::Build);
     }
-    if program == "ctest" { return (ParserKind::Ctest, TaskType::Test); }
-    if matches!(program, "tox" | "nox") { return (ParserKind::ToxNox, TaskType::Test); }
+    if program == "ctest" {
+        return (ParserKind::Ctest, TaskType::Test);
+    }
+    if matches!(program, "tox" | "nox") {
+        return (ParserKind::ToxNox, TaskType::Test);
+    }
     (ParserKind::Generic, TaskType::Custom)
 }
 
 fn active_profile_rules(argv: &[String], parser: ParserKind) -> Option<ProfileRules> {
     let profiles = crate::session::terminal_profiles::active()?;
     let command = argv.join(" ");
-    let profile = profiles.profiles.iter()
+    let profile = profiles
+        .profiles
+        .iter()
         .filter(|profile| profile.id == parser.id())
-        .filter(|profile| profile.command_matchers.is_empty() || profile.command_matchers.iter().any(|pattern| profile_matches_command(pattern, &command)))
+        .filter(|profile| {
+            profile.command_matchers.is_empty()
+                || profile
+                    .command_matchers
+                    .iter()
+                    .any(|pattern| profile_matches_command(pattern, &command))
+        })
         .max_by_key(|profile| profile.priority)?;
-    let compile = |patterns: &[String]| patterns.iter().filter_map(|pattern| Regex::new(pattern).ok()).collect();
-    Some(ProfileRules { summary: compile(&profile.summary_patterns), success: compile(&profile.success_patterns), failure: compile(&profile.failure_patterns), ignore: compile(&profile.ignore_patterns) })
+    let compile = |patterns: &[String]| {
+        patterns
+            .iter()
+            .filter_map(|pattern| Regex::new(pattern).ok())
+            .collect()
+    };
+    Some(ProfileRules {
+        summary: compile(&profile.summary_patterns),
+        success: compile(&profile.success_patterns),
+        failure: compile(&profile.failure_patterns),
+        ignore: compile(&profile.ignore_patterns),
+    })
 }
 
 fn profile_matches_command(pattern: &str, command: &str) -> bool {
     let pattern = pattern.trim();
-    let executable = command.split_whitespace().next().map(basename).unwrap_or("");
-    if pattern.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-' | '.')) { return executable == pattern; }
+    let executable = command
+        .split_whitespace()
+        .next()
+        .map(basename)
+        .unwrap_or("");
+    if pattern
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-' | '.'))
+    {
+        return executable == pattern;
+    }
     Regex::new(pattern).is_ok_and(|regex| regex.is_match(command))
 }
 
 fn parser_hint_kind(value: &str) -> Option<ParserKind> {
     match value.trim().to_ascii_lowercase().as_str() {
         "generic" | "generic-exit" => Some(ParserKind::Generic),
-        "maven" => Some(ParserKind::Maven), "gradle" => Some(ParserKind::Gradle), "android-gradle" => Some(ParserKind::AndroidGradle),
-        "pytest" => Some(ParserKind::Pytest), "go" => Some(ParserKind::Go), "cargo" => Some(ParserKind::Cargo),
-        "jest" => Some(ParserKind::Jest), "vitest" => Some(ParserKind::Vitest), "playwright" => Some(ParserKind::Playwright),
-        "typescript" => Some(ParserKind::TypeScript), "xcodebuild" => Some(ParserKind::Xcodebuild), "swiftpm" => Some(ParserKind::SwiftPm),
-        "dart-flutter" => Some(ParserKind::DartFlutter), "web-build" => Some(ParserKind::WebBuild), "ctest" => Some(ParserKind::Ctest),
-        "tox-nox" => Some(ParserKind::ToxNox), "dotnet" => Some(ParserKind::Dotnet),
-        "python-unittest" => Some(ParserKind::PythonUnittest), "cmake" => Some(ParserKind::Cmake),
-        "make-ninja" | "make" | "ninja" => Some(ParserKind::MakeNinja), "cpp-compiler" => Some(ParserKind::CppCompiler),
-        "ruby" => Some(ParserKind::Ruby), "php" => Some(ParserKind::Php), "sbt" => Some(ParserKind::Sbt),
-        "mix" => Some(ParserKind::Mix), "haskell" => Some(ParserKind::Haskell), "bazel" => Some(ParserKind::Bazel), _ => None,
+        "maven" => Some(ParserKind::Maven),
+        "gradle" => Some(ParserKind::Gradle),
+        "android-gradle" => Some(ParserKind::AndroidGradle),
+        "pytest" => Some(ParserKind::Pytest),
+        "go" => Some(ParserKind::Go),
+        "cargo" => Some(ParserKind::Cargo),
+        "jest" => Some(ParserKind::Jest),
+        "vitest" => Some(ParserKind::Vitest),
+        "playwright" => Some(ParserKind::Playwright),
+        "typescript" => Some(ParserKind::TypeScript),
+        "xcodebuild" => Some(ParserKind::Xcodebuild),
+        "swiftpm" => Some(ParserKind::SwiftPm),
+        "dart-flutter" => Some(ParserKind::DartFlutter),
+        "web-build" => Some(ParserKind::WebBuild),
+        "ctest" => Some(ParserKind::Ctest),
+        "tox-nox" => Some(ParserKind::ToxNox),
+        "dotnet" => Some(ParserKind::Dotnet),
+        "python-unittest" => Some(ParserKind::PythonUnittest),
+        "cmake" => Some(ParserKind::Cmake),
+        "make-ninja" | "make" | "ninja" => Some(ParserKind::MakeNinja),
+        "cpp-compiler" => Some(ParserKind::CppCompiler),
+        "ruby" => Some(ParserKind::Ruby),
+        "php" => Some(ParserKind::Php),
+        "sbt" => Some(ParserKind::Sbt),
+        "mix" => Some(ParserKind::Mix),
+        "haskell" => Some(ParserKind::Haskell),
+        "bazel" => Some(ParserKind::Bazel),
+        _ => None,
     }
 }
 
 fn task_type_hint(value: &str) -> Option<TaskType> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "compile" => Some(TaskType::Compile), "test" => Some(TaskType::Test), "package" => Some(TaskType::Package),
-        "build" => Some(TaskType::Build), "run" => Some(TaskType::Run), "lint" => Some(TaskType::Lint), "custom" => Some(TaskType::Custom), _ => None,
+        "compile" => Some(TaskType::Compile),
+        "test" => Some(TaskType::Test),
+        "package" => Some(TaskType::Package),
+        "build" => Some(TaskType::Build),
+        "run" => Some(TaskType::Run),
+        "lint" => Some(TaskType::Lint),
+        "custom" => Some(TaskType::Custom),
+        _ => None,
     }
 }
 
 /// Resolve a package-manager script to the tool it actually invokes. This is
 /// intentionally conservative: only a script declared in package.json is
 /// considered, and wrappers are inspected for known executable tokens.
-fn resolve_node_script(argv: &[String], working_dir: Option<&std::path::Path>) -> Option<(ParserKind, TaskType)> {
-    let script = argv.iter().skip(1).find(|arg| !arg.starts_with('-') && *arg != "run")?;
+fn resolve_node_script(
+    argv: &[String],
+    working_dir: Option<&std::path::Path>,
+) -> Option<(ParserKind, TaskType)> {
+    let script = argv
+        .iter()
+        .skip(1)
+        .find(|arg| !arg.starts_with('-') && *arg != "run")?;
     let cwd = working_dir?;
     let package = std::fs::read_to_string(cwd.join("package.json")).ok()?;
     let value: serde_json::Value = serde_json::from_str(&package).ok()?;
-    let command = value.get("scripts")?.get(script)?.as_str()?.to_ascii_lowercase();
+    let command = value
+        .get("scripts")?
+        .get(script)?
+        .as_str()?
+        .to_ascii_lowercase();
     let mut queue = vec![command.clone()];
     let mut visited = std::collections::HashSet::new();
     let mut best = None;
     for _ in 0..8 {
         let Some(current) = queue.pop() else { break };
-        if !visited.insert(current.clone()) { continue; }
-        let words: Vec<_> = current.split(|c: char| c.is_whitespace() || c == '&' || c == ';' || c == '|').filter(|w| !w.is_empty()).collect();
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        let words: Vec<_> = current
+            .split(|c: char| c.is_whitespace() || c == '&' || c == ';' || c == '|')
+            .filter(|w| !w.is_empty())
+            .collect();
         for (index, word) in words.iter().enumerate() {
             let name = basename(word).trim_matches(['"', '\'']);
             let candidate = match name {
                 "jest" | "react-scripts" => Some((ParserKind::Jest, TaskType::Test)),
                 "vitest" => Some((ParserKind::Vitest, TaskType::Test)),
                 "playwright" => Some((ParserKind::Playwright, TaskType::Test)),
-                "tsc" | "vue-tsc" | "ngc" | "eslint" => Some((ParserKind::TypeScript, TaskType::Lint)),
-                "vite" | "webpack" | "rollup" | "next" | "nuxt" => Some((ParserKind::WebBuild, TaskType::Build)),
+                "tsc" | "vue-tsc" | "ngc" | "eslint" => {
+                    Some((ParserKind::TypeScript, TaskType::Lint))
+                }
+                "vite" | "webpack" | "rollup" | "next" | "nuxt" => {
+                    Some((ParserKind::WebBuild, TaskType::Build))
+                }
                 "npm" | "pnpm" | "yarn" | "bun" if words.get(index + 1) == Some(&"run") => {
-                    if let Some(nested) = words.get(index + 2).and_then(|name| value.get("scripts")?.get(*name)?.as_str()) { queue.push(nested.to_ascii_lowercase()); }
+                    if let Some(nested) = words
+                        .get(index + 2)
+                        .and_then(|name| value.get("scripts")?.get(*name)?.as_str())
+                    {
+                        queue.push(nested.to_ascii_lowercase());
+                    }
                     None
                 }
                 _ => None,
             };
-            if candidate.is_some() { best = candidate; }
+            if candidate.is_some() {
+                best = candidate;
+            }
         }
     }
     best.or_else(|| Some((ParserKind::Generic, task_from_words(&command))))
 }
 
-fn node_script_secondary_parsers(argv: &[String], working_dir: Option<&std::path::Path>, primary: ParserKind) -> Vec<ParserKind> {
-    let Some(cwd) = working_dir else { return Vec::new(); };
-    let Some(script) = argv.iter().skip(1).find(|arg| !arg.starts_with('-') && *arg != "run") else { return Vec::new(); };
-    let Ok(package) = std::fs::read_to_string(cwd.join("package.json")) else { return Vec::new(); };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&package) else { return Vec::new(); };
-    let Some(command) = value.get("scripts").and_then(|scripts| scripts.get(script)).and_then(|value| value.as_str()) else { return Vec::new(); };
+fn node_script_secondary_parsers(
+    argv: &[String],
+    working_dir: Option<&std::path::Path>,
+    primary: ParserKind,
+) -> Vec<ParserKind> {
+    let Some(cwd) = working_dir else {
+        return Vec::new();
+    };
+    let Some(script) = argv
+        .iter()
+        .skip(1)
+        .find(|arg| !arg.starts_with('-') && *arg != "run")
+    else {
+        return Vec::new();
+    };
+    let Ok(package) = std::fs::read_to_string(cwd.join("package.json")) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&package) else {
+        return Vec::new();
+    };
+    let Some(command) = value
+        .get("scripts")
+        .and_then(|scripts| scripts.get(script))
+        .and_then(|value| value.as_str())
+    else {
+        return Vec::new();
+    };
     let mut result = Vec::new();
     for word in command.split(|c: char| c.is_whitespace() || c == '&' || c == ';' || c == '|') {
         let kind = match basename(word).trim_matches(['"', '\'']) {
@@ -1001,7 +1436,9 @@ fn node_script_secondary_parsers(argv: &[String], working_dir: Option<&std::path
             _ => None,
         };
         if let Some(kind) = kind.filter(|kind| *kind != primary) {
-            if !result.contains(&kind) { result.push(kind); }
+            if !result.contains(&kind) {
+                result.push(kind);
+            }
         }
     }
     result
@@ -1014,7 +1451,8 @@ fn complete_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
     }
     if pending.len() > MAX_PENDING_LINE_BYTES {
         let mut cutoff = MAX_PENDING_LINE_BYTES;
-        while cutoff > 0 && cutoff < pending.len() && (pending[cutoff] & 0b1100_0000) == 0b1000_0000 {
+        while cutoff > 0 && cutoff < pending.len() && (pending[cutoff] & 0b1100_0000) == 0b1000_0000
+        {
             cutoff -= 1;
         }
         lines.push(pending.drain(..cutoff).collect());
@@ -1027,11 +1465,17 @@ fn basename(value: &str) -> &str {
 }
 
 fn maven_task_type(arguments: &str) -> TaskType {
-    if arguments.contains(" test") || arguments.contains("surefire:test") || arguments.contains("failsafe:") {
+    if arguments.contains(" test")
+        || arguments.contains("surefire:test")
+        || arguments.contains("failsafe:")
+    {
         TaskType::Test
     } else if arguments.contains(" compile") || arguments.contains("testcompile") {
         TaskType::Compile
-    } else if arguments.contains(" package") || arguments.contains(" install") || arguments.contains(" deploy") {
+    } else if arguments.contains(" package")
+        || arguments.contains(" install")
+        || arguments.contains(" deploy")
+    {
         TaskType::Package
     } else {
         TaskType::Build
@@ -1055,11 +1499,22 @@ fn gradle_task_type(arguments: &str) -> TaskType {
 fn task_from_words(arguments: &str) -> TaskType {
     if arguments.contains(" test") {
         TaskType::Test
-    } else if arguments.contains(" lint") || arguments.contains(" analyze") || arguments.contains("clippy") || arguments.contains(" vet") {
+    } else if arguments.contains(" lint")
+        || arguments.contains(" analyze")
+        || arguments.contains("clippy")
+        || arguments.contains(" vet")
+    {
         TaskType::Lint
-    } else if arguments.contains(" package") || arguments.contains(" publish") || arguments.contains(" archive") || arguments.contains(" bundle") {
+    } else if arguments.contains(" package")
+        || arguments.contains(" publish")
+        || arguments.contains(" archive")
+        || arguments.contains(" bundle")
+    {
         TaskType::Package
-    } else if arguments.contains(" compile") || arguments.contains(" check") || arguments.contains(" build") {
+    } else if arguments.contains(" compile")
+        || arguments.contains(" check")
+        || arguments.contains(" build")
+    {
         TaskType::Compile
     } else if arguments.contains(" run") {
         TaskType::Run
@@ -1084,8 +1539,15 @@ fn counter_before(line: &str, label: &str) -> Option<u64> {
     let lower = line.to_ascii_lowercase();
     let label = label.to_ascii_lowercase();
     let index = lower.find(&label)?;
-    let digits: String = lower[..index].trim_end_matches(|c: char| c == ',' || c == ':' || c.is_whitespace())
-        .chars().rev().take_while(|c| c.is_ascii_digit()).collect::<String>().chars().rev().collect();
+    let digits: String = lower[..index]
+        .trim_end_matches(|c: char| c == ',' || c == ':' || c.is_whitespace())
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
 }
 
@@ -1118,7 +1580,16 @@ fn xcode_diagnostic(line: &str, line_number: usize) -> Option<TerminalParseError
     let column = parts.next().and_then(|v| v.parse().ok());
     let source_line = parts.next().and_then(|v| v.parse().ok());
     let file = parts.next()?.to_string();
-    Some(TerminalParseError { message: line[index + marker.len()..].trim().to_string(), file: Some(file), line: source_line, column, code: None, test_name: None, start_line: line_number, end_line: line_number })
+    Some(TerminalParseError {
+        message: line[index + marker.len()..].trim().to_string(),
+        file: Some(file),
+        line: source_line,
+        column,
+        code: None,
+        test_name: None,
+        start_line: line_number,
+        end_line: line_number,
+    })
 }
 
 fn android_location_diagnostic(line: &str, line_number: usize) -> Option<TerminalParseError> {
@@ -1129,7 +1600,16 @@ fn android_location_diagnostic(line: &str, line_number: usize) -> Option<Termina
     let column = parts.next().and_then(|v| v.parse().ok());
     let source_line = parts.next().and_then(|v| v.parse().ok());
     let file = parts.next()?.to_string();
-    Some(TerminalParseError { message: line[index + marker.len()..].trim().to_string(), file: Some(file), line: source_line, column, code: Some("android-diagnostic".to_string()), test_name: None, start_line: line_number, end_line: line_number })
+    Some(TerminalParseError {
+        message: line[index + marker.len()..].trim().to_string(),
+        file: Some(file),
+        line: source_line,
+        column,
+        code: Some("android-diagnostic".to_string()),
+        test_name: None,
+        start_line: line_number,
+        end_line: line_number,
+    })
 }
 
 fn rust_error_code(line: &str) -> Option<String> {
@@ -1140,7 +1620,13 @@ fn rust_error_code(line: &str) -> Option<String> {
 
 fn typescript_code(line: &str) -> Option<String> {
     line.split_whitespace()
-        .find(|part| part.len() == 6 && part.starts_with("TS") && part[2..].chars().all(|character| character.is_ascii_digit()))
+        .find(|part| {
+            part.len() == 6
+                && part.starts_with("TS")
+                && part[2..]
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+        })
         .map(str::to_string)
 }
 
@@ -1163,7 +1649,10 @@ mod tests {
 
     #[test]
     fn parses_eslint_detail_line() {
-        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["eslint".to_string(), ".".to_string()]));
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec![
+            "eslint".to_string(),
+            ".".to_string(),
+        ]));
         parser.on_line("  44:3  error  Unexpected console statement  no-console");
 
         let result = parser.finalize(Some(1));

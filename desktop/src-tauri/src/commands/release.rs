@@ -90,7 +90,7 @@ pub async fn check_desktop_release(
         return Err("拒绝版本回退或重复更新".into());
     }
     let url = response.url.ok_or("下载地址缺失")?;
-    if !url.starts_with("https://") {
+    if !valid_download_url(&url) {
         return Err("下载地址必须使用 HTTPS".into());
     }
     let sha256 = response.sha256.ok_or("SHA-256 缺失")?.to_ascii_lowercase();
@@ -115,6 +115,10 @@ pub async fn check_desktop_release(
     }))
 }
 
+fn valid_download_url(url: &str) -> bool {
+    url.starts_with("https://") || (cfg!(debug_assertions) && url.starts_with("http://"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +126,15 @@ mod tests {
     #[test]
     fn platform_is_supported_macos_target() {
         assert!(matches!(platform(), "darwin-aarch64" | "darwin-x86_64"));
+    }
+
+    #[test]
+    fn debug_build_accepts_local_download_url() {
+        assert!(valid_download_url(
+            "https://api.knshark.com/releases/kn.dmg"
+        ));
+        if cfg!(debug_assertions) {
+            assert!(valid_download_url("http://localhost:8080/releases/kn.dmg"));
+        }
     }
 }

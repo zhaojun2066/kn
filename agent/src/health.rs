@@ -282,7 +282,11 @@ mod tests {
     #[tokio::test]
     async fn system_diagnostics_report_the_domestic_qoder_cli_name() {
         let snapshot = probe_snapshot("test", "development", "idle").await;
-        let tool_names: Vec<_> = snapshot.tools.iter().map(|tool| tool.name.as_str()).collect();
+        let tool_names: Vec<_> = snapshot
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
 
         assert!(tool_names.contains(&"qoderclicn"));
         assert!(!tool_names.contains(&"qoder"));

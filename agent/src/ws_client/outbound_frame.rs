@@ -11,7 +11,12 @@ pub fn protect_outbound_text(text: String) -> Vec<String> {
         return vec![text];
     }
 
-    tracing::warn!(message_type, bytes, limit = MAX_TEXT_FRAME_BYTES, "WSS 出站帧超过限制");
+    tracing::warn!(
+        message_type,
+        bytes,
+        limit = MAX_TEXT_FRAME_BYTES,
+        "WSS 出站帧超过限制"
+    );
     let replacement = if is_project_result(message_type) {
         project_too_large_result(message_type, &parsed)
     } else {
@@ -20,7 +25,12 @@ pub fn protect_outbound_text(text: String) -> Vec<String> {
     if replacement.len() <= MAX_TEXT_FRAME_BYTES {
         vec![replacement]
     } else {
-        tracing::warn!(message_type, bytes = replacement.len(), limit = MAX_TEXT_FRAME_BYTES, "WSS 轻量替代帧仍超过限制，已丢弃");
+        tracing::warn!(
+            message_type,
+            bytes = replacement.len(),
+            limit = MAX_TEXT_FRAME_BYTES,
+            "WSS 轻量替代帧仍超过限制，已丢弃"
+        );
         Vec::new()
     }
 }
@@ -33,14 +43,27 @@ fn is_project_result(message_type: &str) -> bool {
 fn project_too_large_result(message_type: &str, original: &Value) -> String {
     let mut data = Map::new();
     if let Some(source) = original.get("data").and_then(Value::as_object) {
-        for key in ["projectKey", "deviceId", "projectPath", "requestId", "runId", "stage"] {
+        for key in [
+            "projectKey",
+            "deviceId",
+            "projectPath",
+            "requestId",
+            "runId",
+            "stage",
+        ] {
             if let Some(value) = source.get(key) {
                 data.insert(key.to_string(), bounded_association(value));
             }
         }
     }
-    data.insert("status".to_string(), Value::String("responseTooLarge".to_string()));
-    data.insert("message".to_string(), Value::String(too_large_message(message_type).to_string()));
+    data.insert(
+        "status".to_string(),
+        Value::String("responseTooLarge".to_string()),
+    );
+    data.insert(
+        "message".to_string(),
+        Value::String(too_large_message(message_type).to_string()),
+    );
     if message_type == "project_git_status_result" {
         data.insert("files".to_string(), json!([]));
         data.insert("totalFiles".to_string(), json!(0));

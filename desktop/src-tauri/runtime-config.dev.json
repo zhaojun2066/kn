@@ -1,0 +1,5 @@
+{
+  "release_api_url": "http://localhost:8080/api/v1/app-config/desktop-release",
+  "cloud_ws_url": "ws://localhost:8081/v1/ws",
+  "cloud_http_url": "http://localhost:8080"
+}

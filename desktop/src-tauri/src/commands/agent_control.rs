@@ -106,7 +106,9 @@ pub fn repair_agent(app: tauri::AppHandle) -> Result<(), String> {
             .map_err(|e| format!("备份现有 Agent 失败，未修改当前安装: {e}"))?;
     }
     if let Err(error) = std::fs::rename(&tmp, &target) {
-        if had_target { let _ = std::fs::rename(&backup, &target); }
+        if had_target {
+            let _ = std::fs::rename(&backup, &target);
+        }
         return Err(format!("原子替换 Agent 失败，已保留原安装: {error}"));
     }
     let domain = format!("gui/{}", unsafe { libc::getuid() });
@@ -134,7 +136,9 @@ pub fn repair_agent(app: tauri::AppHandle) -> Result<(), String> {
         }
         Err(error) => {
             let _ = std::fs::remove_file(&target);
-            if had_target { let _ = std::fs::rename(&backup, &target); }
+            if had_target {
+                let _ = std::fs::rename(&backup, &target);
+            }
             Err(format!("无法注册 Agent 服务，已恢复原安装: {error}"))
         }
     }

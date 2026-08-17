@@ -1,5 +1,5 @@
-use crate::session::verification_history::{LastVerification, VerificationHistory};
 use crate::session::terminal_parser::{CommandContext, OutputStream, TerminalOutputParser};
+use crate::session::verification_history::{LastVerification, VerificationHistory};
 use kn_common::project::{ProjectInfo, ProjectVerifyCommand, ProjectVerifyConfig};
 use regex_lite::Regex;
 use serde::{Deserialize, Serialize};
@@ -863,11 +863,14 @@ impl ProgressReporter {
         data["commandId"] = serde_json::Value::String(command_id.to_string());
         data["logStartLine"] = serde_json::Value::Number((log_start_line as u64).into());
         let offset = log_start_line.saturating_sub(1);
-        let errors = errors.into_iter().map(|mut error| {
-            error.start_line += offset;
-            error.end_line += offset;
-            error
-        }).collect::<Vec<_>>();
+        let errors = errors
+            .into_iter()
+            .map(|mut error| {
+                error.start_line += offset;
+                error.end_line += offset;
+                error
+            })
+            .collect::<Vec<_>>();
         data["terminalParse"] = json!({"errors": errors});
         let _ = tx.send(self.progress_message(data));
     }
@@ -1822,19 +1825,51 @@ fn auto_plan(repo_root: &Path) -> VerifyPlan {
         return node_plan(repo_root);
     }
     if let Some(project) = discover_xcode_project(repo_root) {
-        let scheme = project.file_stem().and_then(|value| value.to_str()).unwrap_or("App");
-        let project_name = project.file_name().and_then(|value| value.to_str()).unwrap_or("App.xcodeproj");
+        let scheme = project
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("App");
+        let project_name = project
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("App.xcodeproj");
         return plan(
             "auto",
-            Some(stage(vec![cmd(&["xcodebuild", "-project", project_name, "-scheme", scheme, "build"], DEFAULT_BUILD_TIMEOUT_SECS)])),
-            Some(stage(vec![cmd(&["xcodebuild", "-project", project_name, "-scheme", scheme, "test"], DEFAULT_TEST_TIMEOUT_SECS)])),
+            Some(stage(vec![cmd(
+                &[
+                    "xcodebuild",
+                    "-project",
+                    project_name,
+                    "-scheme",
+                    scheme,
+                    "build",
+                ],
+                DEFAULT_BUILD_TIMEOUT_SECS,
+            )])),
+            Some(stage(vec![cmd(
+                &[
+                    "xcodebuild",
+                    "-project",
+                    project_name,
+                    "-scheme",
+                    scheme,
+                    "test",
+                ],
+                DEFAULT_TEST_TIMEOUT_SECS,
+            )])),
         );
     }
     if repo_root.join("Package.swift").exists() {
         return plan(
             "auto",
-            Some(stage(vec![cmd(&["swift", "build"], DEFAULT_BUILD_TIMEOUT_SECS)])),
-            Some(stage(vec![cmd(&["swift", "test"], DEFAULT_TEST_TIMEOUT_SECS)])),
+            Some(stage(vec![cmd(
+                &["swift", "build"],
+                DEFAULT_BUILD_TIMEOUT_SECS,
+            )])),
+            Some(stage(vec![cmd(
+                &["swift", "test"],
+                DEFAULT_TEST_TIMEOUT_SECS,
+            )])),
         );
     }
     if repo_root.join("pom.xml").exists() {
@@ -1914,7 +1949,9 @@ fn auto_plan(repo_root: &Path) -> VerifyPlan {
 }
 
 fn discover_xcode_project(repo_root: &Path) -> Option<PathBuf> {
-    let mut projects: Vec<PathBuf> = fs::read_dir(repo_root).ok()?.flatten()
+    let mut projects: Vec<PathBuf> = fs::read_dir(repo_root)
+        .ok()?
+        .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("xcodeproj"))
         .collect();
@@ -1929,26 +1966,46 @@ fn node_plan(repo_root: &Path) -> VerifyPlan {
     let manager = package_manager(repo_root);
     let mut build_commands = Vec::new();
     let mut test_commands = Vec::new();
-    let mut names: Vec<&str> = scripts.map(|scripts| scripts.keys().map(String::as_str).collect()).unwrap_or_default();
+    let mut names: Vec<&str> = scripts
+        .map(|scripts| scripts.keys().map(String::as_str).collect())
+        .unwrap_or_default();
     names.sort_unstable();
     // Keep the stable, conventional order so type checking happens before
     // bundling, while still discovering project-specific names such as
     // `verify`, `compile:prod`, `test:unit`, and `test:e2e`.
     let mut ordered = Vec::new();
     for preferred in ["typecheck", "check", "lint", "compile", "build", "verify"] {
-        if names.contains(&preferred) { ordered.push(preferred); }
-    }
-    for name in names.iter().copied() {
-        if !ordered.contains(&name) && is_build_script_name(name) { ordered.push(name); }
-    }
-    for name in ordered {
-        if let Some(command) = scripts.and_then(|scripts| scripts.get(name)).and_then(|value| value.as_str()) {
-            if !command.trim().is_empty() { build_commands.push(package_run_cmd(&manager, name, DEFAULT_BUILD_TIMEOUT_SECS)); }
+        if names.contains(&preferred) {
+            ordered.push(preferred);
         }
     }
-    for name in names.iter().copied().filter(|name| is_test_script_name(name)) {
-        if let Some(script) = scripts.and_then(|scripts| scripts.get(name)).and_then(|value| value.as_str()) {
-            if is_valid_test_script(script) { test_commands.push(package_run_cmd(&manager, name, DEFAULT_TEST_TIMEOUT_SECS)); }
+    for name in names.iter().copied() {
+        if !ordered.contains(&name) && is_build_script_name(name) {
+            ordered.push(name);
+        }
+    }
+    for name in ordered {
+        if let Some(command) = scripts
+            .and_then(|scripts| scripts.get(name))
+            .and_then(|value| value.as_str())
+        {
+            if !command.trim().is_empty() {
+                build_commands.push(package_run_cmd(&manager, name, DEFAULT_BUILD_TIMEOUT_SECS));
+            }
+        }
+    }
+    for name in names
+        .iter()
+        .copied()
+        .filter(|name| is_test_script_name(name))
+    {
+        if let Some(script) = scripts
+            .and_then(|scripts| scripts.get(name))
+            .and_then(|value| value.as_str())
+        {
+            if is_valid_test_script(script) {
+                test_commands.push(package_run_cmd(&manager, name, DEFAULT_TEST_TIMEOUT_SECS));
+            }
         }
     }
     plan(
@@ -1958,21 +2015,33 @@ fn node_plan(repo_root: &Path) -> VerifyPlan {
         } else {
             Some(stage(build_commands))
         },
-        if test_commands.is_empty() { None } else { Some(stage(test_commands)) },
+        if test_commands.is_empty() {
+            None
+        } else {
+            Some(stage(test_commands))
+        },
     )
 }
 
 fn is_build_script_name(name: &str) -> bool {
     let normalized = name.to_ascii_lowercase();
-    normalized == "build" || normalized == "compile" || normalized == "check" || normalized == "verify"
-        || normalized == "typecheck" || normalized == "lint" || normalized.starts_with("build:")
-        || normalized.starts_with("compile:") || normalized.starts_with("typecheck:")
+    normalized == "build"
+        || normalized == "compile"
+        || normalized == "check"
+        || normalized == "verify"
+        || normalized == "typecheck"
+        || normalized == "lint"
+        || normalized.starts_with("build:")
+        || normalized.starts_with("compile:")
+        || normalized.starts_with("typecheck:")
 }
 
 fn is_test_script_name(name: &str) -> bool {
     let normalized = name.to_ascii_lowercase();
     (normalized == "test" || normalized.starts_with("test:") || normalized.ends_with(":test"))
-        && !normalized.contains("watch") && !normalized.contains("debug") && !normalized.contains("ui")
+        && !normalized.contains("watch")
+        && !normalized.contains("debug")
+        && !normalized.contains("ui")
 }
 
 fn package_manager(repo_root: &Path) -> String {
@@ -2236,8 +2305,12 @@ async fn run_command(
         };
     }
     let mut context = CommandContext::with_working_dir(spec.argv.clone(), repo_root);
-    if let Some(hint) = &spec.parser_hint { context = context.with_parser_hint(hint); }
-    if let Some(hint) = &spec.task_type_hint { context = context.with_task_type_hint(hint); }
+    if let Some(hint) = &spec.parser_hint {
+        context = context.with_parser_hint(hint);
+    }
+    if let Some(hint) = &spec.task_type_hint {
+        context = context.with_task_type_hint(hint);
+    }
     let mut parser = TerminalOutputParser::new(context);
     let report_snapshot = snapshot_reports(repo_root, &spec.argv, spec.report_hints.as_deref());
     let Some(program) = spec.argv.first() else {
@@ -2276,7 +2349,8 @@ async fn run_command(
             emit_progress_output(reporter, stage, &spec.display, progress_output);
             return CommandOutcome::Io {
                 output_tail: message,
-                parse_result: serde_json::to_value(parser.finalize_launch_failed()).unwrap_or_default(),
+                parse_result: serde_json::to_value(parser.finalize_launch_failed())
+                    .unwrap_or_default(),
             };
         }
     };
@@ -2428,18 +2502,21 @@ async fn drain_output_with_timeout(
     parser: &mut TerminalOutputParser,
     duration: Duration,
 ) {
-    let _ = timeout(duration, drain_output(
-        output_rx,
-        output,
-        progress_output,
-        run_log,
-        stage,
-        command,
-        command_id,
-        log_start_line,
-        reporter,
-        parser,
-    ))
+    let _ = timeout(
+        duration,
+        drain_output(
+            output_rx,
+            output,
+            progress_output,
+            run_log,
+            stage,
+            command,
+            command_id,
+            log_start_line,
+            reporter,
+            parser,
+        ),
+    )
     .await;
 }
 
@@ -2469,55 +2546,141 @@ fn collect_fresh_test_reports(
     snapshot: Option<&ReportSnapshot>,
     parser: &mut TerminalOutputParser,
 ) {
-    let program = argv.first().map(|v| v.rsplit('/').next().unwrap_or(v)).unwrap_or("");
+    let program = argv
+        .first()
+        .map(|v| v.rsplit('/').next().unwrap_or(v))
+        .unwrap_or("");
     let roots: Vec<PathBuf> = if matches!(program, "mvn" | "mvnw") {
-        vec![repo_root.join("target/surefire-reports"), repo_root.join("target/failsafe-reports")]
+        vec![
+            repo_root.join("target/surefire-reports"),
+            repo_root.join("target/failsafe-reports"),
+        ]
     } else if matches!(program, "gradle" | "gradlew") {
-        vec![repo_root.join("build/test-results"), repo_root.join("build/reports")]
+        vec![
+            repo_root.join("build/test-results"),
+            repo_root.join("build/reports"),
+        ]
     } else if matches!(program, "pytest" | "python") {
-        vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("junit.xml")]
+        vec![
+            repo_root.join("test-results"),
+            repo_root.join("reports"),
+            repo_root.join("junit.xml"),
+        ]
     } else if matches!(program, "jest" | "vitest" | "npm" | "pnpm" | "yarn" | "bun") {
-        vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("jest.json"), repo_root.join("vitest.json")]
+        vec![
+            repo_root.join("test-results"),
+            repo_root.join("reports"),
+            repo_root.join("jest.json"),
+            repo_root.join("vitest.json"),
+        ]
     } else if program == "dotnet" {
-        vec![repo_root.join("TestResults"), repo_root.join("test-results"), repo_root.join("artifacts")]
+        vec![
+            repo_root.join("TestResults"),
+            repo_root.join("test-results"),
+            repo_root.join("artifacts"),
+        ]
     } else if program == "xcodebuild" {
-        vec![repo_root.join("build"), repo_root.join("Build"), repo_root.join("DerivedData")]
+        vec![
+            repo_root.join("build"),
+            repo_root.join("Build"),
+            repo_root.join("DerivedData"),
+        ]
     } else {
         Vec::new()
     };
     let mut budget = ReportScanBudget::default();
     for root in roots {
-        collect_report_dir(&root, started_at, snapshot, parser, &mut budget, 0, repo_root);
+        collect_report_dir(
+            &root,
+            started_at,
+            snapshot,
+            parser,
+            &mut budget,
+            0,
+            repo_root,
+        );
     }
     if let Some(hints) = report_hints {
         for hint in hints.iter().take(8) {
             let path = Path::new(hint);
-            if path.is_absolute() || hint.contains("..") { continue; }
-            collect_report_dir(&repo_root.join(path), started_at, snapshot, parser, &mut budget, 0, repo_root);
+            if path.is_absolute() || hint.contains("..") {
+                continue;
+            }
+            collect_report_dir(
+                &repo_root.join(path),
+                started_at,
+                snapshot,
+                parser,
+                &mut budget,
+                0,
+                repo_root,
+            );
         }
     }
 }
 
 fn report_roots(repo_root: &Path, program: &str) -> Vec<PathBuf> {
-    if matches!(program, "mvn" | "mvnw") { vec![repo_root.join("target/surefire-reports"), repo_root.join("target/failsafe-reports")] }
-    else if matches!(program, "gradle" | "gradlew") { vec![repo_root.join("build/test-results"), repo_root.join("build/reports")] }
-    else if matches!(program, "pytest" | "python") { vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("junit.xml")] }
-    else if matches!(program, "jest" | "vitest" | "npm" | "pnpm" | "yarn" | "bun") { vec![repo_root.join("test-results"), repo_root.join("reports"), repo_root.join("jest.json"), repo_root.join("vitest.json")] }
-    else if program == "dotnet" { vec![repo_root.join("TestResults"), repo_root.join("test-results"), repo_root.join("artifacts")] }
-    else if program == "xcodebuild" { vec![repo_root.join("build"), repo_root.join("Build"), repo_root.join("DerivedData")] }
-    else { Vec::new() }
+    if matches!(program, "mvn" | "mvnw") {
+        vec![
+            repo_root.join("target/surefire-reports"),
+            repo_root.join("target/failsafe-reports"),
+        ]
+    } else if matches!(program, "gradle" | "gradlew") {
+        vec![
+            repo_root.join("build/test-results"),
+            repo_root.join("build/reports"),
+        ]
+    } else if matches!(program, "pytest" | "python") {
+        vec![
+            repo_root.join("test-results"),
+            repo_root.join("reports"),
+            repo_root.join("junit.xml"),
+        ]
+    } else if matches!(program, "jest" | "vitest" | "npm" | "pnpm" | "yarn" | "bun") {
+        vec![
+            repo_root.join("test-results"),
+            repo_root.join("reports"),
+            repo_root.join("jest.json"),
+            repo_root.join("vitest.json"),
+        ]
+    } else if program == "dotnet" {
+        vec![
+            repo_root.join("TestResults"),
+            repo_root.join("test-results"),
+            repo_root.join("artifacts"),
+        ]
+    } else if program == "xcodebuild" {
+        vec![
+            repo_root.join("build"),
+            repo_root.join("Build"),
+            repo_root.join("DerivedData"),
+        ]
+    } else {
+        Vec::new()
+    }
 }
 
 type ReportSnapshot = HashMap<PathBuf, (u64, SystemTime)>;
 
-fn snapshot_reports(repo_root: &Path, argv: &[String], report_hints: Option<&[String]>) -> ReportSnapshot {
+fn snapshot_reports(
+    repo_root: &Path,
+    argv: &[String],
+    report_hints: Option<&[String]>,
+) -> ReportSnapshot {
     let mut snapshot = ReportSnapshot::new();
-    let program = argv.first().map(|v| v.rsplit('/').next().unwrap_or(v)).unwrap_or("");
+    let program = argv
+        .first()
+        .map(|v| v.rsplit('/').next().unwrap_or(v))
+        .unwrap_or("");
     let roots = report_roots(repo_root, program);
-    for root in roots { snapshot_report_tree(&root, &mut snapshot, 0); }
+    for root in roots {
+        snapshot_report_tree(&root, &mut snapshot, 0);
+    }
     if let Some(hints) = report_hints {
         for hint in hints.iter().take(8) {
-            if hint.contains("..") || Path::new(hint).is_absolute() { continue; }
+            if hint.contains("..") || Path::new(hint).is_absolute() {
+                continue;
+            }
             snapshot_report_tree(&repo_root.join(hint), &mut snapshot, 0);
         }
     }
@@ -2525,136 +2688,294 @@ fn snapshot_reports(repo_root: &Path, argv: &[String], report_hints: Option<&[St
 }
 
 fn snapshot_report_tree(path: &Path, snapshot: &mut ReportSnapshot, depth: usize) {
-    if depth > MAX_REPORT_DEPTH { return; }
-    let Ok(meta) = fs::metadata(path) else { return; };
+    if depth > MAX_REPORT_DEPTH {
+        return;
+    }
+    let Ok(meta) = fs::metadata(path) else {
+        return;
+    };
     if meta.is_file() {
         let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
         if matches!(extension, "xml" | "json" | "sarif" | "trx") {
-            if let Ok(canonical) = fs::canonicalize(path) { if let Ok(modified) = meta.modified() { snapshot.insert(canonical, (meta.len(), modified)); } }
+            if let Ok(canonical) = fs::canonicalize(path) {
+                if let Ok(modified) = meta.modified() {
+                    snapshot.insert(canonical, (meta.len(), modified));
+                }
+            }
         }
         return;
     }
-    let Ok(entries) = fs::read_dir(path) else { return; };
-    for entry in entries.flatten() { snapshot_report_tree(&entry.path(), snapshot, depth + 1); }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        snapshot_report_tree(&entry.path(), snapshot, depth + 1);
+    }
 }
 
 #[derive(Default)]
-struct ReportScanBudget { files: usize, total_bytes: u64 }
+struct ReportScanBudget {
+    files: usize,
+    total_bytes: u64,
+}
 
-fn collect_report_dir(root: &Path, started_at: SystemTime, snapshot: Option<&ReportSnapshot>, parser: &mut TerminalOutputParser, budget: &mut ReportScanBudget, depth: usize, repo_root: &Path) {
-    if depth > MAX_REPORT_DEPTH || budget.files >= MAX_REPORT_FILES { return; }
-    let Ok(canonical) = fs::canonicalize(root) else { return };
-    let Ok(canonical_root) = fs::canonicalize(repo_root) else { return; };
-    if !canonical.starts_with(canonical_root) { return; }
+fn collect_report_dir(
+    root: &Path,
+    started_at: SystemTime,
+    snapshot: Option<&ReportSnapshot>,
+    parser: &mut TerminalOutputParser,
+    budget: &mut ReportScanBudget,
+    depth: usize,
+    repo_root: &Path,
+) {
+    if depth > MAX_REPORT_DEPTH || budget.files >= MAX_REPORT_FILES {
+        return;
+    }
+    let Ok(canonical) = fs::canonicalize(root) else {
+        return;
+    };
+    let Ok(canonical_root) = fs::canonicalize(repo_root) else {
+        return;
+    };
+    if !canonical.starts_with(canonical_root) {
+        return;
+    }
     if root.is_file() {
         collect_report_file(root, started_at, snapshot, parser, budget);
         return;
     }
-    let Ok(entries) = fs::read_dir(root) else { return };
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_report_dir(&path, started_at, snapshot, parser, budget, depth + 1, repo_root);
+            collect_report_dir(
+                &path,
+                started_at,
+                snapshot,
+                parser,
+                budget,
+                depth + 1,
+                repo_root,
+            );
             continue;
         }
         collect_report_file(&path, started_at, snapshot, parser, budget);
     }
 }
 
-fn collect_report_file(path: &Path, started_at: SystemTime, snapshot: Option<&ReportSnapshot>, parser: &mut TerminalOutputParser, budget: &mut ReportScanBudget) {
+fn collect_report_file(
+    path: &Path,
+    started_at: SystemTime,
+    snapshot: Option<&ReportSnapshot>,
+    parser: &mut TerminalOutputParser,
+    budget: &mut ReportScanBudget,
+) {
     let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
     if extension == "xcresult" && path.is_dir() {
         let Ok(meta) = fs::metadata(path) else { return };
         if let Some(snapshot) = snapshot {
             let current = meta.modified().ok().map(|modified| (meta.len(), modified));
             let key = fs::canonicalize(path).ok();
-            if key.and_then(|key| snapshot.get(&key).copied()) == current { return; }
+            if key.and_then(|key| snapshot.get(&key).copied()) == current {
+                return;
+            }
         }
-        let Ok(modified) = meta.modified() else { return };
-        if modified.duration_since(started_at).is_err() { return; }
+        let Ok(modified) = meta.modified() else {
+            return;
+        };
+        if modified.duration_since(started_at).is_err() {
+            return;
+        }
         if let Some(value) = export_xcresult_summary(path) {
             collect_json_failures(&value, path, parser);
         }
         budget.files += 1;
         return;
     }
-    if !matches!(extension, "xml" | "json" | "sarif" | "trx") { return; }
+    if !matches!(extension, "xml" | "json" | "sarif" | "trx") {
+        return;
+    }
     let Ok(meta) = fs::metadata(path) else { return };
     if let Some(snapshot) = snapshot {
         let current = meta.modified().ok().map(|modified| (meta.len(), modified));
         let key = fs::canonicalize(path).ok();
-        if key.and_then(|key| snapshot.get(&key).copied()) == current { return; }
+        if key.and_then(|key| snapshot.get(&key).copied()) == current {
+            return;
+        }
     }
-    if meta.len() > MAX_REPORT_BYTES { return; }
-    if budget.files >= MAX_REPORT_FILES || budget.total_bytes.saturating_add(meta.len()) > MAX_REPORT_TOTAL_BYTES { return; }
+    if meta.len() > MAX_REPORT_BYTES {
+        return;
+    }
+    if budget.files >= MAX_REPORT_FILES
+        || budget.total_bytes.saturating_add(meta.len()) > MAX_REPORT_TOTAL_BYTES
+    {
+        return;
+    }
     budget.files += 1;
     budget.total_bytes = budget.total_bytes.saturating_add(meta.len());
-    let Ok(modified) = meta.modified() else { return };
-    if modified.duration_since(started_at).is_err() { return; }
-    let Ok(text) = fs::read_to_string(path) else { return };
+    let Ok(modified) = meta.modified() else {
+        return;
+    };
+    if modified.duration_since(started_at).is_err() {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
     if matches!(extension, "xml" | "trx") {
         let junit_failure = text.contains("<failure") || text.contains("<error");
         let trx_failure = text.contains("<UnitTestResult") && text.contains("outcome=\"Failed\"");
-        if !(junit_failure || trx_failure) { return; }
-        let (element, name_attr) = if trx_failure { ("UnitTestResult", "testName") } else { ("testcase", "name") };
+        if !(junit_failure || trx_failure) {
+            return;
+        }
+        let (element, name_attr) = if trx_failure {
+            ("UnitTestResult", "testName")
+        } else {
+            ("testcase", "name")
+        };
         let mut cursor = 0;
         let mut found = false;
         while let Some(relative) = text[cursor..].find(&format!("<{}", element)) {
             let start = cursor + relative;
-            let end = text[start..].find('>').map(|v| start + v).unwrap_or(text.len());
+            let end = text[start..]
+                .find('>')
+                .map(|v| start + v)
+                .unwrap_or(text.len());
             let fragment = &text[start..=end.min(text.len().saturating_sub(1))];
-            let case_end = text[end..].find(&format!("</{}>", element)).map(|v| end + v + element.len() + 3).unwrap_or(text.len());
+            let case_end = text[end..]
+                .find(&format!("</{}>", element))
+                .map(|v| end + v + element.len() + 3)
+                .unwrap_or(text.len());
             let body = &text[start..case_end.min(text.len())];
             if trx_failure || body.contains("<failure") || body.contains("<error") {
-                let name = xml_attr(fragment, element, name_attr).unwrap_or_else(|| path.file_stem().and_then(|v| v.to_str()).unwrap_or("test").to_string());
+                let name = xml_attr(fragment, element, name_attr).unwrap_or_else(|| {
+                    path.file_stem()
+                        .and_then(|v| v.to_str())
+                        .unwrap_or("test")
+                        .to_string()
+                });
                 let file = xml_attr(fragment, element, "file");
                 let line = xml_attr(fragment, element, "line").and_then(|v| v.parse().ok());
-                parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {name}"), file, line, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
+                parser.add_artifact_error(
+                    crate::session::terminal_parser::TerminalParseError {
+                        message: format!("测试报告失败: {name}"),
+                        file,
+                        line,
+                        column: None,
+                        code: None,
+                        test_name: Some(name),
+                        start_line: 0,
+                        end_line: 0,
+                    },
+                    format!("fresh test report: {}", path.display()),
+                );
                 found = true;
             }
-            if end >= text.len() { break; }
+            if end >= text.len() {
+                break;
+            }
             cursor = end + 1;
         }
         if !found {
-            parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败: {}", path.display()), file: None, line: None, column: None, code: None, test_name: None, start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
+            parser.add_artifact_error(
+                crate::session::terminal_parser::TerminalParseError {
+                    message: format!("测试报告失败: {}", path.display()),
+                    file: None,
+                    line: None,
+                    column: None,
+                    code: None,
+                    test_name: None,
+                    start_line: 0,
+                    end_line: 0,
+                },
+                format!("fresh test report: {}", path.display()),
+            );
         }
         return;
     }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
     collect_json_failures(&value, path, parser);
 }
 
 fn export_xcresult_summary(path: &Path) -> Option<serde_json::Value> {
-    let tool = if Path::new("/Applications/Xcode.app/Contents/Developer/usr/bin/xcresulttool").is_file() {
-        "/Applications/Xcode.app/Contents/Developer/usr/bin/xcresulttool"
-    } else {
-        "xcrun"
-    };
+    let tool =
+        if Path::new("/Applications/Xcode.app/Contents/Developer/usr/bin/xcresulttool").is_file() {
+            "/Applications/Xcode.app/Contents/Developer/usr/bin/xcresulttool"
+        } else {
+            "xcrun"
+        };
     let mut command = std::process::Command::new(tool);
     if tool == "xcrun" {
         command.args(["xcresulttool", "get", "test-results", "summary", "--path"]);
     } else {
         command.args(["get", "test-results", "summary", "--path"]);
     }
-    let output = command.arg(path).arg("--format").arg("json").output().ok()?;
-    if !output.status.success() { return None; }
+    let output = command
+        .arg(path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
     serde_json::from_slice(&output.stdout).ok()
 }
 
-fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut TerminalOutputParser) {
+fn collect_json_failures(
+    value: &serde_json::Value,
+    path: &Path,
+    parser: &mut TerminalOutputParser,
+) {
     if let Some(object) = value.as_object() {
         if let Some(runs) = object.get("runs").and_then(|v| v.as_array()) {
             for run in runs {
                 if let Some(results) = run.get("results").and_then(|v| v.as_array()) {
                     for result in results {
-                        if result.get("level").and_then(|v| v.as_str()) != Some("error") { continue; }
-                        let rule = result.get("ruleId").and_then(|v| v.as_str()).unwrap_or("lint");
-                        let message = result.get("message").and_then(|v| v.get("text")).and_then(|v| v.as_str()).unwrap_or("Android lint error");
-                        let location = result.get("locations").and_then(|v| v.as_array()).and_then(|v| v.first());
+                        if result.get("level").and_then(|v| v.as_str()) != Some("error") {
+                            continue;
+                        }
+                        let rule = result
+                            .get("ruleId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("lint");
+                        let message = result
+                            .get("message")
+                            .and_then(|v| v.get("text"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Android lint error");
+                        let location = result
+                            .get("locations")
+                            .and_then(|v| v.as_array())
+                            .and_then(|v| v.first());
                         let physical = location.and_then(|v| v.get("physicalLocation"));
-                        let file = physical.and_then(|v| v.get("artifactLocation")).and_then(|v| v.get("uri")).and_then(|v| v.as_str()).map(str::to_string);
-                        let line = physical.and_then(|v| v.get("region")).and_then(|v| v.get("startLine")).and_then(|v| v.as_u64()).map(|v| v as usize);
-                        parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: message.to_string(), file, line, column: None, code: Some(rule.to_string()), test_name: None, start_line: 0, end_line: 0 }, format!("fresh SARIF report: {}", path.display()));
+                        let file = physical
+                            .and_then(|v| v.get("artifactLocation"))
+                            .and_then(|v| v.get("uri"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        let line = physical
+                            .and_then(|v| v.get("region"))
+                            .and_then(|v| v.get("startLine"))
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize);
+                        parser.add_artifact_error(
+                            crate::session::terminal_parser::TerminalParseError {
+                                message: message.to_string(),
+                                file,
+                                line,
+                                column: None,
+                                code: Some(rule.to_string()),
+                                test_name: None,
+                                start_line: 0,
+                                end_line: 0,
+                            },
+                            format!("fresh SARIF report: {}", path.display()),
+                        );
                     }
                 }
             }
@@ -2663,30 +2984,82 @@ fn collect_json_failures(value: &serde_json::Value, path: &Path, parser: &mut Te
             return;
         }
         let status = object.get("status").and_then(|v| v.as_str());
-        let has_test_identity = object.get("fullName").or_else(|| object.get("title")).or_else(|| object.get("name")).is_some()
-            && (object.get("testFilePath").is_some() || object.get("file").is_some()
-                || object.get("location").is_some() || object.get("failureMessages").is_some()
-                || object.get("ancestorTitles").is_some() || object.get("projectName").is_some());
-        let failed = (status.is_some_and(|v| matches!(v, "failed" | "Failed" | "TestFailure" | "FAIL")) && has_test_identity)
-            || object.get("numFailingTests").and_then(|v| v.as_u64()).unwrap_or(0) > 0
-            || object.get("failedTestsCount").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
+        let has_test_identity = object
+            .get("fullName")
+            .or_else(|| object.get("title"))
+            .or_else(|| object.get("name"))
+            .is_some()
+            && (object.get("testFilePath").is_some()
+                || object.get("file").is_some()
+                || object.get("location").is_some()
+                || object.get("failureMessages").is_some()
+                || object.get("ancestorTitles").is_some()
+                || object.get("projectName").is_some());
+        let failed = (status
+            .is_some_and(|v| matches!(v, "failed" | "Failed" | "TestFailure" | "FAIL"))
+            && has_test_identity)
+            || object
+                .get("numFailingTests")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                > 0
+            || object
+                .get("failedTestsCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                > 0;
         if failed {
-            let name = object.get("fullName").or_else(|| object.get("title")).or_else(|| object.get("name")).and_then(|v| v.as_str()).unwrap_or("failed test").to_string();
-            let file = object.get("testFilePath").or_else(|| object.get("file")).and_then(|v| v.as_str()).map(str::to_string);
-            let line = object.get("location").and_then(|v| v.get("line")).and_then(|v| v.as_u64()).map(|v| v as usize);
-            let project = object.get("projectName").and_then(|v| v.as_str()).map(|v| format!(" [{v}]")).unwrap_or_default();
-            parser.add_artifact_error(crate::session::terminal_parser::TerminalParseError { message: format!("测试报告失败{project}: {name}"), file, line, column: None, code: None, test_name: Some(name), start_line: 0, end_line: 0 }, format!("fresh test report: {}", path.display()));
+            let name = object
+                .get("fullName")
+                .or_else(|| object.get("title"))
+                .or_else(|| object.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("failed test")
+                .to_string();
+            let file = object
+                .get("testFilePath")
+                .or_else(|| object.get("file"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let line = object
+                .get("location")
+                .and_then(|v| v.get("line"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let project = object
+                .get("projectName")
+                .and_then(|v| v.as_str())
+                .map(|v| format!(" [{v}]"))
+                .unwrap_or_default();
+            parser.add_artifact_error(
+                crate::session::terminal_parser::TerminalParseError {
+                    message: format!("测试报告失败{project}: {name}"),
+                    file,
+                    line,
+                    column: None,
+                    code: None,
+                    test_name: Some(name),
+                    start_line: 0,
+                    end_line: 0,
+                },
+                format!("fresh test report: {}", path.display()),
+            );
         }
         for (key, child) in object {
             // Jest/Vitest/Playwright may retain failed retry attempts below a
             // final passed result. Historical attempts are evidence of flaky
             // behaviour, not a final command failure.
             if status.is_some_and(|v| matches!(v, "passed" | "passedWithRetry" | "ok"))
-                && matches!(key.as_str(), "attempts" | "retries" | "retryResults") { continue; }
+                && matches!(key.as_str(), "attempts" | "retries" | "retryResults")
+            {
+                continue;
+            }
             collect_json_failures(child, path, parser);
         }
     } else if let Some(array) = value.as_array() {
-        for child in array { collect_json_failures(child, path, parser); }
+        for child in array {
+            collect_json_failures(child, path, parser);
+        }
     }
 }
 
@@ -2897,7 +3270,10 @@ fn decorate_parse_result(
     log_end_line: usize,
 ) -> serde_json::Value {
     let offset = log_start_line.saturating_sub(1) as u64;
-    if let Some(errors) = result.get_mut("errors").and_then(serde_json::Value::as_array_mut) {
+    if let Some(errors) = result
+        .get_mut("errors")
+        .and_then(serde_json::Value::as_array_mut)
+    {
         for error in errors {
             for key in ["startLine", "endLine"] {
                 if let Some(value) = error.get(key).and_then(serde_json::Value::as_u64) {
@@ -2907,11 +3283,26 @@ fn decorate_parse_result(
         }
     }
     if let Some(object) = result.as_object_mut() {
-        object.insert("stage".to_string(), serde_json::Value::String(stage.as_str().to_string()));
-        object.insert("commandId".to_string(), serde_json::Value::String(command_id.to_string()));
-        object.insert("command".to_string(), serde_json::Value::String(command.to_string()));
-        object.insert("logStartLine".to_string(), serde_json::Value::Number((log_start_line as u64).into()));
-        object.insert("logEndLine".to_string(), serde_json::Value::Number((log_end_line as u64).into()));
+        object.insert(
+            "stage".to_string(),
+            serde_json::Value::String(stage.as_str().to_string()),
+        );
+        object.insert(
+            "commandId".to_string(),
+            serde_json::Value::String(command_id.to_string()),
+        );
+        object.insert(
+            "command".to_string(),
+            serde_json::Value::String(command.to_string()),
+        );
+        object.insert(
+            "logStartLine".to_string(),
+            serde_json::Value::Number((log_start_line as u64).into()),
+        );
+        object.insert(
+            "logEndLine".to_string(),
+            serde_json::Value::Number((log_end_line as u64).into()),
+        );
     }
     result
 }
@@ -3534,10 +3925,23 @@ mod tests {
         fs::create_dir_all(dir.join("build/reports")).unwrap();
         let started = SystemTime::now();
         fs::write(dir.join("build/reports/lint-results.sarif"), r#"{"runs":[{"results":[{"ruleId":"MissingTranslation","level":"error","message":{"text":"Missing translation"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"res/values.xml"},"region":{"startLine":12}}}]}]}]}"#).unwrap();
-        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["./gradlew".into(), "lintDebug".into()]));
-        collect_fresh_test_reports(&dir, &["gradlew".into(), "lintDebug".into()], started, None, None, &mut parser);
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec![
+            "./gradlew".into(),
+            "lintDebug".into(),
+        ]));
+        collect_fresh_test_reports(
+            &dir,
+            &["gradlew".into(), "lintDebug".into()],
+            started,
+            None,
+            None,
+            &mut parser,
+        );
         let result = parser.finalize(Some(0));
-        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
+        assert_eq!(
+            result.status,
+            crate::session::terminal_parser::ParseStatus::Failed
+        );
         assert_eq!(result.errors[0].code.as_deref(), Some("MissingTranslation"));
         assert_eq!(result.errors[0].line, Some(12));
         fs::remove_dir_all(&dir).ok();
@@ -3549,31 +3953,57 @@ mod tests {
         fs::create_dir_all(dir.join("TestResults")).unwrap();
         let started = SystemTime::now();
         fs::write(dir.join("TestResults/results.trx"), r#"<TestRun><Results><UnitTestResult testName="Calculator.Add" outcome="Failed" /></Results></TestRun>"#).unwrap();
-        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["dotnet".into(), "test".into()]));
-        collect_fresh_test_reports(&dir, &["dotnet".into(), "test".into()], started, None, None, &mut parser);
+        let mut parser =
+            TerminalOutputParser::new(CommandContext::new(vec!["dotnet".into(), "test".into()]));
+        collect_fresh_test_reports(
+            &dir,
+            &["dotnet".into(), "test".into()],
+            started,
+            None,
+            None,
+            &mut parser,
+        );
         let result = parser.finalize(Some(0));
-        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
-        assert_eq!(result.errors[0].test_name.as_deref(), Some("Calculator.Add"));
+        assert_eq!(
+            result.status,
+            crate::session::terminal_parser::ParseStatus::Failed
+        );
+        assert_eq!(
+            result.errors[0].test_name.as_deref(),
+            Some("Calculator.Add")
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn xcresult_summary_json_failure_is_structured() {
-        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["xcodebuild".into(), "test".into()]));
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec![
+            "xcodebuild".into(),
+            "test".into(),
+        ]));
         let value = serde_json::json!({"status":"Failed", "failedTestsCount": 1, "tests": [{"name":"AppTests.testLogin", "status":"Failed"}]});
         collect_json_failures(&value, Path::new("Tests.xcresult"), &mut parser);
         let result = parser.finalize(Some(0));
-        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Failed);
+        assert_eq!(
+            result.status,
+            crate::session::terminal_parser::ParseStatus::Failed
+        );
         assert!(!result.errors.is_empty());
     }
 
     #[test]
     fn final_passed_test_ignores_failed_retry_attempt() {
-        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["playwright".into(), "test".into()]));
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec![
+            "playwright".into(),
+            "test".into(),
+        ]));
         let value = serde_json::json!({"status":"passed", "attempts":[{"status":"failed"}], "name":"login"});
         collect_json_failures(&value, Path::new("playwright.json"), &mut parser);
         let result = parser.finalize(Some(0));
-        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Success);
+        assert_eq!(
+            result.status,
+            crate::session::terminal_parser::ParseStatus::Success
+        );
         assert!(result.errors.is_empty());
     }
 
@@ -3583,17 +4013,26 @@ mod tests {
         let value = serde_json::json!({"status":"failed", "message":"previous upload failed", "metadata":{"attempt":1}});
         collect_json_failures(&value, Path::new("report.json"), &mut parser);
         let result = parser.finalize(Some(0));
-        assert_eq!(result.status, crate::session::terminal_parser::ParseStatus::Success);
+        assert_eq!(
+            result.status,
+            crate::session::terminal_parser::ParseStatus::Success
+        );
         assert!(result.errors.is_empty());
     }
 
     #[test]
     fn javascript_report_failure_keeps_file_line_and_project() {
-        let mut parser = TerminalOutputParser::new(CommandContext::new(vec!["playwright".into(), "test".into()]));
+        let mut parser = TerminalOutputParser::new(CommandContext::new(vec![
+            "playwright".into(),
+            "test".into(),
+        ]));
         let value = serde_json::json!({"status":"failed", "title":"login", "file":"tests/login.spec.ts", "location":{"line":18}, "projectName":"chromium"});
         collect_json_failures(&value, Path::new("playwright.json"), &mut parser);
         let result = parser.finalize(Some(1));
-        assert_eq!(result.errors[0].file.as_deref(), Some("tests/login.spec.ts"));
+        assert_eq!(
+            result.errors[0].file.as_deref(),
+            Some("tests/login.spec.ts")
+        );
         assert_eq!(result.errors[0].line, Some(18));
         assert!(result.errors[0].message.contains("chromium"));
     }
@@ -3638,8 +4077,14 @@ mod tests {
         let dir = unique_temp_dir("xcode-plan");
         fs::create_dir_all(dir.join("kn.xcodeproj")).unwrap();
         let plan = auto_plan(&dir);
-        assert_eq!(plan.build.unwrap().commands[0].display, "xcodebuild -project kn.xcodeproj -scheme kn build");
-        assert_eq!(plan.test.unwrap().commands[0].display, "xcodebuild -project kn.xcodeproj -scheme kn test");
+        assert_eq!(
+            plan.build.unwrap().commands[0].display,
+            "xcodebuild -project kn.xcodeproj -scheme kn build"
+        );
+        assert_eq!(
+            plan.test.unwrap().commands[0].display,
+            "xcodebuild -project kn.xcodeproj -scheme kn test"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -3664,13 +4109,17 @@ mod tests {
                     command: "mvn -q -DskipTests compile".to_string(),
                     enabled: true,
                     timeout_seconds: Some(400),
-                    parser_hint: None, task_type_hint: None, report_hints: None,
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
                 }),
                 test: Some(ProjectVerifyCommand {
                     command: "mvn -q test".to_string(),
                     enabled: false,
                     timeout_seconds: None,
-                    parser_hint: None, task_type_hint: None, report_hints: None,
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
                 }),
             },
         );
@@ -3701,7 +4150,9 @@ mod tests {
                     command: "cargo check".to_string(),
                     enabled: true,
                     timeout_seconds: Some(300),
-                    parser_hint: None, task_type_hint: None, report_hints: None,
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
                 }),
                 test: None,
             },
@@ -3729,7 +4180,9 @@ mod tests {
                     command: "mvn -q -DskipTests compile".to_string(),
                     enabled: true,
                     timeout_seconds: None,
-                    parser_hint: None, task_type_hint: None, report_hints: None,
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
                 }),
                 test: None,
             },
@@ -3805,7 +4258,9 @@ mod tests {
             command: "cargo test".to_string(),
             enabled: false,
             timeout_seconds: None,
-            parser_hint: None, task_type_hint: None, report_hints: None,
+            parser_hint: None,
+            task_type_hint: None,
+            report_hints: None,
         };
         let disabled_preview = preview_stage(StageName::Test, None, Some(&disabled), "manual");
 
@@ -3817,7 +4272,9 @@ mod tests {
             command: "cargo test && rm -rf target".to_string(),
             enabled: true,
             timeout_seconds: Some(600),
-            parser_hint: None, task_type_hint: None, report_hints: None,
+            parser_hint: None,
+            task_type_hint: None,
+            report_hints: None,
         };
         let invalid_preview = preview_stage(StageName::Test, None, Some(&invalid), "manual");
 
@@ -3967,9 +4424,9 @@ mod tests {
         let window = stage.window("17:/repo", "v_center", 101, 100, 100);
 
         assert!(window["contentTruncated"].as_bool().unwrap_or(false));
-        assert!(window["lines"].as_array().is_some_and(|lines| lines
-            .iter()
-            .any(|line| line["lineNumber"] == 101)));
+        assert!(window["lines"]
+            .as_array()
+            .is_some_and(|lines| lines.iter().any(|line| line["lineNumber"] == 101)));
         assert!(serde_json::to_vec(&window).unwrap().len() <= 128 * 1024);
         fs::remove_dir_all(&dir).ok();
     }
@@ -4250,7 +4707,15 @@ mod tests {
             fs::set_permissions(&tool, permissions).unwrap();
         }
         let reporter = ProgressReporter::new_project(
-            "42:/repo", 42, "/repo", "v_1", "default", VerifyTarget::Test, "auto", None, None,
+            "42:/repo",
+            42,
+            "/repo",
+            "v_1",
+            "default",
+            VerifyTarget::Test,
+            "auto",
+            None,
+            None,
         );
         let spec = cmd(&[tool.to_string_lossy().as_ref(), "test"], 5);
         let mut progress_output = ProgressOutputBuffer::new();
@@ -4269,7 +4734,11 @@ mod tests {
         .await;
 
         match outcome {
-            CommandOutcome::Failed { exit_code, parse_result, .. } => {
+            CommandOutcome::Failed {
+                exit_code,
+                parse_result,
+                ..
+            } => {
                 assert_eq!(exit_code, Some(0));
                 assert_eq!(parse_result["reason"], "summaryFailure");
             }
@@ -4296,7 +4765,15 @@ mod tests {
             fs::set_permissions(&tool, permissions).unwrap();
         }
         let reporter = ProgressReporter::new_project(
-            "42:/repo", 42, "/repo", "v_1", "default", VerifyTarget::Test, "auto", None, None,
+            "42:/repo",
+            42,
+            "/repo",
+            "v_1",
+            "default",
+            VerifyTarget::Test,
+            "auto",
+            None,
+            None,
         );
         let spec = cmd(&[tool.to_string_lossy().as_ref(), "test"], 5);
         let mut progress_output = ProgressOutputBuffer::new();
@@ -4339,18 +4816,36 @@ mod tests {
         }
         let (tx, mut rx) = mpsc::unbounded_channel();
         let reporter = ProgressReporter::new_project(
-            "42:/repo", 42, "/repo", "v_1", "default", VerifyTarget::Test, "auto", Some(tx), None,
+            "42:/repo",
+            42,
+            "/repo",
+            "v_1",
+            "default",
+            VerifyTarget::Test,
+            "auto",
+            Some(tx),
+            None,
         );
         let spec = cmd(&[tool.to_string_lossy().as_ref(), "tests"], 5);
         let mut progress_output = ProgressOutputBuffer::new();
         let outcome = run_command(
-            &dir, &spec, "test-1", 1, &CancellationToken::new(), &reporter,
-            StageName::Test, &mut progress_output, None,
-        ).await;
+            &dir,
+            &spec,
+            "test-1",
+            1,
+            &CancellationToken::new(),
+            &reporter,
+            StageName::Test,
+            &mut progress_output,
+            None,
+        )
+        .await;
         assert!(matches!(outcome, CommandOutcome::Failed { .. }));
         let messages: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(messages.iter().any(|message| {
-            message.contains("terminalParseCandidate") && message.contains("test-1") && message.contains("candidate")
+            message.contains("terminalParseCandidate")
+                && message.contains("test-1")
+                && message.contains("candidate")
         }));
         fs::remove_dir_all(&dir).ok();
     }
@@ -4443,13 +4938,17 @@ mod tests {
                     command: build.to_string(),
                     enabled: true,
                     timeout_seconds: None,
-                    parser_hint: None, task_type_hint: None, report_hints: None,
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
                 }),
                 test: Some(ProjectVerifyCommand {
                     command: test.to_string(),
                     enabled: true,
                     timeout_seconds: None,
-                    parser_hint: None, task_type_hint: None, report_hints: None,
+                    parser_hint: None,
+                    task_type_hint: None,
+                    report_hints: None,
                 }),
             },
         );

@@ -84,6 +84,8 @@ interface InstallResult {
 /* ──────────────────── Component ──────────────────── */
 
 export function MarketplaceBrowser({ open, onClose, onInstalled, projectPath, projectName }: MarketplaceBrowserProps) {
+  // 暂缓说明：Marketplace 依赖第三方 CLI 的不稳定命令和配置格式，且任意来源插件带来供应链风险。
+  // 组件暂时保留，入口由 ResourceList.hideMarketplace 关闭，后续完成安全审核后再开放。
   const [data, setData] = useState<MarketplaceData | null>(null);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -175,7 +177,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled, projectPath, pr
       unlistenInstall.then((fn) => fn());
       unlistenUninstall.then((fn) => fn());
     };
-  }, [open, onInstalled]);
+  }, [open, projectPath, onInstalled]);
 
   // Listen for marketplace add/remove events (secondary path — for other components' changes)
   useEffect(() => {
@@ -197,7 +199,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled, projectPath, pr
       },
     );
     return () => { unlisten.then((fn) => fn()); };
-  }, [open, onInstalled]);
+  }, [open, projectPath, onInstalled]);
 
   // Handlers for marketplace management
   const handleAddMarketplace = async () => {
