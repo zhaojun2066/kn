@@ -165,7 +165,7 @@ describe("useAgent", () => {
       status: "binding_started",
       bindCode: "A1B2C3",
       expiresIn: 120,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
 
     const { result } = renderHook(() => useAgent());
@@ -180,7 +180,7 @@ describe("useAgent", () => {
     expect(bindResult.ok).toBe(true);
     expect(bindResult.bindCode).toBe("A1B2C3");
     expect(bindResult.expiresIn).toBe(120);
-    expect(bindResult.confirmUrl).toBe("https://shark.kim/bind");
+    expect(bindResult.confirmUrl).toBe("https://knshark.com/bind");
   });
 
   it("bindDevice failure returns ok:false with error string", async () => {

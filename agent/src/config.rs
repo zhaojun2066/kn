@@ -41,14 +41,14 @@ impl AgentConfig {
             .or(file_config
                 .as_ref()
                 .and_then(|m| m.get("cloud_url").cloned()))
-            .unwrap_or_else(|| "wss://api.shark.kim/v1/ws".to_string());
+            .unwrap_or_else(|| "wss://api.knshark.com/v1/ws".to_string());
 
         let cloud_http_url = std::env::var("KN_CLOUD_HTTP_URL")
             .ok()
             .or(file_config
                 .as_ref()
                 .and_then(|m| m.get("cloud_http_url").cloned()))
-            .unwrap_or_else(|| "https://api.shark.kim".to_string());
+            .unwrap_or_else(|| "https://api.knshark.com".to_string());
 
         let ipc_socket_path = agent_dir.join("ipc.sock");
         let log_dir = agent_dir.join("logs");

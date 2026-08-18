@@ -1521,7 +1521,7 @@ iOS Error (DomainError enum)
 | 8081 | 服务器 | Cloud WebSocket | 公网 |
 | `~/.kn/agent/ipc.sock` | macOS | Agent IPC Server (JSON-RPC) | 0600 |
 | `~/.kn/agent/sessions/{nid}/pty.sock` | macOS | PTY 代理 (socat 桥接) | 0600 |
-| wss://api.shark.kim/v1/ws | 服务器 | WSS 端点 | HTTPS |
+| wss://api.knshark.com/v1/ws | 服务器 | WSS 端点 | HTTPS |
 
 ### 6.5 配置文件位置
 

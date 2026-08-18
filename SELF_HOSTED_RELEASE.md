@@ -6,7 +6,7 @@ GitHub Actions only produces the signed/notarized `release-candidate-v<version>`
 
 ```text
 KN_RELEASE_ROOT=/opt/kn-cloud/releases
-KN_RELEASE_DOWNLOAD_BASE_URL=https://api.shark.kim/releases
+KN_RELEASE_DOWNLOAD_BASE_URL=https://api.knshark.com/releases
 ```
 
 Nginx serves `/opt/kn-cloud/releases/` read-only at `/releases/`; the matching location is in `kn-cloud/deploy/nginx.conf`.

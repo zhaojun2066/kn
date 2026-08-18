@@ -50,7 +50,7 @@ describe("BindDialog", () => {
       ok: true,
       bindCode: "ABC123",
       expiresIn: 120,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
     const cancelBind = vi.fn();
     const agent = mockAgentState({ bindDevice, cancelBind, fetchStatus: vi.fn() });
@@ -89,7 +89,7 @@ describe("BindDialog", () => {
       ok: true,
       bindCode: "ABC123",
       expiresIn: 120,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
     const agent = mockAgentState({ bindDevice, fetchStatus: vi.fn() });
 
@@ -109,7 +109,7 @@ describe("BindDialog", () => {
       ok: true,
       bindCode: "ABC123",
       expiresIn: 120,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
 
     const connectedStatus: AgentStatus = { state: "connected", crash_count: 0, safe_mode: false };
@@ -148,7 +148,7 @@ describe("BindDialog", () => {
       ok: true,
       bindCode: "ABC123",
       expiresIn: 120,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
     const { rerender } = render(
       <BindDialog onClose={vi.fn()} agent={mockAgentState({ bindDevice, fetchStatus: vi.fn() })} />,
@@ -198,7 +198,7 @@ describe("BindDialog", () => {
         ok: true,
         bindCode: "RETRY01",
         expiresIn: 120,
-        confirmUrl: "https://shark.kim/bind",
+        confirmUrl: "https://knshark.com/bind",
       });
     const agent = mockAgentState({ bindDevice, fetchStatus: vi.fn() });
 
@@ -230,7 +230,7 @@ describe("BindDialog", () => {
       ok: true,
       bindCode: "ABC123",
       expiresIn: 120,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
     const agent = mockAgentState({ bindDevice, fetchStatus: vi.fn() });
 
@@ -256,7 +256,7 @@ describe("BindDialog", () => {
       ok: true,
       bindCode: "SLOW01",
       expiresIn: 120,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
     const agent = mockAgentState({ bindDevice, fetchStatus: vi.fn() });
 
@@ -289,7 +289,7 @@ describe("BindDialog with fake timers", () => {
       ok: true,
       bindCode: "ABC123",
       expiresIn: 120,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
     const fetchStatus = vi.fn();
     const agent = mockAgentState({ bindDevice, fetchStatus });
@@ -321,7 +321,7 @@ describe("BindDialog with fake timers", () => {
       ok: true,
       bindCode: "ABC123",
       expiresIn: 120,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
     const connectedStatus: AgentStatus = { state: "connected", crash_count: 0, safe_mode: false };
 
@@ -367,7 +367,7 @@ describe("BindDialog with fake timers", () => {
       ok: true,
       bindCode: "ABC123",
       expiresIn: 300,
-      confirmUrl: "https://shark.kim/bind",
+      confirmUrl: "https://knshark.com/bind",
     });
     const agent = mockAgentState({ bindDevice, fetchStatus: vi.fn(), cancelBind: vi.fn() });
 
@@ -391,8 +391,8 @@ describe("BindDialog with fake timers", () => {
 
   it("cancels the expired pairing before requesting a fresh QR code", async () => {
     const bindDevice = vi.fn()
-      .mockResolvedValueOnce({ ok: true, bindCode: "OLD001", expiresIn: 1, confirmUrl: "https://shark.kim/bind" })
-      .mockResolvedValueOnce({ ok: true, bindCode: "NEW002", expiresIn: 120, confirmUrl: "https://shark.kim/bind" });
+      .mockResolvedValueOnce({ ok: true, bindCode: "OLD001", expiresIn: 1, confirmUrl: "https://knshark.com/bind" })
+      .mockResolvedValueOnce({ ok: true, bindCode: "NEW002", expiresIn: 120, confirmUrl: "https://knshark.com/bind" });
     const cancelBind = vi.fn().mockResolvedValue({ ok: true, status: "cancelled" });
 
     render(<BindDialog onClose={vi.fn()} agent={mockAgentState({ bindDevice, cancelBind, fetchStatus: vi.fn() })} />);

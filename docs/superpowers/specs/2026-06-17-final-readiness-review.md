@@ -226,7 +226,7 @@ std::fs::rename(&tmp, &path)?;
 |---|------|------|
 | 1 | **GitHub 创建 `kn-cloud` 私有 repo** | ✅ 已创建 |
 | 2 | **GitHub 创建 `kn-ios` 私有 repo** | ✅ 已创建 |
-| 3 | **域名 `api.shark.kim`** + SSL 证书 | ⏳ 用户后续提供，开发/测试用 `localhost:8080/8081` |
+| 3 | **域名 `api.knshark.com`** + SSL 证书 | ⏳ 用户后续提供，开发/测试用 `localhost:8080/8081` |
 | 4 | **Apple Developer Program** ($99/年) | ⏳ 用户正在注册 |
 | 5 | **APNs p8 Key** | ⏳ 依赖 #4 |
 
@@ -320,6 +320,6 @@ std::fs::rename(&tmp, &path)?;
 - [ ] kn-cloud 私有 repo 已创建
 - [ ] kn-ios 私有 repo 已创建
 - [ ] Linux 服务器已就绪 (MySQL + Redis + Nginx + Java 21)
-- [ ] api.shark.kim 域名已解析 + SSL 已配置
+- [ ] api.knshark.com 域名已解析 + SSL 已配置
 - [ ] Apple Developer Program 已开通
 - [ ] APNs p8 key 已创建

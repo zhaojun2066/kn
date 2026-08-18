@@ -563,7 +563,7 @@ pub struct BindCode {
 pub async fn request_bind_code(machine_id: &str) -> Result<BindCode, String> {
     let client = Client::new();
     let base_url = std::env::var("KN_CLOUD_URL")
-        .unwrap_or_else(|_| "https://api.shark.kim".into());
+        .unwrap_or_else(|_| "https://api.knshark.com".into());
     let resp = client.post(format!("{}/api/v1/device/bind-init", base_url))
         .json(&serde_json::json!({"machine_id": machine_id}))
         .send().await.map_err(|e| format!("bind-init 请求失败: {}", e))?;
@@ -593,7 +593,7 @@ struct BindResultData {
 pub async fn poll_bind_result(code: &str, timeout_secs: u64) -> Result<Option<String>, String> {
     let client = Client::new();
     let base_url = std::env::var("KN_CLOUD_URL")
-        .unwrap_or_else(|_| "https://api.shark.kim".into());
+        .unwrap_or_else(|_| "https://api.knshark.com".into());
     let url = format!("{}/api/v1/device/bind-result?code={}", base_url, code);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 

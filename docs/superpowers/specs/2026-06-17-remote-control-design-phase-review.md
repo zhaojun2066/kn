@@ -162,13 +162,13 @@ for name in candidates {
 
 **建议**: Task 10 需要新增一个明确的 Step 来实现 APNs JWT 签名，或标注为独立子 Task "10.5: APNs JWT 签名实现"，并给出具体实现路径。
 
-### H-5: WSS URL 默认值 `wss://api.shark.kim` — 需确认开发/生产切换
+### H-5: WSS URL 默认值 `wss://api.knshark.com` — 需确认开发/生产切换
 
-设计文档中 WSS URL 为 `wss://api.shark.kim`。Plan 中 Agent 通过环境变量 `KN_CLOUD_URL` 覆盖，iOS 通过 `Info.plist` 覆盖，Cloud 侧部署时通过 `application.yml`。
+设计文档中 WSS URL 为 `wss://api.knshark.com`。Plan 中 Agent 通过环境变量 `KN_CLOUD_URL` 覆盖，iOS 通过 `Info.plist` 覆盖，Cloud 侧部署时通过 `application.yml`。
 
 **潜在问题**: 
 - Agent 编译时没有默认开发环境 URL。本地测试时需手动设 `KN_CLOUD_URL=ws://localhost:8081`。容易忘记。
-- iOS `Info.plist` 默认 `https://api.shark.kim`，本地开发需要用 `http://localhost:8080`。Xcode 多 scheme 管理需配置。
+- iOS `Info.plist` 默认 `https://api.knshark.com`，本地开发需要用 `http://localhost:8080`。Xcode 多 scheme 管理需配置。
 
 **建议**: 在 execution-guide.md 中补充"本地开发环境变量配置"表格，列出所有需要设置的环境变量和默认值。
 

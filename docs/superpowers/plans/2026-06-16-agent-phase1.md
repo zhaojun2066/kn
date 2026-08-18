@@ -784,7 +784,7 @@ reqwest = { version = "0.12", features = ["json"] }  # async 模式，Task 12 bi
 //! 注意：绑定流程不再通过 WSS 临时连接。Agent 在绑定期间通过 HTTP 短轮询
 //! GET /api/v1/device/bind-result?code=xxx 获取 device_token，收到后再建立正式 WSS。
 //! 
-//! 服务端 URL 从环境变量 KN_CLOUD_URL 读取，默认 wss://api.shark.kim
+//! 服务端 URL 从环境变量 KN_CLOUD_URL 读取，默认 wss://api.knshark.com
 
 use kn_common::fingerprint;
 use crate::proto::{ClientMessage, ServerMessage};
@@ -802,7 +802,7 @@ const SESSION_FAILED_AFTER_SECS: u64 = 1800; // 30min，避免休眠时误杀 se
 /// 获取云服务 URL（环境变量可覆盖，默认 production）
 fn cloud_ws_url() -> String {
     std::env::var("KN_CLOUD_URL")
-        .unwrap_or_else(|_| "wss://api.shark.kim".into())
+        .unwrap_or_else(|_| "wss://api.knshark.com".into())
         .trim_end_matches('/')
         .to_string()
 }
@@ -957,7 +957,7 @@ async fn main() {
         if !token.is_empty() {
             let (tx, mut rx) = mpsc::unbounded_channel();
             // 正式连接
-            // ws_client::connect("wss://api.shark.kim/v1/ws", &token, state.clone(), tx).await;
+            // ws_client::connect("wss://api.knshark.com/v1/ws", &token, state.clone(), tx).await;
             eprintln!("[agent] device_token 已就绪，待 cloud 端点启用后连接");
         }
     } else {

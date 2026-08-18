@@ -142,7 +142,7 @@ github.com/zhaojun2066/
 
 **跨 repo 协作**：
 - 设计文档在公开 `kn/docs/`，不含密钥/定价等敏感信息，是三方协作的唯一权威入口
-- Agent 连接云服务的唯一凭证是 `wss://api.shark.kim` 域名 + 协议格式（设计文档中公开定义）
+- Agent 连接云服务的唯一凭证是 `wss://api.knshark.com` 域名 + 协议格式（设计文档中公开定义）
 - `kn-cloud` 和 `kn-ios` 各自内部可有私有的实现细节文档
 
 ---
@@ -497,7 +497,7 @@ CREATE TABLE kn_device (
 -- └──────────────────────────────────────────────────────────────┘
 
 -- ┌─ 验证 (Agent 每次 WSS 连接) ─────────────────────────────────┐
--- │ 连接请求: wss://api.shark.kim/v1/ws (Authorization: Bearer <device_token>, X-KN-Machine-Id: <machine_id>)
+-- │ 连接请求: wss://api.knshark.com/v1/ws (Authorization: Bearer <device_token>, X-KN-Machine-Id: <machine_id>)
 -- │                                                                 
 -- │ 云端验证链路:                                                    
 -- │   ① device_token 在 kn_device 表中存在?                         
@@ -1761,7 +1761,7 @@ Shell ai()        ──→ _ai_direct()（现有 ai() 逻辑）
 
 ### 4.1 WebSocket 连接建立
 
-所有 WSS 连接统一使用 `wss://api.shark.kim/v1/ws`（无 query string），鉴权信息通过 **HTTP `Authorization` header** 传递：
+所有 WSS 连接统一使用 `wss://api.knshark.com/v1/ws`（无 query string），鉴权信息通过 **HTTP `Authorization` header** 传递：
 
 ```
 # iOS 连接

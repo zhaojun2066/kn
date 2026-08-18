@@ -969,7 +969,7 @@ public class DeviceController {
     private final SecureRandom random = new SecureRandom();
 
     @org.springframework.beans.factory.annotation.Value("${kn.base-url}")
-    private String baseUrl;  // dev: http://localhost:8080, prod: https://api.shark.kim
+    private String baseUrl;  // dev: http://localhost:8080, prod: https://api.knshark.com
 
     public DeviceController(KnDeviceMapper dm, KnUserMapper um, StringRedisTemplate r) {
         this.deviceMapper = dm; this.userMapper = um; this.redis = r;
@@ -1827,7 +1827,7 @@ git add -A && git commit -m "feat: WebSocket handler - agent/user connection, me
 sudo apt-get update && sudo apt-get install -y certbot python3-certbot-nginx
 
 # 2. 首次获取证书（HTTP-01 challenge，需域名已解析到本机 + 80 端口可达）
-sudo certbot certonly --nginx -d api.shark.kim --non-interactive --agree-tos -m admin@shark.kim
+sudo certbot certonly --nginx -d api.knshark.com --non-interactive --agree-tos -m admin@knshark.com
 
 # 3. certbot 自动续期（安装时已自动创建 systemd timer）
 #    验证: systemctl status certbot.timer
@@ -1847,7 +1847,7 @@ sudo certbot certonly --nginx -d api.shark.kim --non-interactive --agree-tos -m 
 # HTTP → HTTPS 重定向 + certbot ACME challenge
 server {
     listen 80;
-    server_name api.shark.kim;
+    server_name api.knshark.com;
     
     # certbot HTTP-01 challenge
     location /.well-known/acme-challenge/ {
@@ -1873,7 +1873,7 @@ sudo mkdir -p /var/www/certbot
 # HTTP → HTTPS 重定向 + certbot ACME challenge
 server {
     listen 80;
-    server_name api.shark.kim;
+    server_name api.knshark.com;
 
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -1897,10 +1897,10 @@ limit_req_zone $binary_remote_addr zone=bind_limit:10m rate=3r/m;
 
 server {
     listen 443 ssl http2;
-    server_name api.shark.kim;
+    server_name api.knshark.com;
 
-    ssl_certificate     /etc/letsencrypt/live/api.shark.kim/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/api.shark.kim/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/api.knshark.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.knshark.com/privkey.pem;
 
     # HTTP API
     location /api/v1/ {

@@ -274,9 +274,9 @@ Agent/Cloud/iOS Phase 1-3 完成后，以下两项需在合并 main 前完成：
 
 | 组件 | 变量 | 默认值 | 本地开发值 | 配置方式 |
 |------|------|--------|-----------|---------|
-| Agent | `KN_CLOUD_URL` | `wss://api.shark.kim` | `ws://localhost:8081` | shell `export` 或 `launchctl setenv` |
-| Agent HTTP | (同上) | `https://api.shark.kim` | `http://localhost:8080` | `KN_CLOUD_URL` 同时控制 HTTP 和 WSS；Agent 内部自动替换 `wss://` ↔ `https://` |
-| iOS App | `KN_API_BASE_URL` | `https://api.shark.kim` | `http://localhost:8080` | Xcode Scheme → Run → Arguments → Environment Variables；或 `Info.plist` 中改默认值 |
+| Agent | `KN_CLOUD_URL` | `wss://api.knshark.com` | `ws://localhost:8081` | shell `export` 或 `launchctl setenv` |
+| Agent HTTP | (同上) | `https://api.knshark.com` | `http://localhost:8080` | `KN_CLOUD_URL` 同时控制 HTTP 和 WSS；Agent 内部自动替换 `wss://` ↔ `https://` |
+| iOS App | `KN_API_BASE_URL` | `https://api.knshark.com` | `http://localhost:8080` | Xcode Scheme → Run → Arguments → Environment Variables；或 `Info.plist` 中改默认值 |
 | Cloud (Spring) | `SPRING_PROFILES_ACTIVE` | `prod` | `dev` | systemd `EnvironmentFile` (prod) / shell `export` (dev) |
 | Cloud DB | `DB_USER` / `DB_PASS` | (env var) | `root` / `12345678` | dev: `application-dev.yml` 内置；prod: 从 `kn-cloud.env` 注入 |
 | Cloud JWT | `kn.jwt.secret` | `JWT_SECRET` env var | 硬编码 `dev-secret-...` | dev 用内置默认值；prod 从 env 注入 |
