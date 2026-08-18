@@ -271,6 +271,9 @@ fn delivery_request_id(message: &AgentIncoming) -> Option<&str> {
         AgentIncoming::ProjectGitStatus { request_id, .. }
         | AgentIncoming::ProjectGitCommit { request_id, .. }
         | AgentIncoming::ProjectGitPush { request_id, .. }
+        | AgentIncoming::ProjectGitBranches { request_id, .. }
+        | AgentIncoming::ProjectGitCheckout { request_id, .. }
+        | AgentIncoming::ProjectGitCreateBranch { request_id, .. }
         | AgentIncoming::ProjectPrStatus { request_id, .. }
         | AgentIncoming::ProjectPrDetails { request_id, .. }
         | AgentIncoming::ProjectPrCreate { request_id, .. } => request_id.as_deref(),
@@ -317,6 +320,9 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::ProjectGitStatus { .. } => "project_git_status",
         AgentIncoming::ProjectGitCommit { .. } => "project_git_commit",
         AgentIncoming::ProjectGitPush { .. } => "project_git_push",
+        AgentIncoming::ProjectGitBranches { .. } => "project_git_branches",
+        AgentIncoming::ProjectGitCheckout { .. } => "project_git_checkout",
+        AgentIncoming::ProjectGitCreateBranch { .. } => "project_git_create_branch",
         AgentIncoming::ProjectPrStatus { .. } => "project_pr_status",
         AgentIncoming::ProjectPrDetails { .. } => "project_pr_details",
         AgentIncoming::ProjectPrCreate { .. } => "project_pr_create",

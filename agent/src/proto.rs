@@ -184,6 +184,27 @@ pub enum AgentIncoming {
         project_path: String,
         request_id: Option<String>,
     },
+    ProjectGitBranches {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        request_id: Option<String>,
+    },
+    ProjectGitCheckout {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        branch: String,
+        request_id: Option<String>,
+    },
+    ProjectGitCreateBranch {
+        project_key: String,
+        device_id: u64,
+        project_path: String,
+        branch: String,
+        base: String,
+        request_id: Option<String>,
+    },
     ProjectPrStatus {
         project_key: String,
         device_id: u64,
@@ -649,6 +670,52 @@ impl WsEnvelope {
                     project_path,
                     request_id: parse_delivery_request_id(data),
                 })
+            }
+            "project_git_branches" | "project_git_checkout" | "project_git_create_branch" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "项目分支请求缺少 data 字段".to_string())?;
+                let (project_key, device_id, project_path) =
+                    parse_project_scope(data, "项目分支请求")?;
+                let request_id = parse_delivery_request_id(data);
+                match self.msg_type.as_str() {
+                    "project_git_branches" => Ok(AgentIncoming::ProjectGitBranches {
+                        project_key,
+                        device_id,
+                        project_path,
+                        request_id,
+                    }),
+                    "project_git_checkout" => Ok(AgentIncoming::ProjectGitCheckout {
+                        project_key,
+                        device_id,
+                        project_path,
+                        request_id,
+                        branch: data["branch"]
+                            .as_str()
+                            .filter(|value| !value.is_empty())
+                            .ok_or_else(|| "project_git_checkout 缺少 branch 字段".to_string())?
+                            .to_string(),
+                    }),
+                    _ => Ok(AgentIncoming::ProjectGitCreateBranch {
+                        project_key,
+                        device_id,
+                        project_path,
+                        request_id,
+                        branch: data["branch"]
+                            .as_str()
+                            .filter(|value| !value.is_empty())
+                            .ok_or_else(|| {
+                                "project_git_create_branch 缺少 branch 字段".to_string()
+                            })?
+                            .to_string(),
+                        base: data["base"]
+                            .as_str()
+                            .filter(|value| !value.is_empty())
+                            .ok_or_else(|| "project_git_create_branch 缺少 base 字段".to_string())?
+                            .to_string(),
+                    }),
+                }
             }
             "project_pr_status" => {
                 let data = self

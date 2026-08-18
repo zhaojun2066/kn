@@ -1139,11 +1139,38 @@ fn should_dispatch_in_background(message: &proto::AgentIncoming) -> bool {
             | proto::AgentIncoming::ProjectListStatus { .. }
             | proto::AgentIncoming::ProjectGitCommit { .. }
             | proto::AgentIncoming::ProjectGitPush { .. }
+            | proto::AgentIncoming::ProjectGitBranches { .. }
+            | proto::AgentIncoming::ProjectGitCheckout { .. }
+            | proto::AgentIncoming::ProjectGitCreateBranch { .. }
             | proto::AgentIncoming::ProjectPrStatus { .. }
             | proto::AgentIncoming::ProjectPrDetails { .. }
             | proto::AgentIncoming::ProjectPrCreate { .. }
             | proto::AgentIncoming::DeviceHealth { .. }
     )
+}
+
+async fn project_has_active_terminal(
+    sessions: &session::SessionManager,
+    project_path: &str,
+) -> bool {
+    sessions
+        .list()
+        .await
+        .map(|items| {
+            items.into_iter().any(|item| {
+                item.cwd.trim_end_matches('/') == project_path.trim_end_matches('/')
+                    && item.status != session::SessionStatus::Ended
+            })
+        })
+        .unwrap_or(true)
+}
+
+fn project_verification_is_running(project_key: &str) -> bool {
+    crate::session::verify_changes::status(project_key)["status"].as_str() == Some("running")
+}
+
+fn project_operation_key(project_path: &str) -> String {
+    format!("path:{}", project_path.trim_end_matches('/'))
 }
 
 async fn handle_incoming(
@@ -1378,6 +1405,19 @@ async fn handle_incoming(
             );
 
             let cwd_resolved = cwd.unwrap_or_else(|| ".".into());
+            // Project Git operations and terminal creation must not cross: a
+            // session either exists before the branch safety check, or starts
+            // only after the checkout has completed.
+            let _project_operation =
+                if let Some(project_path) = registered_project_path(&cwd_resolved).await {
+                    Some(
+                        project_delivery_gate
+                            .lock(&project_operation_key(&project_path))
+                            .await,
+                    )
+                } else {
+                    None
+                };
 
             // 1. Create session record（create 内部持有 create_mutex，count+insert 原子性，会话数限制由 create 统一保证）
             match sessions
@@ -1962,7 +2002,7 @@ async fn handle_incoming(
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if let Some(registered_path) = registered_project_path(&project_path).await {
-                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let operation_project_key = project_operation_key(&registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
                 crate::session::git_delivery::status_page(
                     &project_key,
@@ -2009,7 +2049,7 @@ async fn handle_incoming(
                 let last_verification =
                     crate::session::verify_changes::last_verification(&project_key);
                 // 与提交、推送共用项目级 gate，避免读取 index/refs 的中间态或撞上 index.lock。
-                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let operation_project_key = project_operation_key(&registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
                 crate::session::project_list_status::read(
                     &project_key,
@@ -2048,7 +2088,7 @@ async fn handle_incoming(
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if let Some(registered_path) = registered_project_path(&project_path).await {
-                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let operation_project_key = project_operation_key(&registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
                 match scope.as_str() {
                     "selected" => {
@@ -2097,7 +2137,7 @@ async fn handle_incoming(
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if let Some(registered_path) = registered_project_path(&project_path).await {
-                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let operation_project_key = project_operation_key(&registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
                 let progress_outgoing = outgoing.clone();
                 let progress_project_key = project_key.clone();
@@ -2142,6 +2182,129 @@ async fn handle_incoming(
             )
             .await;
         }
+        proto::AgentIncoming::ProjectGitBranches {
+            project_key: _,
+            device_id,
+            project_path,
+            request_id,
+        } => {
+            let project_key = canonical_project_key(device_id, &project_path);
+            let started_at = Instant::now();
+            tracing::info!(project_key = %project_key, request_id = ?request_id, "收到 project_git_branches 请求");
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let _operation = project_delivery_gate
+                    .lock(&project_operation_key(&registered_path))
+                    .await;
+                crate::session::git_delivery::branches(&project_key, &registered_path).await
+            } else {
+                serde_json::json!({"status":"pathDenied", "message":"项目未登记"})
+            };
+            tracing::info!(
+                project_key = %project_key,
+                request_id = ?request_id,
+                status = ?data["status"].as_str(),
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "完成 project_git_branches 请求"
+            );
+            let msg = proto::WsMessageBuilder::project_delivery_result(
+                "project_git_branches_result",
+                &project_key,
+                device_id,
+                &project_path,
+                request_id.as_deref(),
+                data,
+            );
+            let _ =
+                send_project_delivery_message(&outgoing, msg, "project_git_branches_result").await;
+        }
+        proto::AgentIncoming::ProjectGitCheckout {
+            project_key: _,
+            device_id,
+            project_path,
+            branch,
+            request_id,
+        } => {
+            let project_key = canonical_project_key(device_id, &project_path);
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let _operation = project_delivery_gate
+                    .lock(&project_operation_key(&registered_path))
+                    .await;
+                if project_has_active_terminal(&sessions, &registered_path).await {
+                    serde_json::json!({"status":"activeTerminal", "message":"请先结束该项目的终端会话"})
+                } else if project_verification_is_running(&project_key) {
+                    serde_json::json!({"status":"verificationRunning", "message":"请先等待构建或测试结束"})
+                } else {
+                    crate::session::git_delivery::checkout_branch(
+                        &project_key,
+                        &registered_path,
+                        &branch,
+                    )
+                    .await
+                }
+            } else {
+                serde_json::json!({"status":"pathDenied", "message":"项目未登记"})
+            };
+            let msg = proto::WsMessageBuilder::project_delivery_result(
+                "project_git_checkout_result",
+                &project_key,
+                device_id,
+                &project_path,
+                request_id.as_deref(),
+                data,
+            );
+            send_project_delivery_result(
+                &outgoing,
+                &delivery_outbox,
+                msg,
+                "project_git_checkout_result",
+            )
+            .await;
+        }
+        proto::AgentIncoming::ProjectGitCreateBranch {
+            project_key: _,
+            device_id,
+            project_path,
+            branch,
+            base,
+            request_id,
+        } => {
+            let project_key = canonical_project_key(device_id, &project_path);
+            let data = if let Some(registered_path) = registered_project_path(&project_path).await {
+                let _operation = project_delivery_gate
+                    .lock(&project_operation_key(&registered_path))
+                    .await;
+                if project_has_active_terminal(&sessions, &registered_path).await {
+                    serde_json::json!({"status":"activeTerminal", "message":"请先结束该项目的终端会话"})
+                } else if project_verification_is_running(&project_key) {
+                    serde_json::json!({"status":"verificationRunning", "message":"请先等待构建或测试结束"})
+                } else {
+                    crate::session::git_delivery::create_and_checkout_branch(
+                        &project_key,
+                        &registered_path,
+                        &branch,
+                        &base,
+                    )
+                    .await
+                }
+            } else {
+                serde_json::json!({"status":"pathDenied", "message":"项目未登记"})
+            };
+            let msg = proto::WsMessageBuilder::project_delivery_result(
+                "project_git_create_branch_result",
+                &project_key,
+                device_id,
+                &project_path,
+                request_id.as_deref(),
+                data,
+            );
+            send_project_delivery_result(
+                &outgoing,
+                &delivery_outbox,
+                msg,
+                "project_git_create_branch_result",
+            )
+            .await;
+        }
         proto::AgentIncoming::ProjectPrStatus {
             project_key: _project_key,
             device_id,
@@ -2150,7 +2313,7 @@ async fn handle_incoming(
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if let Some(registered_path) = registered_project_path(&project_path).await {
-                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let operation_project_key = project_operation_key(&registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
                 crate::session::pr_delivery::status(&project_key, &registered_path).await
             } else {
@@ -2175,7 +2338,7 @@ async fn handle_incoming(
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if let Some(registered_path) = registered_project_path(&project_path).await {
-                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let operation_project_key = project_operation_key(&registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
                 crate::session::pr_delivery::details(&project_key, &registered_path).await
             } else {
@@ -2204,7 +2367,7 @@ async fn handle_incoming(
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
             let data = if let Some(registered_path) = registered_project_path(&project_path).await {
-                let operation_project_key = canonical_project_key(device_id, &registered_path);
+                let operation_project_key = project_operation_key(&registered_path);
                 let _operation = project_delivery_gate.lock(&operation_project_key).await;
                 crate::session::pr_delivery::create(
                     &project_key,

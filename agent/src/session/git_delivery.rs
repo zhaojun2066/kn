@@ -6,6 +6,7 @@ use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const BRANCH_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 const PUSH_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const MAX_MESSAGE_BYTES: usize = 4 * 1024;
 const MAX_SELECTED_FILES: usize = 100;
@@ -20,6 +21,197 @@ struct StatusEntry {
 
 pub async fn status(project_key: &str, cwd: &str) -> Value {
     status_page(project_key, cwd, 0, GIT_STATUS_PAGE_SIZE as i64, None).await
+}
+
+/// Lists local and remote branches. Fetch failures are deliberately non-fatal so an
+/// offline computer can still switch among the branches it already knows about.
+pub async fn branches(project_key: &str, cwd: &str) -> Value {
+    let current = status(project_key, cwd).await;
+    if current["status"].as_str() != Some("ok") {
+        return current;
+    }
+    let fetch_warning = if default_remote(cwd).await.is_some() {
+        fetch_branches(cwd)
+            .await
+            .err()
+            .map(|_| "无法同步远端分支，正在显示本地缓存".to_string())
+    } else {
+        None
+    };
+    let refs = match git_output(
+        cwd,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)|%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    .await
+    {
+        Ok(refs) => refs,
+        Err(_) => return branch_error(project_key, "error", "无法读取分支列表"),
+    };
+    let current_branch = current["branch"].as_str().unwrap_or_default();
+    let branches: Vec<Value> = refs.lines().filter_map(|line| {
+        let (name, reference) = line.split_once('|')?;
+        if name.ends_with("/HEAD") || name.is_empty() { return None; }
+        let is_remote = reference.starts_with("refs/remotes/");
+        let display_name = if is_remote { name.split_once('/').map(|(_, value)| value).unwrap_or(name) } else { name };
+        Some(json!({"name": display_name, "ref": name, "kind": if is_remote { "remote" } else { "local" }, "isCurrent": !is_remote && name == current_branch}))
+    }).collect();
+    json!({"projectKey": project_key, "status": "ok", "currentBranch": current_branch, "branches": branches, "fetchWarning": fetch_warning})
+}
+
+pub async fn checkout_branch(project_key: &str, cwd: &str, reference: &str) -> Value {
+    if !is_safe_branch_ref(reference) {
+        return branch_error(project_key, "invalidBranch", "分支名无效");
+    }
+    let before = status(project_key, cwd).await;
+    if before["status"].as_str() != Some("ok") {
+        return before;
+    }
+    if before["files"]
+        .as_array()
+        .is_some_and(|files| !files.is_empty())
+    {
+        return branch_error(
+            project_key,
+            "workingTreeDirty",
+            "存在未提交变更，无法切换分支",
+        );
+    }
+    let local_exists = git_output(
+        cwd,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{reference}"),
+        ],
+    )
+    .await
+    .is_ok();
+    let args = if local_exists {
+        vec!["switch".to_string(), reference.to_string()]
+    } else if reference.contains('/')
+        && git_output(
+            cwd,
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/{reference}"),
+            ],
+        )
+        .await
+        .is_ok()
+    {
+        vec![
+            "switch".to_string(),
+            "--track".to_string(),
+            reference.to_string(),
+        ]
+    } else {
+        return branch_error(project_key, "branchNotFound", "分支不存在");
+    };
+    match git_output_owned(cwd, &args).await {
+        Ok(_) => branch_success(project_key, cwd).await,
+        Err(error) => branch_error(project_key, branch_error_code(error), "切换分支失败"),
+    }
+}
+
+pub async fn create_and_checkout_branch(
+    project_key: &str,
+    cwd: &str,
+    name: &str,
+    base: &str,
+) -> Value {
+    if !is_safe_branch_ref(name) || !is_safe_branch_ref(base) {
+        return branch_error(project_key, "invalidBranch", "分支名无效");
+    }
+    let before = status(project_key, cwd).await;
+    if before["status"].as_str() != Some("ok") {
+        return before;
+    }
+    if before["files"]
+        .as_array()
+        .is_some_and(|files| !files.is_empty())
+    {
+        return branch_error(
+            project_key,
+            "workingTreeDirty",
+            "存在未提交变更，无法创建分支",
+        );
+    }
+    if git_output(cwd, &["check-ref-format", "--branch", name])
+        .await
+        .is_err()
+    {
+        return branch_error(project_key, "invalidBranch", "分支名无效");
+    }
+    if git_output(
+        cwd,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ],
+    )
+    .await
+    .is_ok()
+    {
+        return branch_error(project_key, "branchExists", "同名本地分支已存在");
+    }
+    if git_output(
+        cwd,
+        &["rev-parse", "--verify", &format!("{base}^{{commit}}")],
+    )
+    .await
+    .is_err()
+    {
+        return branch_error(project_key, "branchNotFound", "基线分支不存在");
+    }
+    match git_output_owned(
+        cwd,
+        &[
+            "switch".to_string(),
+            "-c".to_string(),
+            name.to_string(),
+            base.to_string(),
+        ],
+    )
+    .await
+    {
+        Ok(_) => branch_success(project_key, cwd).await,
+        Err(error) => branch_error(project_key, branch_error_code(error), "创建分支失败"),
+    }
+}
+
+async fn branch_success(project_key: &str, cwd: &str) -> Value {
+    let git_status = status(project_key, cwd).await;
+    json!({"projectKey": project_key, "status": "ok", "branch": git_status["branch"], "gitStatus": git_status})
+}
+
+fn branch_error(project_key: &str, status: &str, message: &str) -> Value {
+    json!({"projectKey": project_key, "status": status, "message": message})
+}
+
+fn is_safe_branch_ref(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && !value.starts_with('-')
+        && !value.contains('\0')
+        && !value.contains("..")
+}
+
+fn branch_error_code(error: GitError) -> &'static str {
+    match error {
+        GitError::Timeout => "operationTimeout",
+        GitError::Failed(message) if message.contains("would be overwritten") => "workingTreeDirty",
+        _ => "error",
+    }
 }
 
 pub async fn status_page(
@@ -38,8 +230,14 @@ pub async fn status_page(
                 "当前仓库处于 detached HEAD 状态",
             )
         }
+        // A freshly initialized repository has a symbolic HEAD but no commit yet.
+        // `rev-parse --abbrev-ref HEAD` fails there, while `symbolic-ref` still
+        // provides the initial branch name (for example, main).
         Err(GitError::Failed(_)) => {
-            return status_error(project_key, "notGitRepo", "当前目录不是 Git 仓库")
+            match git_output(cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"]).await {
+                Ok(branch) if !branch.trim().is_empty() => branch.trim().to_string(),
+                _ => return status_error(project_key, "notGitRepo", "当前目录不是 Git 仓库"),
+            }
         }
         Err(_) => return status_error(project_key, "error", "无法读取 Git 状态"),
     };
@@ -349,6 +547,31 @@ async fn git_output(cwd: &str, args: &[&str]) -> Result<String, GitError> {
             .collect::<Vec<_>>(),
     )
     .await
+}
+
+/// Refreshing remote refs is optional for the branch picker. It must never
+/// wait for interactive credentials or hold the mobile request hostage.
+async fn fetch_branches(cwd: &str) -> Result<String, GitError> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(cwd)
+        .args(["fetch", "--prune"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .kill_on_drop(true);
+    let output = timeout(BRANCH_FETCH_TIMEOUT, command.output())
+        .await
+        .map_err(|_| GitError::Timeout)?
+        .map_err(|_| GitError::Io)?;
+    if !output.status.success() {
+        return Err(GitError::Failed(
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(MAX_OUTPUT_BYTES)
+                .collect(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 async fn raw_status(cwd: &str) -> Result<String, GitError> {
@@ -813,6 +1036,70 @@ mod tests {
         run_git(repo.path(), &["add", "README.md"]);
         run_git(repo.path(), &["commit", "-m", "initial"]);
         repo
+    }
+
+    #[tokio::test]
+    async fn status_recognizes_initialized_repository_without_a_first_commit() {
+        let repo = tempfile::tempdir().expect("temporary repo");
+        run_git(repo.path(), &["init"]);
+        let cwd = repo.path().to_str().expect("utf8 repo");
+
+        let result = status("device:/repo", cwd).await;
+
+        assert_eq!(result["status"], "ok");
+        assert!(result["branch"]
+            .as_str()
+            .is_some_and(|branch| !branch.is_empty()));
+        assert!(result["head"].is_null());
+
+        let branch_result = branches("device:/repo", cwd).await;
+        assert_eq!(branch_result["status"], "ok");
+        assert!(branch_result["branches"]
+            .as_array()
+            .is_some_and(Vec::is_empty));
+        assert!(branch_result["fetchWarning"].is_null());
+    }
+
+    #[tokio::test]
+    async fn branches_lists_current_local_branch() {
+        let repo = initialized_repo();
+        let result = branches("device:/repo", repo.path().to_str().expect("utf8 repo")).await;
+        assert_eq!(result["status"], "ok");
+        assert!(result["branches"]
+            .as_array()
+            .is_some_and(|branches| branches.iter().any(|branch| branch["isCurrent"] == true)));
+    }
+
+    #[tokio::test]
+    async fn checkout_rejects_dirty_working_tree() {
+        let repo = initialized_repo();
+        std::fs::write(repo.path().join("README.md"), "dirty\n").expect("write working change");
+        let cwd = repo.path().to_str().expect("utf8 repo");
+        let current = git_output(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .await
+            .unwrap();
+        let result = checkout_branch("device:/repo", cwd, current.trim()).await;
+        assert_eq!(result["status"], "workingTreeDirty");
+    }
+
+    #[tokio::test]
+    async fn create_branch_creates_and_checks_out_from_current_branch() {
+        let repo = initialized_repo();
+        let cwd = repo.path().to_str().expect("utf8 repo");
+        let current = git_output(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .await
+            .unwrap();
+        let result =
+            create_and_checkout_branch("device:/repo", cwd, "feat/remote", current.trim()).await;
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["branch"], "feat/remote");
+        assert_eq!(
+            git_output(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .await
+                .unwrap()
+                .trim(),
+            "feat/remote"
+        );
     }
 
     #[test]
