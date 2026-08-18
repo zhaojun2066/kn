@@ -17,6 +17,9 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: write
+
 jobs:
   # ── Validate version before building ──
   validate:
@@ -263,7 +266,7 @@ jobs:
           name: ${{ matrix.label }}
           path: target/${{ matrix.target }}/release/bundle/
 
-  # ── Assemble a manually uploadable release candidate ──
+  # ── Assemble and publish a release candidate ──
   release-candidate:
     needs: [validate, build]
     runs-on: ubuntu-latest
@@ -325,3 +328,28 @@ jobs:
           path: |
             assets/**/*.dmg
             release-notes.md
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ env.APP_VERSION }}
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          DMGS=(assets/**/*.dmg)
+          if [ "${#DMGS[@]}" -eq 0 ]; then
+            echo "::error::No DMG assets found to publish"
+            exit 1
+          fi
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md
+            gh release upload "$RELEASE_TAG" "${DMGS[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${DMGS[@]}" \
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md \
+              --target "$GITHUB_SHA"
+          fi
