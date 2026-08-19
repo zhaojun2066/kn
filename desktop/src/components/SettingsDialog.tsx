@@ -2,15 +2,6 @@ import React from "react";
 import { Settings, X, RotateCcw } from "lucide-react";
 import { useFontScale, MIN_SCALE, MAX_SCALE } from "../hooks/useFontScale";
 import { getUsageTrackingEnabled, setUsageTrackingEnabled } from "../lib/tauri-api";
-import { getRemoteApprovalConfig, setRemoteApprovalConfig } from "../lib/tauri-api";
-import {
-  APPROVAL_MODE_LABEL,
-  DEFAULT_REMOTE_APPROVAL_CONFIG,
-  REMOTE_APPROVAL_CLI_CAPABILITIES,
-  REMOTE_APPROVAL_RULES,
-  type ApprovalMode,
-  type RemoteApprovalConfig,
-} from "../lib/remote-approval";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -20,20 +11,9 @@ interface SettingsDialogProps {
 export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const { scale, setScale } = useFontScale();
   const [trackingEnabled, setTrackingEnabled] = React.useState(false);
-  const [approvalConfig, setApprovalConfig] = React.useState<RemoteApprovalConfig>(DEFAULT_REMOTE_APPROVAL_CONFIG);
-  const [approvalSaving, setApprovalSaving] = React.useState(false);
-  const [approvalError, setApprovalError] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (open) {
       getUsageTrackingEnabled().then(setTrackingEnabled).catch(() => {});
-      getRemoteApprovalConfig()
-        .then((config) => {
-          setApprovalConfig(config);
-          setApprovalError(null);
-        })
-        .catch(() => {
-          setApprovalError("Agent 未连接，暂时无法读取远程审批设置。");
-        });
     }
   }, [open]);
 
@@ -41,31 +21,13 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   const pct = Math.round(scale * 100);
 
-  const updateApproval = async (next: RemoteApprovalConfig) => {
-    setApprovalConfig(next);
-    setApprovalError(null);
-    setApprovalSaving(true);
-    try {
-      await setRemoteApprovalConfig(next);
-    } catch (error) {
-      setApprovalError(error instanceof Error ? error.message : "保存远程审批设置失败");
-      try {
-        setApprovalConfig(await getRemoteApprovalConfig());
-      } catch {
-        // Keep the user's attempted state visible when the agent is offline.
-      }
-    } finally {
-      setApprovalSaving(false);
-    }
-  };
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="bg-app-panel border border-app-border shadow-dialog w-[420px] max-h-[calc(100vh-3rem)] overflow-y-auto select-none animate-[scaleIn_150ms_ease-out]"
+        className="bg-app-panel border border-app-border shadow-dialog w-[860px] max-w-[calc(100vw-3rem)] max-h-[85vh] flex flex-col select-none animate-[scaleIn_150ms_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -83,20 +45,16 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
         </div>
 
         {/* Body */}
-        <div className="px-4 py-5 space-y-5">
+        <div className="px-4 py-4 space-y-4 overflow-y-auto">
           {/* Font scale section */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-sm text-app-text font-mono">UI 字体大小</label>
-              <div className="flex items-center gap-2">
+          <div className="grid grid-cols-[1fr_138px] gap-4 items-center">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-sm text-app-text font-mono">界面字体</label>
                 <span className="text-sm text-app-accent font-mono tabular-nums w-10 text-right">
                   {pct}%
                 </span>
               </div>
-            </div>
-
-            {/* Slider */}
-            <div className="space-y-1">
               <input
                 type="range"
                 min={Math.round(MIN_SCALE * 100)}
@@ -115,26 +73,14 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                 <span>{Math.round(MAX_SCALE * 100)}%</span>
               </div>
             </div>
-          </div>
-
-          {/* Preview */}
-          <div className="space-y-2">
-            <span className="text-2xs text-app-text-muted uppercase tracking-wider font-mono">预览</span>
-            <div className="border border-app-border bg-[var(--app-cmd-bg)] px-4 py-3 space-y-2 rounded">
-              <p className="text-lg text-app-text font-mono">这是标题文字</p>
-              <p className="text-base text-app-text-dim font-mono">这是正文内容，用于预览字体大小变化效果。</p>
-              <p className="text-xs text-app-text-muted font-mono">这是辅助说明文字 — 拖动上方滑块实时调整。</p>
+            <div className="border border-app-border bg-[var(--app-cmd-bg)] px-3 py-2 font-mono leading-tight">
+              <p className="text-sm text-app-text">标题与正文</p>
+              <p className="mt-1 text-2xs text-app-text-muted">终端字体独立调整</p>
             </div>
           </div>
 
-          {/* Terminal note */}
-          <div className="flex items-start gap-2 text-2xs text-app-text-muted font-mono bg-[var(--app-subtle)] border border-app-border px-3 py-2">
-            <span>💡</span>
-            <span>终端内字体大小请在终端面板中使用 A⁻ / A⁺ 按钮独立调整，不受此处设置影响。</span>
-          </div>
-
           {/* Token usage tracking toggle */}
-          <div className="space-y-2">
+          <div className="border-y border-app-border py-3">
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-sm text-app-text font-mono">Token 用量追踪</span>
@@ -163,77 +109,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                 />
               </button>
             </div>
-            {trackingEnabled && (
-              <div className="text-2xs text-app-text-muted font-mono bg-[var(--app-subtle)] border border-app-border px-3 py-1.5">
-                数据保存在 ~/.kn/usage.jsonl，完全本地，不会上传。
-              </div>
-            )}
-          </div>
-
-          {/* Remote approval */}
-          <div className="space-y-3 border-t border-app-border pt-4">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <span className="text-sm text-app-text font-mono">远程审批</span>
-                <p className="text-2xs text-app-text-muted font-mono mt-0.5">
-                  仅转发结构化工具权限请求，不识别终端中的 yes/no 提示。
-                </p>
-              </div>
-              <button
-                disabled={approvalSaving}
-                onClick={() => updateApproval({ ...approvalConfig, enabled: !approvalConfig.enabled })}
-                className={`relative shrink-0 w-9 h-5 rounded-full transition-colors duration-200 disabled:opacity-50 ${
-                  approvalConfig.enabled ? "bg-app-accent" : "bg-[var(--app-border)]"
-                }`}
-                aria-label="切换远程审批"
-              >
-                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-[var(--app-bg)] border border-app-border transition-all duration-200 ${approvalConfig.enabled ? "left-4" : "left-0.5"}`} />
-              </button>
-            </div>
-
-            <div className={`space-y-3 ${approvalConfig.enabled ? "" : "opacity-55"}`}>
-              {REMOTE_APPROVAL_CLI_CAPABILITIES.map((cli) => (
-                <div key={cli.id} className="border border-app-border bg-[var(--app-subtle)] px-3 py-2 space-y-1.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs font-mono text-app-text">{cli.name}</span>
-                    <select
-                      value={approvalConfig[cli.id]}
-                      disabled={!approvalConfig.enabled || approvalSaving}
-                      onChange={(event) => updateApproval({ ...approvalConfig, [cli.id]: event.target.value as ApprovalMode })}
-                      className="max-w-[154px] bg-[var(--app-input)] border border-app-border px-2 py-1 text-2xs text-app-text font-mono disabled:cursor-not-allowed"
-                    >
-                      {cli.modes.map((mode) => <option key={mode} value={mode}>{APPROVAL_MODE_LABEL[mode]}</option>)}
-                    </select>
-                  </div>
-                  <p className="text-2xs font-mono text-app-text-muted leading-relaxed">{cli.detail}</p>
-                </div>
-              ))}
-              <div className="space-y-2 pt-1">
-                <span className="text-2xs uppercase tracking-wider font-mono text-app-text-muted">kn 高风险拦截规则</span>
-                {REMOTE_APPROVAL_RULES.map((rule) => (
-                  <label key={rule.id} className="flex items-start gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={approvalConfig.rules[rule.id]}
-                      disabled={!approvalConfig.enabled || approvalSaving}
-                      onChange={(event) => updateApproval({
-                        ...approvalConfig,
-                        rules: { ...approvalConfig.rules, [rule.id]: event.target.checked },
-                      })}
-                      className="mt-0.5 accent-[var(--app-accent)]"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-2xs font-mono text-app-text-dim">{rule.label}</span>
-                      <span className="block text-2xs font-mono text-app-text-muted mt-0.5">{rule.detail}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <p className="text-2xs font-mono text-app-text-muted bg-[var(--app-subtle)] border border-app-border px-3 py-2">
-              系统 Hook 会持续保留；关闭功能只让 Agent 原样放行，不会删除或改写你的其他 Hook。
-            </p>
-            {approvalError && <p className="text-2xs font-mono text-app-red">{approvalError}</p>}
+            {trackingEnabled && <p className="mt-1.5 text-2xs text-app-text-muted font-mono">数据只保存在本机。</p>}
           </div>
         </div>
 

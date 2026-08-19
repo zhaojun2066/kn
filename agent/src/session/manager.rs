@@ -63,7 +63,6 @@ impl SessionManager {
         tool: String,
         profile: Option<String>,
         cwd: String,
-        project_id: Option<u64>,
         kind: SessionKind,
     ) -> Result<ManagedSession> {
         let _guard = self.create_mutex.lock().await;
@@ -87,7 +86,6 @@ impl SessionManager {
             tool,
             profile,
             cwd,
-            project_id,
             cols: 80,
             rows: 24,
             viewport_owner,
@@ -907,7 +905,6 @@ mod tests {
                 "bash".into(),
                 None,
                 "/tmp".into(),
-                None,
                 SessionKind::Native,
             )
             .await
@@ -934,7 +931,6 @@ mod tests {
                 "bash".into(),
                 None,
                 "/tmp".into(),
-                None,
                 SessionKind::Native,
             )
             .await
@@ -965,7 +961,6 @@ mod tests {
                 "claude".into(),
                 Some("work".into()),
                 "/tmp".into(),
-                None,
                 SessionKind::Relay,
             )
             .await
@@ -1003,7 +998,6 @@ mod tests {
                 "claude".into(),
                 Some("work".into()),
                 "/tmp".into(),
-                None,
                 SessionKind::Relay,
             )
             .await

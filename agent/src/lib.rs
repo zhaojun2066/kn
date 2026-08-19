@@ -3,7 +3,6 @@
 #![allow(dead_code)]
 
 pub mod ack;
-pub mod approval;
 pub mod bind;
 pub mod config;
 pub mod delivery_outbox_store;

@@ -33,7 +33,6 @@
 //! | relay_output       | nid, data                          | Forward desktop-owned PTY output         |
 //! | poll_relay_input   | nid                                | Drain queued iOS input for Relay session |
 //! | task_complete_event| Stop hook payload                  | Report completed remote AI turn          |
-//! | approval_request  | Structured PermissionRequest/PreToolUse | Wait for a mobile approval decision     |
 //! | get_version        | —                                  | Return agent version                 |
 //! | redeem             | code                               | Redeem card code (requires binding)  |
 
@@ -156,8 +155,6 @@ pub struct IpcServer {
     wss_cancel_ref: Arc<Mutex<Option<CancellationToken>>>,
     /// ACK registry for session_created → session_created_ack correlation.
     ack_registry: Arc<AckRegistry>,
-    approval_config_dir: PathBuf,
-    approval_coordinator: Arc<crate::approval::ApprovalCoordinator>,
 }
 
 impl IpcServer {
@@ -175,8 +172,6 @@ impl IpcServer {
         outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
         wss_cancel_ref: Arc<Mutex<Option<CancellationToken>>>,
         ack_registry: Arc<AckRegistry>,
-        approval_config_dir: PathBuf,
-        approval_coordinator: Arc<crate::approval::ApprovalCoordinator>,
     ) -> Self {
         Self {
             socket_path,
@@ -193,8 +188,6 @@ impl IpcServer {
             outgoing_tx_ref,
             wss_cancel_ref,
             ack_registry,
-            approval_config_dir,
-            approval_coordinator,
         }
     }
 
@@ -300,8 +293,6 @@ impl IpcServer {
             outgoing_tx_ref: self.outgoing_tx_ref.clone(),
             wss_cancel_ref: self.wss_cancel_ref.clone(),
             ack_registry: self.ack_registry.clone(),
-            approval_config_dir: self.approval_config_dir.clone(),
-            approval_coordinator: self.approval_coordinator.clone(),
         }
     }
 }
@@ -323,8 +314,6 @@ struct IpcHandle {
     outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
     wss_cancel_ref: Arc<Mutex<Option<CancellationToken>>>,
     ack_registry: Arc<AckRegistry>,
-    approval_config_dir: PathBuf,
-    approval_coordinator: Arc<crate::approval::ApprovalCoordinator>,
 }
 
 fn unix_now_ms() -> u64 {
@@ -462,9 +451,6 @@ impl IpcHandle {
             "relay_output" => self.handle_relay_output(req).await,
             "poll_relay_input" => self.handle_poll_relay_input(req).await,
             "task_complete_event" => self.handle_task_complete_event(req).await,
-            "approval_request" => self.handle_approval_request(req).await,
-            "get_approval_config" => self.handle_get_approval_config(req).await,
-            "set_approval_config" => self.handle_set_approval_config(req).await,
             "set_remote_enabled" => self.handle_set_remote_enabled(req).await,
             "get_version" => self.handle_get_version(req).await,
             "redeem" => self.handle_redeem(req).await,
@@ -956,7 +942,6 @@ impl IpcHandle {
                 tool.to_string(),
                 profile.clone(),
                 cwd.clone(),
-                None,
                 crate::session::SessionKind::Native,
             )
             .await
@@ -1314,7 +1299,6 @@ impl IpcHandle {
                 tool.to_string(),
                 profile.clone(),
                 cwd.to_string(),
-                None,
                 crate::session::SessionKind::Relay,
             )
             .await
@@ -1604,171 +1588,6 @@ impl IpcHandle {
             ),
             Err(e) => err_response(&req.id, "WSS_SEND_FAILED", &e.to_string()),
         }
-    }
-
-    async fn handle_get_approval_config(&self, req: &IpcRequest) -> String {
-        let config = crate::approval::load_config(&self.approval_config_dir);
-        match serde_json::to_value(config) {
-            Ok(value) => ok_response(&req.id, value),
-            Err(_) => err_response(&req.id, "APPROVAL_CONFIG_ERROR", "审批配置暂时不可用"),
-        }
-    }
-
-    async fn handle_set_approval_config(&self, req: &IpcRequest) -> String {
-        let config =
-            match serde_json::from_value::<crate::approval::ApprovalConfig>(req.params.clone()) {
-                Ok(config) => config,
-                Err(error) => return err_response(&req.id, "INVALID_PARAMS", &error.to_string()),
-            };
-        if config.qoder_cn_mode == crate::approval::ApprovalMode::NativePermission {
-            return err_response(&req.id, "INVALID_PARAMS", "Qoder CLI CN 不支持原生权限审批");
-        }
-        match crate::approval::save_config(&self.approval_config_dir, &config) {
-            Ok(()) => ok_response(&req.id, serde_json::json!({"ok": true})),
-            Err(error) => err_response(&req.id, "APPROVAL_CONFIG_ERROR", &error),
-        }
-    }
-
-    /// A hook connection intentionally remains open while a mobile client
-    /// decides.  This is a structured CLI hook protocol, never a PTY prompt
-    /// parser; callers without a matching remote session pass through.
-    async fn handle_approval_request(&self, req: &IpcRequest) -> String {
-        let request = match serde_json::from_value::<crate::approval::HookApprovalRequest>(
-            req.params.clone(),
-        ) {
-            Ok(request) => request,
-            Err(error) => return err_response(&req.id, "INVALID_PARAMS", &error.to_string()),
-        };
-        let session = match self.sessions.get(request.session_id.trim()).await {
-            Ok(Some(session)) => session,
-            Ok(None) => {
-                return ok_response(
-                    &req.id,
-                    serde_json::json!({"action": "passthrough", "reason": "session_not_found"}),
-                )
-            }
-            Err(error) => return err_response(&req.id, "INTERNAL", &error.to_string()),
-        };
-        if session.status == crate::session::SessionStatus::Ended
-            || !session
-                .remote_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            return ok_response(
-                &req.id,
-                serde_json::json!({"action": "passthrough", "reason": "not_remote"}),
-            );
-        }
-        if !request.cli_type.trim().eq_ignore_ascii_case(&session.tool) {
-            return ok_response(
-                &req.id,
-                serde_json::json!({"action": "passthrough", "reason": "tool_mismatch"}),
-            );
-        }
-
-        let config = crate::approval::load_config(&self.approval_config_dir);
-        let prepared = crate::approval::prepare_request(
-            &request,
-            &config,
-            &session.cwd,
-            session.project_id,
-            unix_now_ms().min(i64::MAX as u64) as i64,
-        );
-        let Some(prepared) = prepared else {
-            return ok_response(&req.id, serde_json::json!({"action": "passthrough"}));
-        };
-
-        let receiver = match self
-            .approval_coordinator
-            .register(&prepared.event.request_key, &prepared.event.session_id)
-            .await
-        {
-            Ok(receiver) => receiver,
-            Err(error) => return err_response(&req.id, "DUPLICATE_REQUEST", &error),
-        };
-        let request_key = prepared.event.request_key.clone();
-        let session_id = prepared.event.session_id.clone();
-        let sent = self
-            .outgoing_tx_ref
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(|sender| {
-                sender
-                    .send(crate::proto::WsMessageBuilder::approval_requested(
-                        &prepared.event,
-                    ))
-                    .is_ok()
-            });
-        if !sent {
-            self.approval_coordinator.remove(&request_key).await;
-            return ok_response(
-                &req.id,
-                serde_json::json!({"action": "decision", "decision": "deny", "reason": "cloud_unavailable"}),
-            );
-        }
-
-        let mut receiver = receiver;
-        let deadline = tokio::time::sleep(std::time::Duration::from_secs(300));
-        tokio::pin!(deadline);
-        let mut session_check = tokio::time::interval(std::time::Duration::from_secs(1));
-        let mut abandoned_reason = None;
-        let (decision, should_report_applied) = loop {
-            tokio::select! {
-                outcome = &mut receiver => {
-                    match outcome {
-                        Ok(decision) => break (decision, true),
-                        // The coordinator drops a waiter only after it has
-                        // emitted approvalAbandoned (shutdown/session exit).
-                        Err(_) => break (crate::approval::ApprovalDecision::Deny, false),
-                    }
-                }
-                _ = &mut deadline => {
-                    self.approval_coordinator.remove(&request_key).await;
-                    abandoned_reason = Some("timeout");
-                    break (crate::approval::ApprovalDecision::Deny, true);
-                }
-                _ = session_check.tick() => {
-                    let active = self.sessions.get(&session_id).await
-                        .ok()
-                        .flatten()
-                        .is_some_and(|current| current.status != crate::session::SessionStatus::Ended);
-                    if !active {
-                        self.approval_coordinator.remove(&request_key).await;
-                        abandoned_reason = Some("session_ended");
-                        break (crate::approval::ApprovalDecision::Deny, true);
-                    }
-                }
-            }
-        };
-        if let Some(reason) = abandoned_reason {
-            if let Some(sender) = self.outgoing_tx_ref.lock().await.as_ref() {
-                let _ = sender.send(crate::proto::WsMessageBuilder::approval_abandoned(
-                    &request_key,
-                    &session_id,
-                    reason,
-                ));
-            }
-        }
-        if should_report_applied {
-            if let Some(sender) = self.outgoing_tx_ref.lock().await.as_ref() {
-                let _ = sender.send(crate::proto::WsMessageBuilder::approval_applied(
-                    &request_key,
-                    &session_id,
-                    decision,
-                ));
-            }
-        }
-        ok_response(
-            &req.id,
-            serde_json::json!({
-                "action": "decision",
-                "decision": match decision {
-                    crate::approval::ApprovalDecision::AllowOnce => "allowOnce",
-                    crate::approval::ApprovalDecision::Deny => "deny",
-                },
-            }),
-        )
     }
 
     async fn find_matching_remote_session(

@@ -18,8 +18,6 @@ pub struct SessionRecord {
     pub tool: String,
     pub profile: Option<String>,
     pub cwd: String,
-    #[serde(default)]
-    pub project_id: Option<u64>,
     pub cols: u16,
     pub rows: u16,
     pub created_at: String, // ISO 8601
@@ -54,7 +52,6 @@ pub fn write_session_record(session: &ManagedSession, pid: u32) -> Result<()> {
         tool: session.tool.clone(),
         profile: session.profile.clone(),
         cwd: session.cwd.clone(),
-        project_id: session.project_id,
         cols: session.cols,
         rows: session.rows,
         created_at: session.created_at.to_rfc3339(),
@@ -193,7 +190,6 @@ pub async fn recover_surviving_sessions(
                 record.tool.clone(),
                 record.profile.clone(),
                 record.cwd.clone(),
-                record.project_id,
                 kind,
             )
             .await
@@ -255,7 +251,6 @@ mod tests {
             tool: "claude".to_string(),
             profile: Some("test".to_string()),
             cwd: "/tmp".to_string(),
-            project_id: Some(42),
             cols: 80,
             rows: 24,
             viewport_owner: crate::session::types::ViewportOwner::Ios,
@@ -279,7 +274,6 @@ mod tests {
             tool: session.tool.clone(),
             profile: session.profile.clone(),
             cwd: session.cwd.clone(),
-            project_id: session.project_id,
             cols: session.cols,
             rows: session.rows,
             created_at: session.created_at.to_rfc3339(),
@@ -290,7 +284,6 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         let parsed: SessionRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.nid, "s_test123");
-        assert_eq!(parsed.project_id, Some(42));
         assert_eq!(parsed.pid, 12345);
         assert!(parsed.remote_enabled);
     }

@@ -918,7 +918,6 @@ async fn start_pty_basic(tool: &str) -> (String, Arc<kn_agent::session::SessionM
             tool.to_string(),
             None,
             cwd.clone(),
-            None,
             kn_agent::session::SessionKind::Native,
         )
         .await
@@ -996,7 +995,6 @@ async fn test_pty_input_output_roundtrip() {
             "bash".into(),
             None,
             cwd.clone(),
-            None,
             kn_agent::session::SessionKind::Native,
         )
         .await
@@ -1077,7 +1075,6 @@ async fn test_pty_kill_session() {
             "bash".into(),
             None,
             cwd.clone(),
-            None,
             kn_agent::session::SessionKind::Native,
         )
         .await
@@ -1128,7 +1125,6 @@ async fn test_pty_resize_session() {
             "bash".into(),
             None,
             cwd.clone(),
-            None,
             kn_agent::session::SessionKind::Native,
         )
         .await
@@ -1180,7 +1176,6 @@ async fn test_pty_multiple_concurrent_sessions() {
                 "bash".into(),
                 None,
                 cwd.clone(),
-                None,
                 kn_agent::session::SessionKind::Native,
             )
             .await
@@ -1579,7 +1574,6 @@ async fn test_output_fanout_subscriber_receives_data() {
             "bash".into(),
             None,
             cwd.clone(),
-            None,
             kn_agent::session::SessionKind::Native,
         )
         .await

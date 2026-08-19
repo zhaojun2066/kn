@@ -137,9 +137,9 @@ export function useSessionCommands(
     }
   }, [ctx.agentSessionsRef, ctx.childPidRef, ctx.termRefs, setTabs]);
 
-  const withSessionEnv = useCallback((cmd: string, nid: string | null, tool: string | null) => {
-    if (!nid || !tool) return cmd;
-    return `KN_SESSION_ID=${JSON.stringify(nid)} KN_CLI_TOOL=${JSON.stringify(normalizeTool(tool))} ${cmd}`;
+  const withSessionEnv = useCallback((cmd: string, nid: string | null) => {
+    if (!nid) return cmd;
+    return `KN_SESSION_ID=${JSON.stringify(nid)} ${cmd}`;
   }, []);
 
   const attachOrOpenAgentSession = useCallback(async (session: AgentSession, label?: string) => {
@@ -242,7 +242,7 @@ export function useSessionCommands(
       await new Promise((r) => setTimeout(r, PTY_COMMAND_SETTLE_MS));
       invoke("write_pty", {
         sessionId: activeLeaf.sessionId,
-        data: withSessionEnv(cmd, relayNid, parsed?.tool ?? null) + "\r",
+        data: withSessionEnv(cmd, relayNid) + "\r",
       }).catch(() => {});
 
     } catch (e) {

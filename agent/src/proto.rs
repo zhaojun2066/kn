@@ -80,15 +80,6 @@ pub enum AgentIncoming {
         event_id: String,
         status: String,
     },
-    /// A mobile client made a durable decision for a structured hook request.
-    ApprovalDecision {
-        request_key: String,
-        decision: String,
-    },
-    /// Cloud returns decisions that were made while the agent was reconnecting.
-    ApprovalSyncResult {
-        decisions: Vec<ApprovalDecisionWire>,
-    },
     /// WSS 连接确认
     Connected {
         ws_session_id: String,
@@ -102,9 +93,6 @@ pub enum AgentIncoming {
         profile: String,
         /// 工作目录
         cwd: Option<String>,
-        /// Opaque Cloud project ID, if the session was started from a project.
-        /// No project path is ever used for approval association.
-        project_id: Option<u64>,
         /// 发起用户 ID
         from_user_id: u64,
         /// 初始终端列数
@@ -422,43 +410,6 @@ impl WsEnvelope {
                     status: data["status"].as_str().unwrap_or("ok").to_string(),
                 })
             }
-            "approvalDecision" => {
-                let data = self
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| "approvalDecision 缺少 data 字段".to_string())?;
-                let request_key = data["requestKey"].as_str().unwrap_or("").trim().to_string();
-                let decision = data["decision"].as_str().unwrap_or("").trim().to_string();
-                if request_key.is_empty() || decision.is_empty() {
-                    return Err("approvalDecision 缺少 requestKey 或 decision".to_string());
-                }
-                Ok(AgentIncoming::ApprovalDecision {
-                    request_key,
-                    decision,
-                })
-            }
-            "approvalSyncResult" => {
-                let data = self
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| "approvalSyncResult 缺少 data 字段".to_string())?;
-                let decisions = data["decisions"]
-                    .as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| {
-                                serde_json::from_value::<ApprovalDecisionWire>(item.clone()).ok()
-                            })
-                            .filter(|item| {
-                                !item.request_key.trim().is_empty()
-                                    && !item.decision.trim().is_empty()
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Ok(AgentIncoming::ApprovalSyncResult { decisions })
-            }
             "start_session" => {
                 let data = self
                     .data
@@ -474,7 +425,6 @@ impl WsEnvelope {
                 Ok(AgentIncoming::StartSession {
                     profile,
                     cwd: data["cwd"].as_str().map(String::from),
-                    project_id: data["projectId"].as_u64(),
                     from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
                     cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
                     rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
@@ -593,7 +543,6 @@ impl WsEnvelope {
                 Ok(AgentIncoming::StartSession {
                     profile: required("profile")?,
                     cwd: Some(required("cwd")?),
-                    project_id: data["projectId"].as_u64(),
                     from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
                     expected_cli: Some(cli),
                     cli_args,
@@ -1151,50 +1100,6 @@ impl WsMessageBuilder {
         .to_string()
     }
 
-    pub fn approval_requested(event: &crate::approval::ApprovalRequestedEvent) -> String {
-        serde_json::json!({
-            "type": "approvalRequested",
-            "data": event,
-        })
-        .to_string()
-    }
-
-    pub fn approval_abandoned(request_key: &str, session_id: &str, reason: &str) -> String {
-        serde_json::json!({
-            "type": "approvalAbandoned",
-            "data": {
-                "requestKey": request_key,
-                "sessionId": session_id,
-                "reason": reason,
-            },
-        })
-        .to_string()
-    }
-
-    pub fn approval_applied(
-        request_key: &str,
-        session_id: &str,
-        decision: crate::approval::ApprovalDecision,
-    ) -> String {
-        serde_json::json!({
-            "type": "approvalApplied",
-            "data": {
-                "requestKey": request_key,
-                "sessionId": session_id,
-                "decision": decision,
-            },
-        })
-        .to_string()
-    }
-
-    pub fn approval_sync(request_keys: &[String]) -> String {
-        serde_json::json!({
-            "type": "approvalSync",
-            "data": { "requestKeys": request_keys },
-        })
-        .to_string()
-    }
-
     /// 上报可用 Profile 列表。
     pub fn profile_list(profiles: &[ProfileInfo]) -> String {
         serde_json::json!({
@@ -1340,13 +1245,6 @@ pub struct TaskCompleteEvent {
     pub summary: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovalDecisionWire {
-    pub request_key: String,
-    pub decision: String,
-}
-
 /// Profile 信息（上报给云端）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1458,7 +1356,6 @@ mod tests {
             "data": {
                 "profile": "my-profile",
                 "cwd": "/Users/test/project",
-                "projectId": 42,
                 "fromUserId": 100,
                 "cols": 48,
                 "rows": 18
@@ -1470,7 +1367,6 @@ mod tests {
             AgentIncoming::StartSession {
                 profile,
                 cwd,
-                project_id,
                 from_user_id,
                 cols,
                 rows,
@@ -1479,7 +1375,6 @@ mod tests {
             } => {
                 assert_eq!(profile, "my-profile");
                 assert_eq!(cwd, Some("/Users/test/project".into()));
-                assert_eq!(project_id, Some(42));
                 assert_eq!(from_user_id, 100);
                 assert_eq!(cols, 48);
                 assert_eq!(rows, 18);
@@ -1509,7 +1404,6 @@ mod tests {
             AgentIncoming::StartSession {
                 profile,
                 cwd,
-                project_id,
                 from_user_id,
                 cols,
                 rows,
@@ -1518,7 +1412,6 @@ mod tests {
             } => {
                 assert_eq!(profile, "work");
                 assert_eq!(cwd, Some("/Users/test/project".to_string()));
-                assert_eq!(project_id, None);
                 assert_eq!(from_user_id, 100);
                 assert_eq!(expected_cli, Some("qoderclicn".to_string()));
                 assert_eq!(cli_args, vec!["-r", "native_123"]);

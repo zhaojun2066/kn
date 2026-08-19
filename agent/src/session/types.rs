@@ -58,10 +58,6 @@ pub struct ManagedSession {
     pub profile: Option<String>,
     /// 工作目录
     pub cwd: String,
-    /// Cloud project identifier carried from a trusted remote session request.
-    /// This is intentionally opaque: local filesystem paths are never used as
-    /// a substitute for a project ID in approval events.
-    pub project_id: Option<u64>,
     /// 会话来源 ("ios" | "desktop")
     pub source: String,
     /// 终端列数

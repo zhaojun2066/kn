@@ -731,7 +731,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // ── ACK 注册表（session_created → session_created_ack 关联） ──
     let ack_registry = Arc::new(ack::AckRegistry::new());
-    let approval_coordinator = Arc::new(kn_agent::approval::ApprovalCoordinator::new());
 
     // Git/PR 操作会执行受限的外部命令。每个项目串行执行，但绝不能阻塞
     // WSS 入站循环，否则终端输入和心跳会在 push 或 gh 查询期间排队。
@@ -769,8 +768,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             outgoing_tx_ref.clone(),
             wss_cancel_ref.clone(),
             ack_registry.clone(),
-            cfg.config_dir.clone(),
-            approval_coordinator.clone(),
         );
         let ipc_shutdown = shutdown.clone();
         tokio::spawn(async move {
@@ -918,9 +915,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let hb_sessions = sessions.clone();
                 let hb_outgoing = outgoing_tx_ref.clone();
                 let hb_shutdown = shutdown.clone();
-                let hb_approvals = approval_coordinator.clone();
                 tokio::spawn(async move {
-                    cli_heartbeat_loop(hb_sessions, hb_outgoing, hb_approvals, hb_shutdown).await;
+                    cli_heartbeat_loop(hb_sessions, hb_outgoing, hb_shutdown).await;
                 });
                 let task_event_sessions = sessions.clone();
                 let task_event_outgoing = outgoing_tx_ref.clone();
@@ -943,7 +939,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     let session_manager = sessions.clone();
                     let input = input_merger.clone();
                     let acknowledgements = ack_registry.clone();
-                    let approvals = approval_coordinator.clone();
                     let delivery_gate = project_delivery_gate.clone();
                     let outbox = delivery_outbox.clone();
                     let session_revisions = project_session_revisions.clone();
@@ -958,7 +953,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 session_manager,
                                 input,
                                 acknowledgements,
-                                approvals,
                                 delivery_gate,
                                 outbox,
                                 session_revisions,
@@ -975,7 +969,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             session_manager,
                             input,
                             acknowledgements,
-                            approvals,
                             delivery_gate,
                             outbox,
                             session_revisions,
@@ -1039,14 +1032,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     // ── 14. 优雅关闭 ──
-    // A hook is blocked on the local socket at this point. Notify Cloud while
-    // the outgoing channel still exists, then drop its waiter so the hook
-    // fails closed instead of waiting for its full timeout.
-    let abandoned =
-        abandon_pending_approvals(&approval_coordinator, &outgoing_tx_ref, "agent_shutdown").await;
-    if abandoned > 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
     state_machine.transition(state::StateEvent::Stop).await?;
     tracing::info!("Agent 已停止");
 
@@ -1076,7 +1061,6 @@ async fn task_complete_queue_loop(
 async fn cli_heartbeat_loop(
     sessions: Arc<session::SessionManager>,
     outgoing: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
-    approval_coordinator: Arc<kn_agent::approval::ApprovalCoordinator>,
     shutdown: CancellationToken,
 ) {
     loop {
@@ -1110,13 +1094,6 @@ async fn cli_heartbeat_loop(
                     } else {
                         // 进程已死，补发 session_ended
                         tracing::warn!(nid = %s.nid, pid = p, "CLI 进程已死亡，上报 session_ended");
-                        abandon_session_approvals(
-                            &approval_coordinator,
-                            &outgoing,
-                            &s.nid,
-                            "process_exit",
-                        )
-                        .await;
                         if let Ok(Some(msg)) =
                             sessions.report_session_ended(&s.nid, "process_exit").await
                         {
@@ -1153,57 +1130,6 @@ async fn cli_heartbeat_loop(
             tracing::warn!("💓 [HEARTBEAT] WSS 通道不可用，跳过");
         }
     }
-}
-
-async fn abandon_session_approvals(
-    coordinator: &kn_agent::approval::ApprovalCoordinator,
-    outgoing: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
-    session_id: &str,
-    reason: &str,
-) -> usize {
-    let pending = coordinator.drain_session(session_id).await;
-    send_abandoned_approvals(outgoing, pending, reason).await
-}
-
-async fn abandon_pending_approvals(
-    coordinator: &kn_agent::approval::ApprovalCoordinator,
-    outgoing: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
-    reason: &str,
-) -> usize {
-    let pending = coordinator.drain_pending().await;
-    send_abandoned_approvals(outgoing, pending, reason).await
-}
-
-async fn send_abandoned_approvals(
-    outgoing: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>>,
-    pending: Vec<kn_agent::approval::AbandonedApproval>,
-    reason: &str,
-) -> usize {
-    if pending.is_empty() {
-        return 0;
-    }
-    let Some(sender) = outgoing.lock().await.as_ref().cloned() else {
-        tracing::warn!(
-            count = pending.len(),
-            reason,
-            "审批遗弃无法上报：Cloud 未连接"
-        );
-        return 0;
-    };
-    let mut sent = 0;
-    for pending in pending {
-        if sender
-            .send(proto::WsMessageBuilder::approval_abandoned(
-                &pending.request_key,
-                &pending.session_id,
-                reason,
-            ))
-            .is_ok()
-        {
-            sent += 1;
-        }
-    }
-    sent
 }
 
 fn should_dispatch_in_background(message: &proto::AgentIncoming) -> bool {
@@ -1254,7 +1180,6 @@ async fn handle_incoming(
     sessions: Arc<session::SessionManager>,
     input_merger: Arc<session::InputMerger>,
     ack_registry: Arc<ack::AckRegistry>, // Phase 3 开始使用
-    approval_coordinator: Arc<kn_agent::approval::ApprovalCoordinator>,
     project_delivery_gate: Arc<kn_agent::project_delivery::ProjectOperationGate>,
     delivery_outbox: Arc<DeliveryOutbox>,
     project_session_revisions: Arc<
@@ -1296,28 +1221,6 @@ async fn handle_incoming(
                 tracing::warn!(event_id = %event_id, status = %status, "本轮回复完成事件被 Cloud 拒收，本地队列已丢弃");
             }
         }
-        proto::AgentIncoming::ApprovalDecision {
-            request_key,
-            decision,
-        } => {
-            let Some(decision) = kn_agent::approval::ApprovalDecision::from_wire(&decision) else {
-                tracing::warn!(request_key = %request_key, "收到未知审批决定");
-                return;
-            };
-            let resolved = approval_coordinator.decide(&request_key, decision).await;
-            tracing::info!(request_key = %request_key, resolved, "收到远程审批决定");
-        }
-        proto::AgentIncoming::ApprovalSyncResult { decisions } => {
-            for item in decisions {
-                if let Some(decision) =
-                    kn_agent::approval::ApprovalDecision::from_wire(&item.decision)
-                {
-                    let _ = approval_coordinator
-                        .decide(&item.request_key, decision)
-                        .await;
-                }
-            }
-        }
         proto::AgentIncoming::DeviceHealth {
             device_id,
             request_id,
@@ -1356,12 +1259,6 @@ async fn handle_incoming(
                 ws_session_id,
                 protocol_version.unwrap_or(1)
             );
-            let pending_approvals = approval_coordinator.pending_keys().await;
-            if !pending_approvals.is_empty() {
-                if let Some(sender) = outgoing.lock().await.as_ref() {
-                    let _ = sender.send(proto::WsMessageBuilder::approval_sync(&pending_approvals));
-                }
-            }
             let outbox = delivery_outbox.clone();
             let reconnect_outgoing = outgoing.clone();
             tokio::spawn(async move {
@@ -1455,7 +1352,6 @@ async fn handle_incoming(
         proto::AgentIncoming::StartSession {
             profile,
             cwd,
-            project_id,
             from_user_id,
             cols,
             rows,
@@ -1531,7 +1427,6 @@ async fn handle_incoming(
                     resolved_tool.clone(),
                     Some(profile.clone()),
                     cwd_resolved.clone(),
-                    project_id,
                     crate::session::SessionKind::Native,
                 )
                 .await
@@ -2825,14 +2720,6 @@ async fn handle_incoming(
                         .remote_enabled
                         .load(std::sync::atomic::Ordering::Relaxed);
 
-                    abandon_session_approvals(
-                        &approval_coordinator,
-                        &outgoing,
-                        &nid,
-                        "session_killed",
-                    )
-                    .await;
-
                     match sessions.report_session_ended(&nid, &reason).await {
                         Ok(Some(msg)) => {
                             if is_remote {
@@ -2911,7 +2798,6 @@ mod tests {
             ))),
             Arc::new(session::InputMerger::new()),
             Arc::new(ack::AckRegistry::new()),
-            Arc::new(kn_agent::approval::ApprovalCoordinator::new()),
             Arc::new(kn_agent::project_delivery::ProjectOperationGate::default()),
             outbox,
             Arc::new(tokio::sync::Mutex::new(
