@@ -124,4 +124,12 @@ fi
 
 echo "[kn dev] Starting desktop Tauri dev..."
 cd "$ROOT_DIR/desktop"
+# Restart only this workspace's development binary so a previous Tauri
+# session cannot keep occupying the dev port.
+OLD_DESKTOP_PIDS="$(pgrep -f "$ROOT_DIR/target/debug/kn" || true)"
+if [ -n "$OLD_DESKTOP_PIDS" ]; then
+  echo "[kn dev] Stopping previous desktop dev process: $OLD_DESKTOP_PIDS"
+  kill $OLD_DESKTOP_PIDS 2>/dev/null || true
+  sleep 0.5
+fi
 KN_HOME="$DEV_KN_HOME" KN_NO_AGENT_RESTART=true npm run tauri dev
