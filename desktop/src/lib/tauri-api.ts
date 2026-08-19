@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ProfileList, ProfileDetail, MutationResult, HookExecutionLog } from "./types";
+import type { RemoteApprovalConfig } from "./remote-approval";
 
 export async function listProfiles(): Promise<ProfileList> {
   return invoke("list_profiles");
@@ -122,4 +123,13 @@ export async function getHookExecutionLogs(
   limit?: number,
 ): Promise<HookExecutionLog[]> {
   return invoke("get_hook_execution_logs", { hookId, limit });
+}
+
+export async function getRemoteApprovalConfig(): Promise<RemoteApprovalConfig> {
+  return invoke("agent_ipc", { method: "get_approval_config" });
+}
+
+export async function setRemoteApprovalConfig(config: RemoteApprovalConfig): Promise<void> {
+  await invoke("ensure_remote_approval_hooks");
+  await invoke("agent_ipc", { method: "set_approval_config", params: config });
 }

@@ -43,6 +43,10 @@ const TASK_COMPLETE_HOOK: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../shell/hooks/notify-task-complete.py"
 ));
+const REMOTE_APPROVAL_HOOK: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../shell/hooks/remote-approval.py"
+));
 
 pub fn ensure_shell_rc() -> Result<String, String> {
     // One-time migration from legacy ~/.claude-profiles → ~/.kn
@@ -136,6 +140,7 @@ pub fn ensure_shell_rc() -> Result<String, String> {
     // System hooks are part of the product runtime and should self-heal when
     // users edit CLI config files by hand.
     let _ = crate::usage::ensure_task_complete_hooks();
+    let _ = crate::usage::ensure_remote_approval_hooks();
 
     // ── add source line to ~/.zshrc (idempotent) ──
     let zshrc = PathBuf::from(&home).join(".zshrc");
@@ -241,6 +246,7 @@ pub fn write_builtin_hook_scripts(hooks_dir: &Path) {
         TASK_COMPLETE_HOOK,
     )
     .ok();
+    fs::write(hooks_dir.join("remote-approval.py"), REMOTE_APPROVAL_HOOK).ok();
 }
 
 // ── Helpers ──────────────────────────────────────────────────

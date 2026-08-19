@@ -552,6 +552,85 @@ pub fn ensure_task_complete_hooks() -> Result<(), String> {
     })
 }
 
+/// Install kn-owned approval hooks once and keep them installed forever.
+/// Feature toggles are evaluated by the agent at invocation time; removing a
+/// hook on toggle would risk deleting user configuration or leaving an
+/// inconsistent CLI state.
+#[tauri::command]
+pub fn ensure_remote_approval_hooks() -> Result<(), String> {
+    with_write_lock(|| {
+        with_cross_process_lock(|| {
+            let home = crate::home_dir().to_string_lossy().to_string();
+            let hooks_dir = crate::config_dir().join("hooks");
+            fs::create_dir_all(&hooks_dir).map_err(|e| format!("create hooks dir: {}", e))?;
+            crate::profile_cmd::write_builtin_hook_scripts(&hooks_dir);
+
+            let hook_cmd = format!(
+                "python3 {}/remote-approval.py",
+                hooks_dir.to_string_lossy().replace('\\', "/")
+            );
+            let claude_settings = PathBuf::from(&home).join(".claude").join("settings.json");
+            inject_json_system_hook(&claude_settings, "PermissionRequest", &hook_cmd)?;
+            inject_json_system_hook(&claude_settings, "PreToolUse", &hook_cmd)?;
+
+            let qoder_settings = PathBuf::from(&home).join(".qoder-cn").join("settings.json");
+            inject_json_system_hook(&qoder_settings, "PreToolUse", &hook_cmd)?;
+
+            let codex_config = PathBuf::from(&home).join(".codex").join("config.toml");
+            inject_codex_named_hook(
+                &codex_config,
+                "PermissionRequest",
+                &hook_cmd,
+                "remote-approval.py",
+            )?;
+            inject_codex_named_hook(&codex_config, "PreToolUse", &hook_cmd, "remote-approval.py")?;
+            Ok(())
+        })
+    })
+}
+
+/// A narrow system-hook upsert that never removes or rewrites unrelated user
+/// hooks.  The command path is stable under `~/.kn/hooks`, so updating the
+/// script itself is enough for future app versions.
+fn inject_json_system_hook(path: &Path, event_name: &str, hook_cmd: &str) -> Result<(), String> {
+    let content = if path.exists() {
+        fs::read_to_string(path).map_err(|e| format!("read settings.json: {}", e))?
+    } else {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("create settings dir: {}", e))?;
+        }
+        "{}".to_string()
+    };
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("parse settings.json: {}", e))?;
+    let hooks = settings
+        .as_object_mut()
+        .ok_or("invalid settings.json")?
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+    let entries = hooks
+        .as_object_mut()
+        .ok_or("invalid hooks section")?
+        .entry(event_name)
+        .or_insert_with(|| serde_json::json!([]));
+    let items = entries.as_array_mut().ok_or("invalid hook event")?;
+    if !items.iter().any(|item| {
+        item["hooks"].as_array().is_some_and(|hooks| {
+            hooks
+                .iter()
+                .any(|hook| hook["command"].as_str() == Some(hook_cmd))
+        })
+    }) {
+        items.push(serde_json::json!({
+            "matcher": "",
+            "hooks": [{"type": "command", "command": hook_cmd}],
+        }));
+    }
+    let serialized = serde_json::to_string_pretty(&settings)
+        .map_err(|e| format!("serialize settings.json: {}", e))?;
+    fs::write(path, serialized).map_err(|e| format!("write settings.json: {}", e))
+}
+
 fn inject_json_hook(path: &Path, event_name: &str, hook_cmd: &str) -> Result<(), String> {
     let content = if path.exists() {
         fs::read_to_string(path).unwrap_or_else(|_| "{}".into())

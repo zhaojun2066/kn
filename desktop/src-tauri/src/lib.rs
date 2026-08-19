@@ -536,6 +536,7 @@ pub fn run() {
             usage::set_usage_tracking_enabled,
             usage::ensure_usage_hooks,
             usage::ensure_task_complete_hooks,
+            usage::ensure_remote_approval_hooks,
             skill_manager::scan_skills,
             skill_manager::toggle_plugin,
             skill_manager::toggle_standalone_skill,

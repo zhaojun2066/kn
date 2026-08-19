@@ -50,6 +50,14 @@ fn test_all_incoming_types_parse_without_panic() {
             "error_notify",
         ),
         (r#"{"type":"profile_list_ack"}"#, "profile_list_ack"),
+        (
+            r#"{"type":"approvalDecision","data":{"requestKey":"approval-1","decision":"allowOnce"}}"#,
+            "approval_decision",
+        ),
+        (
+            r#"{"type":"approvalSyncResult","data":{"decisions":[{"requestKey":"approval-1","decision":"deny"}]}}"#,
+            "approval_sync_result",
+        ),
         // New: session_created_ack
         (
             r#"{"type":"session_created_ack","data":{"sessionId":"s_abc123","status":"ok"}}"#,
@@ -297,6 +305,8 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
         AgentIncoming::CliHeartbeatAck { .. } => "cli_heartbeat_ack",
         AgentIncoming::ProjectDeliveryAck { .. } => "project_delivery_ack",
         AgentIncoming::TaskCompletedAck { .. } => "task_completed_ack",
+        AgentIncoming::ApprovalDecision { .. } => "approval_decision",
+        AgentIncoming::ApprovalSyncResult { .. } => "approval_sync_result",
         AgentIncoming::Connected { .. } => "connected",
         AgentIncoming::StartSession { .. } => "start_session",
         AgentIncoming::Input { .. } => "input",
@@ -350,6 +360,40 @@ fn test_output_session_id_is_string() {
     assert!(parsed["data"].get("to_session_id").is_none());
     // Verify ansi_text field is present
     assert_eq!(parsed["data"]["ansi_text"], "hello world");
+}
+
+#[test]
+fn approval_builders_use_the_public_cloud_contract() {
+    let event = kn_agent::approval::ApprovalRequestedEvent {
+        request_key: "approval-1".into(),
+        session_id: "s_1".into(),
+        project_id: Some(42),
+        cli_type: "qoderclicn".into(),
+        source: "preToolUse".into(),
+        tool_name: "Apply_Patch".into(),
+        canonical_tool_type: "fileEdit".into(),
+        risk_category: Some("credentialSecurity".into()),
+        title: "审批".into(),
+        summary: "安全摘要".into(),
+        instruction_preview: "edit [已隐藏]".into(),
+        target_preview: Some(".env".into()),
+        detail_snapshot: serde_json::json!({"target": ".env"}),
+        expires_at: 123,
+    };
+    let requested: serde_json::Value =
+        serde_json::from_str(&WsMessageBuilder::approval_requested(&event)).unwrap();
+    assert_eq!(requested["type"], "approvalRequested");
+    assert_eq!(requested["data"]["projectId"], 42);
+    assert_eq!(requested["data"]["canonicalToolType"], "fileEdit");
+
+    let abandoned: serde_json::Value = serde_json::from_str(&WsMessageBuilder::approval_abandoned(
+        "approval-1",
+        "s_1",
+        "agent_shutdown",
+    ))
+    .unwrap();
+    assert_eq!(abandoned["type"], "approvalAbandoned");
+    assert_eq!(abandoned["data"]["requestKey"], "approval-1");
 }
 
 #[test]
