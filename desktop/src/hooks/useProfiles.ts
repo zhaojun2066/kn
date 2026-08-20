@@ -137,11 +137,17 @@ export function useProfiles() {
     async (profileName: string, key: string, value: string) => {
       dispatch({ type: "SET_LOADING", loading: true });
       try {
-        await api.setEnvVar(profileName, key, value);
+        const result = await api.setEnvVar(profileName, key, value);
+        if (!result.ok && result.error) {
+          dispatch({ type: "SET_ERROR", error: result.error });
+          return result;
+        }
         // Refresh selected profile to show changes
         await selectProfile(profileName);
+        return result;
       } catch (e) {
         dispatch({ type: "SET_ERROR", error: String(e) });
+        return { ok: false, error: String(e) };
       }
     },
     [selectProfile]
@@ -151,10 +157,16 @@ export function useProfiles() {
     async (profileName: string, key: string) => {
       dispatch({ type: "SET_LOADING", loading: true });
       try {
-        await api.unsetEnvVar(profileName, key);
+        const result = await api.unsetEnvVar(profileName, key);
+        if (!result.ok && result.error) {
+          dispatch({ type: "SET_ERROR", error: result.error });
+          return result;
+        }
         await selectProfile(profileName);
+        return result;
       } catch (e) {
         dispatch({ type: "SET_ERROR", error: String(e) });
+        return { ok: false, error: String(e) };
       }
     },
     [selectProfile]

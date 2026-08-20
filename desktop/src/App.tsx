@@ -50,7 +50,7 @@ import { useProjects } from "./hooks/useProjects";
 import { useProjectContext } from "./hooks/useProjectContext";
 import { useSessionScanner } from "./hooks/useSessionScanner";
 import { ProjectSidebar } from "./components/ProjectSidebar";
-import type { ProfileDetail, ProjectInfo, ScopeTab, SessionInfo } from "./lib/types";
+import type { MutationResult, ProfileDetail, ProjectInfo, ScopeTab, SessionInfo } from "./lib/types";
 import { basename } from "./lib/path-utils";
 import { showProfile, setEnvVar as setProfileEnvVar, unsetEnvVar as unsetProfileEnvVar } from "./lib/tauri-api";
 import { inferAuthMode } from "./lib/auth-metadata";
@@ -61,6 +61,12 @@ import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog"
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { EnvCheckResult } from "./lib/types";
+
+function requireMutation(result: MutationResult, fallback: string) {
+  if (!result.ok) {
+    throw new Error(result.error || fallback);
+  }
+}
 
 export function App() {
   const ctx = useProfiles();
@@ -134,6 +140,17 @@ export function App() {
   const [hookData, setHookData] = useState<HookManagerData | null>(null);
   const [hookDataLoading, setHookDataLoading] = useState(false);
   const [selectedHook, setSelectedHook] = useState<HookEntry | null>(null);
+
+  const createProfileWithEnv = useCallback(async (name: string, desc: string | undefined, env: Record<string, string>) => {
+    const addResult = await ctx.addProfile(name, desc);
+    requireMutation(addResult, `创建 "${name}" 失败`);
+    for (const [k, v] of Object.entries(env)) {
+      const envResult = await ctx.setEnvVar(name, k, v);
+      requireMutation(envResult, `写入 "${name}" 的 ${k} 失败`);
+    }
+    await ctx.loadProfiles();
+    return showProfile(name);
+  }, [ctx]);
   const [activeScope, setActiveScope] = useState<ScopeTab>("user");
   const {
     projects,
@@ -1377,19 +1394,17 @@ export function App() {
     let failed = 0;
     for (const item of items) {
       try {
-        await ctx.addProfile(item.name, "");
-        for (const [k, v] of Object.entries(item.env)) {
-          if (v) await ctx.setEnvVar(item.name, k, v);
-        }
+        const env = Object.fromEntries(Object.entries(item.env).filter(([, v]) => v));
         if (item.cli_type) {
-          await ctx.setEnvVar(item.name, "_KN_CLI_TYPE", item.cli_type);
+          env["_KN_CLI_TYPE"] = item.cli_type;
         }
         if (item.auth_mode) {
-          await ctx.setEnvVar(item.name, "_KN_AUTH_MODE", item.auth_mode);
+          env["_KN_AUTH_MODE"] = item.auth_mode;
         }
         if (item.provider_id) {
-          await ctx.setEnvVar(item.name, "_KN_PROVIDER_ID", item.provider_id);
+          env["_KN_PROVIDER_ID"] = item.provider_id;
         }
+        await createProfileWithEnv(item.name, "", env);
         imported++;
       } catch (e) {
         failed++;
@@ -1401,20 +1416,16 @@ export function App() {
     if (imported > 0 && failed === 0) addToast("success", `已导入 ${imported}/${items.length} 个 profile`);
     else if (imported > 0) addToast("success", `已导入 ${imported}/${items.length} 个 profile，${failed} 个失败`);
     else addToast("error", "导入失败，请检查配置");
-  }, [ctx]);
+  }, [ctx, createProfileWithEnv, addToast]);
 
   // Confirm import
   const handleConfirmImport = useCallback(async (name: string) => {
     if (!importData) return;
-    await ctx.addProfile(name, importData.desc || "");
-    for (const [k, v] of Object.entries(importData.env)) {
-      if (v) await ctx.setEnvVar(name, k, v);
-    }
-    await ctx.loadProfiles();
+    await createProfileWithEnv(name, importData.desc || "", Object.fromEntries(Object.entries(importData.env).filter(([, v]) => v)));
     ctx.selectProfile(name);
     setImportData(null);
     addToast("success", `已导入 "${name}"`);
-  }, [ctx, importData]);
+  }, [ctx, importData, createProfileWithEnv, addToast]);
 
   // Update flow extracted to useUpdateCheck — see app/useUpdateCheck.ts
 
@@ -1443,32 +1454,24 @@ export function App() {
     setNameDialogTitle("复制 Profile");
     setNameDialogInitial(`${src.name}-copy`);
     setNameDialogOnConfirm(() => async (newName: string) => {
-      await ctx.addProfile(newName, src.desc || `Copy of ${src.name}`);
-      for (const [k, v] of Object.entries(src.env)) {
-        await ctx.setEnvVar(newName, k, v);
-      }
-      await ctx.loadProfiles();
+      await createProfileWithEnv(newName, src.desc || `Copy of ${src.name}`, src.env);
       ctx.selectProfile(newName);
       addToast("success", `Profile "${newName}" 已复制`);
     });
     setShowNameDialog(true);
-  }, [ctx]);
+  }, [ctx, createProfileWithEnv, addToast]);
 
   const handleCopyProfileFromDetail = useCallback((src: ProfileDetail | null) => {
     if (!src) return;
     setNameDialogTitle("复制 Profile");
     setNameDialogInitial(`${src.name}-copy`);
     setNameDialogOnConfirm(() => async (newName: string) => {
-      await ctx.addProfile(newName, src.desc || `Copy of ${src.name}`);
-      for (const [k, v] of Object.entries(src.env)) {
-        await setProfileEnvVar(newName, k, v);
-      }
-      await ctx.loadProfiles();
+      await createProfileWithEnv(newName, src.desc || `Copy of ${src.name}`, src.env);
       await selectDrawerProfile(newName);
       addToast("success", `Profile "${newName}" 已复制`);
     });
     setShowNameDialog(true);
-  }, [ctx, selectDrawerProfile, addToast]);
+  }, [createProfileWithEnv, selectDrawerProfile, addToast]);
 
   // Rename profile — create new, copy env, delete old
   const handleRenameProfile = useCallback((oldName: string) => {
@@ -1482,24 +1485,16 @@ export function App() {
         addToast("error", `Profile "${newName}" 已存在`);
         return;
       }
-      const result = await ctx.addProfile(newName, src.desc || "");
-      if (!result.ok) {
-        addToast("error", result.error || "创建失败");
-        return;
-      }
-      for (const [k, v] of Object.entries(src.env)) {
-        if (v) await ctx.setEnvVar(newName, k, v);
-      }
+      await createProfileWithEnv(newName, src.desc || "", Object.fromEntries(Object.entries(src.env).filter(([, v]) => v)));
       await ctx.removeProfile(oldName);
       // Clean up session history referencing the old profile name
       rightTerminal.clearProfileHistory(oldName);
       bottomTerminal.clearProfileHistory(oldName);
-      await ctx.loadProfiles();
       ctx.selectProfile(newName);
       addToast("success", `已重命名为 "${newName}"`);
     });
     setShowNameDialog(true);
-  }, [ctx]);
+  }, [ctx, createProfileWithEnv, rightTerminal, bottomTerminal, addToast]);
 
   const handleRenameProfileFromDetail = useCallback((src: ProfileDetail | null) => {
     if (!src) return;
@@ -1512,23 +1507,15 @@ export function App() {
         addToast("error", `Profile "${newName}" 已存在`);
         return;
       }
-      const result = await ctx.addProfile(newName, src.desc || "");
-      if (!result.ok) {
-        addToast("error", result.error || "创建失败");
-        return;
-      }
-      for (const [k, v] of Object.entries(src.env)) {
-        if (v) await setProfileEnvVar(newName, k, v);
-      }
+      await createProfileWithEnv(newName, src.desc || "", Object.fromEntries(Object.entries(src.env).filter(([, v]) => v)));
       await ctx.removeProfile(oldName);
       rightTerminal.clearProfileHistory(oldName);
       bottomTerminal.clearProfileHistory(oldName);
-      await ctx.loadProfiles();
       await selectDrawerProfile(newName);
       addToast("success", `已重命名为 "${newName}"`);
     });
     setShowNameDialog(true);
-  }, [ctx, addToast, rightTerminal, bottomTerminal, selectDrawerProfile]);
+  }, [ctx, createProfileWithEnv, addToast, rightTerminal, bottomTerminal, selectDrawerProfile]);
 
   // ── Resize handlers (stable — never recreate during drag) ──
 
@@ -1889,18 +1876,18 @@ export function App() {
         envCheck={envCheck}
         onSetEnv={async (key, value) => {
           if (!drawerSelectedName) return;
-          await setProfileEnvVar(drawerSelectedName, key, value);
+          requireMutation(await setProfileEnvVar(drawerSelectedName, key, value), `写入 ${key} 失败`);
           if (drawerSelectedProfile && !drawerSelectedProfile.env._KN_AUTH_MODE) {
             const nextEnv = { ...drawerSelectedProfile.env, [key]: value };
             const inferred = inferAuthMode(nextEnv._KN_CLI_TYPE, nextEnv);
-            if (inferred) await setProfileEnvVar(drawerSelectedName, "_KN_AUTH_MODE", inferred);
+            if (inferred) requireMutation(await setProfileEnvVar(drawerSelectedName, "_KN_AUTH_MODE", inferred), "写入认证方式失败");
           }
           if (drawerSelectedProfile && !drawerSelectedProfile.env._KN_PROVIDER_ID) {
             const nextEnv = { ...drawerSelectedProfile.env, [key]: value };
             if (nextEnv._KN_CLI_TYPE === "codex") {
-              await setProfileEnvVar(drawerSelectedName, "_KN_PROVIDER_ID", nextEnv.OPENAI_BASE_URL ? "custom" : "openai-official");
+              requireMutation(await setProfileEnvVar(drawerSelectedName, "_KN_PROVIDER_ID", nextEnv.OPENAI_BASE_URL ? "custom" : "openai-official"), "写入供应商标识失败");
             } else if (nextEnv._KN_CLI_TYPE === "qoderclicn") {
-              await setProfileEnvVar(drawerSelectedName, "_KN_PROVIDER_ID", nextEnv.QODERCN_PERSONAL_ACCESS_TOKEN ? "qodercn-pat" : "qodercn-local-login");
+              requireMutation(await setProfileEnvVar(drawerSelectedName, "_KN_PROVIDER_ID", nextEnv.QODERCN_PERSONAL_ACCESS_TOKEN ? "qodercn-pat" : "qodercn-local-login"), "写入供应商标识失败");
             }
           }
           await selectDrawerProfile(drawerSelectedName);
@@ -1908,7 +1895,7 @@ export function App() {
         }}
         onDeleteEnv={async (key) => {
           if (!drawerSelectedName) return;
-          await unsetProfileEnvVar(drawerSelectedName, key);
+          requireMutation(await unsetProfileEnvVar(drawerSelectedName, key), `删除 ${key} 失败`);
           await selectDrawerProfile(drawerSelectedName);
           await ctx.loadProfiles();
         }}
@@ -1920,8 +1907,8 @@ export function App() {
         onDeleteHistory={(id) => rightTerminal.deleteHistory(id)}
         onClearProfileHistory={(name) => rightTerminal.clearProfileHistory(name)}
         onSetTags={async (name, tags) => {
-          if (tags) await setProfileEnvVar(name, "_KN_TAGS", tags);
-          else await unsetProfileEnvVar(name, "_KN_TAGS");
+          if (tags) requireMutation(await setProfileEnvVar(name, "_KN_TAGS", tags), "写入标签失败");
+          else requireMutation(await unsetProfileEnvVar(name, "_KN_TAGS"), "删除标签失败");
           await ctx.loadProfiles();
           await selectDrawerProfile(name);
         }}
@@ -1947,11 +1934,7 @@ export function App() {
         envCheck={envCheck}
         existingNames={ctx.profiles.map((p) => p.name)}
         onAdd={async (name, desc, env) => {
-          await ctx.addProfile(name, desc);
-          for (const [k, v] of Object.entries(env)) {
-            await ctx.setEnvVar(name, k, v);
-          }
-          await ctx.loadProfiles();
+          await createProfileWithEnv(name, desc, env);
           ctx.selectProfile(name);
           addToast("success", `Profile "${name}" 创建成功`);
         }}
