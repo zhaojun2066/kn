@@ -262,6 +262,17 @@ if grep -q '^codex-login$' "$AUTH_HOME/codex-args.txt"; then
 else
     pass "ai codex <local-login-profile> consumes profile name"
 fi
+rm -f "$AUTH_HOME/codex-args.txt"
+set +e
+missing_output=$(HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" ai codex codex-missing 2>&1 >/dev/null)
+missing_rc=$?
+set -e
+[ "$missing_rc" != "0" ] && echo "$missing_output" | grep -q "Profile 'codex-missing' not found" \
+    && pass "ai codex <missing-profile> errors instead of leaking argument" \
+    || fail "ai codex <missing-profile> did not error cleanly"
+[ ! -f "$AUTH_HOME/codex-args.txt" ] \
+    && pass "ai codex <missing-profile> does not launch Codex" \
+    || fail "ai codex <missing-profile> launched Codex"
 
 HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile qoderclicn qoder-token >/dev/null \
     && pass "QoderCN token profile injects QODERCN_PERSONAL_ACCESS_TOKEN" \

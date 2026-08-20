@@ -479,6 +479,8 @@ _ai_direct() {
                     _ai_launch_with_profile "$tool" "$profile_name" "$@"
                     return
                 fi
+                echo "Profile '$1' not found. Use 'ai $tool' to launch with the default profile." >&2
+                return 1
             fi
 
             # Check for project-level .ai-profile file
@@ -543,11 +545,8 @@ ai() {
                 if _profile_exists "$profile"; then
                     shift 2
                 else
-                    if [ -f "$CONFIG" ] && grep -q "^  ${profile}:" "$CONFIG" 2>/dev/null; then
-                        echo "Profile '$profile' exists but could not be read." >&2
-                        return 1
-                    fi
-                    profile=""
+                    echo "Profile '$profile' not found. Use 'ai $tool' to launch with the default profile." >&2
+                    return 1
                 fi
             else
                 local def
