@@ -208,7 +208,7 @@ fn cli_install_options(name: &str) -> Vec<InstallOption> {
                 "manual",
                 "官方/手动安装",
                 None,
-                "如你通过 Qoder 官方安装器或其他渠道安装，请确保 qoderclicn 在 PATH 中。",
+                "如你通过 QoderCN 官方安装器或其他渠道安装，请确保 qoderclicn 在 PATH 中。",
                 false,
                 &["macos"],
             ),
@@ -285,7 +285,7 @@ pub fn check_environment() -> EnvCheckResult {
 
     push_cli_item(&mut items, "claude", "Claude Code");
     push_cli_item(&mut items, "codex", "Codex");
-    push_cli_item(&mut items, "qoderclicn", "Qoder");
+    push_cli_item(&mut items, "qoderclicn", "QoderCN");
 
     // Shell wrapper
     let kn_dir = home.join(".kn");
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_qoder_install_command_is_consistent() {
-        let item = cli_missing_item("qoderclicn", "Qoder");
+        let item = cli_missing_item("qoderclicn", "QoderCN");
         assert_eq!(
             item.install_cmd.as_deref(),
             Some("npm i -g @qodercn-ai/qoderclicn")

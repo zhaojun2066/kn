@@ -10,6 +10,8 @@ import type { SessionRecord } from "../hooks/useTerminal";
 import { shortenPath } from "../lib/path-utils";
 import { formatShortcut } from "../utils/shortcut";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { cliDisplayName } from "../lib/cli-constants";
+import { authModeLabel, inferAuthMode, isSystemEnvKey } from "../lib/auth-metadata";
 
 
 interface MainPanelProps {
@@ -37,19 +39,13 @@ interface MainPanelProps {
 /* ── Helpers ─────────────────────────────────────────────── */
 
 /* ── Tool name mapping ──────────────────────────────────── */
-const TOOL_DISPLAY_NAMES: Record<string, string> = {
-  claude: "Claude Code",
-  codex: "Codex CLI",
-  qoderclicn: "Qoder CLI (国内版)",
-};
-
 /* ── Detect tool from env vars ──────────────────────────── */
 function detectTools(env: Record<string, string>): string | null {
   // Explicit stored type takes priority
   if (env._KN_CLI_TYPE && env._KN_CLI_TYPE !== "both") return env._KN_CLI_TYPE;
   // Heuristic fallback
   const keys = Object.keys(env).map((k) => k.toUpperCase());
-  // Qoder uses OPENAI_API_KEY + OPENAI_BASE_URL; distinguish by dashscope endpoint
+  // QoderCN uses OPENAI_API_KEY + OPENAI_BASE_URL; distinguish by dashscope endpoint
   if (env.OPENAI_BASE_URL?.includes("dashscope")) return "qoderclicn";
   if (keys.some((k) => k.startsWith("ANTHROPIC_"))) return "claude";
   if (keys.some((k) => k.startsWith("OPENAI_") || k.startsWith("OPENROUTER_"))) return "codex";
@@ -60,7 +56,7 @@ function buildCommands(name: string, env: Record<string, string>): { label: stri
   const toolId = detectTools(env);
   const cmds: { label: string; cmd: string }[] = [];
   if (toolId) {
-    const displayName = TOOL_DISPLAY_NAMES[toolId] ?? toolId;
+    const displayName = cliDisplayName(toolId);
     cmds.push({ label: displayName, cmd: `ai ${toolId} ${name}` });
   }
   return cmds;
@@ -91,7 +87,7 @@ function useCopy() {
 }
 
 /* ── EmptyState ──────────────────────────────────────── */
-function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () => void }) {
+function EmptyState({ hasProfiles, onInit, onAdd }: { hasProfiles: boolean; onInit: () => void; onAdd: () => void }) {
   if (!hasProfiles) {
     return (
       <div className="flex-1 flex items-center justify-center bg-app-bg">
@@ -105,46 +101,20 @@ function EmptyState({ hasProfiles, onInit }: { hasProfiles: boolean; onInit: () 
               管理多个 AI CLI 工具的 API 配置，一键切换服务商
             </div>
           </div>
-          <div className="text-xs text-app-text-dim font-mono text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
+          <div className="text-xs text-app-text-dim text-left space-y-1.5 bg-[var(--app-cmd-bg)] border border-app-border p-3 w-full">
             <div className="text-app-text-muted">快速开始：</div>
-            <div>1. 按 <kbd className="text-app-amber">{formatShortcut("mod+N")}</kbd> 创建第一个 profile</div>
-            <div>2. 填入 API 密钥和地址</div>
+            <div>1. 创建一条运行配置</div>
+            <div>2. 选择 API Key、Token/PAT 或账号登录</div>
             <div>3. 点击运行，选择项目目录</div>
           </div>
-          {/* Scan button — prominent CTA with glow animation + tip badge */}
-          <div className="relative">
-            <span className="absolute -top-1.5 -right-1.5 z-10 px-2 py-0.5 text-[10px] font-mono font-bold
-              bg-app-accent text-[var(--app-bg)] onboarding-tip-badge">
-              推荐
-            </span>
-            <button onClick={onInit}
-              className="text-sm text-app-text font-mono font-semibold transition-colors border-2 border-app-accent
-                bg-[var(--app-selected)] px-4 py-2.5 hover:bg-[var(--app-active)]
-                onboarding-scan-btn w-full">
-              <span className="text-app-accent opacity-70 mr-1">$</span>
-              扫描系统配置 (Claude / Codex)
+          <div className="flex gap-2 w-full">
+            <button onClick={onAdd} className="app-primary-action h-9 px-3 text-xs font-medium flex-1">
+              新建运行配置
             </button>
-          </div>
-          <div className="text-2xs text-app-text-muted mt-2">
-            点击 Toolbar 右侧 <kbd>?</kbd> 可随时重新打开此引导
-          </div>
-
-          {/* Shortcuts */}
-          <div className="text-left border border-app-border bg-[var(--app-cmd-bg)] w-full mt-2">
-            <div className="px-3 py-1 border-b border-app-border bg-[var(--app-cmd-header)]">
-              <span className="text-2xs text-app-text-muted uppercase tracking-wider">快捷键</span>
-            </div>
-            <div className="px-3 py-1.5 space-y-0.5 text-2xs font-mono">
-              {[
-                [formatShortcut("mod+N"), "新建运行配置"], ["Esc", "关闭弹窗 / 取消选中"], [formatShortcut("mod+F"), "搜索"],
-                ["Ctrl+`", "开关终端"], [formatShortcut("mod+K"), "快捷键帮助"], ["↑↓", "终端历史命令"],
-              ].map(([key, desc]) => (
-                <div key={key} className="flex justify-between">
-                  <span className="text-app-text-muted">{desc}</span>
-                  <kbd className="text-app-text-dim">{key}</kbd>
-                </div>
-              ))}
-            </div>
+            <button onClick={onInit}
+              className="h-9 px-3 text-xs text-app-text border border-app-border bg-[var(--app-input)] hover:bg-[var(--app-hover)] transition-colors flex-1">
+              扫描明确凭据
+            </button>
           </div>
         </div>
       </div>
@@ -278,11 +248,11 @@ export function ProjectGuide({
         {/* CTA */}
         <button
           onClick={onAddProject}
-          className="text-sm text-app-text font-mono font-semibold transition-colors border-2 border-app-amber
-            bg-[var(--app-selected)] px-4 py-2.5 hover:bg-[var(--app-active)]
-            w-full flex items-center justify-center gap-2"
+          className="text-sm text-white font-semibold transition-colors border border-app-accent
+            bg-app-accent px-4 py-2.5 hover:bg-app-accent-dim hover:border-app-accent-dim
+            w-full flex items-center justify-center gap-2 rounded-md shadow-sm"
         >
-          <Plus size={14} className="text-app-amber" />
+          <Plus size={14} />
           注册项目
         </button>
 
@@ -362,13 +332,13 @@ function CommandBlock({
 
   // Extract tool ID from first command for breakdown display
   const toolId = commands.length > 0 ? commands[0].cmd.split(/\s+/)[1] ?? null : null;
-  const toolDisplayName = toolId ? (TOOL_DISPLAY_NAMES[toolId] ?? toolId) : null;
+  const toolDisplayName = toolId ? cliDisplayName(toolId) : null;
 
   // Check if the tool is installed
   const toolItem = toolId ? envCheck?.items?.find((item) => item.name === toolId) : null;
   const toolMissing = !!toolItem && toolItem.status !== "ok";
   const toolInstallCmd = toolItem ? recommendedInstallCommand(toolItem) : null;
-  const toolMissingHint = toolItem?.detail || (toolId ? `未安装 ${TOOL_DISPLAY_NAMES[toolId] ?? toolId}` : "未安装 CLI 工具");
+  const toolMissingHint = toolItem?.detail || (toolId ? `未安装 ${cliDisplayName(toolId)}` : "未安装 CLI 工具");
 
   return (
     <div className="mt-3 bg-[var(--app-cmd-bg)] select-none border-y border-app-border">
@@ -733,10 +703,11 @@ function TagsRow({ profile, allTags, onSetTags }: { profile: ProfileDetail; allT
 
 /* ── MainPanel ──────────────────────────────────────────── */
 export function MainPanel({ profile, hasProfiles, allTags, history, envCheck, onSetEnv, onDeleteEnv, onPasteCommand, onSplitCommand, onRunProfile, onRenameProfile, onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearProfileHistory, onInit, onSetTags, onAdd }: MainPanelProps) {
-  if (!profile) return <EmptyState hasProfiles={hasProfiles} onInit={onInit} />;
+  if (!profile) return <EmptyState hasProfiles={hasProfiles} onInit={onInit} onAdd={onAdd} />;
 
-  const envCount = Object.keys(profile.env).length;
+  const envCount = Object.keys(profile.env).filter((k) => !isSystemEnvKey(k)).length;
   const commands = buildCommands(profile.name, profile.env);
+  const authMode = inferAuthMode(detectTools(profile.env) ?? undefined, profile.env);
 
   // Confirm dialog states for history deletion
   const [clearConfirm, setClearConfirm] = useState(false);
@@ -766,6 +737,11 @@ export function MainPanel({ profile, hasProfiles, allTags, history, envCheck, on
           {profile.is_default && (
             <Badge variant="primary">
               <Star size={10} className="fill-current" />默认
+            </Badge>
+          )}
+          {authMode && (
+            <Badge variant="default">
+              {authModeLabel(authMode)}
             </Badge>
           )}
         </div>

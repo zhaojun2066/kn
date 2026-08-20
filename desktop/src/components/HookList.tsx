@@ -1,10 +1,11 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
-  ChevronRight, Terminal, Lock, Plus, Search, Store,
-  Circle, Filter, ChevronDown, X, Play, Ban, Trash2,
+  ChevronRight, Terminal, Plus, Search, Store,
+  Filter, ChevronDown, X, Play, Ban, Trash2,
   Ellipsis, CheckSquare, Square, Copy, ArrowRight, ArrowLeft, Folder,
 } from "lucide-react";
 import { SearchInput } from "./common/SearchInput";
+import { ListRow } from "./common/ListRow";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Dialog } from "./common/Dialog";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -146,110 +147,36 @@ function SectionHeader({
   );
 }
 
-/* ──────────────────── ListRow ──────────────────── */
-
-function ListRow({
-  hook,
-  selected,
-  checked,
-  showCheck,
-  noCheck,
-  onClick,
-  onContextMenu,
-}: {
-  hook: HookEntry;
-  selected: boolean;
-  checked: boolean;
-  showCheck: boolean;
-  noCheck?: boolean;
-  onClick: (e: React.MouseEvent) => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
-}) {
+function getHookRowText(hook: HookEntry) {
   const cmdShort = hook.command.length > 35
     ? hook.command.slice(0, 35) + "..."
     : hook.command;
+  return {
+    primary: hook.name || hook.matcher || hook.eventType,
+    secondary: hook.name ? (hook.matcher || "") : cmdShort,
+  };
+}
 
-  const primaryLabel = hook.name || hook.matcher || hook.eventType;
-  const secondaryLabel = hook.name
-    ? (hook.matcher || "")
-    : cmdShort;
-
-  const isSystem = hook.source === "system";
-
+function getHookBadges(hook: HookEntry) {
   return (
-    <div
-      onClick={onClick}
-      onContextMenu={onContextMenu}
-      className={`flex items-center gap-2 h-10 cursor-pointer select-none
-        transition-all duration-100 ease-out group
-        ${selected
-          ? "bg-[var(--app-selected)] border-l-[3px] border-l-[var(--app-accent)] text-[var(--app-text)]"
-          : checked
-            ? "bg-[var(--app-hover)] border-l-[3px] border-l-[var(--app-amber)] text-[var(--app-text)]"
-            : "border-l-[3px] border-l-transparent text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]"
-        }
-        pl-3 pr-2`}
-      style={selected ? { boxShadow: "inset 0 0 8px var(--app-glow)" } : undefined}
-    >
-      {/* Checkbox — hidden for system/readonly hooks */}
-      {!noCheck && (
+    <div className="flex items-center gap-1 shrink-0">
+      {(hook.projectName || hook.source === "project") && (
         <span
-          data-checkbox
-          className={`shrink-0 cursor-pointer transition-opacity duration-fast
-            ${checked || showCheck ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+          className="text-2xs text-[var(--app-amber)] bg-[var(--app-amber)]/10 px-1 py-px rounded font-mono shrink-0"
+          title="项目级"
         >
-          {checked
-            ? <CheckSquare size={12} className="text-[var(--app-amber)]" />
-            : <Square size={12} className="text-[var(--app-text-muted)]" />
-          }
+          项目
         </span>
       )}
-
-      {/* Status dot or lock icon */}
-      {isSystem ? (
-        <Lock size={10} className="text-[var(--app-text-muted)] shrink-0" />
-      ) : (
-        <Circle
-          size={5}
-          className={`shrink-0 ${
-            hook.enabled
-              ? "fill-[var(--app-accent)] text-[var(--app-accent)]"
-              : "fill-[var(--app-text-muted)] text-[var(--app-text-muted)] opacity-50"
-          }`}
-          style={hook.enabled ? { boxShadow: "0 0 4px var(--app-glow)" } : undefined}
-        />
+      {hook.inherited && (
+        <span
+          className="text-2xs text-[var(--app-accent)] bg-[var(--app-accent)]/10 px-1 py-px rounded font-mono shrink-0"
+          title="继承自用户级"
+        >
+          继承
+        </span>
       )}
-
-      {/* Content */}
-      <div className="flex-1 min-w-0">
-        <div className={`text-xs font-mono truncate ${!hook.enabled ? "opacity-60 line-through" : ""}`}>
-          {primaryLabel}
-        </div>
-        <div className="text-2xs text-[var(--app-text-muted)] font-mono truncate mt-0.5">
-          {secondaryLabel}
-        </div>
-      </div>
-
-      {/* Badges */}
-      <div className="flex items-center gap-1 shrink-0">
-        {(hook.projectName || hook.source === "project") && (
-          <span
-            className="text-2xs text-[var(--app-amber)] bg-[var(--app-amber)]/10 px-1 py-px rounded font-mono shrink-0"
-            title="项目级"
-          >
-            项目
-          </span>
-        )}
-        {hook.inherited && (
-          <span
-            className="text-2xs text-[var(--app-accent)] bg-[var(--app-accent)]/10 px-1 py-px rounded font-mono shrink-0"
-            title="继承自用户级"
-          >
-            继承
-          </span>
-        )}
-        <CliBadge cli={hook.cli} />
-      </div>
+      <CliBadge cli={hook.cli} />
     </div>
   );
 }
@@ -677,8 +604,7 @@ export function HookList({
         {/* Add Hook — always visible */}
         <button
           onClick={onAddHook}
-          className="flex items-center gap-1 px-2 py-0.5 bg-[var(--app-accent)] text-[var(--app-bg)]
-            text-2xs font-mono hover:opacity-90 transition-opacity shrink-0"
+          className="app-primary-action flex items-center gap-1 px-2 py-0.5 text-2xs font-mono shrink-0 rounded-md"
           title="添加 Hook"
         >
           <Plus size={12} />
@@ -869,10 +795,15 @@ export function HookList({
                 />
                 {!isCollapsed && hooks.map((hook) => {
                   const isSystem = hook.source === "system";
+                  const rowText = getHookRowText(hook);
                   return (
                   <ListRow
                     key={hook.id}
-                    hook={hook}
+                    label={rowText.primary}
+                    secondary={rowText.secondary}
+                    badge={getHookBadges(hook)}
+                    enabled={hook.enabled}
+                    readonly={isSystem}
                     selected={selectedId === hook.id}
                     checked={isSystem ? false : selectedSet.has(hook.id)}
                     showCheck={isSystem ? false : showBatch}

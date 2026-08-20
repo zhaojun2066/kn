@@ -47,8 +47,7 @@ export function ActivityBar({ active, onChange }: ActivityBarProps) {
             {/* Left edge accent bar — visible when active */}
             {isActive && (
               <span
-                className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-[var(--app-accent)]"
-                style={{ boxShadow: "0 0 6px var(--app-glow)" }}
+                className="absolute left-1 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-full bg-[var(--app-accent)]"
               />
             )}
             <Icon size={18} strokeWidth={isActive ? 2 : 1.5} />
@@ -56,9 +55,10 @@ export function ActivityBar({ active, onChange }: ActivityBarProps) {
             {/* Tooltip — slides in from the left on hover */}
             <span
               className="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2 py-1
-                text-2xs font-mono whitespace-nowrap
+                text-2xs font-medium whitespace-nowrap
                 bg-[var(--app-panel)] text-[var(--app-text)]
                 border border-[var(--app-border)] shadow-panel
+                rounded-md
                 opacity-0 group-hover:opacity-100
                 pointer-events-none z-50
                 transition-opacity duration-150 ease-out"

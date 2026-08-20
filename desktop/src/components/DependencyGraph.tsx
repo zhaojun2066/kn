@@ -32,7 +32,7 @@ interface DependencyGraphProps {
 
 // ── Visual styling constants ──
 
-import { CLI_HEX_COLORS } from "../lib/cli-constants";
+import { CLI_HEX_COLORS, CLI_LABELS } from "../lib/cli-constants";
 const CLI_COLORS: Record<string, string> = CLI_HEX_COLORS;
 
 const NODE_SHAPES: Record<string, string> = {
@@ -300,7 +300,7 @@ function Legend() {
         <span className="w-2 h-2 rounded-full" style={{ backgroundColor: CLI_HEX_COLORS.codex }} /> Codex
       </span>
       <span className="flex items-center gap-1">
-        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: CLI_HEX_COLORS.qoder }} /> Qoder
+        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: CLI_HEX_COLORS.qoder }} /> {CLI_LABELS.qoder}
       </span>
       <span className="text-[var(--app-border)]">|</span>
       <span className="flex items-center gap-1">

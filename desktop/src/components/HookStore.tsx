@@ -43,14 +43,8 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 const CATEGORY_ORDER = ["security", "quality", "automation", "session", "notification"];
 
-import { CLI_HEX_COLORS } from "../lib/cli-constants";
-const CLI_COLORS: Record<string, string> = CLI_HEX_COLORS;
-
-const CLI_LABELS: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  qoder: "Qoder",
-};
+import { cliDisplayName, cliHexColor } from "../lib/cli-constants";
+import { CLIIcon } from "./common/CLIIcon";
 
 const PLATFORM_LABELS: Record<string, string> = {
   unix: "macOS / Linux",
@@ -175,10 +169,10 @@ export function HookStore({ open, onClose, onInstalled }: HookStoreProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-[fadeIn_100ms_ease-out]"
+      className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop animate-[fadeIn_100ms_ease-out]"
       onClick={(e) => e.target === e.currentTarget && handleClose()}
     >
-      <div className="bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog w-[720px] max-h-[85vh] animate-[scaleIn_150ms_ease-out] flex flex-col">
+      <div className="app-dialog-panel bg-[var(--app-panel)] border border-[var(--app-border)] w-[720px] max-h-[85vh] animate-[scaleIn_150ms_ease-out] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--app-border)]">
           <div className="flex items-center gap-2">
@@ -314,7 +308,7 @@ export function HookStore({ open, onClose, onInstalled }: HookStoreProps) {
                             <div className="flex items-center gap-1 mt-0.5">
                               <Check size={10} className="text-[var(--app-green)]" />
                               <span className="text-2xs text-[var(--app-text-muted)] font-mono">
-                                已安装: {hook.installed.map((c) => CLI_LABELS[c] || c).join(", ")}
+                                已安装: {hook.installed.map((c) => cliDisplayName(c)).join(", ")}
                               </span>
                             </div>
                           )}
@@ -424,7 +418,8 @@ export function HookStore({ open, onClose, onInstalled }: HookStoreProps) {
                               ) : (
                                 <Trash2 size={12} />
                               )}
-                              <span>{CLI_LABELS[cli]}</span>
+                              <CLIIcon type={cli} size={13} />
+                              <span>{cliDisplayName(cli)}</span>
                             </button>
                           ) : (
                             <button
@@ -441,8 +436,9 @@ export function HookStore({ open, onClose, onInstalled }: HookStoreProps) {
                               ) : (
                                 <Download size={12} />
                               )}
-                              <span style={{ color: CLI_COLORS[cli] }}>
-                                {CLI_LABELS[cli]}
+                              <CLIIcon type={cli} size={13} />
+                              <span style={{ color: cliHexColor(cli) }}>
+                                {cliDisplayName(cli)}
                               </span>
                             </button>
                           );

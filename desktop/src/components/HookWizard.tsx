@@ -15,7 +15,7 @@ interface HookWizardProps {
 
 const CLI_TOOLS = [
   { id: "claude", name: "Claude", desc: "Claude Code" },
-  { id: "qoder", name: "Qoder", desc: "Qoder CLI" },
+  { id: "qoder", name: "QoderCN", desc: "QoderCN CLI" },
   { id: "codex", name: "Codex", desc: "OpenAI Codex" },
 ] as const;
 
@@ -148,7 +148,7 @@ function getMatcherCategory(eventType: string): string {
  *
  * Claude Code supports: command (shell), prompt (LLM eval), agent (sub-agent),
  *   http (POST JSON), mcp_tool (MCP invoke).
- * Qoder / Codex currently only support command in practice.
+ * QoderCN / Codex currently only support command in practice.
  */
 const HOOK_TYPES_BY_CLI: Record<CliId, { id: string; label: string; desc: string }[]> = {
   claude: [
@@ -332,10 +332,10 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-[fadeIn_100ms_ease-out]"
+      className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop animate-[fadeIn_100ms_ease-out]"
       onClick={(e) => e.target === e.currentTarget && handleClose()}
     >
-      <div className="bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog w-[840px] animate-[scaleIn_150ms_ease-out] flex flex-col max-h-[80vh]">
+      <div className="app-dialog-panel bg-[var(--app-panel)] border border-[var(--app-border)] w-[840px] animate-[scaleIn_150ms_ease-out] flex flex-col max-h-[80vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--app-border)]">
           <div className="flex items-center gap-2">
@@ -713,11 +713,11 @@ export function HookWizard({ open, onClose, onCreated }: HookWizardProps) {
               </button>
             )}
             {step < totalSteps - 1 ? (
-              <button onClick={handleNext} className="px-4 py-1.5 text-xs font-mono text-[var(--app-bg)] bg-[var(--app-accent)] rounded hover:opacity-90 transition-opacity">
+              <button onClick={handleNext} className="app-primary-action px-4 py-1.5 text-xs font-medium">
                 下一步
               </button>
             ) : (
-              <button onClick={handleCreate} disabled={saving} className="px-4 py-1.5 text-xs font-mono text-[var(--app-bg)] bg-[var(--app-accent)] rounded hover:opacity-90 transition-opacity disabled:opacity-50">
+              <button onClick={handleCreate} disabled={saving} className="app-primary-action px-4 py-1.5 text-xs font-medium">
                 {saving ? "创建中..." : "创建"}
               </button>
             )}

@@ -54,11 +54,11 @@ export function RedeemDialog({ onClose, agent }: RedeemDialogProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop"
       onClick={canDismiss ? onClose : undefined}
     >
       <div
-        className="bg-app-panel border border-app-border shadow-dialog w-[420px] select-none animate-[scaleIn_150ms_ease-out]"
+        className="app-dialog-panel bg-app-panel border border-app-border w-[420px] select-none animate-[scaleIn_150ms_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -105,7 +105,7 @@ export function RedeemDialog({ onClose, agent }: RedeemDialogProps) {
               <button
                 onClick={handleRedeem}
                 disabled={!code.trim()}
-                className="w-full px-3 py-2 text-sm font-mono bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity disabled:opacity-40"
+                className="app-primary-action w-full px-3 py-2 text-sm font-medium"
               >
                 确认兑换
               </button>
@@ -142,7 +142,7 @@ export function RedeemDialog({ onClose, agent }: RedeemDialogProps) {
               </div>
               <button
                 onClick={onClose}
-                className="mt-2 px-4 py-1.5 text-xs font-mono bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity"
+                className="app-primary-action mt-2 px-4 py-1.5 text-xs font-medium"
               >
                 完成
               </button>
@@ -170,7 +170,7 @@ export function RedeemDialog({ onClose, agent }: RedeemDialogProps) {
                     setPhase("input");
                     setErrorMsg(null);
                   }}
-                  className="px-4 py-1.5 text-xs font-mono bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity"
+                  className="app-primary-action px-4 py-1.5 text-xs font-medium"
                 >
                   重试
                 </button>

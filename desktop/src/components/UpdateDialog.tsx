@@ -90,8 +90,8 @@ export function UpdateDialog({
 
   const done = !downloading && progress >= 100;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-[fadeIn_100ms_ease-out]">
-      <div className="bg-app-panel border border-app-border shadow-dialog w-[480px] max-h-[85vh] flex flex-col animate-[scaleIn_150ms_ease-out]">
+    <div className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop animate-[fadeIn_100ms_ease-out]">
+      <div className="app-dialog-panel bg-app-panel border border-app-border w-[480px] max-h-[85vh] flex flex-col animate-[scaleIn_150ms_ease-out]">
 
         {/* ── Header: phase indicator ────────────────────────── */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-app-border shrink-0 bg-[var(--app-subtle)]">

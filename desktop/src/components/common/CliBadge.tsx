@@ -1,6 +1,7 @@
 import React from "react";
 import type { CliKind } from "../../lib/types";
-import { CLI_LABELS, CLI_CSS_COLORS } from "../../lib/cli-constants";
+import { cliCssColor, cliDisplayName, cliHexColor } from "../../lib/cli-constants";
+import { CLIIcon } from "./CLIIcon";
 
 interface CliBadgeProps {
   cli: CliKind | string;
@@ -8,24 +9,18 @@ interface CliBadgeProps {
   variant?: "css" | "hex";
 }
 
-const HEX: Record<string, string> = {
-  claude: "#D97706",
-  codex: "#7C3AED",
-  qoder: "#059669",
-};
-
 export const CliBadge = React.memo(function CliBadge({ cli, variant = "css" }: CliBadgeProps) {
-  const label = CLI_LABELS[cli as CliKind] || cli;
-  const color = variant === "hex" ? (HEX[cli] || "#6B7280") : (CLI_CSS_COLORS[cli as CliKind] || "var(--app-text-muted)");
+  const label = cliDisplayName(cli);
+  const color = variant === "hex" ? cliHexColor(cli) : cliCssColor(cli);
   return (
     <span
-      className="text-2xs px-1.5 py-0.5 border font-mono shrink-0"
+      className="inline-flex items-center gap-1.5 text-xs font-medium shrink-0"
       style={{
         color,
-        borderColor: color,
-        opacity: 0.7,
+        opacity: 0.92,
       }}
     >
+      <CLIIcon type={cli} size={14} />
       {label}
     </span>
   );

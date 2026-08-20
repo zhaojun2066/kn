@@ -6,6 +6,7 @@ import { ContextMenu } from "./ContextMenu";
 import { Circle, Hash, ArrowUpDown, Copy, Pencil, Trash2, Star, Tag, ChevronDown, CheckSquare, Square } from "lucide-react";
 import type { ProfileSummary } from "../lib/types";
 import { ExpandableToolbar } from "./ExpandableToolbar";
+import { authModeLabel } from "../lib/auth-metadata";
 
 interface SidebarProps {
   className?: string;
@@ -169,7 +170,7 @@ export function Sidebar({ className, profiles, selectedName, searchQuery, onSele
       <div className="px-2.5 pt-2.5 pb-2">
         <div className="flex items-center gap-1.5 mb-2.5">
           <Hash size={13} className="text-[var(--app-accent)] shrink-0" />
-          <span className="text-2xs text-[var(--app-text)] font-mono tracking-[0.15em] uppercase flex-1">
+          <span className="text-2xs text-[var(--app-text-dim)] font-semibold tracking-wide flex-1">
             运行配置
           </span>
         </div>
@@ -241,15 +242,15 @@ export function Sidebar({ className, profiles, selectedName, searchQuery, onSele
                 data-profile-index={idx}
                 onClick={(e) => handleClick(p.name, idx, e)}
                 onContextMenu={(e) => onContextMenu(e, p.name)}
-                className={`group flex items-center gap-2 mx-1 my-px px-2.5 py-1.5 cursor-pointer
+                className={`group flex items-center gap-2 mx-1.5 my-0.5 px-2.5 py-1.5 cursor-pointer rounded-lg border-l-[3px]
                   transition-all duration-fast
                   ${isSelected || isPending
-                    ? "bg-app-selected text-app-text border-l-[3px] border-l-app-accent shadow-[inset_0_0_8px_var(--app-glow)]"
+                    ? "bg-app-selected text-app-text border-l-app-accent shadow-sm"
                     : isChecked
-                      ? "bg-app-hover text-app-text border-l-[3px] border-l-app-amber"
+                      ? "bg-app-hover text-app-text border-l-app-amber"
                       : isFocused
-                        ? "bg-app-selected text-app-text border-l-[3px] border-l-app-accent shadow-[inset_0_0_8px_var(--app-glow)]"
-                        : "text-app-text border-l-[3px] border-l-transparent hover:bg-app-hover active:bg-app-active"
+                        ? "bg-app-hover text-app-text border-l-app-text-muted"
+                        : "text-app-text border-l-transparent hover:bg-app-hover active:bg-app-active"
                   }`}
               >
                 {/* Checkbox — visible on hover or when checked */}
@@ -268,16 +269,25 @@ export function Sidebar({ className, profiles, selectedName, searchQuery, onSele
                   size={7}
                   className={`shrink-0 transition-colors duration-fast ${
                     p.is_default
-                      ? "fill-app-accent text-app-accent shadow-[0_0_6px_var(--app-glow)]"
+                      ? "fill-app-accent text-app-accent"
                       : "fill-transparent text-transparent group-hover:text-app-text-muted"
                   }`}
                 />
                 {/* CLI type icon */}
                 {p.cli_type && <CLIIcon type={p.cli_type} size={16} />}
                 {/* Name */}
-                <span className={`truncate text-sm font-mono ${isSelected ? "font-medium" : "font-normal"}`}>
+                <span className={`truncate text-sm ${isSelected ? "font-semibold" : "font-medium"}`}>
                   {p.name}
                 </span>
+                {p.auth_mode && (
+                  <span className={`text-2xs px-1.5 py-0.5 font-mono shrink-0 transition-colors duration-fast
+                    ${isSelected
+                      ? "bg-[var(--app-input)] text-app-text"
+                      : "bg-[var(--app-input)] text-app-text-muted group-hover:text-app-text-dim"
+                    }`}>
+                    {authModeLabel(p.auth_mode)}
+                  </span>
+                )}
                 {/* Env count */}
                 <span className={`text-2xs px-1.5 py-0.5 font-mono tabular-nums transition-colors duration-fast
                   ${isSelected
@@ -352,7 +362,7 @@ function TagFilter({ tags, active, onChange }: { tags: string[]; active: string 
         <ChevronDown size={9} className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
-        <div className="absolute top-full left-2 right-2 z-50 bg-app-panel border border-app-border shadow-dialog py-0.5 max-h-[200px] overflow-y-auto">
+        <div className="absolute top-full left-2 right-2 z-50 bg-app-panel border border-app-border shadow-dialog py-0.5 max-h-[200px] overflow-y-auto rounded-lg">
           <button
             onClick={() => { onChange(null); setOpen(false); }}
             className={`w-full text-left px-3 py-1 text-2xs font-mono transition-colors ${!active ? "bg-app-accent text-[var(--app-bg)]" : "text-app-text-dim hover:bg-[var(--app-hover)]"}`}

@@ -136,7 +136,7 @@ fn builtin_agents(cli: &str) -> Vec<AgentEntry> {
             builtin(
                 "qoder",
                 "qoder-guide",
-                "Answers questions about Qoder CLI features",
+                "Answers questions about QoderCN CLI features",
                 &["Read", "Bash", "WebFetch", "WebSearch"],
                 None,
                 "#F59E0B",
@@ -144,7 +144,7 @@ fn builtin_agents(cli: &str) -> Vec<AgentEntry> {
             builtin(
                 "qoder",
                 "statusline-setup",
-                "Configures the Qoder status line",
+                "Configures the QoderCN status line",
                 &["Read", "Edit"],
                 None,
                 "#8B5CF6",
@@ -395,8 +395,9 @@ pub(crate) fn scan_md_agents_in_dir(
 // ── Qoder agent scanning ──
 //
 // Qoder path convention:
-//   User-level:  ~/.qoder-cn/agents/    (domestic edition)
-//   Project-level: <project>/.qoder/agents/  (NOT .qoder-cn — project uses .qoder)
+//   User-level domestic edition: ~/.qoder-cn/agents/
+//   Project-level shared by international + domestic editions: <project>/.qoder/agents/
+// Do not rename project-level paths to .qoder-cn: both editions use .qoder inside projects.
 
 fn qoder_agents_dir() -> std::path::PathBuf {
     let home = crate::commands::home_dir();
@@ -409,7 +410,7 @@ fn scan_qoder_user_agents() -> Vec<AgentEntry> {
 }
 
 fn scan_qoder_project_agents(project_root: &std::path::Path) -> Vec<AgentEntry> {
-    // Qoder project-level uses .qoder (not .qoder-cn like user-level)
+    // Project-level Qoder resources use .qoder for both international and domestic editions.
     let dir = project_root.join(".qoder").join("agents");
     let pn = crate::project_name_from_root(project_root);
     scan_md_agents_in_dir("qoder", &dir, "project", pn, Some(project_root))

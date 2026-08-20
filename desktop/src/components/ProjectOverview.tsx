@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import type { ProjectInfo, SessionInfo, ProfileSummary, CliCounts, OverviewResources, CliConfigStatus, ProjectOverviewData, ProjectVerifyConfig, ProjectVerifyCommand } from "../lib/types";
 import { CliBadge } from "./common/CliBadge";
-import { CLI_HEX_COLORS } from "../lib/cli-constants";
+import { CLI_HEX_COLORS, CLI_LABELS } from "../lib/cli-constants";
 import { relativeTime } from "../lib/time-utils";
 
 // ── Types ────────────────────────────────────────────────────
@@ -24,8 +24,6 @@ interface ProjectOverviewProps {
 
 const CLI_KEYS = ["claude", "codex", "qoder"] as const;
 type CliKey = (typeof CLI_KEYS)[number];
-
-const CLI_LABEL: Record<CliKey, string> = { claude: "Claude", codex: "Codex", qoder: "Qoder" };
 
 function cliColor(cli: string): string {
   return CLI_HEX_COLORS[cli as CliKey] || "#6B7280";
@@ -59,12 +57,12 @@ function OverviewMetricCards({ sessions, resources }: MetricCardsProps) {
         return (
           <div
             key={key}
-            className="border border-app-border bg-app-sidebar p-3 flex flex-col gap-2.5
-              transition-colors duration-fast hover:bg-[var(--app-hover)]"
+            className="border border-app-border bg-app-panel p-3 flex flex-col gap-2.5 rounded-lg shadow-sm
+              transition-colors duration-fast hover:bg-[var(--app-panel)]"
           >
             {/* Header */}
             <div className="flex items-center justify-between">
-              <span className="text-2xs font-mono text-app-text-muted tracking-wider uppercase">
+              <span className="text-2xs font-medium text-app-text-muted tracking-wide">
                 {label}
               </span>
               <span className="text-2xs text-app-text-dim opacity-40">{icon}</span>
@@ -88,13 +86,13 @@ function OverviewMetricCards({ sessions, resources }: MetricCardsProps) {
                       className="text-2xs font-mono w-10 shrink-0 text-right tabular-nums"
                       style={{ color: val > 0 ? color : "var(--app-text-muted)", opacity: val > 0 ? 0.85 : 0.4 }}
                     >
-                      {CLI_LABEL[cli]}
+                      {CLI_LABELS[cli]}
                     </span>
                     {/* Bar track */}
-                    <div className="flex-1 h-2 bg-[var(--app-border-light)] overflow-hidden">
+                    <div className="flex-1 h-2 bg-[var(--app-border-light)] overflow-hidden rounded-full">
                       {/* Bar fill */}
                       <div
-                        className="h-full transition-all duration-300 ease-out"
+                        className="h-full transition-all duration-300 ease-out rounded-full"
                         style={{
                           width: `${Math.max(pct, val > 0 ? 4 : 0)}%`,
                           backgroundColor: color,
@@ -122,7 +120,7 @@ function OverviewMetricCards({ sessions, resources }: MetricCardsProps) {
 function SectionHeader({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-3">
-      <span className="text-2xs font-mono text-app-text-muted tracking-widest uppercase shrink-0">
+      <span className="text-2xs font-semibold text-app-text-muted tracking-wide shrink-0">
         {label}
       </span>
       <div className="flex-1 h-px bg-app-border" />
@@ -152,7 +150,7 @@ function OverviewRecentSessions({ sessions, loading, profiles, onResume }: Recen
   };
   if (loading) {
     return (
-      <div className="border border-app-border bg-app-sidebar">
+      <div className="border border-app-border bg-app-panel rounded-lg overflow-hidden shadow-sm">
         {Array.from({ length: 4 }).map((_, i) => (
           <div
             key={i}
@@ -170,17 +168,17 @@ function OverviewRecentSessions({ sessions, loading, profiles, onResume }: Recen
 
   if (sessions.length === 0) {
     return (
-      <div className="border border-app-border bg-app-sidebar p-6 text-center">
-        <span className="text-xs font-mono text-app-text-muted">暂无会话记录</span>
-        <div className="text-2xs font-mono text-app-text-dim mt-1">
-          使用 Claude Code / Codex / Qoder 打开此项目后，会话将出现在这里
+      <div className="border border-app-border bg-app-panel p-6 text-center rounded-lg">
+        <span className="text-xs text-app-text-muted">暂无会话记录</span>
+        <div className="text-2xs text-app-text-dim mt-1">
+          使用 Claude Code / Codex / QoderCN 打开此项目后，会话将出现在这里
         </div>
       </div>
     );
   }
 
   return (
-    <div className="border border-app-border bg-app-sidebar">
+    <div className="border border-app-border bg-app-panel rounded-lg overflow-hidden shadow-sm">
       {sessions.slice(0, 8).map((s, i) => {
         const title = s.title.length > 48 ? s.title.slice(0, 48) + "…" : s.title;
         return (
@@ -220,8 +218,8 @@ function OverviewRecentSessions({ sessions, loading, profiles, onResume }: Recen
         );
       })}
       {sessionToResume && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
-          <div className="w-[360px] border border-app-border bg-app-panel p-5 shadow-dialog">
+        <div className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop">
+          <div className="app-dialog-panel w-[360px] border border-app-border bg-app-panel p-5">
             <h3 className="text-sm font-medium text-app-text">选择运行配置</h3>
             <p className="mt-2 text-xs text-app-text-muted">恢复会话前请选择 {sessionToResume.cli} 的运行配置。</p>
             <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value)} className="mt-4 w-full border border-app-border bg-app-input px-2 py-2 text-sm text-app-text">
@@ -230,7 +228,7 @@ function OverviewRecentSessions({ sessions, loading, profiles, onResume }: Recen
             </select>
             <div className="mt-5 flex justify-end gap-2">
               <button onClick={() => setSessionToResume(null)} className="px-3 py-1.5 text-xs text-app-text-muted">取消</button>
-              <button disabled={!selectedProfile} onClick={() => { onResume(sessionToResume, selectedProfile); setSessionToResume(null); }} className="px-3 py-1.5 text-xs text-app-bg bg-app-accent disabled:opacity-40">恢复会话</button>
+              <button disabled={!selectedProfile} onClick={() => { onResume(sessionToResume, selectedProfile); setSessionToResume(null); }} className="app-primary-action px-3 py-1.5 text-xs font-medium">恢复会话</button>
             </div>
           </div>
         </div>, document.body,
@@ -252,7 +250,7 @@ function configFileName(cli: string): string {
 
 function OverviewConfigMatrix({ matrix }: ConfigMatrixProps) {
   return (
-    <div className="border border-app-border bg-app-sidebar overflow-x-auto">
+    <div className="border border-app-border bg-app-panel overflow-x-auto rounded-lg shadow-sm">
       {/* Header row */}
       <div className="grid border-b border-app-border" style={{ gridTemplateColumns: "72px 1fr 1fr 1fr" }}>
         <div className="p-2.5" />
@@ -263,7 +261,7 @@ function OverviewConfigMatrix({ matrix }: ConfigMatrixProps) {
             style={{ borderBottomWidth: 2, borderBottomStyle: "solid", borderBottomColor: cliColor(cli) }}
           >
             <span className="text-xs font-mono font-semibold" style={{ color: cliColor(cli) }}>
-              {CLI_LABEL[cli]}
+              {CLI_LABELS[cli]}
             </span>
           </div>
         ))}
@@ -409,30 +407,30 @@ function ProjectVerifyCard({
   };
 
   return (
-    <div className="border border-app-border bg-app-sidebar p-3 space-y-3">
+    <div className="border border-app-border bg-app-panel p-3 space-y-3 rounded-lg shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="text-xs font-mono font-semibold text-app-text">验证</div>
-          <div className="text-2xs font-mono text-app-text-muted mt-0.5">
+          <div className="text-xs font-semibold text-app-text">验证</div>
+          <div className="text-2xs text-app-text-muted mt-0.5">
             环境 {envName} · {source}
           </div>
         </div>
         <button
           onClick={onEdit}
-          className="px-2 py-1 text-2xs font-mono border border-app-border text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"
+          className="px-2 py-1 text-2xs font-medium border border-app-border text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)] rounded-md"
         >
           编辑配置
         </button>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <div className="border border-app-border-light p-2">
-          <div className="text-2xs font-mono text-app-text-muted mb-1">构建</div>
+        <div className="border border-app-border-light p-2 rounded-md bg-app-subtle">
+          <div className="text-2xs text-app-text-muted mb-1">构建</div>
           <div className="text-2xs font-mono text-app-text truncate" title={env?.build?.command}>
             {summary(env?.build)}
           </div>
         </div>
-        <div className="border border-app-border-light p-2">
-          <div className="text-2xs font-mono text-app-text-muted mb-1">测试</div>
+        <div className="border border-app-border-light p-2 rounded-md bg-app-subtle">
+          <div className="text-2xs text-app-text-muted mb-1">测试</div>
           <div className="text-2xs font-mono text-app-text truncate" title={env?.test?.command}>
             {summary(env?.test)}
           </div>
@@ -576,11 +574,11 @@ function ProjectVerifyConfigEditor({
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[560px] max-w-[calc(100vw-32px)] border border-app-border bg-app-panel shadow-lg">
+    <div className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop">
+      <div className="app-dialog-panel w-[560px] max-w-[calc(100vw-32px)] border border-app-border bg-app-panel">
         <div className="px-4 py-3 border-b border-app-border">
-          <div className="text-sm font-mono font-semibold text-app-text">验证配置</div>
-          <div className="text-2xs font-mono text-app-text-muted mt-1">
+          <div className="text-sm font-semibold text-app-text">验证配置</div>
+          <div className="text-2xs text-app-text-muted mt-1">
             {project.name} · default · {loadingPlan ? "读取中" : source}
           </div>
         </div>
@@ -627,7 +625,7 @@ function ProjectVerifyConfigEditor({
             <button onClick={onClose} disabled={saving} className="px-3 py-1.5 text-2xs font-mono border border-app-border text-app-text-muted hover:text-app-text">
               取消
             </button>
-            <button onClick={handleSave} disabled={saving} className="px-3 py-1.5 text-2xs font-mono bg-app-accent text-[var(--app-bg)]">
+            <button onClick={handleSave} disabled={saving} className="app-primary-action px-3 py-1.5 text-2xs font-medium">
               保存
             </button>
           </div>
@@ -837,8 +835,7 @@ export function ProjectOverview({
               <div className="relative group/run">
                 <button
                   onClick={handleRunDefault}
-                  className="h-7 flex items-center gap-1.5 px-3 text-xs font-mono
-                    bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity"
+                  className="app-primary-action h-7 flex items-center gap-1.5 px-3 text-xs font-mono rounded-l-md"
                   title={defaultProfile ? `使用 ${defaultProfile} 运行` : "选择运行配置"}
                 >
                   <span>▶</span>
@@ -858,9 +855,7 @@ export function ProjectOverview({
               <div ref={runRef} className="relative">
                 <button
                   onClick={() => { setShowRunPicker((v) => !v); setShowDefaultPicker(false); }}
-                  className="h-7 px-1.5 text-xs font-mono
-                    bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity
-                    border-l border-[var(--app-bg)]/20"
+                  className="app-primary-action h-7 px-1.5 text-xs font-mono rounded-r-md border-l-white/25"
                 >
                   ▾
                 </button>

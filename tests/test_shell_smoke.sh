@@ -201,5 +201,66 @@ rm -rf "$(dirname "$CFG2")"
 set -e  # Re-enable after project tests
 
 echo ""
+echo "--- Codex/Qoder auth modes ---"
+
+AUTH_HOME="$TMP_DIR/auth-home"
+AUTH_BIN="$TMP_DIR/auth-bin"
+mkdir -p "$AUTH_HOME/.kn" "$AUTH_HOME/.codex" "$AUTH_BIN"
+cat > "$AUTH_HOME/.codex/auth.json" << 'YEOF'
+{"auth_mode":"chatgpt","tokens":{"id_token":"original"}}
+YEOF
+cat > "$AUTH_HOME/.kn/config.yaml" << 'YEOF'
+default: codex-key
+profiles:
+  codex-key:
+    desc: "Codex API key"
+    env:
+      _KN_CLI_TYPE: codex
+      _KN_AUTH_MODE: api_key
+      OPENAI_API_KEY: sk-codex-test
+      OPENAI_BASE_URL: https://proxy.example.com/v1
+  codex-login:
+    desc: "Codex local login"
+    env:
+      _KN_CLI_TYPE: codex
+      _KN_AUTH_MODE: local_login
+  qoder-token:
+    desc: "QoderCN token"
+    env:
+      _KN_CLI_TYPE: qoderclicn
+      _KN_AUTH_MODE: token
+      QODERCN_PERSONAL_ACCESS_TOKEN: qo-test-token
+YEOF
+cat > "$AUTH_BIN/codex" << 'YEOF'
+#!/bin/bash
+printf '%s\n' "$@" > "$HOME/codex-args.txt"
+exit 0
+YEOF
+cat > "$AUTH_BIN/qoderclicn" << 'YEOF'
+#!/bin/bash
+[ "$QODERCN_PERSONAL_ACCESS_TOKEN" = "qo-test-token" ] || exit 9
+exit 0
+YEOF
+chmod +x "$AUTH_BIN/codex" "$AUTH_BIN/qoderclicn"
+
+auth_before=$(cat "$AUTH_HOME/.codex/auth.json")
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile codex codex-key >/dev/null
+auth_after=$(cat "$AUTH_HOME/.codex/auth.json")
+[ "$auth_after" = "$auth_before" ] && pass "Codex API key profile restores auth.json" \
+    || fail "Codex API key profile did not restore auth.json"
+grep -q 'model_provider="custom"' "$AUTH_HOME/codex-args.txt" \
+    && pass "Codex API key profile selects custom provider for base URL" \
+    || fail "Codex API key profile did not select custom provider"
+
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile codex codex-login >/dev/null
+auth_login_after=$(cat "$AUTH_HOME/.codex/auth.json")
+[ "$auth_login_after" = "$auth_before" ] && pass "Codex local-login profile does not modify auth.json" \
+    || fail "Codex local-login profile modified auth.json"
+
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile qoderclicn qoder-token >/dev/null \
+    && pass "QoderCN token profile injects QODERCN_PERSONAL_ACCESS_TOKEN" \
+    || fail "QoderCN token profile did not inject token"
+
+echo ""
 echo -e "=== ${GREEN}$PASS passed${RESET}, ${RED}$FAIL failed${RESET} ==="
 [ "$FAIL" -eq 0 ] || exit 1

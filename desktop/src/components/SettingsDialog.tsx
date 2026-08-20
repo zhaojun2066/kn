@@ -23,18 +23,18 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop"
       onClick={onClose}
     >
       <div
-        className="bg-app-panel border border-app-border shadow-dialog w-[860px] max-w-[calc(100vw-3rem)] max-h-[85vh] flex flex-col select-none animate-[scaleIn_150ms_ease-out]"
+        className="app-dialog-panel bg-app-panel border border-app-border w-[520px] max-w-[calc(100vw-3rem)] max-h-[85vh] flex flex-col select-none animate-[scaleIn_150ms_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
           <div className="flex items-center gap-2">
             <Settings size={15} className="text-app-accent" />
-            <span className="text-sm font-mono text-app-text font-semibold">设置</span>
+            <span className="text-sm text-app-text font-semibold">设置</span>
           </div>
           <button
             onClick={onClose}
@@ -50,7 +50,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           <div className="grid grid-cols-[1fr_138px] gap-4 items-center">
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <label className="text-sm text-app-text font-mono">界面字体</label>
+                <label className="text-sm text-app-text font-medium">界面字体</label>
                 <span className="text-sm text-app-accent font-mono tabular-nums w-10 text-right">
                   {pct}%
                 </span>
@@ -65,7 +65,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                 className="w-full h-1.5 bg-[var(--app-input)] rounded-full appearance-none cursor-pointer
                   [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4
                   [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-app-accent
-                  [&::-webkit-slider-thumb]:shadow-[0_0_6px_var(--app-glow)] [&::-webkit-slider-thumb]:cursor-pointer
+                  [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer
                   [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-110"
               />
               <div className="flex justify-between text-2xs text-app-text-muted font-mono">
@@ -73,7 +73,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                 <span>{Math.round(MAX_SCALE * 100)}%</span>
               </div>
             </div>
-            <div className="border border-app-border bg-[var(--app-cmd-bg)] px-3 py-2 font-mono leading-tight">
+            <div className="border border-app-border bg-[var(--app-cmd-bg)] px-3 py-2 leading-tight rounded-md">
               <p className="text-sm text-app-text">标题与正文</p>
               <p className="mt-1 text-2xs text-app-text-muted">终端字体独立调整</p>
             </div>
@@ -83,8 +83,8 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           <div className="border-y border-app-border py-3">
             <div className="flex items-center justify-between">
               <div>
-                <span className="text-sm text-app-text font-mono">Token 用量追踪</span>
-                <p className="text-2xs text-app-text-muted font-mono mt-0.5">
+                <span className="text-sm text-app-text font-medium">Token 用量追踪</span>
+                <p className="text-2xs text-app-text-muted mt-0.5">
                   自动记录每次 AI 会话的 token 消耗和费用
                 </p>
               </div>
@@ -109,7 +109,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                 />
               </button>
             </div>
-            {trackingEnabled && <p className="mt-1.5 text-2xs text-app-text-muted font-mono">数据只保存在本机。</p>}
+            {trackingEnabled && <p className="mt-1.5 text-2xs text-app-text-muted">数据只保存在本机。</p>}
           </div>
         </div>
 
@@ -118,7 +118,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           <button
             onClick={() => setScale(1.0)}
             disabled={scale === 1.0}
-            className="flex items-center gap-1 px-3 py-1 text-xs font-mono transition-colors
+            className="flex items-center gap-1 px-3 py-1 text-xs font-medium transition-colors
               border border-app-border
               disabled:opacity-30 disabled:cursor-not-allowed
               bg-[var(--app-input)] hover:bg-[var(--app-hover)]
@@ -130,7 +130,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           </button>
           <button
             onClick={onClose}
-            className="px-4 py-1 text-xs font-mono text-app-text-dim hover:text-app-text
+            className="px-4 py-1 text-xs font-medium text-app-text-dim hover:text-app-text
               border border-app-border bg-[var(--app-input)] hover:bg-[var(--app-hover)]
               transition-colors"
           >

@@ -49,12 +49,14 @@ function detectCliFromPath(srcPath: string): string {
 }
 
 function userConfigDir(cli: string): string {
+  // QoderCN user-level config lives in .qoder-cn.
   if (cli === "codex" || cli === "cx") return ".codex";
   if (cli === "qoder") return ".qoder-cn";
   return ".claude";
 }
 
 function projectConfigDir(cli: string): string {
+  // Project-level Qoder resources use .qoder for both international and domestic editions.
   if (cli === "codex" || cli === "cx") return ".codex";
   if (cli === "qoder") return ".qoder";
   return ".claude";

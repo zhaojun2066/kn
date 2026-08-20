@@ -17,7 +17,11 @@ export function EnvVarTable({ env, onSet, onDelete }: EnvVarTableProps) {
   const [showAll, setShowAll] = useState(false);
 
   // System-managed keys — read-only in detail view
-  const PROTECTED_KEYS: ReadonlySet<string> = new Set(["_KN_CLI_TYPE"]);
+  const PROTECTED_KEYS: ReadonlySet<string> = new Set([
+    "_KN_CLI_TYPE",
+    "_KN_AUTH_MODE",
+    "_KN_PROVIDER_ID",
+  ]);
 
   // User vars first, protected keys at bottom
   const entries = Object.entries(env).sort(([a], [b]) => {
@@ -65,8 +69,8 @@ export function EnvVarTable({ env, onSet, onDelete }: EnvVarTableProps) {
       <div className="flex-1 overflow-y-auto">
         {entries.length === 0 && !adding ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center py-8">
-            <div className="w-12 h-12 flex items-center justify-center">
-              <Plus size={22} className="text-app-text-muted opacity-30" />
+            <div className="w-12 h-12 rounded-full bg-[var(--app-selected)] border border-app-border flex items-center justify-center shadow-sm">
+              <Plus size={22} className="text-app-accent" />
             </div>
             <div>
               <div className="text-sm text-app-text-dim">
@@ -132,7 +136,7 @@ export function EnvVarTable({ env, onSet, onDelete }: EnvVarTableProps) {
         <div className="px-2 py-1 bg-app-panel border-t border-app-border shrink-0">
           <button
             onClick={() => setAdding(true)}
-            className="flex items-center gap-1.5 px-2 py-1 text-xs text-app-text-dim font-mono
+            className="flex items-center gap-1.5 px-2 py-1 text-xs text-app-text-dim font-mono rounded-md
               hover:text-app-accent hover:bg-[var(--app-hover)] transition-colors duration-fast"
           >
             <Plus size={12} />

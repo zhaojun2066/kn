@@ -6,6 +6,7 @@ import { ContextMenu } from "./ContextMenu";
 import { Folder, Trash2, Play, FolderOpen, Plus, Star, Pin, Pencil, ArrowUpDown, ExternalLink, Terminal } from "lucide-react";
 import { Button } from "./common/Button";
 import { Dialog } from "./common/Dialog";
+import { CLI_LABELS } from "../lib/cli-constants";
 import type { ProjectInfo, ProfileSummary, ProjectStats } from "../lib/types";
 
 interface ProjectSidebarProps {
@@ -160,8 +161,8 @@ export function ProjectSidebar({
     <div className="w-[300px] shrink-0 flex flex-col bg-app-sidebar border-r border-app-border select-none">
       <div className="px-2.5 pt-2.5 pb-2">
         <div className="flex items-center gap-1.5 mb-2.5">
-          <Folder size={13} className="text-[var(--app-amber)] shrink-0" />
-          <span className="text-2xs text-[var(--app-text)] font-mono tracking-[0.15em] uppercase flex-1">
+          <Folder size={13} className="text-[var(--app-accent)] shrink-0" />
+          <span className="text-2xs text-[var(--app-text-dim)] font-semibold tracking-wide flex-1">
             项目
           </span>
         </div>
@@ -171,14 +172,20 @@ export function ProjectSidebar({
 
       {/* Toolbar */}
       <div className="flex items-center gap-1 px-2 pt-1.5 pb-1">
-        <Button variant="primary" size="sm" onClick={onAddProject} title="注册新项目">
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={onAddProject}
+          title="注册新项目"
+          className="min-w-[32px] text-white bg-app-accent border-app-accent shadow-sm hover:bg-app-accent-dim hover:border-app-accent-dim"
+        >
           <Plus size={14} />
         </Button>
 
         <button
           disabled={!selectedProject}
           onClick={() => { if (selectedProject) openProfilePicker(selectedProject); }}
-          className={`p-0.5 transition-colors duration-fast
+          className={`p-1 rounded-md transition-colors duration-fast
             ${!selectedProject
               ? "text-app-text-muted opacity-40 cursor-not-allowed"
               : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"
@@ -191,7 +198,7 @@ export function ProjectSidebar({
         <button
           disabled={!selectedProject}
           onClick={() => selectedProject && onDeleteProject(selectedProject.name)}
-          className={`p-0.5 transition-colors duration-fast
+          className={`p-1 rounded-md transition-colors duration-fast
             ${!selectedProject
               ? "text-app-text-muted opacity-40 cursor-not-allowed"
               : "text-app-text-dim hover:text-app-red hover:bg-[var(--app-hover)]"
@@ -205,7 +212,7 @@ export function ProjectSidebar({
 
         <button
           onClick={cycleSort}
-          className="p-0.5 text-[var(--app-text-muted)]/40 hover:text-[var(--app-text-muted)] transition-colors"
+          className="p-1 rounded-md text-[var(--app-text-muted)]/50 hover:text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] transition-colors"
           title={`排序: ${sortLabels[sortKey]}`}
         >
           <ArrowUpDown size={12} />
@@ -240,24 +247,24 @@ export function ProjectSidebar({
               data-project-name={p.name}
               onClick={() => onSelect(p)}
               onContextMenu={(e) => onContextMenu(e, p.name)}
-              className={`group relative mx-1.5 my-0.5 px-3 py-2.5 cursor-pointer
+              className={`group relative mx-1.5 my-0.5 px-3 py-2.5 cursor-pointer rounded-lg border-l-[3px]
                 ${isSelected
-                  ? "bg-[var(--app-selected)] text-[var(--app-text)] border-l-[3px] border-l-[var(--app-amber)] transition-none"
+                  ? "bg-[var(--app-selected)] text-[var(--app-text)] border-l-[var(--app-accent)] shadow-sm transition-none"
                   : isFocused
-                    ? "bg-[var(--app-hover)] text-[var(--app-text)] border-l-[3px] border-l-[var(--app-text-muted)] transition-all duration-150"
+                    ? "bg-[var(--app-hover)] text-[var(--app-text)] border-l-[var(--app-text-muted)] transition-all duration-150"
                     : p.pinned
-                      ? "bg-[var(--app-amber)]/5 text-[var(--app-text)] border-l-[3px] border-l-[var(--app-amber)]/40 transition-all duration-150"
-                      : "text-[var(--app-text)] border-l-[3px] border-l-transparent hover:bg-[var(--app-hover)] transition-all duration-150"
+                      ? "bg-[color-mix(in_srgb,var(--app-amber)_8%,transparent)] text-[var(--app-text)] border-l-[color-mix(in_srgb,var(--app-amber)_40%,transparent)] transition-all duration-150"
+                      : "text-[var(--app-text)] border-l-transparent hover:bg-[var(--app-hover)] transition-all duration-150"
                 }`}
             >
 
               {/* Main row: icon + name | CLI dots + stats */}
               <div className="flex items-center gap-2.5 min-w-0">
                 {isSelected
-                  ? <FolderOpen size={15} className="text-[var(--app-amber)] shrink-0" />
-                  : <Folder size={15} className="text-[var(--app-text-muted)] shrink-0 group-hover:text-[var(--app-amber)] transition-colors" />
+                  ? <FolderOpen size={15} className="text-[var(--app-accent)] shrink-0" />
+                  : <Folder size={15} className="text-[var(--app-text-muted)] shrink-0 group-hover:text-[var(--app-accent)] transition-colors" />
                 }
-                <span className={`truncate text-[13px] font-mono leading-snug flex-1 ${isSelected ? "font-semibold" : "font-normal"}`}>
+                <span className={`truncate text-[13px] leading-snug flex-1 ${isSelected ? "font-semibold" : "font-medium"}`}>
                   {p.name}
                 </span>
 
@@ -266,7 +273,7 @@ export function ProjectSidebar({
                   <div className="flex items-center gap-2 shrink-0">
                     {stats.sessionCount > 0 && (
                       <span
-                        className="flex items-center gap-1 text-[10px] font-mono text-[var(--app-text-muted)]/50 cursor-default py-1 px-1 -my-1 -mr-1"
+                        className="flex items-center gap-1 text-[10px] font-mono text-[var(--app-text-muted)]/60 cursor-default py-1 px-1 -my-1 -mr-1"
                         onMouseEnter={(e) => {
                           const rect = e.currentTarget.getBoundingClientRect();
                           setTooltip({ stats, x: rect.left, y: rect.bottom + 6 });
@@ -303,7 +310,7 @@ export function ProjectSidebar({
                   />
                 </div>
               ) : p.description ? (
-                <div className="mt-1 text-[11px] text-[var(--app-text-dim)] font-mono leading-relaxed truncate">
+                <div className="mt-1 text-[11px] text-[var(--app-text-dim)] leading-relaxed truncate">
                   {p.description}
                 </div>
               ) : null}
@@ -399,7 +406,7 @@ export function ProjectSidebar({
           {[
             { id: "claude", label: "Claude", count: tooltip.stats.claudeCount, color: "bg-[var(--app-accent)]" },
             { id: "codex", label: "Codex", count: tooltip.stats.codexCount, color: "bg-[var(--app-blue)]" },
-            { id: "qoder", label: "Qoder", count: tooltip.stats.qoderCount, color: "bg-[var(--app-purple)]" },
+            { id: "qoder", label: CLI_LABELS.qoder, count: tooltip.stats.qoderCount, color: "bg-[#65d76f]" },
           ].map((cli) => (
             <div
               key={cli.id}
@@ -458,13 +465,13 @@ export function ProjectSidebar({
                   <button
                     key={p.name}
                     onClick={() => runTargetRef.current && handleSelectProfile(runTargetRef.current, p)}
-                    className={`w-full text-left px-4 py-2 text-xs font-mono transition-colors flex items-center gap-2
+                    className={`group mx-1.5 my-0.5 w-[calc(100%-12px)] text-left px-2.5 py-2 text-xs transition-colors flex items-center gap-2 rounded-lg border-l-[3px]
                       ${isFocused
-                        ? "bg-[var(--app-selected)] text-[var(--app-text)]"
-                        : "text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]"
+                        ? "bg-[var(--app-selected)] text-[var(--app-text)] border-l-[var(--app-accent)] shadow-sm"
+                        : "text-[var(--app-text-dim)] border-l-transparent hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]"
                       }`}
                   >
-                    <span className={`truncate ${isProjectDefault || p.is_default ? "text-[var(--app-accent)] font-medium" : ""}`}>
+                    <span className={`truncate ${isFocused ? "font-semibold" : "font-medium"} ${isProjectDefault || p.is_default ? "text-[var(--app-accent)]" : ""}`}>
                       {p.name}
                     </span>
                     <div className="flex items-center gap-1.5 ml-auto shrink-0">

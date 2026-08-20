@@ -462,7 +462,8 @@ fn scan_claude_project_hooks(project_root: &std::path::Path) -> Vec<HookEntry> {
 }
 
 fn scan_qoder_project_hooks(project_root: &std::path::Path) -> Vec<HookEntry> {
-    // Qoder: user-level = ~/.qoder-cn/  ,  project-level = <project>/.qoder/
+    // QoderCN user-level uses ~/.qoder-cn/, while project-level Qoder resources
+    // are shared by international + domestic editions under <project>/.qoder/.
     let path = project_root.join(".qoder").join("settings.json");
     let pn = crate::project_name_from_root(project_root);
     scan_json_hooks("qoder", &path, "project", pn)

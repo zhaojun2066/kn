@@ -1,18 +1,19 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   Sun, Moon, Monitor, HelpCircle, RotateCw, ChevronDown, Settings, Keyboard,
-  PanelLeft, PanelBottom, PanelRight, Circle, Info, Palette, Check, Terminal, Search, History,
-  Copy, Container, Puzzle, Radio,
+  PanelLeft, PanelBottom, PanelRight, Circle, Info, Check, Terminal, Search, History,
+  Copy, Container, Puzzle, Radio, Compass,
 } from "lucide-react";
 import { formatShortcut } from "../utils/shortcut";
 import { Button } from "./common/Button";
-import { useTheme, ThemeMode, COLOR_SCHEMES } from "../hooks/useTheme";
+import { useTheme, ThemeMode } from "../hooks/useTheme";
 import type { EnvCheckItem, EnvCheckResult, ProjectInfo } from "../lib/types";
 import { itemSeverity } from "../lib/types";
 
 interface ToolbarProps {
   onToggleTerminal: () => void;
   onShowHelp: () => void;
+  onShowOnboarding: () => void;
   onShowShortcuts: () => void;
   onCheckUpdate: () => void;
   onAbout: () => void;
@@ -57,19 +58,19 @@ function DropMenu({ items, children }: { items: { label: string; icon?: React.Re
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className={`flex items-center gap-0.5 px-2 h-[24px] text-xs font-mono transition-colors duration-fast whitespace-nowrap
+        className={`flex items-center gap-1 px-2.5 h-[26px] text-xs font-medium transition-colors duration-fast whitespace-nowrap rounded-md
           ${open ? "text-app-accent bg-[var(--app-hover)]" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
       >
         {children}
         <ChevronDown size={10} className={open ? "rotate-180" : ""} />
       </button>
       {open && (
-        <div className="absolute top-full right-0 mt-1 z-50 min-w-[150px] bg-app-panel border border-app-border shadow-dialog py-0.5 whitespace-nowrap">
+        <div className="absolute top-full right-0 mt-1.5 z-[120] min-w-[150px] bg-app-panel border border-app-border shadow-dialog py-1 whitespace-nowrap rounded-lg">
           {items.map((item, i) => (
             <button
               key={i}
               onClick={() => { item.onClick(); setOpen(false); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors whitespace-nowrap"
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors whitespace-nowrap"
             >
               {item.icon && <span className="shrink-0">{item.icon}</span>}
               <span className="flex-1 text-left">{item.label}</span>
@@ -83,7 +84,7 @@ function DropMenu({ items, children }: { items: { label: string; icon?: React.Re
 }
 
 export function Toolbar({
-  onToggleTerminal, onShowHelp, onShowShortcuts,
+  onToggleTerminal, onShowHelp, onShowOnboarding, onShowShortcuts,
   onCheckUpdate,
   onAbout, onSettings,
   sidebarVisible, onToggleSidebar,
@@ -97,26 +98,26 @@ export function Toolbar({
   agentPanelOpen,
   agentStatusIcon,
 }: ToolbarProps) {
-  const { mode, colorScheme, setColorScheme, setTheme } = useTheme();
+  const { mode, setTheme } = useTheme();
   const cycleTheme = () => setTheme(themeNext[mode]);
 
   return (
-    <div className="flex items-center gap-1.5 h-[38px] px-3 bg-app-toolbar border-b border-app-border select-none shrink-0 overflow-visible">
+    <div className="relative z-40 flex items-center gap-2 h-[40px] px-4 bg-app-toolbar border-b border-app-border select-none shrink-0 overflow-visible backdrop-blur-xl">
       <div className="flex items-center gap-1 min-w-0">
-        <div className="max-w-[220px] truncate px-2 py-1 text-xs font-mono border border-app-border bg-app-panel text-app-text-dim">
+        <div className="max-w-[220px] truncate px-2.5 py-1 text-xs font-medium border border-app-border bg-app-panel text-app-text rounded-md shadow-sm">
           {activeProject ? activeProject.name : "未选择项目"}
         </div>
       </div>
 
       <div className="flex-1" />
 
-      {/* ── Right side — Quick Switcher + layout controls (VS Code style) ── */}
-      <div className="flex items-center gap-0.5 mr-1">
+      {/* ── Right side — grouped toolbar controls ── */}
+      <div className="flex items-center gap-1.5 mr-1">
         {onOpenProfiles && (
           <button
             onClick={onOpenProfiles}
             aria-label="运行配置管理"
-            className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded"
+            className="h-[26px] w-[26px] inline-flex items-center justify-center text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded-md"
             title={`运行配置管理 (${formatShortcut("mod+⇧G")})`}
           >
             <Container size={14} aria-hidden="true" />
@@ -126,7 +127,7 @@ export function Toolbar({
           <button
             onClick={onOpenResources}
             aria-label="扩展"
-            className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded"
+            className="h-[26px] w-[26px] inline-flex items-center justify-center text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded-md"
             title={`扩展 (${formatShortcut("mod+⇧Y")})`}
           >
             <Puzzle size={14} aria-hidden="true" />
@@ -136,7 +137,7 @@ export function Toolbar({
         <button
           onClick={onQuickSwitcher}
           aria-label="快速切换运行配置"
-          className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded"
+          className="h-[26px] w-[26px] inline-flex items-center justify-center text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded-md"
           title={`快速切换运行配置 (${formatShortcut("mod+P")})`}
         >
           <Search size={14} aria-hidden="true" />
@@ -145,16 +146,20 @@ export function Toolbar({
         <button
           onClick={onQuickHistory}
           aria-label="会话历史"
-          className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded"
+          className="h-[26px] w-[26px] inline-flex items-center justify-center text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors duration-fast rounded-md"
           title={`会话历史 (${formatShortcut("mod+⇧P")})`}
         >
           <History size={14} aria-hidden="true" />
         </button>
-        <div className="w-px h-4 bg-app-border mx-0.5" />
+      </div>
+
+      <div className="w-px h-5 bg-app-border mx-1" />
+
+      <div className="flex items-center gap-1.5">
         <button
           onClick={onToggleSidebar}
           aria-label={`${sidebarVisible ? "隐藏侧边栏" : "显示侧边栏"}`}
-          className={`p-1 transition-colors duration-fast rounded ${sidebarVisible ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
+          className={`h-[26px] w-[26px] inline-flex items-center justify-center transition-colors duration-fast rounded-md ${sidebarVisible ? "text-app-accent bg-[var(--app-selected)]" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
           title={`${sidebarVisible ? "隐藏侧边栏" : "显示侧边栏"} (${formatShortcut("mod+B")})`}
         >
           <PanelLeft size={14} aria-hidden="true" />
@@ -162,7 +167,7 @@ export function Toolbar({
         <button
           onClick={onToggleTerminal}
           aria-label={`${terminalVisible ? "隐藏终端面板" : "显示终端面板"}`}
-          className={`p-1 transition-colors duration-fast rounded ${terminalVisible ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
+          className={`h-[26px] w-[26px] inline-flex items-center justify-center transition-colors duration-fast rounded-md ${terminalVisible ? "text-app-accent bg-[var(--app-selected)]" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
           title={`${terminalVisible ? "隐藏终端面板" : "显示终端面板"} (${formatShortcut("mod+J")})`}
         >
           <PanelBottom size={14} aria-hidden="true" />
@@ -170,7 +175,7 @@ export function Toolbar({
         <button
           onClick={onToggleRightTerminal}
           aria-label={rightTerminalVisible ? "隐藏右侧终端" : "显示右侧终端"}
-          className={`p-1 transition-colors duration-fast rounded ${rightTerminalVisible ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
+          className={`h-[26px] w-[26px] inline-flex items-center justify-center transition-colors duration-fast rounded-md ${rightTerminalVisible ? "text-app-accent bg-[var(--app-selected)]" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
           title={rightTerminalVisible ? "隐藏右侧终端" : "显示右侧终端"}
         >
           <PanelRight size={14} aria-hidden="true" />
@@ -179,41 +184,37 @@ export function Toolbar({
 
       {/* 电脑端状态 — remote control indicator */}
       {onToggleAgent && (
-        <div className="relative group">
-          <button
-            onClick={onToggleAgent}
-            aria-label="电脑端状态"
-            className={`p-1 transition-colors duration-fast rounded ${
-              agentPanelOpen ? "text-app-accent" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"
-            }`}
-            title={`电脑端状态${agentStatusIcon ? ` (${agentStatusIcon})` : ""}`}
-          >
-            <Radio size={14} aria-hidden="true" />
-          </button>
-        </div>
+        <>
+          <div className="w-px h-5 bg-app-border mx-1" />
+          <div className="relative group">
+            <button
+              onClick={onToggleAgent}
+              aria-label="电脑端状态"
+              className={`h-[26px] w-[26px] inline-flex items-center justify-center transition-colors duration-fast rounded-md ${
+                agentPanelOpen ? "text-app-accent bg-[var(--app-selected)]" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"
+              }`}
+              title={`电脑端状态${agentStatusIcon ? ` (${agentStatusIcon})` : ""}`}
+            >
+              <Radio size={14} aria-hidden="true" />
+            </button>
+          </div>
+        </>
       )}
 
       {/* ══ Env Health Indicator — click-to-toggle diagnostic panel ══ */}
       {envCheck && (
-        <EnvPanel
-          envCheck={envCheck}
-          onInstallTool={onInstallTool}
-          onOpen={onRefreshEnvCheck}
-        />
+        <div className="ml-0.5">
+          <EnvPanel
+            envCheck={envCheck}
+            onInstallTool={onInstallTool}
+            onOpen={onRefreshEnvCheck}
+          />
+        </div>
       )}
 
-      {/* Color scheme picker — single icon + dropdown */}
-      <DropMenu items={COLOR_SCHEMES.map((s) => ({
-        label: s.label,
-        icon: <span className="w-[11px] h-[11px] shrink-0 inline-block" style={{ backgroundColor: s.color }} />,
-        onClick: () => setColorScheme(s.id),
-        hint: colorScheme === s.id ? "✓" : "",
-      }))}>
-        <Palette size={13} />
-        <span className="hidden sm:inline text-app-text-muted">配色</span>
-      </DropMenu>
-
       {/* Theme toggle */}
+      <div className="w-px h-5 bg-app-border mx-0.5" />
+
       <Button variant="ghost" size="sm" onClick={cycleTheme} title={`主题: ${themeLabel[mode]}`}>
         {themeIcons[mode]}
         <span className="hidden xl:inline text-app-text-muted">{themeLabel[mode]}</span>
@@ -222,6 +223,7 @@ export function Toolbar({
       {/* Gear menu */}
       <DropMenu items={[
         { label: "快捷键", icon: <Keyboard size={13} />, onClick: onShowShortcuts, hint: formatShortcut("mod+K") },
+        { label: "引导", icon: <Compass size={13} />, onClick: onShowOnboarding },
         { label: "帮助", icon: <HelpCircle size={13} />, onClick: onShowHelp },
         { label: "检查更新", icon: <RotateCw size={13} />, onClick: onCheckUpdate },
         { label: "设置", icon: <Settings size={13} />, onClick: onSettings },
@@ -311,7 +313,7 @@ function EnvPanel({ envCheck, onInstallTool, onOpen }: EnvPanelProps) {
       <button
         ref={dotRef}
         onClick={toggle}
-        className="relative group/dot p-1 -m-1 rounded hover:bg-[var(--app-hover)] transition-colors duration-200"
+        className="relative group/dot p-1 -m-1 rounded-md hover:bg-[var(--app-hover)] transition-colors duration-200"
         title="查看环境状态"
       >
         {/* Outer glow ring */}
@@ -326,12 +328,12 @@ function EnvPanel({ envCheck, onInstallTool, onOpen }: EnvPanelProps) {
           size={8}
           className={`relative shrink-0 transition-all duration-500 ${
             envCheck.all_ok
-              ? "fill-app-green text-app-green drop-shadow-[0_0_5px_var(--app-green)]"
+              ? "fill-app-green text-app-green"
               : hasError
-                ? "fill-app-red text-app-red drop-shadow-[0_0_5px_var(--app-red)] animate-pulse"
+                ? "fill-app-red text-app-red animate-pulse"
                 : hasWarn
-                  ? "fill-app-amber text-app-amber drop-shadow-[0_0_4px_var(--app-amber)]"
-                  : "fill-app-amber text-app-amber drop-shadow-[0_0_4px_var(--app-amber)]"
+                  ? "fill-app-amber text-app-amber"
+                  : "fill-app-amber text-app-amber"
           }`}
         />
       </button>
@@ -341,7 +343,7 @@ function EnvPanel({ envCheck, onInstallTool, onOpen }: EnvPanelProps) {
         <div
           ref={panelRef}
           className={`absolute top-full right-0 mt-2 z-50
-            w-[420px] bg-app-panel border border-app-border
+            w-[420px] bg-app-panel border border-app-border shadow-dialog rounded-lg overflow-hidden
             transition-all duration-150 ease-out origin-top-right
             ${visible ? "opacity-100 scale-100 translate-y-0" : "opacity-0 scale-95 -translate-y-1 pointer-events-none"}`}
         >
@@ -349,12 +351,12 @@ function EnvPanel({ envCheck, onInstallTool, onOpen }: EnvPanelProps) {
           <div className="flex items-center justify-between px-3 py-2 border-b border-app-border-light bg-[var(--app-subtle)]">
             <div className="flex items-center gap-1.5">
               <Terminal size={10} className="text-app-text-muted" />
-              <span className="text-2xs font-mono text-app-text-dim tracking-wider uppercase">
+              <span className="text-2xs font-medium text-app-text-dim tracking-wide">
                 系统诊断
               </span>
             </div>
             <span
-              className={`text-2xs font-mono ${
+              className={`text-2xs font-medium ${
                 envCheck.all_ok ? "text-app-green" : hasError ? "text-app-red" : "text-app-amber"
               }`}
             >
@@ -369,7 +371,7 @@ function EnvPanel({ envCheck, onInstallTool, onOpen }: EnvPanelProps) {
               if (groupItems.length === 0) return null;
               return (
                 <div key={group.id}>
-                  <div className="px-1 pb-1 text-[10px] font-mono text-app-text-muted uppercase tracking-wider">
+                  <div className="px-1 pb-1 text-[10px] font-medium text-app-text-muted tracking-wide">
                     {group.label}
                   </div>
                   <div className="space-y-1">

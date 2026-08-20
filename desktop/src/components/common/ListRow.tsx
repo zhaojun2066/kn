@@ -1,5 +1,6 @@
 import React from "react";
 import { CheckSquare, Square, Circle, Lock } from "lucide-react";
+import { projectLikeListRowChrome, projectLikeListRowState } from "./listRowStyles";
 
 export interface ListRowProps {
   icon?: React.ReactNode;
@@ -52,17 +53,11 @@ export const ListRow = React.memo(function ListRow({
       onContextMenu={onContextMenu}
       onKeyDown={handleKeyDown}
       className={`flex items-center gap-2 ${height} cursor-pointer select-none
-        transition-all duration-100 ease-out group outline-none
+        ${projectLikeListRowChrome} group outline-none
         focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--app-focus)]
-        ${selected
-          ? "bg-[var(--app-selected)] border-l-[3px] border-l-[var(--app-accent)] text-[var(--app-text)]"
-          : checked
-            ? "bg-[var(--app-hover)] border-l-[3px] border-l-[var(--app-amber)] text-[var(--app-text)]"
-            : "border-l-[3px] border-l-transparent text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]"
-        }
+        ${projectLikeListRowState({ selected, checked })}
         ${indent ? "pl-10" : "pl-3"}
         pr-2`}
-      style={selected ? { boxShadow: "inset 0 0 8px var(--app-glow)" } : undefined}
     >
       {!noCheck && (
         <span
