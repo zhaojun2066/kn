@@ -48,6 +48,15 @@ _profile_env() {
         }'
 }
 
+_profile_exists() {
+    local name="$1"
+    [ -z "$name" ] && return 1
+    if [ -n "$(_profile_env "$name" 2>/dev/null)" ]; then
+        return 0
+    fi
+    [ -f "$CONFIG" ] && grep -q "^  ${name}:" "$CONFIG" 2>/dev/null
+}
+
 # ── List profiles ──
 _profile_list() {
     if [ -n "$PROFILE_CMD" ]; then
@@ -465,9 +474,7 @@ _ai_direct() {
             local tool="$1"; shift
             # Check if next arg is a known profile name
             if [ $# -gt 0 ]; then
-                local env_check
-                env_check=$(_profile_env "$1" 2>/dev/null)
-                if [ -n "$env_check" ]; then
+                if _profile_exists "$1"; then
                     local profile_name="$1"; shift
                     _ai_launch_with_profile "$tool" "$profile_name" "$@"
                     return
@@ -533,11 +540,13 @@ ai() {
             local tool="$1"
             local profile="${2:-}"
             if [ -n "$profile" ]; then
-                local env_check
-                env_check=$(_profile_env "$profile" 2>/dev/null)
-                if [ -n "$env_check" ]; then
+                if _profile_exists "$profile"; then
                     shift 2
                 else
+                    if [ -f "$CONFIG" ] && grep -q "^  ${profile}:" "$CONFIG" 2>/dev/null; then
+                        echo "Profile '$profile' exists but could not be read." >&2
+                        return 1
+                    fi
                     profile=""
                 fi
             else
@@ -582,9 +591,11 @@ with open('$_kn_settings', 'w') as f:
             else
                 _ai_direct "$cmd" "${@:2}"
             fi
+            local _kn_ai_rc=$?
 
             # 恢复原 settings.json
             [ -n "$_kn_bak" ] && [ -f "$_kn_bak" ] && mv "$_kn_bak" "$_kn_settings"
+            return $_kn_ai_rc
             ;;
         *)
             _ai_direct "$@"

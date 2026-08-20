@@ -256,6 +256,12 @@ HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" P
 auth_login_after=$(cat "$AUTH_HOME/.codex/auth.json")
 [ "$auth_login_after" = "$auth_before" ] && pass "Codex local-login profile does not modify auth.json" \
     || fail "Codex local-login profile modified auth.json"
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" ai codex codex-login >/dev/null
+if grep -q '^codex-login$' "$AUTH_HOME/codex-args.txt"; then
+    fail "ai codex <local-login-profile> leaked profile name to Codex"
+else
+    pass "ai codex <local-login-profile> consumes profile name"
+fi
 
 HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile qoderclicn qoder-token >/dev/null \
     && pass "QoderCN token profile injects QODERCN_PERSONAL_ACCESS_TOKEN" \
