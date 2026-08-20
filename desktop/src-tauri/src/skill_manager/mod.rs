@@ -988,7 +988,7 @@ fn scan_qoder_standalone_skills() -> Vec<StandaloneSkill> {
 /// Identical logic to Codex standalone skill toggle.
 fn toggle_qoder_standalone_skill(skill_name: &str, enabled: bool) -> Result<(), String> {
     validate_skill_name(skill_name)?;
-    let skills_dir = qoder_skills_dir().ok_or("无法找到 Qoder skills 目录")?;
+    let skills_dir = qoder_skills_dir().ok_or("无法找到 QoderCN skills 目录")?;
     let skill_dir = skills_dir.join(skill_name);
 
     if !skill_dir.exists() {
@@ -1039,7 +1039,8 @@ fn scan_codex_project_skills(project_root: &Path) -> Vec<StandaloneSkill> {
 
 /// Scan Qoder project-level standalone skills from `<project>/.qoder/skills/`.
 fn scan_qoder_project_skills(project_root: &Path) -> Vec<StandaloneSkill> {
-    // Qoder: user-level = ~/.qoder-cn/  ,  project-level = <project>/.qoder/
+    // QoderCN user-level uses ~/.qoder-cn/, while project-level Qoder resources
+    // are shared by international + domestic editions under <project>/.qoder/.
     let skills_dir = project_root.join(".qoder").join("skills");
     let pn = crate::project_name_from_root(project_root);
     scan_codex_style_skills_in_dir("qoder", &skills_dir, pn, Some(project_root))
@@ -2994,11 +2995,11 @@ pub fn install_standalone_skill(
             install_codex_style_standalone_skill(src, &skills_dir, overwrite)
         }
         "qoder" => {
-            // Qoder: project-level uses .qoder (NOT .qoder-cn)
+            // Project-level Qoder resources use .qoder for both international and domestic editions.
             let skills_dir = if let Some(ref proj) = project_dir {
                 proj.join(".qoder").join("skills")
             } else {
-                qoder_skills_dir().ok_or("无法找到 Qoder skills 目录")?
+                qoder_skills_dir().ok_or("无法找到 QoderCN skills 目录")?
             };
             install_codex_style_standalone_skill(src, &skills_dir, overwrite)
         }
@@ -3070,7 +3071,7 @@ pub fn uninstall_standalone_skill(
             Ok(format!("Skill '{}' 已删除", name))
         }
         "qoder" => {
-            let skills_dir = qoder_skills_dir().ok_or("无法找到 Qoder skills 目录")?;
+            let skills_dir = qoder_skills_dir().ok_or("无法找到 QoderCN skills 目录")?;
             let skill_dir = skills_dir.join(name);
             if !skill_dir.exists() && !skill_dir.is_symlink() {
                 return Err(format!("Skill '{}' 不存在", name));

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { X, Check, FileJson } from "lucide-react";
 import { Button } from "./common/Button";
 import { CLIIcon } from "./common/CLIIcon";
+import { cliDisplayName } from "../lib/cli-constants";
 
 interface ImportData {
   name: string;
@@ -16,18 +17,12 @@ interface Props {
   onCancel: () => void;
 }
 
-const CLI_LABELS: Record<string, string> = {
-  claude: "Claude Code",
-  codex: "Codex CLI",
-  qoderclicn: "Qoder CLI (国内版)",
-};
-
 function detectCLI(env: Record<string, string>): string | null {
   // Explicit stored type takes priority (skip legacy "both")
   if (env._KN_CLI_TYPE && env._KN_CLI_TYPE !== "both") return env._KN_CLI_TYPE;
   // Heuristic detection
   const keys = Object.keys(env).map((k) => k.toUpperCase());
-  // Qoder uses OPENAI_API_KEY + OPENAI_BASE_URL; distinguish by dashscope endpoint
+  // QoderCN uses OPENAI_API_KEY + OPENAI_BASE_URL; distinguish by dashscope endpoint
   if (env.OPENAI_BASE_URL?.includes("dashscope")) return "qoderclicn";
   if (keys.some((k) => k.startsWith("ANTHROPIC_"))) return "claude";
   if (keys.some((k) => k.startsWith("OPENAI_") || k.startsWith("OPENROUTER_"))) return "codex";
@@ -62,10 +57,10 @@ export function ImportPreview({ open, data, onConfirm, onCancel }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-[fadeIn_100ms_ease-out]"
+      className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop animate-[fadeIn_100ms_ease-out]"
       onClick={(e) => e.target === e.currentTarget && onCancel()}
     >
-      <div className="bg-app-panel border border-app-border shadow-dialog w-[480px] animate-[scaleIn_150ms_ease-out]">
+      <div className="app-dialog-panel bg-app-panel border border-app-border w-[480px] animate-[scaleIn_150ms_ease-out]">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
           <div className="flex items-center gap-2">
@@ -96,7 +91,7 @@ export function ImportPreview({ open, data, onConfirm, onCancel }: Props) {
                 <span className="flex items-center gap-1 px-2 py-1 bg-[var(--app-input)] border border-app-border">
                   <CLIIcon type={cli} size={18} />
                   <span className="text-2xs text-app-text-dim font-mono">
-                    {CLI_LABELS[cli] ?? cli}
+                    {cliDisplayName(cli)}
                   </span>
                 </span>
               )}

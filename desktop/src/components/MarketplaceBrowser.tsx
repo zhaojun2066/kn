@@ -370,10 +370,10 @@ export function MarketplaceBrowser({ open, onClose, onInstalled, projectPath, pr
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-[fadeIn_150ms_ease-out]">
+    <div className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop animate-[fadeIn_150ms_ease-out]">
       <div
         className="relative w-full max-w-[720px] max-h-[85vh] flex flex-col
-          bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog"
+          app-dialog-panel bg-[var(--app-panel)] border border-[var(--app-border)]"
       >
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-3 border-b border-[var(--app-border-light)]">
@@ -606,7 +606,7 @@ export function MarketplaceBrowser({ open, onClose, onInstalled, projectPath, pr
             >
               <option value="claude">Claude</option>
               <option value="codex">Codex</option>
-              <option value="qoder">Qoder</option>
+              <option value="qoder">{CLI_LABEL.qoder}</option>
             </select>
 
             {/* File path display / picker */}

@@ -30,7 +30,7 @@ describe("buildRedactedHealthReport", () => {
     expect(report).not.toContain('"unknown"');
   });
 
-  it("keeps the domestic Qoderclicn diagnostic tool and labels it clearly", () => {
+  it("keeps the domestic QoderCN diagnostic tool and labels it clearly", () => {
     const report = buildRedactedHealthReport({
       schemaVersion: 1,
       generatedAt: 123,
@@ -41,7 +41,7 @@ describe("buildRedactedHealthReport", () => {
 
     expect(report).toContain('"name": "qoderclicn"');
     expect(healthToolLabel({ name: "qoderclicn", state: "available" })).toBe(
-      "Qoderclicn（国内版） · 可用",
+      "QoderCN · 可用",
     );
   });
 });

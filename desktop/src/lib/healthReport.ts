@@ -45,7 +45,7 @@ export function healthToolLabel(tool: AgentHealthSnapshot["tools"][number]): str
     gh: "GitHub CLI",
     codex: "Codex",
     claude: "Claude",
-    qoderclicn: "Qoderclicn（国内版）",
+    qoderclicn: "QoderCN",
   };
   const states: Record<HealthToolState, string> = {
     available: "可用",

@@ -1,26 +1,48 @@
 import React from "react";
-import claudeCodeSvg from "../../assets/icons/claude-code-color.svg";
-import codexSvg from "../../assets/icons/codex-color.svg";
-import qoderSvg from "../../assets/icons/qoder-color.svg";
+import claudeMarkPng from "../../assets/icons/claude-mark.png";
+import codexMarkPng from "../../assets/icons/codex-mark.png";
+import qoderMarkPng from "../../assets/icons/qoder-mark.png";
 
 interface CLIIconProps {
   type: string;
   size?: number;
 }
 
-/* ── Claude Code — official brand icon (coral #D97757) ───── */
+function MarkIcon({
+  src,
+  alt,
+  size,
+  padding,
+}: {
+  src: string;
+  alt: string;
+  size: number;
+  padding: number;
+}) {
+  return (
+    <span
+      className="inline-flex items-center justify-center shrink-0"
+      style={{ width: size, height: size, padding }}
+      aria-hidden="true"
+    >
+      <img src={src} alt={alt} className="block w-full h-full object-contain" draggable={false} />
+    </span>
+  );
+}
+
+/* ── Claude Code — same mark as the iOS running profile UI ── */
 function ClaudeIcon({ size = 16 }: { size: number }) {
-  return <img src={claudeCodeSvg} alt="Claude Code" width={size} height={size} />;
+  return <MarkIcon src={claudeMarkPng} alt="Claude Code" size={size} padding={Math.max(1, Math.round(size * 0.16))} />;
 }
 
-/* ── Codex — official brand icon (purple-blue gradient) ──── */
+/* ── Codex — same mark as the iOS running profile UI ─────── */
 function CodexIcon({ size = 16 }: { size: number }) {
-  return <img src={codexSvg} alt="Codex" width={size} height={size} />;
+  return <MarkIcon src={codexMarkPng} alt="Codex" size={size} padding={Math.max(1, Math.round(size * 0.11))} />;
 }
 
-/* ── Qoder — official brand icon (green #2ADB5C) ─────────── */
-function QoderclicnIcon({ size = 16 }: { size: number }) {
-  return <img src={qoderSvg} alt="Qoder" width={size} height={size} />;
+/* ── QoderCN — same mark as the iOS running profile UI ───── */
+function QoderCNIcon({ size = 16 }: { size: number }) {
+  return <MarkIcon src={qoderMarkPng} alt="QoderCN" size={size} padding={Math.max(1, Math.round(size * 0.16))} />;
 }
 
 /* ── Generic "other" icon ────────────────────────────────── */
@@ -37,6 +59,6 @@ function OtherIcon({ size = 16 }: { size: number }) {
 export function CLIIcon({ type, size = 16 }: CLIIconProps) {
   if (type === "claude" || type === "anthropic") return <ClaudeIcon size={size} />;
   if (type === "codex" || type === "openai") return <CodexIcon size={size} />;
-  if (type === "qoderclicn") return <QoderclicnIcon size={size} />;
+  if (type === "qoder" || type === "qoderclicn") return <QoderCNIcon size={size} />;
   return <OtherIcon size={size} />;
 }

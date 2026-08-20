@@ -85,11 +85,11 @@ export function UsagePanel({ open, onClose }: UsagePanelProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop"
       onClick={onClose}
     >
       <div
-        className="bg-app-panel border border-app-border shadow-dialog w-[620px] max-h-[85vh] overflow-y-auto select-none animate-[scaleIn_150ms_ease-out]"
+        className="app-dialog-panel bg-app-panel border border-app-border w-[620px] max-h-[85vh] overflow-y-auto select-none animate-[scaleIn_150ms_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

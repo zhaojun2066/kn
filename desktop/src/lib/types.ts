@@ -4,6 +4,8 @@ export interface ProfileSummary {
   env_count: number;
   is_default: boolean;
   cli_type?: string;
+  auth_mode?: string;
+  provider_id?: string;
   tags?: string[];       // from _KN_TAGS env var, max 3
 }
 
@@ -149,7 +151,7 @@ export function recommendedInstallCommand(item: EnvCheckItem): string | null {
 export const CLI_TYPES = [
   { id: "claude", label: "Claude" },
   { id: "codex", label: "Codex" },
-  { id: "qoder", label: "Qoder" },
+  { id: "qoder", label: "QoderCN" },
 ] as const;
 
 export type CliKind = (typeof CLI_TYPES)[number]["id"];

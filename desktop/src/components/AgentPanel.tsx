@@ -429,11 +429,11 @@ export function AgentPanel({ onClose, onBind, onRedeem, onUnbind, onOpenRemoteSe
   return (
     <>
     <div
-      className="fixed inset-0 z-50 flex items-start justify-end pt-12 pr-4"
+      className="fixed inset-0 z-[120] flex items-start justify-end pt-12 pr-4"
       onClick={onClose}
     >
       <div
-        className="bg-app-panel border border-app-border shadow-dialog w-[360px] max-h-[70vh] overflow-y-auto select-none animate-[scaleIn_150ms_ease-out]"
+        className="app-dialog-panel bg-app-panel border border-app-border w-[360px] max-h-[70vh] overflow-y-auto select-none animate-[scaleIn_150ms_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -508,7 +508,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onUnbind, onOpenRemoteSe
               <div className="text-center space-y-2">
                 <button
                   onClick={onBind}
-                  className="w-full px-3 py-2 text-sm font-mono bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+                  className="app-primary-action w-full px-3 py-2 text-sm font-medium flex items-center justify-center gap-2"
                 >
                   <Radio size={14} />
                   绑定设备

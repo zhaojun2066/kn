@@ -19,6 +19,7 @@ import { ToastViewport } from "./components/ToastViewport";
 import { ProfileDrawer } from "./components/ProfileDrawer";
 import { ResourceDrawer } from "./components/ResourceDrawer";
 import { OnboardingWizard } from "./components/OnboardingWizard";
+import { HelpDialog } from "./components/HelpDialog";
 import { useUpdateCheck } from "./app/useUpdateCheck";
 import { useSkillOps } from "./app/useSkillOps";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
@@ -52,6 +53,7 @@ import { ProjectSidebar } from "./components/ProjectSidebar";
 import type { ProfileDetail, ProjectInfo, ScopeTab, SessionInfo } from "./lib/types";
 import { basename } from "./lib/path-utils";
 import { showProfile, setEnvVar as setProfileEnvVar, unsetEnvVar as unsetProfileEnvVar } from "./lib/tauri-api";
+import { inferAuthMode } from "./lib/auth-metadata";
 import { buildDestDir, getResourceData, getResourceType, getSubdir, type ResourceData } from "./lib/resource-transfer";
 import { flattenPanes } from "./lib/pane-types";
 import { Command } from "@tauri-apps/plugin-shell";
@@ -71,6 +73,7 @@ export function App() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteProfileTarget, setDeleteProfileTarget] = useState<ProfileDetail | null>(null);
   const [showWelcome, setShowWelcome] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showQuickSwitcher, setShowQuickSwitcher] = useState(false);
   const [quickSwitcherMode, setQuickSwitcherMode] = useState<"profile" | "history">("profile");
@@ -177,7 +180,7 @@ export function App() {
         lastUsed: hasRecentUsage ? "最近" : "-",
       },
       {
-        cli: "Qoder",
+        cli: "QoderCN",
         version: "检测中",
         installed: true,
         runs: stats?.qoderCount ?? 0,
@@ -591,7 +594,8 @@ export function App() {
   /** Compute the target config file path for a hook move/copy. */
   const getHookTargetPath = useCallback((cli: string, toScope: "user" | "project", sourcePath: string, targetProjectPath?: string): string => {
     const configFile = cli === "codex" ? "config.toml" : "settings.json";
-    // Qoder: user-level = .qoder-cn, project-level = .qoder (different names!)
+    // QoderCN user-level uses .qoder-cn; project-level Qoder resources use .qoder,
+    // shared by both international and domestic editions.
     const cliDirUser = cli === "qoder" ? ".qoder-cn" : cli === "codex" ? ".codex" : ".claude";
     const cliDirProject = cli === "qoder" ? ".qoder" : cli === "codex" ? ".codex" : ".claude";
 
@@ -1380,6 +1384,12 @@ export function App() {
         if (item.cli_type) {
           await ctx.setEnvVar(item.name, "_KN_CLI_TYPE", item.cli_type);
         }
+        if (item.auth_mode) {
+          await ctx.setEnvVar(item.name, "_KN_AUTH_MODE", item.auth_mode);
+        }
+        if (item.provider_id) {
+          await ctx.setEnvVar(item.name, "_KN_PROVIDER_ID", item.provider_id);
+        }
         imported++;
       } catch (e) {
         failed++;
@@ -1580,7 +1590,8 @@ export function App() {
       {/* Toolbar */}
       <Toolbar
         onToggleTerminal={bottomTerminal.toggle}
-        onShowHelp={() => setShowWelcome(true)}
+        onShowHelp={() => setShowHelp(true)}
+        onShowOnboarding={() => setShowWelcome(true)}
         onShowShortcuts={() => setShowShortcuts(true)}
         onCheckUpdate={handleCheckUpdate}
         onAbout={() => setShowAbout(true)}
@@ -1856,7 +1867,7 @@ export function App() {
           try {
             const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
             if (result.profiles.length === 0) {
-              addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
+              addToast("error", "未找到明确可导入凭据。\n检查: ~/.claude/settings.json、~/.codex/auth.json 和 ~/.qoder-cn/settings.json");
               return;
             }
             setScanData(result.profiles);
@@ -1879,6 +1890,19 @@ export function App() {
         onSetEnv={async (key, value) => {
           if (!drawerSelectedName) return;
           await setProfileEnvVar(drawerSelectedName, key, value);
+          if (drawerSelectedProfile && !drawerSelectedProfile.env._KN_AUTH_MODE) {
+            const nextEnv = { ...drawerSelectedProfile.env, [key]: value };
+            const inferred = inferAuthMode(nextEnv._KN_CLI_TYPE, nextEnv);
+            if (inferred) await setProfileEnvVar(drawerSelectedName, "_KN_AUTH_MODE", inferred);
+          }
+          if (drawerSelectedProfile && !drawerSelectedProfile.env._KN_PROVIDER_ID) {
+            const nextEnv = { ...drawerSelectedProfile.env, [key]: value };
+            if (nextEnv._KN_CLI_TYPE === "codex") {
+              await setProfileEnvVar(drawerSelectedName, "_KN_PROVIDER_ID", nextEnv.OPENAI_BASE_URL ? "custom" : "openai-official");
+            } else if (nextEnv._KN_CLI_TYPE === "qoderclicn") {
+              await setProfileEnvVar(drawerSelectedName, "_KN_PROVIDER_ID", nextEnv.QODERCN_PERSONAL_ACCESS_TOKEN ? "qodercn-pat" : "qodercn-local-login");
+            }
+          }
           await selectDrawerProfile(drawerSelectedName);
           await ctx.loadProfiles();
         }}
@@ -1935,18 +1959,25 @@ export function App() {
 
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
 
+      <HelpDialog
+        open={showHelp}
+        onClose={() => setShowHelp(false)}
+        onOpenProfiles={() => setProfileDrawerOpen(true)}
+      />
+
       {showWelcome && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"          onClick={(e) => e.target === e.currentTarget && window.dispatchEvent(new CustomEvent("kn-dismiss-welcome"))}
+          className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop"
+          onClick={(e) => e.target === e.currentTarget && window.dispatchEvent(new CustomEvent("kn-dismiss-welcome"))}
         >
-          <div className="bg-app-panel border border-app-border shadow-dialog w-[560px] max-h-[90vh] overflow-y-auto animate-[scaleIn_150ms_ease-out]">
+          <div className="app-dialog-panel bg-app-panel border border-app-border w-[560px] max-h-[90vh] overflow-y-auto animate-[scaleIn_150ms_ease-out]">
             <OnboardingWizard
               hasProfiles={ctx.profiles.length > 0}
               onScan={async () => {
                 try {
                   const result: { profiles: ScanProfile[] } = await invoke("scan_system_configs");
                   if (result.profiles.length === 0) {
-                    addToast("error", "未找到配置。\n检查: ~/.claude/settings.json 和 ~/.codex/config.json");
+                    addToast("error", "未找到明确可导入凭据。\n检查: ~/.claude/settings.json、~/.codex/auth.json 和 ~/.qoder-cn/settings.json");
                     return;
                   }
                   setScanData(result.profiles);
@@ -1954,7 +1985,10 @@ export function App() {
                   addToast("error", `扫描失败: ${e}`);
                 }
               }}
-              onCreate={() => setShowAddDialog(true)}
+              onCreate={() => {
+                setShowWelcome(false);
+                setShowAddDialog(true);
+              }}
               onDismiss={() => window.dispatchEvent(new CustomEvent("kn-dismiss-welcome"))}
             />
           </div>

@@ -6,6 +6,7 @@ import { CLI_TOOLS, CLIToolDef, ProviderPreset, getToolById, getEnvTemplate, get
 import type { EnvCheckResult } from "../lib/types";
 import { recommendedInstallCommand } from "../lib/types";
 import { detectKeyFormat } from "../lib/key-format-detector";
+import { authModeLabel, isSystemEnvKey } from "../lib/auth-metadata";
 
 interface ProfileDialogProps {
   open: boolean;
@@ -127,22 +128,34 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
   };
 
   const handleCreate = async () => {
+    const selectedAuthMode = selectedProvider?.authMode ?? "api_key";
     const env: Record<string, string> = {};
     for (const [k, v] of envVars) {
-      if (v.trim()) env[k] = v.trim();
+      const key = k.trim();
+      if (key && v.trim()) env[key] = v.trim();
     }
-    // Must have at least one user-defined env var with a value
-    const systemKeys = ["_KN_CLI_TYPE", "_KN_TAGS"];
-    const userEnvCount = Object.keys(env).filter((k) => !systemKeys.includes(k)).length;
-    if (userEnvCount === 0) {
-      setError("至少需要填写一个环境变量");
-      return;
+    if (selectedAuthMode !== "local_login") {
+      const missingRequired = selectedProvider?.envVars
+        .filter((v) => v.required)
+        .filter((v) => !env[v.key]?.trim())
+        .map((v) => v.label ?? v.key) ?? [];
+      if (missingRequired.length > 0) {
+        setError(`请填写必填项：${missingRequired.join("、")}`);
+        return;
+      }
+      const userEnvCount = Object.keys(env).filter((k) => !isSystemEnvKey(k)).length;
+      if (userEnvCount === 0) {
+        setError("至少需要填写一个环境变量");
+        return;
+      }
     }
     setSaving(true);
     setError("");
     try {
       // Store CLI type directly (no mapping needed)
       env["_KN_CLI_TYPE"] = toolId;
+      env["_KN_AUTH_MODE"] = selectedAuthMode;
+      if (providerId) env["_KN_PROVIDER_ID"] = providerId;
       // Store tags
       if (tags.length > 0) env["_KN_TAGS"] = tags.join(",");
       await onAdd(name.trim(), desc.trim() || undefined, env);
@@ -182,11 +195,11 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-[fadeIn_100ms_ease-out]"
+      className="fixed inset-0 z-[140] flex items-center justify-center app-dialog-backdrop animate-[fadeIn_100ms_ease-out]"
     >
       <div
         onKeyDown={handleKeyDown}
-        className="bg-app-panel border border-app-border shadow-dialog w-[680px] animate-[scaleIn_150ms_ease-out]"
+        className="app-dialog-panel bg-app-panel border border-app-border w-[680px] animate-[scaleIn_150ms_ease-out]"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
@@ -208,7 +221,7 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
           <ChevronRight size={11} className="text-app-text-muted" />
           <StepDot num={2} active={step === 2} done={step > 2} label="工具" />
           <ChevronRight size={11} className="text-app-text-muted" />
-          <StepDot num={3} active={step === 3} done={step > 3} label="服务商" />
+          <StepDot num={3} active={step === 3} done={step > 3} label="认证" />
           <ChevronRight size={11} className="text-app-text-muted" />
           <StepDot num={4} active={step === 4} done={step > 4} label="变量" />
           <ChevronRight size={11} className="text-app-text-muted" />
@@ -364,19 +377,20 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
             </div>
           )}
 
-          {/* ── Step 3: Provider Preset selection ──────────── */}
+          {/* ── Step 3: Auth/provider selection ────────────── */}
           {step === 3 && (
             <div>
               <label className="block text-xs text-app-text-dim mb-2 font-mono">
                 <span className="text-app-text-muted"># </span>
-                选择提供商预设
+                选择认证方式
               </label>
               <p className="text-2xs text-app-text-muted mb-3">
-                为 {selectedTool?.name} 选择合适的服务商。每个预设包含常用的环境变量模板
+                为 {selectedTool?.name} 选择账号登录、API Key 或 Token/PAT。账号登录由 CLI 启动时验证
               </p>
               <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
                 {filteredProviders.map((provider) => {
                   const isCustom = provider.id === "custom";
+                  const authMode = provider.authMode ?? "api_key";
                   const isSelected = providerId === provider.id;
                   // Preview first 2 env var key names
                   const keyPreview = provider.envVars.slice(0, 2).map((v) => v.key).join(", ");
@@ -402,10 +416,13 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
                         <div className="text-sm text-app-text font-mono flex items-center gap-1.5">
                           {provider.name}
                           {isCustom && <span className="text-2xs text-app-amber bg-app-amber-bg px-1 py-px font-mono">自定义</span>}
+                          <span className="text-2xs text-app-text-dim bg-[var(--app-input)] border border-app-border px-1 py-px font-mono">
+                            {authModeLabel(authMode)}
+                          </span>
                         </div>
                         <div className="text-xs text-app-text-muted truncate">{provider.description}</div>
                         <div className="text-2xs text-app-text-muted mt-0.5 font-mono truncate">
-                          {keyPreview}
+                          {provider.envVars.length === 0 ? "无需填写凭据" : keyPreview}
                           {provider.envVars.length > 2 && ` +${provider.envVars.length - 2} 个变量`}
                         </div>
                       </div>
@@ -422,25 +439,39 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
             <div>
               <label className="block text-xs text-app-text-dim mb-2 font-mono">
                 <span className="text-app-text-muted"># </span>
-                环境变量
+                {selectedProvider?.authMode === "local_login" ? "本机账号登录" : "环境变量"}
                 {selectedProvider && (
                   <span className="text-app-text-muted"> — {selectedProvider.name}</span>
                 )}
               </label>
               <p className="text-2xs text-app-text-muted mb-3">
-                已预填 {selectedProvider?.name ?? "自定义"} 的常用变量模板。填入需要的值，不需要的点 × 删除
+                {selectedProvider?.authMode === "local_login"
+                  ? "kn 不保存账号 token，也不读取 CLI 内部登录文件；是否已登录由启动后的 CLI 自己验证"
+                  : `已预填 ${selectedProvider?.name ?? "自定义"} 的常用变量模板。填入需要的值，不需要的点 × 删除`}
               </p>
               {selectedProvider?.note && (
                 <div className="mb-3 px-3 py-2 border border-app-amber/30 bg-app-amber-bg/10 text-xs text-app-text-dim font-mono whitespace-pre-line leading-relaxed">
                   {selectedProvider.note}
                 </div>
               )}
-              {envVars.length === 0 ? (
+              {selectedProvider?.authMode === "local_login" ? (
+                <div className="border border-app-border bg-[var(--app-subtle)] px-3 py-3 text-xs text-app-text-dim leading-relaxed">
+                  <div className="font-semibold text-app-text mb-1">使用本机登录态</div>
+                  <div>
+                    {toolId === "codex"
+                      ? "启动时直接使用当前 ~/.codex 登录状态。API Key 配置才会临时接管 auth.json。"
+                      : "启动时直接使用 QoderCN 自己保存的登录状态。kn 不读取 .qoder-cn/.auth。"}
+                  </div>
+                  <div className="mt-2 text-app-text-muted">如果账号失效，终端会显示 CLI 原生登录提示。</div>
+                </div>
+              ) : envVars.length === 0 ? (
                 <div className="text-xs text-app-text-muted font-mono py-2 text-center space-y-2">
                   <div>所有变量已删除</div>
                   <button
                     onClick={() => setEnvVars([["", ""]])}
-                    className="text-2xs text-app-accent hover:underline font-mono"
+                    className="inline-flex items-center gap-1 px-2 py-1 text-2xs text-app-accent hover:text-white
+                      border border-app-border hover:border-app-accent bg-[var(--app-input)] hover:bg-app-accent
+                      rounded-md font-mono transition-colors"
                   >
                     + 添加变量
                   </button>
@@ -485,12 +516,16 @@ export function ProfileDialog({ open, onClose, onAdd, onRunCommand, onSplitComma
                   })}
                 </div>
               )}
-              <button
-                onClick={() => setEnvVars((prev) => [...prev, ["", ""]])}
-                className="text-2xs text-app-text-muted hover:text-app-accent font-mono mt-2 transition-colors"
-              >
-                + 添加变量
-              </button>
+              {selectedProvider?.authMode !== "local_login" && (
+                <button
+                  onClick={() => setEnvVars((prev) => [...prev, ["", ""]])}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-2xs text-app-text-dim hover:text-app-accent
+                    border border-transparent hover:border-app-border hover:bg-[var(--app-hover)]
+                    rounded-md font-mono mt-2 transition-colors"
+                >
+                  + 添加变量
+                </button>
+              )}
 
             </div>
           )}

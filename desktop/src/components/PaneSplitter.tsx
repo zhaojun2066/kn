@@ -46,7 +46,8 @@ interface TreeLayout {
 
 // ── Layout computation ───────────────────────────────────────────
 
-const DIVIDER_SIZE = 4;
+const DIVIDER_SIZE = 1;
+const DIVIDER_HIT_SIZE = 7;
 const MIN_RATIO = 0.15;
 const MAX_RATIO = 0.85;
 const SNAP_THRESHOLD = 0.03;
@@ -260,25 +261,25 @@ export function PaneSplitter({
           const isH = d.direction === "horizontal";
           const currentRatio = ratios.get(d.splitId);
           const isDragging = currentRatio !== undefined && currentRatio !== 0.5; // heuristic
+          const hitOffset = Math.floor((DIVIDER_HIT_SIZE - DIVIDER_SIZE) / 2);
 
           return (
             <div
               key={d.splitId}
-              className={`absolute shrink-0 transition-colors duration-150 group/divider flex items-center justify-center
-                ${isDragging ? "bg-[var(--app-accent)]/40 z-10" : "hover:bg-[var(--app-accent)]/20"}
+              className={`absolute shrink-0 transition-colors duration-150 group/divider flex items-center justify-center z-10
                 ${isH ? "cursor-col-resize" : "cursor-row-resize"}`}
               style={{
-                left: d.rect.x,
-                top: d.rect.y,
-                width: d.rect.w,
-                height: d.rect.h,
+                left: isH ? d.rect.x - hitOffset : d.rect.x,
+                top: isH ? d.rect.y : d.rect.y - hitOffset,
+                width: isH ? DIVIDER_HIT_SIZE : d.rect.w,
+                height: isH ? d.rect.h : DIVIDER_HIT_SIZE,
                 touchAction: "none",
               }}
               onMouseDown={(e) => handleDividerMouseDown(d.splitId, d.direction, e)}
             >
               <div
-                className={`shrink-0 bg-app-border group-hover/divider:bg-[var(--app-accent)]/50 transition-colors duration-150
-                  ${isDragging ? "bg-[var(--app-accent)]" : ""}
+                className={`shrink-0 bg-app-border/70 group-hover/divider:bg-[var(--app-accent)]/45 transition-colors duration-150
+                  ${isDragging ? "bg-[var(--app-accent)]/75" : ""}
                   ${isH ? "w-px h-full" : "h-px w-full"}`}
               />
             </div>

@@ -40,18 +40,18 @@ export function SearchInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         spellCheck={false}
-        className="w-full h-[28px] pl-7 pr-6 text-xs bg-app-input
-          border-app-border-light
+        className="w-full h-[28px] pl-7 pr-6 text-xs bg-app-input rounded-md shadow-sm
+          border border-app-border-light
           text-app-text placeholder:text-app-text-muted
           hover:border-app-border
-          focus:border-app-accent focus:shadow-[0_0_0_1px_var(--app-accent),0_0_8px_var(--app-glow)]"
+          focus:border-app-accent focus:shadow-glow"
       />
       {value && (
         <button
           onClick={() => onChange("")}
           className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5
             text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]
-            transition-fast"
+            rounded transition-fast"
         >
           <X size={11} />
         </button>

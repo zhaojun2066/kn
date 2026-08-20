@@ -3,10 +3,13 @@ import { X, Check, Search, CheckSquare, Square } from "lucide-react";
 import { Button } from "./common/Button";
 import { CLIIcon } from "./common/CLIIcon";
 import { shortenPath } from "../lib/path-utils";
+import { authModeLabel, displayEnvValue, isSystemEnvKey } from "../lib/auth-metadata";
 
 export interface ScanProfile {
   name: string;
   cli_type: string;
+  auth_mode?: string;
+  provider_id?: string;
   env: Record<string, string>;
   source: string;
 }
@@ -63,14 +66,14 @@ export function ScanPreview({ open, profiles, onImport, onCancel }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-[fadeIn_100ms_ease-out]"
+      className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop animate-[fadeIn_100ms_ease-out]"
       onClick={(e) => e.target === e.currentTarget && onCancel()}
     >
-      <div className="bg-app-panel border border-app-border shadow-dialog w-[560px] animate-[scaleIn_150ms_ease-out]">
+      <div className="app-dialog-panel bg-app-panel border border-app-border w-[560px] animate-[scaleIn_150ms_ease-out]">
         <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
           <div className="flex items-center gap-2">
             <Search size={15} className="text-app-accent" />
-            <h3 className="font-semibold text-sm font-mono">扫描结果 ({profiles.length})</h3>
+            <h3 className="font-semibold text-sm font-mono">候选配置 ({profiles.length})</h3>
           </div>
           <button onClick={onCancel} className="p-1 text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors">
             <X size={14} />
@@ -111,20 +114,31 @@ export function ScanPreview({ open, profiles, onImport, onCancel }: Props) {
                     }`}>
                       {p.cli_type === "claude" ? "Claude Code" :
                        p.cli_type === "codex" ? "Codex CLI" :
-                       p.cli_type === "qoderclicn" ? "Qoder CLI (国内版)" :
+                       p.cli_type === "qoderclicn" ? "QoderCN" :
                        p.cli_type}
                     </span>
                   </div>
                   <div className="text-2xs text-app-text-muted font-mono truncate">
-                    {Object.keys(p.env).length} 个变量 · {shortenPath(p.source)}
+                    {Object.keys(p.env).filter((k) => !isSystemEnvKey(k)).length} 个变量 · {shortenPath(p.source)}
+                  </div>
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <span className="text-2xs px-1.5 py-px font-mono text-app-text bg-[var(--app-input)] border border-app-border">
+                      {authModeLabel(p.auth_mode ?? p.env._KN_AUTH_MODE)}
+                    </span>
+                    {p.provider_id && (
+                      <span className="text-2xs text-app-text-muted font-mono truncate">{p.provider_id}</span>
+                    )}
                   </div>
                   <div className="mt-1 space-y-0.5">
-                    {Object.entries(p.env).slice(0, 3).map(([k, v]) => (
+                    {Object.entries(p.env).filter(([k]) => !isSystemEnvKey(k)).slice(0, 3).map(([k, v]) => (
                       <div key={k} className="text-2xs font-mono flex gap-1">
                         <span className="text-app-accent shrink-0">{k}</span>
                         <span className="text-app-text-muted">=</span>
                         <span className="text-app-text-dim truncate">
-                          {v ? (v.length > 30 ? v.slice(0, 30) + "..." : v) : <span className="italic">空</span>}
+                          {v ? (() => {
+                            const shown = displayEnvValue(k, v);
+                            return shown.length > 30 ? shown.slice(0, 30) + "..." : shown;
+                          })() : <span className="italic">空</span>}
                         </span>
                       </div>
                     ))}

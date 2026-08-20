@@ -166,6 +166,98 @@ _check_tool() {
     return 0
 }
 
+_kn_codex_auth_lock_dir() {
+    echo "${KN_HOME:-$HOME/.kn}/locks/codex-auth.lock"
+}
+
+_kn_pid_alive() {
+    local pid="$1"
+    [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1
+}
+
+_kn_codex_recover_stale_lock() {
+    local lock_dir="$1"
+    local auth="$2"
+    local written="$lock_dir/written.auth.json"
+    local backup="$lock_dir/original.auth.json"
+    local no_original="$lock_dir/no-original"
+
+    if [ -f "$written" ] && [ -f "$auth" ] && cmp -s "$auth" "$written"; then
+        if [ -f "$backup" ]; then
+            cp "$backup" "$auth"
+            echo "kn: 已从上次异常退出中恢复 Codex auth.json" >&2
+        elif [ -f "$no_original" ]; then
+            rm -f "$auth"
+            echo "kn: 已清理上次异常退出留下的 Codex 临时 auth.json" >&2
+        fi
+    else
+        echo "kn: 检测到上次 Codex API Key 会话异常退出，但 auth.json 已变化，已保留当前内容" >&2
+    fi
+    rm -rf "$lock_dir"
+}
+
+_kn_codex_acquire_auth_lock() {
+    local profile_name="$1"
+    local auth="$2"
+    local lock_dir="$(_kn_codex_auth_lock_dir)"
+    local lock_parent
+    lock_parent="$(dirname "$lock_dir")"
+    mkdir -p "$lock_parent"
+
+    if mkdir "$lock_dir" 2>/dev/null; then
+        {
+            echo "pid=$$"
+            echo "profile=$profile_name"
+            echo "started_at=$(date +%s)"
+            echo "auth=$auth"
+        } > "$lock_dir/meta"
+        echo "$lock_dir"
+        return 0
+    fi
+
+    local old_pid
+    old_pid="$(sed -n 's/^pid=//p' "$lock_dir/meta" 2>/dev/null | head -1)"
+    if _kn_pid_alive "$old_pid"; then
+        echo "kn: Codex API Key 配置正在运行，暂时不能同时修改 auth.json。" >&2
+        echo "kn: 请先关闭当前 Codex 会话，或使用账号登录配置。" >&2
+        return 1
+    fi
+
+    _kn_codex_recover_stale_lock "$lock_dir" "$auth"
+    if mkdir "$lock_dir" 2>/dev/null; then
+        {
+            echo "pid=$$"
+            echo "profile=$profile_name"
+            echo "started_at=$(date +%s)"
+            echo "auth=$auth"
+        } > "$lock_dir/meta"
+        echo "$lock_dir"
+        return 0
+    fi
+
+    echo "kn: 无法获取 Codex auth 锁，请稍后重试。" >&2
+    return 1
+}
+
+_kn_codex_restore_auth_and_release() {
+    local lock_dir="$1"
+    local auth="$2"
+    local written="$lock_dir/written.auth.json"
+    local backup="$lock_dir/original.auth.json"
+    local no_original="$lock_dir/no-original"
+
+    if [ -f "$written" ] && [ -f "$auth" ] && cmp -s "$auth" "$written"; then
+        if [ -f "$backup" ]; then
+            cp "$backup" "$auth"
+        elif [ -f "$no_original" ]; then
+            rm -f "$auth"
+        fi
+    else
+        echo "kn: Codex auth.json 在会话期间被外部修改，已保留当前内容。" >&2
+    fi
+    rm -rf "$lock_dir"
+}
+
 # ── Launch tool with profile env injected ──
 _ai_launch_with_profile() {
     local tool="$1"
@@ -246,20 +338,35 @@ print(json.dumps({'env': env}))
             ;;
         codex)
             # Codex ignores OPENAI_API_KEY env var; reads only ~/.codex/auth.json.
-            # Write the profile's key to auth.json, pass base_url/model via -c.
+            # API Key profiles temporarily write auth.json under a kn lock, then restore it.
+            # Local-login profiles do not touch auth.json and let Codex validate login state.
             local _kn_apikey=$(echo "$env_output" | sed -n "s/^export OPENAI_API_KEY='\\(.*\\)'/\\1/p")
             local _kn_base=$(echo "$env_output" | sed -n "s/^export OPENAI_BASE_URL='\\(.*\\)'/\\1/p")
             local _kn_model=$(echo "$env_output" | sed -n "s/^export OPENAI_MODEL='\\(.*\\)'/\\1/p")
             local _kn_auth="$HOME/.codex/auth.json"
             [ -n "$_kn_model" ] && set -- -c "model=$(_toml_string "$_kn_model")" "$@"
-            [ -n "$_kn_base" ] && set -- -c "model_providers.custom.base_url=$(_toml_string "$_kn_base")" "$@"
+            if [ -n "$_kn_base" ]; then
+                set -- \
+                    -c "model_provider=\"custom\"" \
+                    -c "model_providers.custom.name=\"Custom\"" \
+                    -c "model_providers.custom.env_key=\"OPENAI_API_KEY\"" \
+                    -c "model_providers.custom.base_url=$(_toml_string "$_kn_base")" \
+                    "$@"
+            fi
             if [ -n "$_kn_apikey" ]; then
+                local _kn_lock_dir
+                _kn_lock_dir="$(_kn_codex_acquire_auth_lock "$profile_name" "$_kn_auth")" || return 1
                 [ -d "$HOME/.codex" ] || mkdir -p "$HOME/.codex"
-                [ -f "$_kn_auth" ] && cp "$_kn_auth" "$_kn_auth.kn-bak"
+                if [ -f "$_kn_auth" ]; then
+                    cp "$_kn_auth" "$_kn_lock_dir/original.auth.json"
+                else
+                    : > "$_kn_lock_dir/no-original"
+                fi
                 printf '{"auth_mode":"apikey","OPENAI_API_KEY":"%s"}\n' "$_kn_apikey" > "$_kn_auth"
+                cp "$_kn_auth" "$_kn_lock_dir/written.auth.json"
                 (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")
                 local _kn_rc=$?
-                [ -f "$_kn_auth.kn-bak" ] && mv "$_kn_auth.kn-bak" "$_kn_auth"
+                _kn_codex_restore_auth_and_release "$_kn_lock_dir" "$_kn_auth"
                 return $_kn_rc
             fi
             (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")

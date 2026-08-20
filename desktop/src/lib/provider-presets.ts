@@ -30,6 +30,8 @@ export interface ProviderPreset {
   description: string;
   /** Environment variable definitions for this preset */
   envVars: EnvVarDef[];
+  /** How this preset authenticates. Defaults to api_key for legacy presets. */
+  authMode?: "api_key" | "local_login" | "token";
   /** Optional note shown on the env vars step (e.g. PAT vs /login warning) */
   note?: string;
 }
@@ -156,9 +158,18 @@ const claudeProviders: ProviderPreset[] = [
 
 const codexProviders: ProviderPreset[] = [
   {
+    id: "codex-local-login",
+    name: "账号登录",
+    description: "复用本机 Codex 登录态，kn 不保存 token，也不提前判断是否已登录",
+    authMode: "local_login",
+    envVars: [],
+    note: "启动时由 Codex 自己验证本机登录状态；如果登录失效，请在终端里按 Codex 提示重新登录。",
+  },
+  {
     id: "openai-official",
     name: "OpenAI 官方",
     description: "直接使用 OpenAI API",
+    authMode: "api_key",
     envVars: [
       { key: "OPENAI_API_KEY", required: true, placeholder: "sk-..." },
       { key: "OPENAI_BASE_URL", required: false, placeholder: "https://api.openai.com/v1" },
@@ -169,6 +180,7 @@ const codexProviders: ProviderPreset[] = [
     id: "custom",
     name: "其他中转站",
     description: "任何 OpenAI 兼容的三方网关",
+    authMode: "api_key",
     envVars: [
       { key: "OPENAI_API_KEY", required: true, placeholder: "sk-..." },
       { key: "OPENAI_BASE_URL", required: true, placeholder: "https://your-gateway.com/v1" },
@@ -176,14 +188,23 @@ const codexProviders: ProviderPreset[] = [
   },
 ];
 
-// --- Qwen CLI (Qoder) ---
+// --- Qwen CLI (QoderCN) ---
 
 const qoderclicnProviders: ProviderPreset[] = [
   {
-    id: "alibaba-bailian",
+    id: "qodercn-local-login",
+    name: "账号登录",
+    description: "复用本机 QoderCN 登录态，kn 不读取登录文件",
+    authMode: "local_login",
+    envVars: [],
+    note: "启动时由 QoderCN 自己验证本机登录状态；kn 不读取 .qoder-cn/.auth 内部文件，也不判断是否已登录。",
+  },
+  {
+    id: "qodercn-pat",
     name: "阿里百炼 官方",
     description: "通义千问官方 API — 个人访问令牌（PAT）认证",
-    note: "💡 请始终使用 PAT 令牌（环境变量），勿在 Qoder 内执行 /login。\n/login 存储的令牌会覆盖环境变量，导致多 Profile 无法正确切换。",
+    authMode: "token",
+    note: "使用 QODERCN_PERSONAL_ACCESS_TOKEN 注入当前进程，不修改本机 QoderCN 登录文件。",
     envVars: [
       { key: "QODERCN_PERSONAL_ACCESS_TOKEN", required: true, placeholder: "qo-...", label: "个人访问令牌" },
     ],
@@ -209,7 +230,7 @@ export const CLI_TOOLS: CLIToolDef[] = [
   },
   {
     id: "qoderclicn",
-    name: "Qoder CLI (国内版)",
+    name: "QoderCN",
     description: "通义灵码 CLI — 仅支持阿里百炼平台，不支持第三方 API",
     iconLetter: "Q",
     providers: qoderclicnProviders,

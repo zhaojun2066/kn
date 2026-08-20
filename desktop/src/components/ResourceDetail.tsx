@@ -257,55 +257,57 @@ function PluginDetail({
       {viewMode === "list" && (
         <>
           {/* Tab bar */}
-          <div className="flex border-b border-[var(--app-border-light)]" role="tablist">
-        <button
-          role="tab"
-          aria-selected={tab === "skills"}
-          onClick={() => setTab("skills")}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-mono transition-colors duration-fast
-            ${tab === "skills"
-              ? "text-[var(--app-accent)] border-b-[2px] border-b-[var(--app-accent)] -mb-px"
-              : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
-            }`}
-        >
-          <Layers size={12} aria-hidden="true" />
-          Skills
-          <span className="text-2xs opacity-50 ml-0.5">{p.skills.length}</span>
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === "agents"}
-          onClick={() => setTab("agents")}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-mono transition-colors duration-fast
-            ${tab === "agents"
-              ? "text-[var(--app-accent)] border-b-[2px] border-b-[var(--app-accent)] -mb-px"
-              : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
-            }`}
-        >
-          <Bot size={12} aria-hidden="true" />
-          Agents
-          <span className="text-2xs opacity-50 ml-0.5">{p.agents.length}</span>
-        </button>
-        {(p.commands?.length > 0) && (
-          <button
-            role="tab"
-            aria-selected={tab === "commands"}
-            onClick={() => setTab("commands")}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-mono transition-colors duration-fast
-              ${tab === "commands"
-                ? "text-[var(--app-accent)] border-b-[2px] border-b-[var(--app-accent)] -mb-px"
-                : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
-              }`}
-          >
-            <Terminal size={12} aria-hidden="true" />
-            Commands
-            <span className="text-2xs opacity-50 ml-0.5">{p.commands.length}</span>
-          </button>
-        )}
-      </div>
+          <div className="border-b border-app-border px-4 py-2 overflow-x-auto bg-app-bg" role="tablist">
+            <div className="inline-flex items-center gap-1">
+              <button
+                role="tab"
+                aria-selected={tab === "skills"}
+                onClick={() => setTab("skills")}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-all duration-fast flex items-center gap-1.5 ${
+                  tab === "skills"
+                    ? "bg-app-panel text-app-accent shadow-sm ring-1 ring-app-border"
+                    : "text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"
+                }`}
+              >
+                <Layers size={12} aria-hidden="true" />
+                Skills
+                <span className="text-2xs opacity-60 ml-0.5">{p.skills.length}</span>
+              </button>
+              <button
+                role="tab"
+                aria-selected={tab === "agents"}
+                onClick={() => setTab("agents")}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-all duration-fast flex items-center gap-1.5 ${
+                  tab === "agents"
+                    ? "bg-app-panel text-app-accent shadow-sm ring-1 ring-app-border"
+                    : "text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"
+                }`}
+              >
+                <Bot size={12} aria-hidden="true" />
+                Agents
+                <span className="text-2xs opacity-60 ml-0.5">{p.agents.length}</span>
+              </button>
+              {(p.commands?.length > 0) && (
+                <button
+                  role="tab"
+                  aria-selected={tab === "commands"}
+                  onClick={() => setTab("commands")}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-all duration-fast flex items-center gap-1.5 ${
+                    tab === "commands"
+                      ? "bg-app-panel text-app-accent shadow-sm ring-1 ring-app-border"
+                      : "text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"
+                  }`}
+                >
+                  <Terminal size={12} aria-hidden="true" />
+                  Commands
+                  <span className="text-2xs opacity-60 ml-0.5">{p.commands.length}</span>
+                </button>
+              )}
+          </div>
+        </div>
 
-      {/* Tab content */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+        {/* Tab content */}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
         {tab === "skills" ? (
           p.skills.length > 0 ? (
             <div className="space-y-1.5">

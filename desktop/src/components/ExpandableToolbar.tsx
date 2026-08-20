@@ -51,7 +51,7 @@ function ImportDrop({ onScan, onFile }: { onScan: () => void; onFile: () => void
         <ChevronDown size={9} className={open ? "rotate-180" : ""} />
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-1 z-50 min-w-[150px] bg-app-panel border border-app-border shadow-dialog py-0.5 whitespace-nowrap">
+        <div className="absolute top-full left-0 mt-1 z-50 min-w-[150px] bg-app-panel border border-app-border shadow-dialog py-0.5 whitespace-nowrap rounded-lg overflow-hidden">
           <button
             onClick={() => { onScan(); setOpen(false); }}
             className="w-full flex items-center gap-2 px-3 py-1.5 text-sm font-mono text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)] transition-colors whitespace-nowrap"
@@ -106,7 +106,13 @@ export function ExpandableToolbar({
   return (
     <div className="flex items-center gap-1 px-2 pt-1.5 pb-1">
       {/* ── Always visible ──────────────────────────── */}
-      <Button variant="primary" size="sm" onClick={onAdd} title="新增运行配置">
+      <Button
+        variant="primary"
+        size="sm"
+        onClick={onAdd}
+        title="新增运行配置"
+        className="min-w-[32px] text-white bg-app-accent border-app-accent shadow-sm hover:bg-app-accent-dim hover:border-app-accent-dim"
+      >
         <Plus size={14} />
       </Button>
 

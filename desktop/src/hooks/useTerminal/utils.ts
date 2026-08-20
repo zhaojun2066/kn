@@ -14,7 +14,7 @@ export interface ProfileCliInfo {
   cli_type?: string;
 }
 
-/** CLI identity must match exactly; Qoder and Qoderclicn are distinct products. */
+/** CLI identity must match exactly; QoderCN uses qoderclicn while legacy qoder sessions remain distinct. */
 export function normalizedCli(tool: string | undefined): string | null {
   switch (tool?.trim().toLowerCase()) {
     case "claude": return "claude";

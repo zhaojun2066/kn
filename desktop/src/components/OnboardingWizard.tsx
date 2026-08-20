@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { formatShortcut } from "../utils/shortcut";
 import { Terminal, Check, X as XIcon, AlertTriangle, ChevronRight, ChevronLeft, Search, Plus, Play, X } from "lucide-react";
 import { Button } from "./common/Button";
 import type { EnvCheckItem, EnvCheckResult } from "../lib/types";
@@ -152,7 +151,7 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
               <div className="px-4 py-2 border-t border-app-border bg-[var(--app-subtle)]">
                 <div className="text-2xs text-app-text-muted font-mono leading-relaxed">
                   {envCheck?.items.some(i => i.category === "cli" && i.status !== "ok") &&
-                    "💡 提示：缺少的 CLI 工具可在顶部系统诊断中选择安装方式。"}
+                    "提示：缺少的 CLI 工具可在顶部系统诊断中选择安装方式。"}
                   {envCheck?.items.find(i => i.name === "shell-wrapper")?.status !== "ok" &&
                     " Shell 集成会在应用启动时自动尝试写入。"}
                 </div>
@@ -189,8 +188,8 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
                   扫描现有配置
                 </div>
                 <div className="text-xs text-app-text-dim leading-relaxed">
-                  自动检测 ~/.claude/settings.json 和 ~/.codex/ 中的 API 配置，
-                  一键导入为运行配置
+                  只检测明确可导入的 API Key、Token 和环境变量。
+                  Codex / QoderCN 账号登录需要手动选择创建
                 </div>
               </div>
             </button>
@@ -202,11 +201,11 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
                 bg-[var(--app-cmd-bg)] hover:border-app-accent hover:bg-[var(--app-selected)]
                 transition-all duration-fast group"
             >
-              <div className="w-10 h-10 rounded-full bg-[var(--app-input)] border border-app-border
+              <div className="w-10 h-10 rounded-full bg-[var(--app-selected)] border border-app-accent/30
                 flex items-center justify-center shrink-0 mt-0.5
                 group-hover:border-app-accent group-hover:bg-[var(--app-selected)] transition-colors"
               >
-                <Plus size={18} className="text-app-amber" />
+                <Plus size={18} className="text-app-accent" />
               </div>
               <div>
                 <div className="text-sm font-semibold text-app-text font-mono mb-0.5">
@@ -214,8 +213,8 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
                   手动创建运行配置
                 </div>
                 <div className="text-xs text-app-text-dim leading-relaxed">
-                  填写 API 密钥、Base URL 和模型名称，创建自定义运行配置。
-                  支持任何兼容 Anthropic 或 OpenAI 协议的服务商
+                  选择 CLI 和认证方式。Codex / QoderCN 支持账号登录配置，
+                  也可以填写 API Key 或 Token/PAT
                 </div>
               </div>
             </button>
@@ -248,14 +247,14 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
                   <span className="text-app-accent font-bold text-xs w-5 text-right shrink-0 mt-0.5">1</span>
                   <div>
                     <div className="text-app-text">从侧边栏选择一个 profile</div>
-                    <div className="text-xs text-app-text-muted mt-0.5">或按 <kbd className="text-app-amber">{formatShortcut("mod+N")}</kbd> 新建</div>
+                    <div className="text-xs text-app-text-muted mt-0.5">没有合适配置时，可以在运行配置抽屉中新建</div>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-app-accent font-bold text-xs w-5 text-right shrink-0 mt-0.5">2</span>
                   <div>
                     <div className="text-app-text">点击 <span className="inline-flex items-center gap-1 text-app-green"><Play size={10} />运行</span> 按钮</div>
-                    <div className="text-xs text-app-text-muted mt-0.5">选择项目目录后，终端将自动执行 ai claude 命令</div>
+                    <div className="text-xs text-app-text-muted mt-0.5">选择项目目录后，终端将自动执行对应 ai 命令</div>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
@@ -265,29 +264,6 @@ export function OnboardingWizard({ hasProfiles, onScan, onCreate, onDismiss }: O
                     <div className="text-xs text-app-text-muted mt-0.5">会话结束后环境变量自动清除，不影响其他终端</div>
                   </div>
                 </div>
-              </div>
-            </div>
-
-            {/* Shortcut keys quick reference */}
-            <div className="text-left border border-app-border bg-[var(--app-cmd-bg)] w-full">
-              <div className="px-3 py-2 border-b border-app-border bg-[var(--app-cmd-header)]">
-                <span className="text-2xs text-app-text-muted uppercase tracking-wider font-mono">
-                  常用快捷键
-                </span>
-              </div>
-              <div className="px-4 py-2 space-y-1 font-mono">
-                {[
-                  [formatShortcut("mod+N"), "新建运行配置"],
-                  [formatShortcut("mod+B"), "切换侧边栏"],
-                  ["Ctrl+`", "打开终端面板"],
-                  [formatShortcut("mod+K"), "查看全部快捷键"],
-                  ["Esc", "关闭弹窗 / 取消选中"],
-                ].map(([key, desc]) => (
-                  <div key={desc} className="flex items-center justify-between text-xs">
-                    <span className="text-app-text-dim">{desc}</span>
-                    <kbd className="px-1.5 py-0.5 text-2xs bg-[var(--app-input)] border border-app-border text-app-text">{key}</kbd>
-                  </div>
-                ))}
               </div>
             </div>
           </div>

@@ -721,6 +721,7 @@ export function ProjectWorkspace({
       return `${homeDirRef.current}/${cliDirUser}/${configFile}`;
     }
     if (targetProjectPath) {
+      // Project-level Qoder resources use .qoder for both international and domestic editions.
       const cliDirProject = cli === "qoder" ? ".qoder" : cli === "codex" ? ".codex" : ".claude";
       return `${targetProjectPath.replace(/\/+$/, "")}/${cliDirProject}/${configFile}`;
     }
@@ -1058,8 +1059,7 @@ export function ProjectWorkspace({
             <div className="relative group/run">
               <button
                 onClick={handleHeaderRunDefault}
-                className="h-7 flex items-center gap-1.5 px-3 text-xs font-mono
-                  bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity"
+                className="app-primary-action h-7 flex items-center gap-1.5 px-3 text-xs font-mono rounded-l-md"
                 title={defaultProfile ? `使用 ${defaultProfile} 运行` : "选择运行配置"}
               >
                 <span>▶</span>
@@ -1079,9 +1079,7 @@ export function ProjectWorkspace({
             <div ref={headerRunRef} className="relative">
               <button
                 onClick={() => { setShowHeaderRunPicker((v) => !v); setShowHeaderDefaultPicker(false); }}
-                className="h-7 px-1.5 text-xs font-mono
-                  bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity
-                  border-l border-[var(--app-bg)]/20"
+                className="app-primary-action h-7 px-1.5 text-xs font-mono rounded-r-md border-l-white/25"
               >
                 ▾
               </button>
@@ -1110,22 +1108,24 @@ export function ProjectWorkspace({
           </div>
         </div>
       </div>
-      <div className="flex shrink-0 border-b border-app-border px-2 overflow-x-auto" role="tablist">
-        {TABS.map((tab) => (
-          <button
-            key={tab.key}
-            role="tab"
-            aria-selected={activeTab === tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`px-3 py-2 text-2xs font-mono border-b whitespace-nowrap ${
-              activeTab === tab.key
-                ? "text-app-accent border-app-accent"
-                : "text-app-text-muted border-transparent hover:text-app-text"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="shrink-0 border-b border-app-border px-4 py-2 overflow-x-auto bg-app-bg" role="tablist">
+        <div className="inline-flex items-center gap-1">
+          {TABS.map((tab) => (
+            <button
+              key={tab.key}
+              role="tab"
+              aria-selected={activeTab === tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-all duration-fast ${
+                activeTab === tab.key
+                  ? "bg-app-panel text-app-accent shadow-sm ring-1 ring-app-border"
+                  : "text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
       {activeTab === "overview" && (
         <ProjectOverview

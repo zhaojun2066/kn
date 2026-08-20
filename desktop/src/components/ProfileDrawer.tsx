@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { X } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Folder, X } from "lucide-react";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import type { ProfileDetail, ProfileSummary, ProjectInfo, EnvCheckResult } from "../lib/types";
 import type { SessionRecord } from "../hooks/useTerminal";
 import { useResizeHandle } from "../hooks/useResizeHandle";
+import { projectLikeListRowChrome, projectLikeListRowState } from "./common/listRowStyles";
 import { Sidebar } from "./Sidebar";
 import { MainPanel } from "./MainPanel";
 import { Dialog } from "./common/Dialog";
@@ -102,13 +103,22 @@ export function ProfileDrawer({
   onRunProfileInProject,
 }: ProfileDrawerProps) {
   /* ── Resizable width ── */
-  const maxWidth = useMemo(() => Math.round(window.innerWidth * 0.92), []);
+  const [maxWidth, setMaxWidth] = useState(() => Math.max(400, window.innerWidth - 12));
+  const [defaultDrawerWidth, setDefaultDrawerWidth] = useState(() => Math.round(window.innerWidth * 0.6));
+  useEffect(() => {
+    const updateDrawerBounds = () => {
+      setMaxWidth(Math.max(400, window.innerWidth - 12));
+      setDefaultDrawerWidth(Math.round(window.innerWidth * 0.6));
+    };
+    window.addEventListener("resize", updateDrawerBounds);
+    return () => window.removeEventListener("resize", updateDrawerBounds);
+  }, []);
   const { size: drawerWidth, handleProps } = useResizeHandle({
     direction: "horizontal",
     minSize: 400,
     maxSize: maxWidth,
-    defaultSize: 960,
-    storageKey: "kn-profile-drawer-width",
+    defaultSize: defaultDrawerWidth,
+    storageKey: "kn-profile-drawer-width-v2",
   });
 
   // ── Project picker state ──
@@ -198,23 +208,23 @@ export function ProfileDrawer({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
+    <div className="fixed inset-0 z-[80] flex justify-end">
       <button
         aria-label="关闭运行配置管理遮罩"
-        className="absolute inset-0 bg-black/45 animate-[fadeIn_160ms_ease-out]"
+        className="absolute inset-0 z-0 bg-black/45 animate-[fadeIn_160ms_ease-out]"
         onClick={onClose}
       />
       {/* Resize handle — outside section so internal content can't block it */}
       <div
         {...handleProps}
-        className={`absolute top-0 bottom-0 w-2 z-30 hover:bg-app-accent/15 transition-colors ${handleProps.className}`}
+        className={`absolute top-0 bottom-0 w-3 z-[90] pointer-events-auto hover:bg-app-accent/15 transition-colors ${handleProps.className}`}
         style={{ right: `${drawerWidth}px` }}
       >
         <div className="absolute right-0 top-0 bottom-0 w-px bg-app-border" />
       </div>
       <section
         data-testid="profile-drawer-panel"
-        className="relative z-10 h-full bg-app-bg border-l border-app-border shadow-dialog flex flex-col shrink-0"
+        className="relative z-20 h-full bg-app-bg border-l border-app-border shadow-dialog flex flex-col shrink-0"
         style={{ width: `${drawerWidth}px` }}
       >
         {/* ── Header ── */}
@@ -272,12 +282,12 @@ export function ProfileDrawer({
               width="340px"
             >
               <div
-                className="flex flex-col max-h-[300px] outline-none"
+                className="flex flex-col max-h-[360px] outline-none"
                 onKeyDown={handlePickerKeyDown}
               >
                 {/* Header */}
-                <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--app-border)]">
-                  <span className="text-xs font-mono text-[var(--app-text)] font-medium">
+                <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-[var(--app-border-light)] bg-[var(--app-subtle)]/70">
+                  <span className="text-sm text-[var(--app-text)] font-semibold">
                     选择运行项目
                   </span>
                   <span className="text-3xs text-[var(--app-text-muted)] font-mono">
@@ -296,14 +306,13 @@ export function ProfileDrawer({
                       <button
                         key={p.name}
                         data-project-index={i}
+                        onMouseEnter={() => setProjectPickerIdx(i)}
                         onClick={() => handleSelectProject(i)}
-                        className={`w-full text-left px-4 py-2 text-xs font-mono transition-colors flex items-center gap-2
-                          ${i === projectPickerIdx
-                            ? "bg-[var(--app-selected)] text-[var(--app-text)]"
-                            : "text-[var(--app-text-dim)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]"
-                          }`}
+                        className={`w-[calc(100%-12px)] text-left px-3 py-2.5 text-xs flex items-center gap-2.5
+                          ${projectLikeListRowChrome} ${projectLikeListRowState({ selected: i === projectPickerIdx })}`}
                       >
-                        <span className="truncate flex-1">{p.name}</span>
+                        <Folder size={14} className={i === projectPickerIdx ? "text-app-accent shrink-0" : "text-app-text-muted shrink-0"} />
+                        <span className={`truncate flex-1 ${i === projectPickerIdx ? "font-semibold" : "font-medium"}`}>{p.name}</span>
                         <span className="text-3xs text-[var(--app-text-muted)] truncate max-w-[140px]">
                           {p.path.split("/").pop()}
                         </span>
@@ -315,14 +324,17 @@ export function ProfileDrawer({
                 {/* Browse folder fallback */}
                 <button
                   data-project-index={projects.length}
+                  onMouseEnter={() => setProjectPickerIdx(projects.length)}
                   onClick={handleBrowseFolder}
-                  className={`w-full text-left px-4 py-2 text-xs font-mono transition-colors flex items-center gap-2 border-t border-[var(--app-border)]
+                  className={`mx-1.5 my-1.5 w-[calc(100%-12px)] text-left px-3 py-2.5 text-xs flex items-center gap-2.5
+                    border border-[var(--app-border-light)] rounded-lg transition-all duration-fast
                     ${projectPickerIdx === projects.length
-                      ? "bg-[var(--app-selected)] text-[var(--app-text)]"
-                      : "text-[var(--app-text-muted)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]"
+                      ? "bg-app-selected text-app-text border-app-accent shadow-sm"
+                      : "text-app-text-dim hover:bg-app-hover hover:text-app-text"
                     }`}
                 >
-                  <span>📁 浏览文件夹...</span>
+                  <Folder size={14} className={projectPickerIdx === projects.length ? "text-app-accent shrink-0" : "text-app-text-muted shrink-0"} />
+                  <span className="font-medium">浏览文件夹...</span>
                 </button>
               </div>
             </Dialog>

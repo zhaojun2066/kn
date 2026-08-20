@@ -148,20 +148,16 @@ export function ProjectDetail({
         <div className="flex items-stretch">
           <button
             onClick={handleRunClick}
-            className="flex items-center gap-1 px-2 py-1 text-2xs font-mono
-              bg-[var(--app-accent)] text-[var(--app-bg)] hover:opacity-90
-              border-none outline-none cursor-pointer
-              transition-opacity duration-100"
+            className="app-primary-action flex items-center gap-1 px-2 py-1 text-2xs font-mono
+              rounded-l-md outline-none cursor-pointer"
           >
             <Play size={11} className="shrink-0" />
             <span>运行</span>
           </button>
           <button
             onClick={handleRunClick}
-            className="flex items-center px-1 py-1 text-2xs font-mono
-              bg-[var(--app-accent)] text-[var(--app-bg)] hover:opacity-90
-              border-l border-[var(--app-bg)]/20 border-none outline-none cursor-pointer
-              transition-opacity duration-100"
+            className="app-primary-action flex items-center px-1 py-1 text-2xs font-mono
+              rounded-r-md border-l-white/25 outline-none cursor-pointer"
           >
             <ChevronDown size={11} />
           </button>

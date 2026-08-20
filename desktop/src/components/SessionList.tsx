@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { CLIIcon } from "./common/CLIIcon";
+import { projectLikeListRowChrome, projectLikeListRowState } from "./common/listRowStyles";
 import { Circle, Loader, ChevronDown } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { CLI_TYPES, type CliKind, type ProfileSummary, type SessionInfo } from "../lib/types";
@@ -113,12 +114,8 @@ export function SessionList({ sessions, loading, profiles, onResume }: SessionLi
             <div
               key={s.sessionId}
               onClick={() => togglePreview(s)}
-              className={`group flex flex-col mx-1 my-px cursor-pointer
-                transition-all duration-fast
-                ${expandedId === s.sessionId
-                  ? "bg-[var(--app-selected)]/50 border-l-[3px] border-l-[var(--app-accent)]"
-                  : "border-l-[3px] border-l-transparent hover:bg-[var(--app-hover)]"
-                }`}
+              className={`group flex flex-col cursor-pointer
+                ${projectLikeListRowChrome} ${projectLikeListRowState({ selected: expandedId === s.sessionId })}`}
             >
               <div className="flex items-center gap-2.5 px-2.5 py-2 text-[var(--app-text)]">
               <Circle
@@ -211,8 +208,8 @@ export function SessionList({ sessions, loading, profiles, onResume }: SessionLi
         </div>
       )}
       {sessionToResume && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
-          <div className="w-[360px] border border-app-border bg-app-panel p-5 shadow-dialog">
+        <div className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop">
+          <div className="app-dialog-panel w-[360px] border border-app-border bg-app-panel p-5">
             <h3 className="text-sm font-medium text-app-text">选择运行配置</h3>
             <p className="mt-2 text-xs text-app-text-muted">恢复会话前请选择 {sessionToResume.cli} 的运行配置。</p>
             <select
@@ -228,7 +225,7 @@ export function SessionList({ sessions, loading, profiles, onResume }: SessionLi
               <button
                 disabled={!selectedProfile}
                 onClick={() => { onResume(sessionToResume, selectedProfile); setSessionToResume(null); }}
-                className="px-3 py-1.5 text-xs text-app-bg bg-app-accent disabled:opacity-40"
+                className="app-primary-action px-3 py-1.5 text-xs font-medium"
               >
                 恢复会话
               </button>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useResizeHandle } from "../hooks/useResizeHandle";
 import { Puzzle, Terminal, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -74,13 +74,22 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
   const [hookStoreOpen, setHookStoreOpen] = useState(false);
 
   /* ── Resizable width ── */
-  const maxWidth = useMemo(() => Math.round(window.innerWidth * 0.92), []);
+  const [maxWidth, setMaxWidth] = useState(() => Math.max(480, window.innerWidth - 12));
+  const [defaultDrawerWidth, setDefaultDrawerWidth] = useState(() => Math.round(window.innerWidth * 0.6));
+  useEffect(() => {
+    const updateDrawerBounds = () => {
+      setMaxWidth(Math.max(480, window.innerWidth - 12));
+      setDefaultDrawerWidth(Math.round(window.innerWidth * 0.6));
+    };
+    window.addEventListener("resize", updateDrawerBounds);
+    return () => window.removeEventListener("resize", updateDrawerBounds);
+  }, []);
   const { size: drawerWidth, handleProps } = useResizeHandle({
     direction: "horizontal",
     minSize: 480,
     maxSize: maxWidth,
-    defaultSize: 1080,
-    storageKey: "kn-resource-drawer-width",
+    defaultSize: defaultDrawerWidth,
+    storageKey: "kn-resource-drawer-width-v2",
   });
 
   // Overwrite confirmation (shared hook)
@@ -657,22 +666,22 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
+    <div className="fixed inset-0 z-[80] flex justify-end">
       <button
         aria-label="关闭资源管理遮罩"
-        className="absolute inset-0 bg-black/45"
+        className="absolute inset-0 z-0 bg-black/45"
         onClick={onClose}
       />
       {/* Resize handle — outside section so internal content can't block it */}
       <div
         {...handleProps}
-        className={`absolute top-0 bottom-0 w-2 z-30 hover:bg-app-accent/15 transition-colors ${handleProps.className}`}
+        className={`absolute top-0 bottom-0 w-3 z-[90] pointer-events-auto hover:bg-app-accent/15 transition-colors ${handleProps.className}`}
         style={{ right: `${drawerWidth}px` }}
       >
         <div className="absolute right-0 top-0 bottom-0 w-px bg-app-border" />
       </div>
       <section
-        className="relative z-10 h-full bg-app-bg border-l border-app-border shadow-dialog flex flex-col shrink-0"
+        className="relative z-20 h-full bg-app-bg border-l border-app-border shadow-dialog flex flex-col shrink-0"
         style={{ width: `${drawerWidth}px` }}
       >
         {/* Header */}
@@ -688,39 +697,35 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
         </div>
 
         {/* Tab bar */}
-        <div className="h-[36px] shrink-0 flex items-center border-b border-app-border bg-app-toolbar px-2" role="tablist">
-          <button
-            role="tab"
-            aria-selected={activeTab === "resources"}
-            onClick={() => { setActiveTab("resources"); setSelectedHook(null); }}
-            className={`px-3 py-1 text-xs font-mono transition-colors relative flex items-center gap-1.5
-              ${activeTab === "resources"
-                ? "text-[var(--app-text)]"
-                : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+        <div className="shrink-0 border-b border-app-border px-4 py-2 overflow-x-auto bg-app-bg" role="tablist">
+          <div className="inline-flex items-center gap-1">
+            <button
+              role="tab"
+              aria-selected={activeTab === "resources"}
+              onClick={() => { setActiveTab("resources"); setSelectedHook(null); }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-all duration-fast flex items-center gap-1.5 ${
+                activeTab === "resources"
+                  ? "bg-app-panel text-app-accent shadow-sm ring-1 ring-app-border"
+                  : "text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"
               }`}
-          >
-            <Puzzle size={12} className={activeTab === "resources" ? "text-[var(--app-accent)]" : ""} />
-            扩展
-            {activeTab === "resources" && (
-              <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-[var(--app-accent)]" />
-            )}
-          </button>
-          <button
-            role="tab"
-            aria-selected={activeTab === "hooks"}
-            onClick={() => { setActiveTab("hooks"); setSelectedItem(null); }}
-            className={`px-3 py-1 text-xs font-mono transition-colors relative flex items-center gap-1.5
-              ${activeTab === "hooks"
-                ? "text-[var(--app-text)]"
-                : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+            >
+              <Puzzle size={12} />
+              扩展
+            </button>
+            <button
+              role="tab"
+              aria-selected={activeTab === "hooks"}
+              onClick={() => { setActiveTab("hooks"); setSelectedItem(null); }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-all duration-fast flex items-center gap-1.5 ${
+                activeTab === "hooks"
+                  ? "bg-app-panel text-app-accent shadow-sm ring-1 ring-app-border"
+                  : "text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"
               }`}
-          >
-            <Terminal size={12} className={activeTab === "hooks" ? "text-[var(--app-accent)]" : ""} />
-            Hooks
-            {activeTab === "hooks" && (
-              <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-[var(--app-accent)]" />
-            )}
-          </button>
+            >
+              <Terminal size={12} />
+              Hooks
+            </button>
+          </div>
         </div>
 
         {/* Tab content */}

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { relativeTime } from "../lib/time-utils";
 import { CLIIcon } from "./common/CLIIcon";
+import { projectLikeListRowChrome, projectLikeListRowState } from "./common/listRowStyles";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import type { ProfileSummary, ProjectInfo } from "../lib/types";
 import type { SessionRecord } from "../hooks/useTerminal";
@@ -352,11 +353,9 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
       <div
         key={p.name}
         data-index={index}
-        className={`flex items-center gap-2.5 mx-1 my-px px-2.5 py-1.5 cursor-pointer transition-colors duration-60 border-l-[3px] ${
-          index === activeIndex
-            ? "bg-[var(--app-selected)] text-[var(--app-text)] border-l-[var(--app-accent)] shadow-[inset_0_0_8px_var(--app-glow)]"
-            : "text-[var(--app-text)] border-l-transparent hover:bg-[var(--app-hover)]"
-        } ${!canLaunch ? "opacity-50" : ""}`}
+        className={`flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer
+          ${projectLikeListRowChrome} ${projectLikeListRowState({ selected: index === activeIndex })}
+          ${!canLaunch ? "opacity-50" : ""}`}
         onClick={() => {
           if (!canLaunch) return;
           setSelectedProfile({ name: p.name, command: p.cmd! });
@@ -402,11 +401,8 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
       <div
         key={p.name}
         data-index={index}
-        className={`flex items-center gap-2.5 mx-1 my-px px-2.5 py-1.5 cursor-pointer transition-colors duration-60 border-l-[3px] ${
-          index === activeIndex
-            ? "bg-[var(--app-selected)] text-[var(--app-text)] border-l-[var(--app-accent)] shadow-[inset_0_0_8px_var(--app-glow)]"
-            : "text-[var(--app-text)] border-l-transparent hover:bg-[var(--app-hover)]"
-        }`}
+        className={`flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer
+          ${projectLikeListRowChrome} ${projectLikeListRowState({ selected: index === activeIndex })}`}
         onClick={() => {
           if (!selectedProfile) return;
           onLaunchProfile(selectedProfile.name, selectedProfile.command, p.path);
@@ -434,11 +430,8 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
       <div
         key={r.id}
         data-index={index}
-        className={`flex items-center gap-2.5 mx-1 my-px px-2.5 py-1.5 cursor-pointer transition-colors duration-60 border-l-[3px] ${
-          index === activeIndex
-            ? "bg-[var(--app-selected)] text-[var(--app-text)] border-l-[var(--app-accent)] shadow-[inset_0_0_8px_var(--app-glow)]"
-            : "text-[var(--app-text)] border-l-transparent hover:bg-[var(--app-hover)]"
-        }`}
+        className={`flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer
+          ${projectLikeListRowChrome} ${projectLikeListRowState({ selected: index === activeIndex })}`}
         onClick={() => {
           onResumeSession(r);
           onClose();
@@ -471,7 +464,7 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[120] flex items-start justify-center app-dialog-backdrop"
       style={{ paddingTop: "15vh" }}
       onClick={(e) => {
         // Click backdrop to close
@@ -480,10 +473,9 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
       onKeyDown={handleKeyDown}
     >
       <div
-        className="w-[520px] bg-[var(--app-panel)] border border-[var(--app-border)] flex flex-col overflow-hidden"
+        className="app-dialog-panel w-[520px] bg-[var(--app-panel)] border border-[var(--app-border)] flex flex-col"
         style={{
           animation: "scaleIn 150ms ease-out",
-          boxShadow: "var(--shadow-dialog)",
         }}
       >
         {/* ── Search input ──────────────────────────────── */}
@@ -559,11 +551,8 @@ export const QuickSwitcher = React.memo(function QuickSwitcher({
                 {/* "浏览文件夹..." — always present, unfiltered */}
                 <div
                   data-index={filteredProjects.length}
-                  className={`flex items-center gap-2.5 mx-1 my-px px-2.5 py-1.5 cursor-pointer transition-colors duration-60 border-l-[3px] ${
-                    activeIndex === filteredProjects.length
-                      ? "bg-[var(--app-selected)] text-[var(--app-text)] border-l-[var(--app-accent)] shadow-[inset_0_0_8px_var(--app-glow)]"
-                      : "text-[var(--app-text-dim)] border-l-transparent hover:bg-[var(--app-hover)]"
-                  }`}
+                  className={`flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer
+                    ${projectLikeListRowChrome} ${projectLikeListRowState({ selected: activeIndex === filteredProjects.length })}`}
                   onClick={async () => {
                     if (!selectedProfile) return;
                     try {

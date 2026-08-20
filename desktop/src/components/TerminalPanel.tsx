@@ -413,7 +413,7 @@ export function TerminalPanel({
                   ${isActive ? "bg-[var(--app-terminal-bg)] text-app-text border-b-[2px] border-b-app-accent -mb-px"
                     : "text-app-text-muted hover:text-app-text hover:bg-[var(--app-hover)]"}`}
               >
-                <span className={`w-2 h-2 rounded-full shrink-0 ${tab.ptyRunning ? "bg-app-accent shadow-[0_0_4px_var(--app-glow)]" : "bg-app-text-muted opacity-40"}`} />
+                <span className={`w-2 h-2 rounded-full shrink-0 ${tab.ptyRunning ? "bg-app-green" : "bg-app-text-muted opacity-40"}`} />
                 {mode === "right" && tab.agentNid && (
                   tab.agentRemoteEnabled ? (
                     <Globe2 size={11} className="shrink-0 text-emerald-400" aria-label="远程会话" />
@@ -458,7 +458,7 @@ export function TerminalPanel({
             <>
               <div className="fixed inset-0 z-40" onClick={() => setShowHistory(false)} />
               <div className="absolute right-0 top-[32px] z-50 w-[380px] max-h-[400px] overflow-y-auto
-                bg-[var(--app-panel)] border border-app-border shadow-dialog">
+                bg-[var(--app-panel)] border border-app-border shadow-dialog rounded-lg">
                 <div className="px-3 py-2 border-b border-app-border bg-[var(--app-subtle)] space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="text-2xs text-app-text-muted uppercase tracking-wider">历史会话</span>
@@ -480,7 +480,7 @@ export function TerminalPanel({
                     value={historySearch}
                     onChange={(e) => setHistorySearch(e.target.value)}
                     placeholder="搜索..."
-                    className="w-full h-[22px] text-2xs font-mono bg-[var(--app-input)] border border-app-border px-2 py-0 focus:border-app-accent"
+                    className="w-full h-[22px] text-2xs font-mono bg-[var(--app-input)] border border-app-border px-2 py-0 rounded-md focus:border-app-accent"
                     spellCheck={false}
                   />
                 </div>
@@ -610,7 +610,7 @@ export function TerminalPanel({
           {showThemeMenu && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setShowThemeMenu(false)} />
-              <div className="absolute right-0 top-[32px] z-50 w-[200px] bg-[var(--app-panel)] border border-app-border shadow-dialog py-0.5">
+              <div className="absolute right-0 top-[32px] z-50 w-[200px] bg-[var(--app-panel)] border border-app-border shadow-dialog py-1 rounded-lg">
                 {TERMINAL_THEMES.map((t) => (
                   <button
                     key={t.name}
@@ -630,7 +630,7 @@ export function TerminalPanel({
                     {t.label}
                   </button>
                 ))}
-                <div className="border-t border-app-border mt-0.5 pt-0.5">
+                <div className="border-t border-app-border mt-1 pt-1">
                   <label className="flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs font-mono text-app-text-dim hover:text-app-text transition-colors">
                     <input
                       type="checkbox"
@@ -681,7 +681,7 @@ export function TerminalPanel({
               <input type="text" value={activeTab?.workDir || ""}
                 onChange={(e) => activeTabId && onSetWorkDir(activeTabId, e.target.value)}
                 placeholder="工作目录"
-                className="w-[160px] h-[24px] bg-[var(--app-input)] border border-app-border text-xs font-mono text-app-text-dim px-1.5 py-0 focus:border-app-accent"
+                className="w-[160px] h-[24px] bg-[var(--app-input)] border border-app-border text-xs font-mono text-app-text-dim px-1.5 py-0 rounded-md focus:border-app-accent"
                 spellCheck={false} />
               <button onClick={browseDir} className="p-0.5 text-app-text-muted hover:text-app-accent transition-colors" title="选择目录">
                 <FolderOpen size={13} />
@@ -723,7 +723,7 @@ export function TerminalPanel({
         {/* Search bar overlay */}
         {showSearch && (
           <div className="absolute top-0 right-0 z-20 flex items-center gap-1 px-2 py-1
-            bg-[var(--app-panel)] border-b border-l border-app-border shadow-lg
+            bg-[var(--app-panel)] border-b border-l border-app-border shadow-lg rounded-bl-lg
             animate-[fadeIn_120ms_ease-out]"
           >
             <Search size={11} className="text-app-text-muted shrink-0" />
@@ -739,7 +739,7 @@ export function TerminalPanel({
                 }
                 if (e.key === "Escape") { e.preventDefault(); closeSearch(); }
               }}
-              className="w-[160px] h-[22px] text-xs font-mono bg-[var(--app-input)] border border-app-border px-1.5 py-0 focus:border-app-accent"
+              className="w-[160px] h-[22px] text-xs font-mono bg-[var(--app-input)] border border-app-border px-1.5 py-0 rounded-md focus:border-app-accent"
               placeholder="搜索..."
               spellCheck={false}
             />

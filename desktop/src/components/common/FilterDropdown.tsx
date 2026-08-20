@@ -51,7 +51,7 @@ export const FilterDropdown = React.memo(function FilterDropdown({ value, option
         <ChevronDown size={9} className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
-        <div className="absolute top-full left-0 right-0 z-50 bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog py-0.5 max-h-[200px] overflow-y-auto">
+        <div className="absolute top-full left-0 right-0 z-50 bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog py-0.5 max-h-[200px] overflow-y-auto rounded-lg">
           {(options as FilterOption[]).map((opt) => (
             <button
               key={opt.value}

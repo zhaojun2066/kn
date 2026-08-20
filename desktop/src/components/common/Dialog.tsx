@@ -63,14 +63,14 @@ export function Dialog({ open, onClose, width = "420px", children, persistent }:
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-[fadeIn_100ms_ease-out]"
+      className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop animate-[fadeIn_100ms_ease-out]"
       onClick={(e) => {
         if (!persistent && e.target === e.currentTarget) onClose();
       }}
     >
       <div
         ref={panelRef}
-        className="bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog animate-[scaleIn_150ms_ease-out] flex flex-col max-h-[85vh] outline-none"
+        className="app-dialog-panel bg-[var(--app-panel)] border border-[var(--app-border)] animate-[scaleIn_150ms_ease-out] flex flex-col max-h-[85vh] outline-none"
         style={{ width }}
         role="dialog"
         aria-modal="true"

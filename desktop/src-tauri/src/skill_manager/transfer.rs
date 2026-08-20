@@ -40,7 +40,8 @@ fn compute_content_fingerprint(path: &Path) -> String {
 fn is_project_scope(path: &str) -> bool {
     // Project-level resources have ":project-" in their ID
     // But for paths, we check if the path contains "/.claude/" or "/.codex/" or
-    // "/.qoder-cn/" (user) or "/.qoder/" (project, for agents/skills)
+    // "/.qoder-cn/" (QoderCN user-level) or "/.qoder/" (Qoder project-level,
+    // shared by international + domestic editions for agents/skills).
     path.contains("/.claude/")
         || path.contains("/.codex/")
         || path.contains("/.qoder-cn/")

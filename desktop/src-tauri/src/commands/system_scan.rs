@@ -12,6 +12,8 @@ pub struct ScanResult {
 pub struct ScanProfile {
     pub name: String,
     pub cli_type: String,
+    pub auth_mode: String,
+    pub provider_id: String,
     pub env: std::collections::HashMap<String, String>,
     pub source: String,
 }
@@ -43,7 +45,10 @@ fn sanitize_scan_name(name: &str) -> String {
 
 #[command]
 pub fn scan_system_configs() -> Result<ScanResult, String> {
-    let home = home_dir();
+    scan_system_configs_from_home(home_dir())
+}
+
+fn scan_system_configs_from_home(home: std::path::PathBuf) -> Result<ScanResult, String> {
     let mut profiles = Vec::new();
     let mut checked = Vec::new();
 
@@ -64,6 +69,8 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
             profiles.push(ScanProfile {
                 name: sanitize_scan_name("claude"),
                 cli_type: "claude".into(),
+                auth_mode: "api_key".into(),
+                provider_id: "imported".into(),
                 env,
                 source: claude_str,
             });
@@ -75,9 +82,11 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
     let codex_auth_str = codex_auth.display().to_string();
     checked.push(codex_auth_str.clone());
     let mut codex_env = std::collections::HashMap::new();
+    let mut codex_has_api_key = false;
     if let Ok(json) = read_json_file(&codex_auth) {
         if let Some(key) = json.get("OPENAI_API_KEY").and_then(|v| v.as_str()) {
             codex_env.insert("OPENAI_API_KEY".into(), key.to_string());
+            codex_has_api_key = true;
         }
     }
 
@@ -100,10 +109,14 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
         }
     }
 
-    if !codex_env.is_empty() {
+    if codex_has_api_key {
+        codex_env.insert("_KN_AUTH_MODE".into(), "api_key".into());
+        codex_env.insert("_KN_PROVIDER_ID".into(), "openai-official".into());
         profiles.push(ScanProfile {
             name: sanitize_scan_name("codex"),
             cli_type: "codex".into(),
+            auth_mode: "api_key".into(),
+            provider_id: "openai-official".into(),
             env: codex_env,
             source: format!("{}, {}", codex_auth_str, codex_config_str),
         });
@@ -121,12 +134,18 @@ pub fn scan_system_configs() -> Result<ScanResult, String> {
                 qoder_env.insert("QODERCN_PERSONAL_ACCESS_TOKEN".into(), token.to_string());
             }
         }
-        profiles.push(ScanProfile {
-            name: sanitize_scan_name("qoder-cn"),
-            cli_type: "qoderclicn".into(),
-            env: qoder_env,
-            source: qoder_str,
-        });
+        if !qoder_env.is_empty() {
+            qoder_env.insert("_KN_AUTH_MODE".into(), "token".into());
+            qoder_env.insert("_KN_PROVIDER_ID".into(), "qodercn-pat".into());
+            profiles.push(ScanProfile {
+                name: sanitize_scan_name("qoder-cn"),
+                cli_type: "qoderclicn".into(),
+                auth_mode: "token".into(),
+                provider_id: "qodercn-pat".into(),
+                env: qoder_env,
+                source: qoder_str,
+            });
+        }
     }
 
     if profiles.is_empty() {
@@ -150,5 +169,34 @@ mod tests {
             home
         );
         assert!(home.is_absolute());
+    }
+
+    #[test]
+    fn qoder_dir_without_token_does_not_create_candidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qoder = tmp.path().join(".qoder-cn");
+        std::fs::create_dir_all(&qoder).unwrap();
+        std::fs::write(qoder.join("settings.json"), r#"{"model":"qoder"}"#).unwrap();
+
+        let err = scan_system_configs_from_home(tmp.path().to_path_buf()).unwrap_err();
+        assert!(err.contains("未找到配置"));
+    }
+
+    #[test]
+    fn codex_requires_api_key_candidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(codex.join("auth.json"), r#"{"auth_mode":"chatgpt","tokens":{}}"#).unwrap();
+        std::fs::write(codex.join("config.toml"), r#"model = "gpt-5-codex""#).unwrap();
+        let err = scan_system_configs_from_home(tmp.path().to_path_buf()).unwrap_err();
+        assert!(err.contains("未找到配置"));
+
+        std::fs::write(codex.join("auth.json"), r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#).unwrap();
+        let result = scan_system_configs_from_home(tmp.path().to_path_buf()).unwrap();
+        assert_eq!(result.profiles.len(), 1);
+        assert_eq!(result.profiles[0].cli_type, "codex");
+        assert_eq!(result.profiles[0].auth_mode, "api_key");
+        assert_eq!(result.profiles[0].env.get("OPENAI_API_KEY").unwrap(), "sk-test");
     }
 }

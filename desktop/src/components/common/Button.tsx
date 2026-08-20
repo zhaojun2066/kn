@@ -9,38 +9,30 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   prompt?: string;
 }
 
-const promptChar: Record<Variant, string> = {
-  primary:   ">",
-  secondary: "$",
-  danger:    "!",
-  ghost:     "",
-  icon:      "",
-};
-
 const base =
-  "inline-flex items-center justify-center gap-1.5 font-mono font-medium " +
-  "transition-all duration-fast focus-visible:outline-1 focus-visible:outline-[var(--app-focus)] " +
+  "inline-flex items-center justify-center gap-1.5 font-medium " +
+  "transition-all duration-fast focus-visible:outline-2 focus-visible:outline-[var(--app-focus)] focus-visible:outline-offset-2 " +
   "disabled:cursor-not-allowed disabled:opacity-35 select-none";
 
 const variants: Record<Variant, string> = {
   primary:
-    "bg-[var(--btn-pri-bg)] text-app-amber border border-[var(--btn-pri-border)] " +
-    "hover:bg-[var(--btn-pri-hover-bg)] hover:border-[var(--btn-pri-hover-border)] hover:shadow-[0_0_12px_var(--app-glow-amber)] " +
-    "active:bg-[var(--btn-pri-active-bg)] active:shadow-[0_0_6px_var(--app-glow-amber)]",
+    "bg-[var(--btn-pri-bg)] text-white border border-[var(--btn-pri-border)] shadow-sm " +
+    "hover:bg-[var(--btn-pri-hover-bg)] hover:border-[var(--btn-pri-hover-border)] hover:shadow-panel " +
+    "active:bg-[var(--btn-pri-active-bg)] active:shadow-none",
   secondary:
-    "bg-[var(--btn-sec-bg)] text-app-text-dim border border-[var(--btn-sec-border)] " +
-    "hover:bg-[var(--btn-sec-hover-bg)] hover:text-app-text hover:border-[var(--btn-sec-hover-border)] hover:shadow-[0_0_8px_var(--app-glow)] " +
+    "bg-[var(--btn-sec-bg)] text-app-text-dim border border-[var(--btn-sec-border)] shadow-sm " +
+    "hover:bg-[var(--btn-sec-hover-bg)] hover:text-app-text hover:border-[var(--btn-sec-hover-border)] " +
     "active:bg-[var(--btn-sec-active-bg)]",
   danger:
     "bg-[var(--btn-danger-bg)] text-app-red border border-[var(--btn-danger-border)] " +
-    "hover:bg-[var(--btn-danger-hover-bg)] hover:border-[var(--btn-danger-hover-border)] hover:shadow-[0_0_12px_var(--app-glow-red)] " +
+    "hover:bg-[var(--btn-danger-hover-bg)] hover:border-[var(--btn-danger-hover-border)] " +
     "active:bg-[var(--btn-danger-active-bg)]",
   ghost:
     "bg-transparent text-app-text-dim hover:text-app-text hover:bg-[var(--btn-ghost-hover-bg)] " +
-    "active:bg-[var(--btn-ghost-active-bg)] border border-transparent hover:border-app-border",
+    "active:bg-[var(--btn-ghost-active-bg)] border border-transparent",
   icon:
     "bg-transparent text-app-text-dim hover:text-app-text hover:bg-[var(--btn-ghost-hover-bg)] " +
-    "active:bg-[var(--btn-ghost-active-bg)] p-0.5 border border-transparent hover:border-app-border",
+    "active:bg-[var(--btn-ghost-active-bg)] p-0.5 border border-transparent",
 };
 
 const sizes: Record<string, string> = {
@@ -58,7 +50,6 @@ export function Button({
   "aria-label": ariaLabel,
   ...props
 }: ButtonProps) {
-  const p = prompt ?? promptChar[variant];
   // Auto-provide aria-label for icon-only buttons from title or variant
   const effectiveAriaLabel = ariaLabel ?? (variant === "icon" ? title : undefined);
 
@@ -69,17 +60,17 @@ export function Button({
       title={title}
       {...props}
     >
-      {p && (
+      {prompt && (
         <span
           className={
             variant === "primary"
-              ? "text-app-amber opacity-60"
+              ? "text-white/70"
               : variant === "danger"
               ? "text-app-red opacity-50"
               : "text-app-text-muted opacity-50"
           }
         >
-          {p}
+          {prompt}
         </span>
       )}
       {children}

@@ -55,7 +55,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
         top: `${y}px`,
         zIndex: 1000,
       }}
-      className="bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog py-1 min-w-[140px] animate-[fadeIn_100ms_ease-out]"
+      className="bg-[var(--app-panel)] border border-[var(--app-border)] shadow-dialog py-1 min-w-[140px] animate-[fadeIn_100ms_ease-out] rounded-lg overflow-hidden"
     >
       {items.map((item, i) => {
         if ("separator" in item && item.separator) {

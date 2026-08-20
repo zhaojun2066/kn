@@ -1,7 +1,7 @@
 import React from "react";
 
 export interface LocalCliUsageRow {
-  cli: "Claude" | "Codex" | "Qoder";
+  cli: "Claude" | "Codex" | "QoderCN";
   version: string | null;
   installed: boolean;
   runs: number;

@@ -205,11 +205,11 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop"
       onClick={canDismiss ? onClose : undefined}
     >
       <div
-        className="bg-app-panel border border-app-border shadow-dialog w-[400px] select-none animate-[scaleIn_150ms_ease-out]"
+        className="app-dialog-panel bg-app-panel border border-app-border w-[400px] select-none animate-[scaleIn_150ms_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -392,7 +392,7 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
                     setQrDataUrl(null);
                     setRetryKey((k) => k + 1);
                   }}
-                  className="px-4 py-1.5 text-xs font-mono bg-app-accent text-[var(--app-bg)] hover:opacity-90 transition-opacity"
+                  className="app-primary-action px-4 py-1.5 text-xs font-medium"
                 >
                   重试
                 </button>

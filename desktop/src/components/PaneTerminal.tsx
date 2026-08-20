@@ -20,7 +20,7 @@ interface PaneTerminalProps {
  * Single terminal pane wrapping an XTerm instance.
  * Extracted from TerminalPanel's inline TabTerminal component.
  *
- * Active panes get a 2px accent border + subtle glow;
+ * Active panes get a 1px accent border + subtle glow;
  * inactive panes have no border. Clicking anywhere focuses the pane.
  */
 export function PaneTerminal({
@@ -70,8 +70,8 @@ export function PaneTerminal({
   }, [active]);
 
   const borderClass = active
-    ? "border-[2px] border-[var(--app-accent)] shadow-[0_0_6px_var(--app-glow)]"
-    : "border-[2px] border-transparent";
+    ? "border border-[var(--app-accent)] shadow-[inset_0_0_0_1px_var(--app-glow)]"
+    : "border border-transparent";
 
   return (
     <div

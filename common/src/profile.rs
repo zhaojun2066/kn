@@ -22,6 +22,10 @@ pub struct ProfileSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
 }
 
@@ -203,12 +207,15 @@ pub fn list_profiles_cmd() -> Result<ProfileList, String> {
         .iter()
         .map(|(name, p)| {
             let cli_type = detect_cli_type(&p.env);
+            let auth_mode = detect_auth_mode(cli_type.as_deref(), &p.env);
             let mut summary = ProfileSummary {
                 name: name.clone(),
                 desc: p.desc.clone(),
-                env_count: p.env.len(),
+                env_count: p.env.keys().filter(|k| !is_system_env_key(k)).count(),
                 is_default: config.default == *name,
                 cli_type,
+                auth_mode,
+                provider_id: p.env.get("_KN_PROVIDER_ID").cloned(),
                 tags: None,
             };
             if let Some(tags_str) = p.env.get("_KN_TAGS") {
@@ -229,6 +236,13 @@ pub fn list_profiles_cmd() -> Result<ProfileList, String> {
         default: config.default,
         profiles,
     })
+}
+
+fn is_system_env_key(key: &str) -> bool {
+    matches!(
+        key,
+        "_KN_CLI_TYPE" | "_KN_TAGS" | "_KN_AUTH_MODE" | "_KN_PROVIDER_ID"
+    )
 }
 
 pub fn show_profile_cmd(name: &str) -> Result<ProfileDetail, String> {
@@ -525,6 +539,41 @@ pub fn detect_cli_type(env: &HashMap<String, String>) -> Option<String> {
         return Some("codex".into());
     }
     None
+}
+
+/// Detect how a profile authenticates without mutating legacy profiles.
+pub fn detect_auth_mode(cli_type: Option<&str>, env: &HashMap<String, String>) -> Option<String> {
+    if let Some(mode) = env.get("_KN_AUTH_MODE") {
+        if matches!(mode.as_str(), "api_key" | "local_login" | "token") {
+            return Some(mode.clone());
+        }
+    }
+    match cli_type {
+        Some("qoderclicn") => {
+            if env.contains_key("QODERCN_PERSONAL_ACCESS_TOKEN") {
+                Some("token".into())
+            } else {
+                Some("local_login".into())
+            }
+        }
+        Some("codex") => {
+            if env.contains_key("OPENAI_API_KEY") {
+                Some("api_key".into())
+            } else {
+                Some("local_login".into())
+            }
+        }
+        _ => {
+            if env.contains_key("ANTHROPIC_API_KEY")
+                || env.contains_key("ANTHROPIC_AUTH_TOKEN")
+                || env.contains_key("OPENAI_API_KEY")
+            {
+                Some("api_key".into())
+            } else {
+                None
+            }
+        }
+    }
 }
 
 // ── Test helpers (re-exported for desktop crate tests) ──────

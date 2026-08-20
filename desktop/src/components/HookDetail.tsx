@@ -137,7 +137,7 @@ function EmptyState({ scope }: { scope?: "user" | "project" }) {
           比如在提交提示词前注入上下文、工具调用后记录日志、会话结束时发送通知等。
         </div>
         <div className="leading-relaxed mt-1">
-          支持 <b className="text-[var(--app-text)]">Claude Code</b>、<b className="text-[var(--app-text)]">Codex</b>、<b className="text-[var(--app-text)]">Qoder</b> 三款工具。
+          支持 <b className="text-[var(--app-text)]">Claude Code</b>、<b className="text-[var(--app-text)]">Codex</b>、<b className="text-[var(--app-text)]">QoderCN</b> 三款工具。
         </div>
       </div>
 
@@ -429,7 +429,7 @@ export function HookDetail({ hook, onRefresh, scope }: HookDetailProps) {
               <button
                 onClick={handleSaveMeta}
                 disabled={!editName.trim() || savingMeta}
-                className="flex items-center gap-1 px-2 py-1 text-2xs font-mono bg-[var(--app-accent)] text-[var(--app-bg)] hover:opacity-90 disabled:opacity-50 transition-opacity"
+                className="app-primary-action flex items-center gap-1 px-2 py-1 text-2xs font-medium"
               >
                 <Check size={10} />
                 {savingMeta ? "保存中…" : "保存"}

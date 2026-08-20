@@ -7,7 +7,7 @@ import type { DependencyGraphData } from "./DependencyGraph";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { FileTree } from "./FileTree";
 import type { FileTreeNode } from "./FileTree";
-import { CLI_HEX_COLORS } from "../lib/cli-constants";
+import { CLI_HEX_COLORS, cliCssColor, cliDisplayName } from "../lib/cli-constants";
 import { basename } from "../lib/path-utils";
 import { FileContentBlock, isImagePath, isPdfPath, langFromPath } from "./common/FileContentBlock";
 
@@ -253,8 +253,8 @@ export function AgentDetail({ agent, graphData, onToggle, onDelete, onNodeClick 
       <div className="px-6 py-4 border-b border-[var(--app-border-light)]">
         <div className="space-y-1">
           <MetaRow label="CLI">
-            <span style={{ color: agent.cli === "claude" ? "var(--app-accent)" : agent.cli === "codex" ? "var(--app-blue)" : "var(--app-purple)" }}>
-              {agent.cli === "claude" ? "Claude" : agent.cli === "codex" ? "Codex" : "Qoder"}
+            <span style={{ color: cliCssColor(agent.cli) }}>
+              {cliDisplayName(agent.cli)}
             </span>
           </MetaRow>
           <MetaRow label="来源">{agent.source}</MetaRow>
