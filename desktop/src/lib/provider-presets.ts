@@ -166,53 +166,8 @@ const codexProviders: ProviderPreset[] = [
     ],
   },
   {
-    id: "azure-openai",
-    name: "Azure OpenAI",
-    description: "通过 Azure OpenAI 服务",
-    envVars: [
-      { key: "AZURE_OPENAI_API_KEY", required: true, placeholder: "..." },
-      { key: "AZURE_OPENAI_ENDPOINT", required: true, placeholder: "https://<name>.openai.azure.com" },
-      { key: "OPENAI_API_VERSION", required: false, defaultValue: "2025-03-01" },
-    ],
-  },
-  {
-    id: "openrouter",
-    name: "OpenRouter",
-    description: "200+ 模型统一 API",
-    envVars: [
-      { key: "OPENROUTER_API_KEY", required: true, placeholder: "sk-or-v1-..." },
-      { key: "OPENROUTER_BASE_URL", required: false, defaultValue: "https://openrouter.ai/api/v1" },
-    ],
-  },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    description: "DeepSeek V3 / R1 模型",
-    envVars: [
-      { key: "DEEPSEEK_API_KEY", required: true, placeholder: "sk-..." },
-      { key: "DEEPSEEK_BASE_URL", required: false, defaultValue: "https://api.deepseek.com" },
-    ],
-  },
-  {
-    id: "groq",
-    name: "Groq",
-    description: "高速推理 LPU 引擎",
-    envVars: [
-      { key: "GROQ_API_KEY", required: true, placeholder: "gsk_..." },
-      { key: "GROQ_BASE_URL", required: false, defaultValue: "https://api.groq.com/openai/v1" },
-    ],
-  },
-  {
-    id: "ollama",
-    name: "Ollama (本地)",
-    description: "本地运行的开源模型",
-    envVars: [
-      { key: "OLLAMA_BASE_URL", required: false, defaultValue: "http://localhost:11434/v1" },
-    ],
-  },
-  {
     id: "custom",
-    name: "自定义中转",
+    name: "其他中转站",
     description: "任何 OpenAI 兼容的三方网关",
     envVars: [
       { key: "OPENAI_API_KEY", required: true, placeholder: "sk-..." },
@@ -248,7 +203,7 @@ export const CLI_TOOLS: CLIToolDef[] = [
   {
     id: "codex",
     name: "Codex CLI",
-    description: "OpenAI 协议 — 兼容 OpenAI、Azure、OpenRouter、DeepSeek、Groq 等",
+    description: "OpenAI 协议 — 支持 OpenAI 官方和其他兼容中转站",
     iconLetter: "O",
     providers: codexProviders,
   },
