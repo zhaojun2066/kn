@@ -50,8 +50,12 @@ impl AgentRuntime {
     }
 }
 
-pub(crate) fn should_restart_agent(agent_updated: bool, plist_updated: bool) -> bool {
-    agent_updated || plist_updated
+pub(crate) fn should_restart_agent(
+    agent_updated: bool,
+    plist_updated: bool,
+    running_version_mismatch: bool,
+) -> bool {
+    agent_updated || plist_updated || running_version_mismatch
 }
 
 pub(crate) fn escape_plist_value(value: &str) -> String {
@@ -103,10 +107,11 @@ mod tests {
 
     #[test]
     fn plist_update_requires_restart_even_without_binary_update() {
-        assert!(!should_restart_agent(false, false));
-        assert!(should_restart_agent(true, false));
-        assert!(should_restart_agent(false, true));
-        assert!(should_restart_agent(true, true));
+        assert!(!should_restart_agent(false, false, false));
+        assert!(should_restart_agent(true, false, false));
+        assert!(should_restart_agent(false, true, false));
+        assert!(should_restart_agent(true, true, false));
+        assert!(should_restart_agent(false, false, true));
     }
 
     #[test]

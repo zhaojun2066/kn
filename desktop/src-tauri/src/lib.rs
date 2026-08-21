@@ -69,6 +69,53 @@ fn agent_version_differs(agent: &Path, expected: &str) -> bool {
     version != expected
 }
 
+#[cfg(unix)]
+fn running_agent_version_mismatch(socket_path: &Path, expected: &str) -> bool {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = match UnixStream::connect(socket_path) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+    let timeout = Some(std::time::Duration::from_secs(2));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+    let request = serde_json::json!({
+        "id": "desktop-version-check",
+        "method": "get_version",
+        "params": {}
+    });
+    let mut line = match serde_json::to_string(&request) {
+        Ok(line) => line,
+        Err(_) => return true,
+    };
+    line.push('\n');
+    if stream.write_all(line.as_bytes()).is_err() {
+        return true;
+    }
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+
+    let mut response = String::new();
+    if BufReader::new(stream).read_line(&mut response).is_err() {
+        return true;
+    }
+    let parsed: serde_json::Value = match serde_json::from_str(&response) {
+        Ok(parsed) => parsed,
+        Err(_) => return true,
+    };
+    let version = parsed
+        .get("result")
+        .and_then(|result| result.get("version"))
+        .and_then(|version| version.as_str());
+    version != Some(expected)
+}
+
+#[cfg(not(unix))]
+fn running_agent_version_mismatch(_socket_path: &Path, _expected: &str) -> bool {
+    false
+}
+
 /// Acquire the global write lock and run the closure.
 /// All file-write operations should pass through this to avoid races.
 ///
@@ -376,8 +423,20 @@ pub fn run() {
                                 || !content.contains(&format!("<string>{}</string>", cloud_http_url))
                         })
                         .unwrap_or(true);
-                    if agent_runtime::should_restart_agent(agent_updated, plist_needs_update) {
-                        eprintln!("[kn] kn-agent configuration updated, restarting launchd service...");
+                    let running_version_mismatch =
+                        running_agent_version_mismatch(&agent_dir.join("ipc.sock"), &app_version);
+                    if running_version_mismatch {
+                        eprintln!(
+                            "[kn] running kn-agent version is missing or mismatched, expected={}",
+                            app_version
+                        );
+                    }
+                    if agent_runtime::should_restart_agent(
+                        agent_updated,
+                        plist_needs_update,
+                        running_version_mismatch,
+                    ) {
+                        eprintln!("[kn] kn-agent updated/configuration changed, restarting launchd service...");
                         let _ = std::process::Command::new("launchctl")
                             .args(["bootout", &service_name])
                             .output();
