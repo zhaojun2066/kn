@@ -97,6 +97,9 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Sync Cargo workspace lockfile
+        run: cargo update -w
+
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
