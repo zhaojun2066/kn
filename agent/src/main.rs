@@ -990,10 +990,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 match result {
                     Some(Ok(Err(ref e))) if e.to_string().contains("AUTH_REJECTED") => {
                         tracing::warn!(
-                            "device_token 已失效，切换至未绑定状态（IPC 仍运行），保留旧 token 文件"
+                            "device_token 已失效，切换至未绑定状态（IPC 仍运行）"
                         );
+                        if let Err(error) = device::quarantine_invalid_device_token("wss_auth_rejected") {
+                            tracing::warn!("失效 device_token 备份失败: {}", error);
+                        }
+                        let _ = device::clear_pending_activation();
+                        let _ = device::clear_pending_binding();
                         let _ = state_machine
-                            .transition(state::StateEvent::WsConnected { has_token: false })
+                            .transition(state::StateEvent::TokenRevoked)
                             .await;
                     }
                     Some(Ok(Ok(()))) => {

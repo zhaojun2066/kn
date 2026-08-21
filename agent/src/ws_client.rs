@@ -42,6 +42,31 @@ fn text_preview(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+fn ws_header_value(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii() && !ch.is_ascii_control() {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim();
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn is_auth_rejection_error(message: &str) -> bool {
+    message.contains("401")
+        || message.contains("403")
+        || message.contains("HTTP error: 400 Bad Request")
+}
+
 // ── Public API ──────────────────────────────────────────────
 
 /// 运行 WebSocket 连接循环，返回出站消息发送端。
@@ -170,13 +195,15 @@ async fn connect_and_run(
         .parse()
         .map_err(|e| AgentError::Ws(format!("无效的云端 URL: {}", e)))?;
 
+    let safe_os_version = ws_header_value(os_version);
+    let safe_hostname = ws_header_value(hostname);
     let request = tokio_tungstenite::tungstenite::client::ClientRequestBuilder::new(uri)
         .with_header("Authorization", format!("Bearer {}", device_token))
         .with_header("X-KN-Role", "kn-agent")
         .with_header("X-KN-Machine-Id", machine_id)
         .with_header("X-KN-Agent-Version", agent_version)
-        .with_header("X-KN-OS-Version", os_version)
-        .with_header("X-KN-Hostname", hostname)
+        .with_header("X-KN-OS-Version", safe_os_version)
+        .with_header("X-KN-Hostname", safe_hostname)
         .with_header("X-KN-Protocol-Version", "1");
 
     tracing::info!("正在连接 {} ...", cloud_url);
@@ -189,7 +216,7 @@ async fn connect_and_run(
             .map_err(|e| {
                 // Check if the error indicates an auth failure (token revoked/expired)
                 let err_str = e.to_string();
-                if err_str.contains("401") || err_str.contains("403") {
+                if is_auth_rejection_error(&err_str) {
                     AgentError::Ws("AUTH_REJECTED: device_token 已失效，请重新绑定".into())
                 } else {
                     AgentError::Ws(format!("WSS 连接失败: {}", e))
@@ -197,7 +224,8 @@ async fn connect_and_run(
             })?;
 
     // Also check HTTP upgrade response status
-    if response.status() == http::StatusCode::UNAUTHORIZED
+    if response.status() == http::StatusCode::BAD_REQUEST
+        || response.status() == http::StatusCode::UNAUTHORIZED
         || response.status() == http::StatusCode::FORBIDDEN
     {
         return Err(AgentError::Ws(
@@ -278,9 +306,9 @@ async fn connect_and_run(
                             let reason = frame.as_ref().map(|f| f.reason.as_ref()).unwrap_or("");
                             tracing::info!(code = ?code, reason = reason, "WSS 收到关闭帧");
                             match code {
-                                Some(4003) | Some(4001) => {
+                                Some(4003) | Some(4001) | Some(4000) => {
                                     *read_error_clone.lock().await =
-                                        Some("AUTH_REJECTED: 服务端关闭连接，关闭码 4003/4001".into());
+                                        Some("AUTH_REJECTED: 服务端关闭连接，关闭码 4000/4001/4003".into());
                                 }
                                 _ => {
                                     *read_error_clone.lock().await =

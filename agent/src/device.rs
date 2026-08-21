@@ -612,6 +612,28 @@ pub fn delete_device_token() {
     }
 }
 
+/// Move an invalid local token out of the active credential path.
+///
+/// This is used when Cloud rejects WebSocket authentication. Keeping the bad
+/// token at `device_token` would make every restart re-enter the reconnect loop
+/// instead of showing the binding flow. The renamed file is retained for local
+/// troubleshooting but is never used for future connections.
+pub fn quarantine_invalid_device_token(reason: &str) -> Result<bool> {
+    let path = device_token_path();
+    if !path.exists() {
+        return Ok(false);
+    }
+    let suffix = chrono::Utc::now().timestamp_millis();
+    let backup = path.with_file_name(format!("device_token.invalid-{suffix}"));
+    std::fs::rename(&path, &backup).map_err(AgentError::Io)?;
+    tracing::warn!(
+        reason = reason,
+        backup = %backup.display(),
+        "device_token 已标记为失效并移出 active 路径"
+    );
+    Ok(true)
+}
+
 /// Remove a production token only after Cloud has accepted a self-unbind.
 /// This intentionally has a separate name from the defensive test helper.
 pub fn clear_device_token_after_unbind() -> Result<()> {

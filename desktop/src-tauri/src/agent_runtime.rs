@@ -16,34 +16,23 @@ pub struct AgentRuntime {
 impl AgentRuntime {
     pub fn current() -> Self {
         let home = kn_common::path::home_dir();
-        let configured_home = std::env::var("KN_HOME")
-            .ok()
-            .map(PathBuf::from)
-            .filter(is_safe_home);
-        Self::resolve(cfg!(debug_assertions), home, configured_home)
+        Self::resolve(cfg!(debug_assertions), home)
     }
 
-    fn resolve(is_debug_build: bool, home: PathBuf, configured_home: Option<PathBuf>) -> Self {
+    fn resolve(is_debug_build: bool, home: PathBuf) -> Self {
         let development_home = home.join(".kn-dev");
         let production_home = home.join(".kn");
-        let configured_home = configured_home.filter(|path| {
-            if is_debug_build {
-                path != &production_home
-            } else {
-                path != &development_home
-            }
-        });
 
         if is_debug_build {
             Self {
                 environment: AgentRuntimeEnvironment::Development,
-                config_dir: configured_home.unwrap_or(development_home),
+                config_dir: development_home,
                 launchd_label: "com.kn.agent.dev",
             }
         } else {
             Self {
                 environment: AgentRuntimeEnvironment::Production,
-                config_dir: configured_home.unwrap_or(production_home),
+                config_dir: production_home,
                 launchd_label: "com.kn.agent",
             }
         }
@@ -59,13 +48,6 @@ impl AgentRuntime {
             AgentRuntimeEnvironment::Production => "production",
         }
     }
-}
-
-fn is_safe_home(path: &PathBuf) -> bool {
-    path.is_absolute()
-        && !path
-            .components()
-            .any(|component| component == std::path::Component::ParentDir)
 }
 
 pub(crate) fn should_restart_agent(agent_updated: bool, plist_updated: bool) -> bool {
@@ -93,54 +75,30 @@ mod tests {
 
     #[test]
     fn debug_runtime_uses_isolated_home_and_label() {
-        let runtime = AgentRuntime::resolve(true, PathBuf::from("/Users/test"), None);
+        let runtime = AgentRuntime::resolve(true, PathBuf::from("/Users/test"));
         assert_eq!(runtime.config_dir, PathBuf::from("/Users/test/.kn-dev"));
         assert_eq!(runtime.launchd_label, "com.kn.agent.dev");
         assert_eq!(runtime.environment_name(), "development");
     }
 
     #[test]
-    fn explicit_home_is_preserved_for_each_runtime() {
-        let runtime = AgentRuntime::resolve(
-            false,
-            PathBuf::from("/Users/test"),
-            Some(PathBuf::from("/Volumes/kn-production")),
-        );
-        assert_eq!(runtime.config_dir, PathBuf::from("/Volumes/kn-production"));
-        assert_eq!(
-            runtime.agent_dir(),
-            PathBuf::from("/Volumes/kn-production/agent")
-        );
-        assert_eq!(runtime.launchd_label, "com.kn.agent");
-    }
-
-    #[test]
-    fn invalid_home_does_not_cross_runtime_boundaries() {
-        assert!(!is_safe_home(&PathBuf::from("relative/kn")));
-        assert!(!is_safe_home(&PathBuf::from("/Users/test/../other")));
-        assert!(is_safe_home(&PathBuf::from("/Users/test/.kn-dev")));
-    }
-
-    #[test]
-    fn debug_runtime_rejects_the_production_default_home() {
-        let runtime = AgentRuntime::resolve(
-            true,
-            PathBuf::from("/Users/test"),
-            Some(PathBuf::from("/Users/test/.kn")),
-        );
-
-        assert_eq!(runtime.config_dir, PathBuf::from("/Users/test/.kn-dev"));
-    }
-
-    #[test]
-    fn production_runtime_rejects_the_development_default_home() {
-        let runtime = AgentRuntime::resolve(
-            false,
-            PathBuf::from("/Users/test"),
-            Some(PathBuf::from("/Users/test/.kn-dev")),
-        );
-
+    fn production_runtime_uses_isolated_home_and_label() {
+        let runtime = AgentRuntime::resolve(false, PathBuf::from("/Users/test"));
         assert_eq!(runtime.config_dir, PathBuf::from("/Users/test/.kn"));
+        assert_eq!(runtime.agent_dir(), PathBuf::from("/Users/test/.kn/agent"));
+        assert_eq!(runtime.launchd_label, "com.kn.agent");
+        assert_eq!(runtime.environment_name(), "production");
+    }
+
+    #[test]
+    fn runtime_home_is_build_environment_isolated() {
+        std::env::set_var("KN_HOME", "/tmp/kn-override");
+        let runtime = AgentRuntime::resolve(true, PathBuf::from("/Users/test"));
+        assert_eq!(runtime.config_dir, PathBuf::from("/Users/test/.kn-dev"));
+
+        let runtime = AgentRuntime::resolve(false, PathBuf::from("/Users/test"));
+        assert_eq!(runtime.config_dir, PathBuf::from("/Users/test/.kn"));
+        std::env::remove_var("KN_HOME");
     }
 
     #[test]
