@@ -21,7 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
 serde_yaml.workspace = true
-reqwest = { workspace = true, features = ["blocking"] }
+reqwest = { workspace = true, features = ["blocking", "native-tls", "macos-system-configuration"] }
 toml.workspace = true
 toml_edit.workspace = true
 chrono.workspace = true

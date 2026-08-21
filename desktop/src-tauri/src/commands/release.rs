@@ -2,6 +2,7 @@
 
 use semver::Version;
 use serde::Deserialize;
+use std::error::Error;
 use tauri::command;
 
 use super::app_config::load_app_config;
@@ -46,6 +47,17 @@ fn platform() -> &'static str {
     }
 }
 
+fn describe_reqwest_error(error: &reqwest::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(err) = source {
+        message.push_str(": ");
+        message.push_str(&err.to_string());
+        source = err.source();
+    }
+    message
+}
+
 #[command]
 pub async fn check_desktop_release(
     app: tauri::AppHandle,
@@ -65,11 +77,11 @@ pub async fn check_desktop_release(
         reqwest::blocking::Client::new()
             .get(url)
             .send()
-            .map_err(|e| format!("请求更新接口失败: {e}"))?
+            .map_err(|e| format!("请求更新接口失败: {}", describe_reqwest_error(&e)))?
             .error_for_status()
-            .map_err(|e| format!("更新接口 HTTP 错误: {e}"))?
+            .map_err(|e| format!("更新接口 HTTP 错误: {}", describe_reqwest_error(&e)))?
             .text()
-            .map_err(|e| format!("读取更新接口失败: {e}"))
+            .map_err(|e| format!("读取更新接口失败: {}", describe_reqwest_error(&e)))
     })
     .await
     .map_err(|e| format!("更新检查任务失败: {e}"))??;

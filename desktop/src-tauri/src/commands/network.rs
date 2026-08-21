@@ -1,6 +1,7 @@
 //! HTTP fetch, file download, SHA256 verification, binary resolution.
 
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -15,6 +16,17 @@ fn downloads() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     DOWNLOADS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn describe_reqwest_error(error: &reqwest::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(err) = source {
+        message.push_str(": ");
+        message.push_str(&err.to_string());
+        source = err.source();
+    }
+    message
+}
+
 /// Find a system binary across common macOS paths.
 pub(crate) fn find_binary(names: &[&str]) -> Option<String> {
     kn_common::path::find_binary(names)
@@ -27,11 +39,11 @@ pub async fn fetch_url(url: String) -> Result<String, String> {
             .get(&url)
             .timeout(Duration::from_secs(30))
             .send()
-            .map_err(|e| format!("请求失败: {}", e))?
+            .map_err(|e| format!("请求失败: {}", describe_reqwest_error(&e)))?
             .error_for_status()
-            .map_err(|e| format!("HTTP 错误: {}", e))?
+            .map_err(|e| format!("HTTP 错误: {}", describe_reqwest_error(&e)))?
             .text()
-            .map_err(|e| format!("读取响应失败: {}", e))
+            .map_err(|e| format!("读取响应失败: {}", describe_reqwest_error(&e)))
     })
     .await
     .map_err(|e| format!("后台任务失败: {}", e))?
@@ -56,9 +68,9 @@ pub async fn download_file(url: String, path: String, app: tauri::AppHandle) -> 
             .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?
             .get(&url)
             .send()
-            .map_err(|e| format!("请求失败: {}", e))?
+            .map_err(|e| format!("请求失败: {}", describe_reqwest_error(&e)))?
                 .error_for_status()
-                .map_err(|e| format!("HTTP 错误: {}", e))?;
+                .map_err(|e| format!("HTTP 错误: {}", describe_reqwest_error(&e)))?;
 
         let total = response.content_length();
         let mut file =
