@@ -70,6 +70,7 @@ async function renderOpenDrawer() {
 
 describe("ResourceDrawer", () => {
   beforeEach(() => {
+    localStorage.clear();
     mockDefaultInvoke();
   });
 
@@ -84,6 +85,14 @@ describe("ResourceDrawer", () => {
     const elements = screen.getAllByText("扩展");
     expect(elements.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("button", { name: "关闭资源管理" })).toBeTruthy();
+  });
+
+  it("uses 60% of the viewport for a new drawer, ignoring the previous width record", async () => {
+    localStorage.setItem("kn-resource-drawer-width-v2", "480");
+
+    await renderOpenDrawer();
+
+    expect(screen.getByTestId("resource-drawer-panel").style.width).toBe(`${Math.round(window.innerWidth * 0.6)}px`);
   });
 
   it("does not show project-level resources", async () => {

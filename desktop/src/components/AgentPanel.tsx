@@ -429,15 +429,15 @@ export function AgentPanel({ onClose, onBind, onRedeem, onUnbind, onOpenRemoteSe
   return (
     <>
     <div
-      className="fixed inset-0 z-[120] flex items-start justify-end pt-12 pr-4"
+      className="fixed inset-0 z-[120] flex items-start justify-end p-4 pt-12"
       onClick={onClose}
     >
       <div
-        className="app-dialog-panel bg-app-panel border border-app-border w-[360px] max-h-[70vh] overflow-y-auto select-none animate-[scaleIn_150ms_ease-out]"
+        className="app-dialog-panel bg-app-panel border border-app-border w-[360px] max-h-[calc(100vh-4rem)] flex flex-col select-none animate-[scaleIn_150ms_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-app-border sticky top-0 bg-app-panel z-10">
+        <div className="flex shrink-0 items-center justify-between px-3 py-2.5 border-b border-app-border bg-app-panel z-10">
           <div className="flex items-center gap-2">
             <Smartphone size={15} className="text-app-accent" />
             <span className="text-sm font-mono text-app-text font-semibold">手机远程控制</span>
@@ -451,7 +451,7 @@ export function AgentPanel({ onClose, onBind, onRedeem, onUnbind, onOpenRemoteSe
         </div>
 
         {/* Body */}
-        <div className="px-3 py-4 space-y-4">
+        <div className="min-h-0 overflow-y-auto px-3 py-4 space-y-4">
           {/* ── Connection status ── */}
           <div className="flex flex-col items-center gap-2 py-2">
             <div className="flex items-center gap-2">

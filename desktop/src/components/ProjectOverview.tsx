@@ -591,12 +591,6 @@ function ProjectVerifyConfigEditor({
             onEnabledChange={setBuildEnabled}
             onCommandChange={setBuildCommand}
             onTimeoutChange={setBuildTimeout}
-            parserHint={buildParserHint}
-            taskTypeHint={buildTaskTypeHint}
-            reportHints={buildReportHints}
-            onParserHintChange={setBuildParserHint}
-            onTaskTypeHintChange={setBuildTaskTypeHint}
-            onReportHintsChange={setBuildReportHints}
             placeholder={loadingPlan ? "正在读取当前验证计划..." : "未识别到构建命令，可手动填写"}
           />
           <VerifyCommandEditor
@@ -607,12 +601,6 @@ function ProjectVerifyConfigEditor({
             onEnabledChange={setTestEnabled}
             onCommandChange={setTestCommand}
             onTimeoutChange={setTestTimeout}
-            parserHint={testParserHint}
-            taskTypeHint={testTaskTypeHint}
-            reportHints={testReportHints}
-            onParserHintChange={setTestParserHint}
-            onTaskTypeHintChange={setTestTaskTypeHint}
-            onReportHintsChange={setTestReportHints}
             placeholder={loadingPlan ? "正在读取当前验证计划..." : "未识别到测试命令，可手动填写"}
           />
           {error && <div className="text-2xs font-mono text-red-400">{error}</div>}
@@ -644,12 +632,6 @@ function VerifyCommandEditor({
   onEnabledChange,
   onCommandChange,
   onTimeoutChange,
-  parserHint,
-  taskTypeHint,
-  reportHints,
-  onParserHintChange,
-  onTaskTypeHintChange,
-  onReportHintsChange,
   placeholder,
 }: {
   title: string;
@@ -659,12 +641,6 @@ function VerifyCommandEditor({
   onEnabledChange: (value: boolean) => void;
   onCommandChange: (value: string) => void;
   onTimeoutChange: (value: string) => void;
-  parserHint: string;
-  taskTypeHint: string;
-  reportHints: string;
-  onParserHintChange: (value: string) => void;
-  onTaskTypeHintChange: (value: string) => void;
-  onReportHintsChange: (value: string) => void;
   placeholder: string;
 }) {
   return (
@@ -687,11 +663,6 @@ function VerifyCommandEditor({
           className="w-20 px-2 py-1 bg-app-bg border border-app-border text-app-text"
         />
       </label>
-      <div className="grid grid-cols-2 gap-2">
-        <input value={parserHint} onChange={(e) => onParserHintChange(e.target.value)} placeholder="Parser 提示（可选）" className="px-2 py-1 bg-app-bg border border-app-border text-2xs font-mono text-app-text" />
-        <input value={taskTypeHint} onChange={(e) => onTaskTypeHintChange(e.target.value)} placeholder="任务类型（test/build…）" className="px-2 py-1 bg-app-bg border border-app-border text-2xs font-mono text-app-text" />
-      </div>
-      <input value={reportHints} onChange={(e) => onReportHintsChange(e.target.value)} placeholder="报告路径提示（逗号分隔，可选）" className="w-full px-2 py-1 bg-app-bg border border-app-border text-2xs font-mono text-app-text" />
     </div>
   );
 }

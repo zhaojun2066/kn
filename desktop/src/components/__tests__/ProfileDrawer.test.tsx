@@ -62,6 +62,14 @@ function renderDrawer(overrides: Partial<React.ComponentProps<typeof ProfileDraw
 }
 
 describe("ProfileDrawer", () => {
+  it("uses 60% of the viewport for a new drawer, ignoring the previous width record", () => {
+    localStorage.setItem("kn-profile-drawer-width-v2", "400");
+
+    renderDrawer();
+
+    expect(screen.getByTestId("profile-drawer-panel").style.width).toBe(`${Math.round(window.innerWidth * 0.6)}px`);
+  });
+
   it("renders a bottom drawer with the full profile list UI", () => {
     renderDrawer();
 

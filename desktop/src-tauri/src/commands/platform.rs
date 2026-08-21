@@ -32,8 +32,5 @@ pub fn get_platform_info() -> PlatformInfo {
 
 #[command]
 pub fn get_app_version(app: tauri::AppHandle) -> String {
-    app.config()
-        .version
-        .clone()
-        .unwrap_or_else(|| "0.0.0".into())
+    app.package_info().version.to_string()
 }

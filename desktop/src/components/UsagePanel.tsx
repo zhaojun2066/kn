@@ -358,12 +358,17 @@ export function UsagePanel({ open, onClose }: UsagePanelProps) {
                     {period === "today" ? "今日趋势" : period === "week" ? "近 7 天趋势" : "近 30 天趋势"}
                   </div>
                   <div className="border border-app-border bg-[var(--app-cmd-bg)] px-4 pt-4 pb-2">
-                    <div className="flex items-end justify-center gap-2 h-28">
+                    <div
+                      data-testid="usage-trend-scroll"
+                      className="overflow-x-auto pb-2"
+                      aria-label="每日 Token 用量趋势，可横向滚动查看"
+                    >
+                    <div className="flex min-w-max items-end justify-center gap-2 h-28">
                       {daily.map((d, i) => {
                         const maxVal = Math.max(...daily.map((x) => x.tokens_in + x.tokens_out), 1);
                         const h = Math.max(((d.tokens_in + d.tokens_out) / maxVal) * 100, 3);
                         return (
-                          <div key={i} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end max-w-[48px]">
+                          <div key={i} className="w-12 shrink-0 flex flex-col items-center gap-1.5 h-full justify-end">
                             <span className="text-2xs text-app-text-dim font-mono tabular-nums leading-none">
                               {formatTokens(d.tokens_in + d.tokens_out)}
                             </span>
@@ -383,6 +388,7 @@ export function UsagePanel({ open, onClose }: UsagePanelProps) {
                           </div>
                         );
                       })}
+                    </div>
                     </div>
                   </div>
                 </div>

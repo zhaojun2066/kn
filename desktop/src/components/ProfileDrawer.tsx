@@ -118,7 +118,7 @@ export function ProfileDrawer({
     minSize: 400,
     maxSize: maxWidth,
     defaultSize: defaultDrawerWidth,
-    storageKey: "kn-profile-drawer-width-v2",
+    storageKey: "kn-profile-drawer-width-v3",
   });
 
   // ── Project picker state ──

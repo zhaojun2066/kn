@@ -89,7 +89,7 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
     minSize: 480,
     maxSize: maxWidth,
     defaultSize: defaultDrawerWidth,
-    storageKey: "kn-resource-drawer-width-v2",
+    storageKey: "kn-resource-drawer-width-v3",
   });
 
   // Overwrite confirmation (shared hook)
@@ -681,6 +681,7 @@ export function ResourceDrawer({ open, onClose, onOpenMarketplace }: ResourceDra
         <div className="absolute right-0 top-0 bottom-0 w-px bg-app-border" />
       </div>
       <section
+        data-testid="resource-drawer-panel"
         className="relative z-20 h-full bg-app-bg border-l border-app-border shadow-dialog flex flex-col shrink-0"
         style={{ width: `${drawerWidth}px` }}
       >
