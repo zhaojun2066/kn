@@ -807,6 +807,43 @@ impl IpcHandle {
     /// it doesn't waste resources.
     async fn handle_cancel_bind(&self, req: &IpcRequest) -> String {
         let current_gen = self.bind_generation.load(Ordering::Relaxed);
+        {
+            let guard = self.bind_cancel.lock().await;
+            if let Some(worker) = guard.as_ref() {
+                if !worker.phase.can_cancel() || crate::device::load_pending_activation().is_some()
+                {
+                    return ok_response(
+                        &req.id,
+                        serde_json::json!({
+                            "status": "activation_uncertain",
+                            "message": "电脑正在确认正式绑定，暂时不能取消"
+                        }),
+                    );
+                }
+            }
+        }
+
+        let pending_to_cancel = crate::device::load_pending_binding();
+        if let Some(pending) = pending_to_cancel.as_ref() {
+            match crate::device::bind_has_phone_confirmation(&self.bind_http_url, pending).await {
+                Ok(true) => {
+                    tracing::info!(pairing_id = %pending.pairing_id, "手机已确认绑定，忽略取消请求");
+                    return ok_response(
+                        &req.id,
+                        serde_json::json!({
+                            "status": "activation_uncertain",
+                            "message": "手机已确认，电脑正在完成绑定"
+                        }),
+                    );
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(pairing_id = %pending.pairing_id, "取消前状态探测失败: {}", e);
+                    return err_response(&req.id, "CANCEL_STATUS_UNKNOWN", "暂时无法确认绑定状态，请稍后重试");
+                }
+            }
+        }
+
         let mut guard = self.bind_cancel.lock().await;
         if let Some(worker) = guard.as_ref() {
             if !worker.phase.can_cancel() || crate::device::load_pending_activation().is_some() {
@@ -829,14 +866,20 @@ impl IpcHandle {
                 );
                 return ok_response(&req.id, serde_json::json!({"status": "stale_cancel"}));
             }
-            worker.cancel.cancel();
-            let pending_to_cancel = crate::device::load_pending_binding();
             drop(guard);
             if let Some(pending) = pending_to_cancel {
                 if let Err(e) = crate::device::bind_cancel(&self.bind_http_url, &pending).await {
-                    tracing::warn!("Cloud 绑定取消未确认，将等待 Redis TTL: {}", e);
+                    tracing::warn!("Cloud 绑定取消未确认，保留本地申请以便重试: {}", e);
+                    let mut guard = self.bind_cancel.lock().await;
+                    if guard.is_none()
+                        && self.bind_generation.load(Ordering::Relaxed) == current_gen
+                    {
+                        *guard = Some(worker);
+                    }
+                    return err_response(&req.id, "CANCEL_FAILED", "取消绑定失败，请稍后重试");
                 }
             }
+            worker.cancel.cancel();
             // The phase lock proves no marker exists at this point.  Never
             // delete one here: a worker that has reached credential saving is
             // activation-uncertain and must finish its idempotent recovery.

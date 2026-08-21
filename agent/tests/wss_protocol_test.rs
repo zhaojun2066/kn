@@ -736,6 +736,8 @@ fn test_profile_info_from_summary() {
         env_count: 3,
         is_default: false,
         cli_type: Some("claude".into()),
+        auth_mode: None,
+        provider_id: None,
         tags: None,
     };
     let info: kn_agent::proto::ProfileInfo = (&summary).into();

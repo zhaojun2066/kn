@@ -225,6 +225,33 @@ pub async fn bind_poll(
     }
 }
 
+/// Cancel is allowed only before the phone confirms the pairing. This one-shot
+/// probe closes the race where the phone confirms just before Desktop clicks close.
+pub async fn bind_has_phone_confirmation(http_url: &str, pending: &PendingBinding) -> Result<bool> {
+    let envelope: CloudEnvelope<BindResultData> = http()
+        .get(format!("{}/api/v1/device/bind-result", http_url))
+        .query(&[
+            ("pairingId", pending.pairing_id.as_str()),
+            ("pollSecret", pending.poll_secret.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(AgentError::Http)?
+        .error_for_status()
+        .map_err(AgentError::Http)?
+        .json()
+        .await
+        .map_err(AgentError::Http)?;
+    let data = envelope.into_data()?;
+    if data.device_token.as_deref().is_some_and(|token| !token.is_empty()) {
+        return Ok(true);
+    }
+    Ok(matches!(
+        data.status.as_deref(),
+        Some("waitingAgent") | Some("activating") | Some("active")
+    ))
+}
+
 /// Agent 在本地凭证完成原子持久化后，才能调用此接口创建正式设备。
 pub async fn bind_activate(
     http_url: &str,

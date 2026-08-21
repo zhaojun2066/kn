@@ -24,11 +24,13 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [remainingSecs, setRemainingSecs] = useState<number>(0);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const effectGenerationRef = useRef(0);
   const activeBindRequestRef = useRef<ReturnType<AgentState["bindDevice"]> | null>(null);
+  const cancelStaleBindRef = useRef(false);
 
   const cleanup = useCallback(() => {
     if (pollRef.current) {
@@ -45,15 +47,44 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
     }
   }, []);
 
-  const cancelCurrentBinding = useCallback(() => {
+  const resetBindingView = useCallback(() => {
     activeBindRequestRef.current = null;
-    void cancelBind();
-  }, [cancelBind]);
+    setErrorMsg(null);
+    setBindCode(null);
+    setConfirmUrl(null);
+    setQrDataUrl(null);
+    setRemainingSecs(0);
+  }, []);
+
+  const cancelBindingForClose = useCallback(async () => {
+    cancelStaleBindRef.current = true;
+    effectGenerationRef.current += 1;
+    cleanup();
+    setIsClosing(true);
+    const result = await cancelBind();
+    setIsClosing(false);
+    if (!result.ok && result.status !== "activation_uncertain") {
+      setPhase("error");
+      setErrorMsg(result.error || "取消绑定失败，请稍后重试");
+      return;
+    }
+    onClose();
+  }, [cancelBind, cleanup, onClose]);
+
+  const handleClose = useCallback(() => {
+    if (phase === "activating" || phase === "connecting" || phase === "success" || phase === "timeout" || phase === "error") {
+      cleanup();
+      onClose();
+      return;
+    }
+    void cancelBindingForClose();
+  }, [cancelBindingForClose, cleanup, onClose, phase]);
 
   const restartWithFreshQr = useCallback(async () => {
     // A new QR is only valid after the old pending pairing is explicitly
     // cancelled.  Do not race a second bind-init against the old worker.
     setIsRestarting(true);
+    cancelStaleBindRef.current = true;
     effectGenerationRef.current += 1;
     cleanup();
     const result = await cancelBind();
@@ -69,15 +100,10 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
       return;
     }
 
-    activeBindRequestRef.current = null;
-    setErrorMsg(null);
-    setBindCode(null);
-    setConfirmUrl(null);
-    setQrDataUrl(null);
-    setRemainingSecs(0);
+    resetBindingView();
     setPhase("binding");
     setRetryKey((key) => key + 1);
-  }, [cancelBind, cleanup]);
+  }, [cancelBind, cleanup, resetBindingView]);
 
   // Pause background agent polling while bind dialog is open to avoid
   // duplicate IPC "status" calls (BindDialog does its own 2s polling).
@@ -110,7 +136,13 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
       const request = activeBindRequestRef.current ?? bindDevice();
       activeBindRequestRef.current = request;
       const result = await request;
-      if (effectGenerationRef.current !== generation) return;
+      if (effectGenerationRef.current !== generation) {
+        if (result.ok && cancelStaleBindRef.current) {
+          cancelStaleBindRef.current = false;
+          void cancelBind();
+        }
+        return;
+      }
 
       if (!result.ok) {
         activeBindRequestRef.current = null;
@@ -142,12 +174,20 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
         });
       }, 1000);
 
-      // QR expiry only expires the camera code. Agent keeps the 24h pairing alive,
-      // so this must never invoke cancelBind.
       timeoutRef.current = setTimeout(() => {
         if (effectGenerationRef.current !== generation) return;
         cleanup();
-        setPhase("timeout");
+        void cancelBind().then((result) => {
+          if (effectGenerationRef.current !== generation) return;
+          if (!result.ok && result.status === "activation_uncertain") {
+            setPhase("activating");
+          } else if (!result.ok) {
+            setPhase("error");
+            setErrorMsg(result.error || "二维码已过期，但取消绑定失败，请稍后重试");
+          } else {
+            setPhase("timeout");
+          }
+        });
       }, ttl * 1000 + TIMEOUT_GRACE_MS);
 
       // Recursive polling — each call waits for the previous to finish,
@@ -166,8 +206,6 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
 
     return () => {
       cleanup();
-      // Closing the dialog hides only this view. The durable Agent pairing keeps
-      // polling so a phone confirmation cannot be stranded by a UI dismissal.
       effectGenerationRef.current += 1;
     };
   }, [retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -206,7 +244,7 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
   return (
     <div
       className="fixed inset-0 z-[120] flex items-center justify-center app-dialog-backdrop"
-      onClick={canDismiss ? onClose : undefined}
+      onClick={canDismiss ? handleClose : undefined}
     >
       <div
         className="app-dialog-panel bg-app-panel border border-app-border w-[400px] select-none animate-[scaleIn_150ms_ease-out]"
@@ -216,10 +254,12 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
         <div className="flex items-center justify-between px-4 py-3 border-b border-app-border">
           <span className="text-sm font-mono text-app-text font-semibold">设备绑定</span>
           <button
-            onClick={onClose}
+            onClick={handleClose}
+            disabled={isClosing}
             className="p-0.5 text-app-text-dim hover:text-app-text transition-colors"
+            title={phase === "activating" || phase === "connecting" ? "隐藏窗口" : "取消本次绑定"}
           >
-            <X size={14} />
+            {isClosing ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
           </button>
         </div>
 
@@ -267,9 +307,9 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
               </div>
               <button
                 onClick={() => void restartWithFreshQr()}
-                disabled={remainingSecs > 0 || isRestarting}
+                disabled={isRestarting || isClosing}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono border border-app-border text-app-text-dim hover:text-app-text transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                title={remainingSecs > 0 ? "二维码过期后可重新生成" : "取消当前申请并生成新二维码"}
+                title="取消当前申请并生成新二维码"
               >
                 <RefreshCw size={12} />
                 {isRestarting ? "正在生成..." : "重新生成二维码"}
@@ -299,7 +339,7 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
                 </div>
               </div>
               <button
-                onClick={onClose}
+                onClick={handleClose}
                 className="px-4 py-1.5 text-xs font-mono border border-app-border text-app-text-dim hover:text-app-text transition-colors"
               >
                 隐藏窗口
@@ -317,7 +357,7 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
                 </div>
               </div>
               <button
-                onClick={onClose}
+                onClick={handleClose}
                 className="px-4 py-1.5 text-xs font-mono border border-app-border text-app-text-dim hover:text-app-text transition-colors"
               >
                 隐藏窗口
@@ -334,7 +374,7 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
               <div className="text-center space-y-1">
                 <div className="text-sm font-mono text-app-text">二维码已过期</div>
                 <div className="text-xs font-mono text-app-text-muted">
-                  二维码已过期；若手机已确认，电脑仍会在后台继续完成绑定
+                  本次绑定已取消，请重新生成二维码
                 </div>
               </div>
               <div className="flex gap-2">
@@ -353,16 +393,6 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
                 >
                   {isRestarting ? "正在生成..." : "重新生成二维码"}
                 </button>
-                <button
-                  onClick={() => {
-                    cancelCurrentBinding();
-                    onClose();
-                  }}
-                  disabled={isRestarting}
-                  className="px-4 py-1.5 text-xs font-mono border border-red-500/50 text-red-300 hover:text-red-100 transition-colors disabled:opacity-50"
-                >
-                  取消本次绑定
-                </button>
               </div>
             </>
           )}
@@ -378,7 +408,7 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
               </div>
               <div className="flex gap-2">
                 <button
-                  onClick={onClose}
+                  onClick={handleClose}
                   className="px-4 py-1.5 text-xs font-mono border border-app-border text-app-text-dim hover:text-app-text transition-colors"
                 >
                   关闭

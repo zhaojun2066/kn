@@ -24,7 +24,7 @@ function mockAgentState(overrides: Partial<AgentState> = {}): AgentState {
     isConnected: false,
     statusIcon: "offline",
     bindDevice: vi.fn(),
-    cancelBind: vi.fn(),
+    cancelBind: vi.fn().mockResolvedValue({ ok: true, status: "cancelled" }),
     redeemCode: vi.fn(),
     fetchStatus: vi.fn(),
     fetchSessions: vi.fn(),
@@ -362,14 +362,18 @@ describe("BindDialog with fake timers", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("keeps the Agent pairing alive after the QR code expires", async () => {
+  it("cancels the Agent pairing after the QR code expires", async () => {
     const bindDevice = vi.fn().mockResolvedValue({
       ok: true,
       bindCode: "ABC123",
       expiresIn: 300,
       confirmUrl: "https://knshark.com/bind",
     });
-    const agent = mockAgentState({ bindDevice, fetchStatus: vi.fn(), cancelBind: vi.fn() });
+    const agent = mockAgentState({
+      bindDevice,
+      fetchStatus: vi.fn(),
+      cancelBind: vi.fn().mockResolvedValue({ ok: true, status: "cancelled" }),
+    });
 
     render(<BindDialog onClose={vi.fn()} agent={agent} />);
     await settle();
@@ -385,23 +389,48 @@ describe("BindDialog with fake timers", () => {
 
     await waitFor(() => {
       expect(screen.getByText("二维码已过期")).toBeTruthy();
-      expect(screen.getByText("取消本次绑定")).toBeTruthy();
+      expect(screen.getByText("本次绑定已取消，请重新生成二维码")).toBeTruthy();
     });
+    expect(agent.cancelBind).toHaveBeenCalledTimes(1);
   });
 
-  it("cancels the expired pairing before requesting a fresh QR code", async () => {
+  it("switches to activating when expiry cancellation finds phone confirmation", async () => {
+    const bindDevice = vi.fn().mockResolvedValue({
+      ok: true,
+      bindCode: "ABC123",
+      expiresIn: 300,
+      confirmUrl: "https://knshark.com/bind",
+    });
+    const cancelBind = vi.fn().mockResolvedValue({
+      ok: false,
+      status: "activation_uncertain",
+      error: "手机已确认，电脑正在完成绑定",
+    });
+
+    render(<BindDialog onClose={vi.fn()} agent={mockAgentState({ bindDevice, fetchStatus: vi.fn(), cancelBind })} />);
+    await settle();
+    await waitFor(() => expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy());
+
+    await act(async () => {
+      vi.advanceTimersByTime(311_000);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("手机已确认，正在确认设备")).toBeTruthy();
+    });
+    expect(cancelBind).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels the active pairing before requesting a fresh QR code", async () => {
     const bindDevice = vi.fn()
-      .mockResolvedValueOnce({ ok: true, bindCode: "OLD001", expiresIn: 1, confirmUrl: "https://knshark.com/bind" })
+      .mockResolvedValueOnce({ ok: true, bindCode: "OLD001", expiresIn: 120, confirmUrl: "https://knshark.com/bind" })
       .mockResolvedValueOnce({ ok: true, bindCode: "NEW002", expiresIn: 120, confirmUrl: "https://knshark.com/bind" });
     const cancelBind = vi.fn().mockResolvedValue({ ok: true, status: "cancelled" });
 
     render(<BindDialog onClose={vi.fn()} agent={mockAgentState({ bindDevice, cancelBind, fetchStatus: vi.fn() })} />);
     await settle();
 
-    await act(async () => {
-      vi.advanceTimersByTime(11_100);
-    });
-    await waitFor(() => expect(screen.getByText("二维码已过期")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy());
 
     fireEvent.click(screen.getByText("重新生成二维码"));
     await waitFor(() => {
@@ -409,5 +438,67 @@ describe("BindDialog with fake timers", () => {
       expect(bindDevice).toHaveBeenCalledTimes(2);
       expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy();
     });
+  });
+
+  it("cancels the binding when the QR window is closed before phone confirmation", async () => {
+    const onClose = vi.fn();
+    const bindDevice = vi.fn().mockResolvedValue({
+      ok: true,
+      bindCode: "ABC123",
+      expiresIn: 120,
+      confirmUrl: "https://knshark.com/bind",
+    });
+    const cancelBind = vi.fn().mockResolvedValue({ ok: true, status: "cancelled" });
+
+    render(<BindDialog onClose={onClose} agent={mockAgentState({ bindDevice, cancelBind, fetchStatus: vi.fn() })} />);
+    await settle();
+    await waitFor(() => expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy());
+
+    fireEvent.click(screen.getByTitle("取消本次绑定"));
+
+    await waitFor(() => {
+      expect(cancelBind).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("hides the dialog without cancelling after the phone has confirmed", async () => {
+    const onClose = vi.fn();
+    const bindDevice = vi.fn().mockResolvedValue({
+      ok: true,
+      bindCode: "ABC123",
+      expiresIn: 120,
+      confirmUrl: "https://knshark.com/bind",
+    });
+    const cancelBind = vi.fn();
+    const { rerender } = render(
+      <BindDialog onClose={onClose} agent={mockAgentState({ bindDevice, cancelBind, fetchStatus: vi.fn() })} />,
+    );
+    await settle();
+    await waitFor(() => expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy());
+
+    rerender(
+      <BindDialog
+        onClose={onClose}
+        agent={mockAgentState({
+          bindDevice: vi.fn(),
+          cancelBind,
+          fetchStatus: vi.fn(),
+          agentStatus: {
+            state: "binding",
+            crash_count: 0,
+            safe_mode: false,
+            binding: { state: "activating" },
+          },
+          isBinding: true,
+        })}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("手机已确认，正在确认设备")).toBeTruthy());
+
+    fireEvent.click(screen.getByTitle("隐藏窗口"));
+
+    expect(cancelBind).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
