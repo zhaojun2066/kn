@@ -45,11 +45,13 @@ fn text_preview(text: &str, max_chars: usize) -> String {
 fn ws_header_value(value: &str) -> String {
     let sanitized: String = value
         .chars()
-        .map(|ch| {
-            if ch.is_ascii() && !ch.is_ascii_control() {
-                ch
+        .filter_map(|ch| {
+            if ch.is_ascii_control() {
+                None
+            } else if ch.is_ascii() {
+                Some(ch)
             } else {
-                '_'
+                Some('_')
             }
         })
         .collect();
@@ -62,9 +64,7 @@ fn ws_header_value(value: &str) -> String {
 }
 
 fn is_auth_rejection_error(message: &str) -> bool {
-    message.contains("401")
-        || message.contains("403")
-        || message.contains("HTTP error: 400 Bad Request")
+    message.contains("401") || message.contains("403")
 }
 
 // ── Public API ──────────────────────────────────────────────
@@ -224,8 +224,7 @@ async fn connect_and_run(
             })?;
 
     // Also check HTTP upgrade response status
-    if response.status() == http::StatusCode::BAD_REQUEST
-        || response.status() == http::StatusCode::UNAUTHORIZED
+    if response.status() == http::StatusCode::UNAUTHORIZED
         || response.status() == http::StatusCode::FORBIDDEN
     {
         return Err(AgentError::Ws(
@@ -306,9 +305,9 @@ async fn connect_and_run(
                             let reason = frame.as_ref().map(|f| f.reason.as_ref()).unwrap_or("");
                             tracing::info!(code = ?code, reason = reason, "WSS 收到关闭帧");
                             match code {
-                                Some(4003) | Some(4001) | Some(4000) => {
+                                Some(4003) | Some(4001) => {
                                     *read_error_clone.lock().await =
-                                        Some("AUTH_REJECTED: 服务端关闭连接，关闭码 4000/4001/4003".into());
+                                        Some("AUTH_REJECTED: 服务端关闭连接，关闭码 4001/4003".into());
                                 }
                                 _ => {
                                     *read_error_clone.lock().await =
@@ -467,6 +466,19 @@ mod tests {
 
         assert_eq!(preview.chars().count(), 200);
         assert!(preview.ends_with('中'));
+    }
+
+    #[test]
+    fn ws_header_value_replaces_non_ascii_and_control_chars() {
+        assert_eq!(ws_header_value("赵军的MacBook Pro\n"), "___MacBook Pro");
+        assert_eq!(ws_header_value(" \n\t"), "unknown");
+    }
+
+    #[test]
+    fn http_400_is_not_treated_as_token_rejection() {
+        assert!(is_auth_rejection_error("HTTP error: 401 Unauthorized"));
+        assert!(is_auth_rejection_error("HTTP error: 403 Forbidden"));
+        assert!(!is_auth_rejection_error("HTTP error: 400 Bad Request"));
     }
 
     #[test]
