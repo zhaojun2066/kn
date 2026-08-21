@@ -242,6 +242,15 @@ impl IpcServer {
                 let _ = crate::device::clear_pending_binding();
                 return;
             }
+            // 1.2.2 and earlier could persist a closed QR dialog. Migrate it
+            // out of the visible binding state; Cloud will replace it only on
+            // the user's next explicit request for a fresh QR code.
+            if pending.is_legacy_unconfirmed_record() {
+                if let Err(error) = crate::device::migrate_legacy_pending_binding() {
+                    tracing::warn!(pairing_id = %pending.pairing_id, "迁移旧版绑定记录失败: {}", error);
+                }
+                return;
+            }
             if recovery.transition_to_binding().await.is_ok() {
                 recovery.start_binding_poll(pending).await;
             }
@@ -340,6 +349,7 @@ fn pending_for_activation(
     activation: &crate::device::PendingActivation,
 ) -> crate::device::PendingBinding {
     crate::device::PendingBinding {
+        format_version: crate::device::PendingBinding::CURRENT_FORMAT_VERSION,
         pairing_id: activation.pairing_id.clone(),
         // These fields are never exposed or polled when an activation marker
         // exists; they merely let the single recovery worker retain its common
@@ -531,6 +541,10 @@ impl IpcHandle {
         if self.bind_http_url.is_empty() {
             return err_response(&req.id, "CONFIG_ERROR", "bind_http_url 未配置");
         }
+        if let Err(error) = crate::device::migrate_legacy_pending_binding() {
+            return err_response(&req.id, "LOCAL_STORAGE_ERROR", &error.to_string());
+        }
+        let replacement = crate::device::load_legacy_binding_replacement();
 
         // A durable pending pairing always wins over a new request. This protects the
         // user from consuming another QR code when they merely closed/reopened Desktop.
@@ -544,7 +558,13 @@ impl IpcHandle {
                 Some(pending) if !binding_expired(&pending) => pending,
                 Some(_) => {
                     let _ = crate::device::clear_pending_binding();
-                    match crate::device::bind_init(&self.bind_http_url, &self.machine_id).await {
+                    match crate::device::bind_init(
+                        &self.bind_http_url,
+                        &self.machine_id,
+                        replacement.as_ref(),
+                    )
+                    .await
+                    {
                         Ok(pending) => {
                             if let Err(e) = crate::device::save_pending_binding(&pending) {
                                 let _ =
@@ -555,18 +575,25 @@ impl IpcHandle {
                                     &e.to_string(),
                                 );
                             }
+                            let _ = crate::device::clear_legacy_binding_replacement();
                             pending
                         }
                         Err(e) => return bind_init_error(req, e),
                     }
                 }
-                None => match crate::device::bind_init(&self.bind_http_url, &self.machine_id).await
+                None => match crate::device::bind_init(
+                    &self.bind_http_url,
+                    &self.machine_id,
+                    replacement.as_ref(),
+                )
+                .await
                 {
                     Ok(pending) => {
                         if let Err(e) = crate::device::save_pending_binding(&pending) {
                             let _ = crate::device::bind_cancel(&self.bind_http_url, &pending).await;
                             return err_response(&req.id, "LOCAL_STORAGE_ERROR", &e.to_string());
                         }
+                        let _ = crate::device::clear_legacy_binding_replacement();
                         pending
                     }
                     Err(e) => return bind_init_error(req, e),
@@ -839,7 +866,11 @@ impl IpcHandle {
                 Ok(false) => {}
                 Err(e) => {
                     tracing::warn!(pairing_id = %pending.pairing_id, "取消前状态探测失败: {}", e);
-                    return err_response(&req.id, "CANCEL_STATUS_UNKNOWN", "暂时无法确认绑定状态，请稍后重试");
+                    return err_response(
+                        &req.id,
+                        "CANCEL_STATUS_UNKNOWN",
+                        "暂时无法确认绑定状态，请稍后重试",
+                    );
                 }
             }
         }

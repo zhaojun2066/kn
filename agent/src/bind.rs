@@ -33,18 +33,33 @@ pub async fn run_bind_command(config: AgentConfig) -> Result<()> {
         return Ok(());
     }
 
+    device::migrate_legacy_pending_binding()?;
+    let replacement = device::load_legacy_binding_replacement();
+
     // ── Step 1: 请求绑定码 ──
     let pending = match device::load_pending_binding() {
         Some(pending) if pending.pairing_expires_at_ms > now_ms() => pending,
         Some(_) => {
             let _ = device::clear_pending_binding();
-            let pending = device::bind_init(&config.cloud_http_url, &config.machine_id).await?;
+            let pending = device::bind_init(
+                &config.cloud_http_url,
+                &config.machine_id,
+                replacement.as_ref(),
+            )
+            .await?;
             device::save_pending_binding(&pending)?;
+            let _ = device::clear_legacy_binding_replacement();
             pending
         }
         None => {
-            let pending = device::bind_init(&config.cloud_http_url, &config.machine_id).await?;
+            let pending = device::bind_init(
+                &config.cloud_http_url,
+                &config.machine_id,
+                replacement.as_ref(),
+            )
+            .await?;
             device::save_pending_binding(&pending)?;
+            let _ = device::clear_legacy_binding_replacement();
             pending
         }
     };

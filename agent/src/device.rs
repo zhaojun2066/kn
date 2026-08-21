@@ -98,12 +98,35 @@ struct BindResultData {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingBinding {
+    /// Bindings created before 1.2.3 do not contain this marker.  Their old
+    /// Desktop UI could hide a QR dialog without cancelling it, so startup
+    /// handles those records as a one-time migration instead of resuming them.
+    #[serde(default)]
+    pub format_version: u8,
     pub pairing_id: String,
     pub approval_code: String,
     pub poll_secret: String,
     pub confirm_url: String,
     pub qr_expires_at_ms: u64,
     pub pairing_expires_at_ms: u64,
+}
+
+/// Private migration metadata retained only long enough to let Cloud replace
+/// an abandoned pre-1.2.3 pairing on the user's next explicit bind request.
+/// It deliberately excludes the displayed code and does not start polling.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyBindingReplacement {
+    pub pairing_id: String,
+    pub poll_secret: String,
+}
+
+impl PendingBinding {
+    pub const CURRENT_FORMAT_VERSION: u8 = 1;
+
+    pub fn is_legacy_unconfirmed_record(&self) -> bool {
+        self.format_version < Self::CURRENT_FORMAT_VERSION
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -136,11 +159,20 @@ struct RedeemResponseData {
 // ── Public API ──────────────────────────────────────────────
 
 /// 向云端创建待 Agent 确认的配对申请。凭证只在 Agent 本机落盘后才可激活。
-pub async fn bind_init(http_url: &str, machine_id: &str) -> Result<PendingBinding> {
+pub async fn bind_init(
+    http_url: &str,
+    machine_id: &str,
+    replacement: Option<&LegacyBindingReplacement>,
+) -> Result<PendingBinding> {
     tracing::info!("正在初始化设备绑定...");
+    let mut body = serde_json::json!({"machineId": machine_id});
+    if let Some(replacement) = replacement {
+        body["replacePairingId"] = serde_json::Value::String(replacement.pairing_id.clone());
+        body["replacePollSecret"] = serde_json::Value::String(replacement.poll_secret.clone());
+    }
     let envelope: CloudEnvelope<BindInitData> = http()
         .post(format!("{}/api/v1/device/bind-init", http_url))
-        .json(&serde_json::json!({"machineId": machine_id}))
+        .json(&body)
         .send()
         .await
         .map_err(|e| AgentError::Http(e))?
@@ -153,6 +185,7 @@ pub async fn bind_init(http_url: &str, machine_id: &str) -> Result<PendingBindin
     let data = envelope.into_data()?;
     let now_ms = now_ms()?;
     let pending = PendingBinding {
+        format_version: PendingBinding::CURRENT_FORMAT_VERSION,
         pairing_id: data.pairing_id,
         approval_code: data.approval_code,
         poll_secret: data.poll_secret,
@@ -243,7 +276,11 @@ pub async fn bind_has_phone_confirmation(http_url: &str, pending: &PendingBindin
         .await
         .map_err(AgentError::Http)?;
     let data = envelope.into_data()?;
-    if data.device_token.as_deref().is_some_and(|token| !token.is_empty()) {
+    if data
+        .device_token
+        .as_deref()
+        .is_some_and(|token| !token.is_empty())
+    {
         return Ok(true);
     }
     Ok(matches!(
@@ -348,7 +385,7 @@ pub async fn bind_device(
     machine_id: &str,
     shutdown: CancellationToken,
 ) -> Result<String> {
-    let pending = bind_init(http_url, machine_id).await?;
+    let pending = bind_init(http_url, machine_id, None).await?;
     save_pending_binding(&pending)?;
     let token = bind_poll(http_url, &pending, shutdown).await?;
     let activation = PendingActivation {
@@ -463,6 +500,12 @@ pub(crate) fn pending_binding_path() -> PathBuf {
         .join("pending_binding.json")
 }
 
+fn legacy_binding_replacement_path() -> PathBuf {
+    kn_common::path::config_dir()
+        .join("agent")
+        .join("legacy_binding_replacement.json")
+}
+
 pub(crate) fn pending_activation_path() -> PathBuf {
     kn_common::path::config_dir()
         .join("agent")
@@ -479,6 +522,29 @@ pub fn save_pending_binding(pending: &PendingBinding) -> Result<()> {
 
 pub fn clear_pending_binding() -> Result<()> {
     clear_secure_file(&pending_binding_path())
+}
+
+pub fn migrate_legacy_pending_binding() -> Result<()> {
+    let Some(pending) = load_pending_binding() else {
+        return Ok(());
+    };
+    if !pending.is_legacy_unconfirmed_record() {
+        return Ok(());
+    }
+    let replacement = LegacyBindingReplacement {
+        pairing_id: pending.pairing_id,
+        poll_secret: pending.poll_secret,
+    };
+    write_secure_json(&legacy_binding_replacement_path(), &replacement)?;
+    clear_pending_binding()
+}
+
+pub fn load_legacy_binding_replacement() -> Option<LegacyBindingReplacement> {
+    read_secure_json(&legacy_binding_replacement_path())
+}
+
+pub fn clear_legacy_binding_replacement() -> Result<()> {
+    clear_secure_file(&legacy_binding_replacement_path())
 }
 
 pub fn load_pending_activation() -> Option<PendingActivation> {
@@ -769,6 +835,7 @@ pub(crate) mod tests {
         std::env::set_var("KN_HOME", dir.to_str().unwrap());
 
         let pending = PendingBinding {
+            format_version: PendingBinding::CURRENT_FORMAT_VERSION,
             pairing_id: "pair_123".into(),
             approval_code: "123456".into(),
             poll_secret: "secret-not-in-a-path".into(),
@@ -786,6 +853,22 @@ pub(crate) mod tests {
 
         restore_kn_home(prev);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_pending_binding_without_format_marker_is_detected() {
+        let pending: PendingBinding = serde_json::from_value(serde_json::json!({
+            "pairingId": "pair_legacy",
+            "approvalCode": "123456",
+            "pollSecret": "poll-secret",
+            "confirmUrl": "https://example.test/confirm",
+            "qrExpiresAtMs": 100,
+            "pairingExpiresAtMs": 200
+        }))
+        .unwrap();
+
+        assert!(pending.is_legacy_unconfirmed_record());
+        assert_eq!(pending.format_version, 0);
     }
 
     #[test]
