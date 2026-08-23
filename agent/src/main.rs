@@ -1178,6 +1178,21 @@ fn project_operation_key(project_path: &str) -> String {
     format!("path:{}", project_path.trim_end_matches('/'))
 }
 
+/// Cloud 的 `session_created_ack` 只有 Desktop 重新同步路径会携带这些稳定的
+/// RemoteAccessGuard 拒绝码。它们表示账号已经不能使用远程功能，重试不会成功；
+/// Redis、网络或未知错误则一律保留远程状态，等待下次连接重试。
+fn is_permanent_reconnect_ack_error(source: &str, error: &str) -> bool {
+    if !source.eq_ignore_ascii_case("desktop") {
+        return false;
+    }
+
+    let code = error.split_once(':').map_or(error, |(code, _)| code).trim();
+    matches!(
+        code,
+        "membershipExpired" | "membershipInactive" | "membershipGracePeriod" | "userNotFound"
+    )
+}
+
 async fn handle_incoming(
     msg: proto::AgentIncoming,
     state: Arc<state::StateMachine>,
@@ -1313,43 +1328,94 @@ async fn handle_incoming(
                     let ack_sessions = sessions.clone();
 
                     tokio::spawn(async move {
-                        let msg_id = format!("reconnect-{}", ack_nid);
-                        let msg = proto::WsMessageBuilder::session_created_with_msg_id(
-                            &ack_nid,
-                            &ack_tool,
-                            &ack_cwd,
-                            ack_profile.as_deref(),
-                            ack_cols,
-                            ack_rows,
-                            &ack_source,
-                            Some(&msg_id),
-                        );
+                        const MAX_RETRIES: u32 = 3;
+                        let backoffs = [1u64, 2];
 
-                        let send_ok = {
-                            let guard = ack_outgoing.lock().await;
-                            match guard.as_ref() {
-                                Some(tx) => tx.send(msg).is_ok(),
-                                None => false,
+                        for attempt in 0..MAX_RETRIES {
+                            let msg_id = format!("reconnect-{}", ack_nid);
+                            let msg = proto::WsMessageBuilder::session_created_with_msg_id(
+                                &ack_nid,
+                                &ack_tool,
+                                &ack_cwd,
+                                ack_profile.as_deref(),
+                                ack_cols,
+                                ack_rows,
+                                &ack_source,
+                                Some(&msg_id),
+                            );
+
+                            // 必须先登记 ACK，再把消息交给 WSS writer。否则本机/低延迟
+                            // Cloud 可在 register 前返回 ACK，导致 ACK 被丢失并错误关闭远程。
+                            let Some(rx) = ack_registry.register_if_absent(&ack_nid).await else {
+                                tracing::info!(nid = %ack_nid, "reconnect: 已有 session_created 确认进行中，跳过重复同步");
+                                return;
+                            };
+                            let send_ok = {
+                                let guard = ack_outgoing.lock().await;
+                                match guard.as_ref() {
+                                    Some(tx) => tx.send(msg).is_ok(),
+                                    None => false,
+                                }
+                            };
+
+                            if !send_ok {
+                                let _ = ack_registry
+                                    .resolve(
+                                        &ack_nid,
+                                        crate::ack::AckResult::Error("send failed".to_string()),
+                                    )
+                                    .await;
+                                tracing::warn!(nid = %ack_nid, attempt = attempt, "reconnect: session_created 发送失败");
+                            } else {
+                                tracing::info!(nid = %ack_nid, attempt = attempt, "🔄 [RECONNECT] 重连后补发 session_created，等待 ACK");
+                                match tokio::time::timeout(tokio::time::Duration::from_secs(10), rx)
+                                    .await
+                                {
+                                    Ok(Ok(crate::ack::AckResult::Ok)) => {
+                                        tracing::info!(nid = %ack_nid, "reconnect: ACK 成功，会话已恢复");
+                                        return;
+                                    }
+                                    Ok(Ok(crate::ack::AckResult::Error(error))) => {
+                                        ack_registry.cancel(&ack_nid).await;
+                                        if is_permanent_reconnect_ack_error(&ack_source, &error) {
+                                            match ack_sessions.set_remote_enabled(&ack_nid, false).await {
+                                                Ok(()) => tracing::warn!(
+                                                    nid = %ack_nid,
+                                                    error = %error,
+                                                    "reconnect: Cloud 永久拒绝远程会话，已关闭本地远程状态"
+                                                ),
+                                                Err(disable_error) => tracing::error!(
+                                                    nid = %ack_nid,
+                                                    error = %disable_error,
+                                                    original_error = %error,
+                                                    "reconnect: Cloud 永久拒绝后关闭本地远程状态失败"
+                                                ),
+                                            }
+                                            return;
+                                        }
+
+                                        // Redis、网络或未知错误均可能恢复；保留用户远程设置
+                                        // 并重试，不能将其误判为用户主动关闭。
+                                        tracing::warn!(nid = %ack_nid, attempt = attempt, error = %error, "reconnect: Cloud 暂时拒绝 session_created，将重试");
+                                    }
+                                    Ok(Err(_)) | Err(_) => {
+                                        ack_registry.cancel(&ack_nid).await;
+                                        tracing::warn!(nid = %ack_nid, attempt = attempt, "reconnect: session_created ACK 超时");
+                                    }
+                                }
                             }
-                        };
 
-                        if !send_ok {
-                            tracing::warn!(nid = %ack_nid, "reconnect: session_created 发送失败");
-                            return;
+                            if attempt + 1 < MAX_RETRIES {
+                                tokio::time::sleep(tokio::time::Duration::from_secs(
+                                    backoffs[attempt as usize],
+                                ))
+                                .await;
+                            }
                         }
 
-                        tracing::info!(nid = %ack_nid, "🔄 [RECONNECT] 重连后补发 session_created，等待 ACK");
-                        let rx = ack_registry.register(&ack_nid).await;
-                        match tokio::time::timeout(tokio::time::Duration::from_secs(10), rx).await {
-                            Ok(Ok(crate::ack::AckResult::Ok)) => {
-                                tracing::info!(nid = %ack_nid, "reconnect: ACK 成功，会话已恢复");
-                            }
-                            _ => {
-                                // 重连 ACK 失败 → 降级，关闭远程
-                                tracing::warn!(nid = %ack_nid, "reconnect: ACK 失败，关闭远程");
-                                let _ = ack_sessions.set_remote_enabled(&ack_nid, false).await;
-                            }
-                        }
+                        // WSS 断线、休眠唤醒或暂时拥塞均不代表用户关闭了远程。
+                        // 保留 remote_enabled，下一次连接仍会重新同步该运行中的会话。
+                        tracing::warn!(nid = %ack_nid, "reconnect: 未收到 ACK，保留远程状态等待后续重连");
                     });
                 }
             }
@@ -1398,6 +1464,11 @@ async fn handle_incoming(
                     return;
                 }
             }
+            let launch_kind = if expected_cli.is_some() {
+                session::SessionLaunchKind::LocalHistoryResume
+            } else {
+                session::SessionLaunchKind::Standard
+            };
             let cli_version = session::env::resolve_cli_version(&resolved_tool).await;
             // Agent 自行生成 sessionId，cloud 不再预分配
             let session_nid = format!("s_{}", nanoid::nanoid!(12));
@@ -1514,6 +1585,7 @@ async fn handle_incoming(
                                 cols,
                                 rows,
                                 &history_cli_args,
+                                launch_kind,
                                 wss_tx,
                                 ipc_tx,
                                 m,
@@ -1564,7 +1636,7 @@ async fn handle_incoming(
                         let backoffs = [1u64, 2, 4];
 
                         for attempt in 0..MAX_RETRIES {
-                            let msg_id = format!("{}-{}", ack_nid, attempt);
+                            let msg_id = format!("ios-{}", ack_nid);
                             let msg =
                                 proto::WsMessageBuilder::session_created_with_msg_id_and_version(
                                     &ack_nid,
@@ -1578,6 +1650,14 @@ async fn handle_incoming(
                                     ack_cli_version.as_deref(),
                                 );
 
+                            // 先注册再发送，避免低延迟 ACK 在 receiver 建立前被丢弃。
+                            let Some(rx) = ack_registry.register_if_absent(&ack_nid).await else {
+                                // 重连同步正在确认同一会话；它成功即可，不能由这里的
+                                // 重复任务覆盖 receiver 后误杀刚创建的 PTY。
+                                tracing::info!(nid = %ack_nid, "session_created 确认已在进行，交由现有任务完成");
+                                return;
+                            };
+
                             let send_ok = {
                                 let guard = ack_outgoing.lock().await;
                                 match guard.as_ref() {
@@ -1587,6 +1667,12 @@ async fn handle_incoming(
                             };
 
                             if !send_ok {
+                                let _ = ack_registry
+                                    .resolve(
+                                        &ack_nid,
+                                        crate::ack::AckResult::Error("send failed".to_string()),
+                                    )
+                                    .await;
                                 tracing::warn!(nid = %ack_nid, attempt = attempt, "WSS channel 不可用");
                                 if attempt + 1 < MAX_RETRIES {
                                     tokio::time::sleep(tokio::time::Duration::from_secs(
@@ -1599,7 +1685,6 @@ async fn handle_incoming(
                             }
 
                             tracing::info!(nid = %ack_nid, attempt = attempt, "session_created 已发送，等待 ACK");
-                            let rx = ack_registry.register(&ack_nid).await;
                             match tokio::time::timeout(tokio::time::Duration::from_secs(10), rx)
                                 .await
                             {
@@ -1614,6 +1699,7 @@ async fn handle_incoming(
                                 }
                                 Ok(Err(_)) | Err(_) => {
                                     // Timeout or oneshot sender dropped
+                                    ack_registry.cancel(&ack_nid).await;
                                     tracing::warn!(nid = %ack_nid, attempt = attempt, "session_created ACK 超时");
                                     if attempt + 1 < MAX_RETRIES {
                                         tokio::time::sleep(tokio::time::Duration::from_secs(
@@ -2760,6 +2846,31 @@ async fn handle_incoming(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_permanent_desktop_access_rejections_disable_remote_state() {
+        for error in [
+            "membershipExpired: 会员已过期，无法开启远程会话",
+            "membershipInactive: 会员已过期或账号已禁用，无法开启远程会话",
+            "membershipGracePeriod: 会员已到期，无法开启远程会话",
+            "userNotFound: 用户不存在",
+        ] {
+            assert!(is_permanent_reconnect_ack_error("desktop", error));
+        }
+    }
+
+    #[test]
+    fn reconnect_transient_or_non_desktop_errors_keep_remote_state() {
+        assert!(!is_permanent_reconnect_ack_error(
+            "desktop",
+            "Redis write failed: connection reset"
+        ));
+        assert!(!is_permanent_reconnect_ack_error("desktop", "send failed"));
+        assert!(!is_permanent_reconnect_ack_error(
+            "ios",
+            "membershipExpired: 会员已过期，无法开启远程会话"
+        ));
+    }
 
     #[tokio::test]
     async fn delivery_outbox_flushes_completed_result_when_sender_returns() {

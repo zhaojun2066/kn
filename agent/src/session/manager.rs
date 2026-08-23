@@ -39,6 +39,61 @@ pub struct SessionManager {
 pub const SESSION_LIMIT: usize = 10;
 /// 同时开启远程控制的会话数量上限
 pub const REMOTE_LIMIT: usize = 10;
+const HISTORY_RESUME_OUTPUT_TAIL_BYTES: usize = 8 * 1024;
+
+/// Explains why the CLI process is being launched. This must be explicit: CLI
+/// arguments alone are not a reliable indicator of business intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionLaunchKind {
+    Standard,
+    LocalHistoryResume,
+}
+
+struct ProcessExit {
+    exit_code: Option<u32>,
+    output_tail: String,
+}
+
+fn append_output_tail(tail: &mut Vec<u8>, output: &[u8]) {
+    tail.extend_from_slice(output);
+    if tail.len() > HISTORY_RESUME_OUTPUT_TAIL_BYTES {
+        let excess = tail.len() - HISTORY_RESUME_OUTPUT_TAIL_BYTES;
+        tail.drain(..excess);
+    }
+}
+
+fn history_resume_session_not_found(output: &str) -> bool {
+    let output = output.to_ascii_lowercase();
+    [
+        "no session found",
+        "session not found",
+        "could not find session",
+        "cannot find session",
+        "unknown session",
+        "session does not exist",
+        "no conversation found",
+        "conversation not found",
+        "unknown conversation",
+        "conversation does not exist",
+    ]
+    .iter()
+    .any(|pattern| output.contains(pattern))
+}
+
+fn session_exit_reason(launch_kind: SessionLaunchKind, exit: &ProcessExit) -> &'static str {
+    if launch_kind != SessionLaunchKind::LocalHistoryResume {
+        return "process_exit";
+    }
+    if history_resume_session_not_found(&exit.output_tail) {
+        return "history_resume_not_found";
+    }
+    // Exit 130 is the conventional Ctrl-C status. It is a normal user action,
+    // not evidence that the saved history could not be reopened.
+    if exit.exit_code.is_some_and(|code| code != 0 && code != 130) {
+        return "history_resume_failed";
+    }
+    "process_exit"
+}
 
 impl SessionManager {
     pub fn new(store: Box<dyn SessionStore>) -> Self {
@@ -556,6 +611,7 @@ impl SessionManager {
             cols,
             rows,
             &[],
+            SessionLaunchKind::Standard,
             wss_tx,
             ipc_tx,
             merger,
@@ -575,6 +631,7 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         cli_args: &[String],
+        launch_kind: SessionLaunchKind,
         wss_tx: mpsc::UnboundedSender<String>,
         ipc_tx: mpsc::UnboundedSender<String>,
         merger: std::sync::Arc<InputMerger>,
@@ -688,7 +745,6 @@ impl SessionManager {
             );
             format!("shell_spawn_failed: {}", e)
         })?;
-
         drop(pair.slave);
 
         // 6. 创建 I/O 通道 + session 生命周期令牌
@@ -740,7 +796,7 @@ impl SessionManager {
         let fanout_clone = fanout.clone();
         let reader_cancel = session_cancel.clone();
         let sid = nid.to_string();
-        let (end_tx, mut end_rx) = mpsc::unbounded_channel::<()>();
+        let (end_tx, mut end_rx) = mpsc::unbounded_channel::<ProcessExit>();
         let end_wss_tx = fanout.inner.wss_tx.clone();
         let sid_for_end = sid.clone();
         let sessions_for_end = self.clone();
@@ -749,10 +805,11 @@ impl SessionManager {
         let cleanup_nid = nid.to_string();
         tokio::spawn(async move {
             tracing::debug!(session_id = %sid_for_end, "session_ended 监听任务已启动");
-            while end_rx.recv().await.is_some() {
+            while let Some(exit) = end_rx.recv().await {
                 tracing::info!(session_id = %sid_for_end, "收到 session_ended 信号，准备上报");
+                let reason = session_exit_reason(launch_kind, &exit);
                 if let Some(msg) = sessions_for_end
-                    .report_session_ended(&sid_for_end, "process_exit")
+                    .report_session_ended(&sid_for_end, reason)
                     .await
                     .ok()
                     .flatten()
@@ -778,22 +835,31 @@ impl SessionManager {
         });
         tokio::task::spawn_blocking(move || {
             let mut buf = [0u8; 16384];
+            let mut output_tail = Vec::with_capacity(HISTORY_RESUME_OUTPUT_TAIL_BYTES);
             let result = loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break Ok(()),
                     Ok(n) => {
+                        append_output_tail(&mut output_tail, &buf[..n]);
                         fanout_clone.broadcast(&buf[..n]);
                     }
                     Err(e) => break Err(e),
                 }
             };
+            // Do this before cancellation stops the periodic flush timer: a
+            // CLI's final resume error is often its only output.
+            fanout_clone.flush_pending();
             // 等待子进程退出（回收僵尸进程）
-            match child.wait() {
+            let exit_code = match child.wait() {
                 Ok(status) => {
-                    tracing::info!(session_id=%sid, exit_code=%status.exit_code(), "PTY 进程已退出")
+                    tracing::info!(session_id=%sid, exit_code=%status.exit_code(), "PTY 进程已退出");
+                    Some(status.exit_code())
                 }
-                Err(e) => tracing::warn!(session_id=%sid, error=%e, "PTY wait 失败"),
-            }
+                Err(e) => {
+                    tracing::warn!(session_id=%sid, error=%e, "PTY wait 失败");
+                    None
+                }
+            };
             // 子进程已退出，立即从 child_pids 移除，防止 kill_session 操作已回收的 PID
             {
                 let removed = self_for_pid_cleanup
@@ -817,7 +883,11 @@ impl SessionManager {
             }
             reader_cancel.cancel();
             tracing::info!(session_id=%sid, "PTY 进程已退出，准备发送 session_ended 信号");
-            match end_tx.send(()) {
+            let exit = ProcessExit {
+                exit_code,
+                output_tail: String::from_utf8_lossy(&output_tail).into_owned(),
+            };
+            match end_tx.send(exit) {
                 Ok(_) => tracing::info!(session_id=%sid, "session_ended 信号已发送到监听任务"),
                 Err(e) => tracing::error!(session_id=%sid, error=%e, "发送 session_ended 信号失败"),
             }
@@ -890,6 +960,55 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::store::MemorySessionStore;
+
+    #[test]
+    fn history_resume_exit_is_classified_from_cli_evidence() {
+        let missing = ProcessExit {
+            exit_code: Some(1),
+            output_tail: "Error: no session found with ID abc".to_string(),
+        };
+        assert_eq!(
+            session_exit_reason(SessionLaunchKind::LocalHistoryResume, &missing),
+            "history_resume_not_found"
+        );
+
+        let failed = ProcessExit {
+            exit_code: Some(1),
+            output_tail: "authentication failed".to_string(),
+        };
+        assert_eq!(
+            session_exit_reason(SessionLaunchKind::LocalHistoryResume, &failed),
+            "history_resume_failed"
+        );
+    }
+
+    #[test]
+    fn normal_and_user_interrupted_history_sessions_keep_process_exit_reason() {
+        let user_interrupted = ProcessExit {
+            exit_code: Some(130),
+            output_tail: String::new(),
+        };
+        assert_eq!(
+            session_exit_reason(SessionLaunchKind::LocalHistoryResume, &user_interrupted),
+            "process_exit"
+        );
+        let ordinary_failure = ProcessExit {
+            exit_code: Some(1),
+            output_tail: "no session found".to_string(),
+        };
+        assert_eq!(
+            session_exit_reason(SessionLaunchKind::Standard, &ordinary_failure),
+            "process_exit"
+        );
+    }
+
+    #[test]
+    fn output_tail_keeps_the_most_recent_bytes() {
+        let mut tail = b"1234".to_vec();
+        append_output_tail(&mut tail, &vec![b'x'; HISTORY_RESUME_OUTPUT_TAIL_BYTES]);
+        assert_eq!(tail.len(), HISTORY_RESUME_OUTPUT_TAIL_BYTES);
+        assert!(tail.iter().all(|byte| *byte == b'x'));
+    }
 
     fn test_manager() -> SessionManager {
         SessionManager::new(Box::new(MemorySessionStore::new()))

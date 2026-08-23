@@ -1500,7 +1500,13 @@ impl IpcHandle {
                     "desktop",
                     Some(&format!("desktop-{}", nid)),
                 );
-                let rx = self.ack_registry.register(nid).await;
+                let Some(rx) = self.ack_registry.register_if_absent(nid).await else {
+                    return err_response(
+                        &req.id,
+                        "WSS_ACK_IN_PROGRESS",
+                        "云端正在确认该会话，请稍后重试",
+                    );
+                };
                 if let Err(e) = outgoing_tx.send(msg) {
                     let _ = self
                         .ack_registry
@@ -1542,6 +1548,7 @@ impl IpcHandle {
                         return err_response(&req.id, "WSS_ACK_ERROR", &e);
                     }
                     _ => {
+                        self.ack_registry.cancel(nid).await;
                         return err_response(&req.id, "WSS_ACK_TIMEOUT", "云端确认超时，请重试");
                     }
                 }

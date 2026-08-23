@@ -41,7 +41,7 @@ pub fn pty_sock_path(nid: &str) -> PathBuf {
 // Re-export public API (保持与拆分前完全一致的对外接口)
 pub use env::resolve_tool_path;
 pub use input::{InputMerger, InputMessage};
-pub use manager::SessionManager;
+pub use manager::{SessionLaunchKind, SessionManager};
 pub use output::OutputFanout;
 pub use store::{MemorySessionStore, SessionStore};
 pub use types::{ManagedSession, SessionKind, SessionStatus, SessionSummary, ViewportOwner};

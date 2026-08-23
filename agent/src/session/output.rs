@@ -218,6 +218,38 @@ impl OutputFanout {
         }
     }
 
+    /// Flushes output which has not yet reached the periodic flush timer. This
+    /// is required before a terminal is cancelled so a CLI's final error is not
+    /// lost when it exits immediately.
+    pub fn flush_pending(&self) {
+        let (data, subscribers) = {
+            let mut buffer = self.inner.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            if buffer.is_empty() {
+                return;
+            }
+            let data = std::mem::take(&mut *buffer);
+            let subscribers = self
+                .inner
+                .extra_subscribers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            (data, subscribers)
+        };
+        for subscriber in subscribers {
+            let _ = subscriber.send(data.clone());
+        }
+        Self::flush_chunked(
+            self.inner.session_nid.clone(),
+            data,
+            self.inner.wss_tx.clone(),
+            self.inner.ipc_tx.clone(),
+            self.inner.log_path.clone(),
+            &self.inner.log_size,
+            self.inner.remote_enabled.clone(),
+        );
+    }
+
     /// 将数据按 10KB 分块，分别发送到 WSS 和 IPC 通道，同时写入环形日志。
     /// `remote_enabled` 为 Some(false) 时跳过 WSS 发送（但仍写 ring log）。
     fn flush_chunked(
@@ -406,8 +438,10 @@ impl OutputFanout {
 
 #[cfg(test)]
 mod tests {
-    use super::OutputFanout;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use super::{OutputFanout, OutputFanoutInner};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
 
     fn with_temp_log<R>(name: &str, f: impl FnOnce(std::path::PathBuf) -> R) -> R {
         static COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -482,6 +516,33 @@ mod tests {
             assert_eq!(result.bytes, 0);
             assert!(result.data.is_empty());
             assert!(result.message.is_some());
+        });
+    }
+
+    #[test]
+    fn flush_pending_delivers_final_output_before_cancellation() {
+        with_temp_log("s_final", |path| {
+            let (wss_tx, mut wss_rx) = mpsc::unbounded_channel();
+            let fanout = OutputFanout {
+                inner: Arc::new(OutputFanoutInner {
+                    wss_tx: Some(wss_tx),
+                    ipc_tx: None,
+                    session_nid: "s_final".to_string(),
+                    buffer: std::sync::Mutex::new(Vec::new()),
+                    extra_subscribers: std::sync::Mutex::new(Vec::new()),
+                    log_path: path.clone(),
+                    log_size: AtomicU64::new(0),
+                    remote_enabled: None,
+                }),
+                cancel: tokio_util::sync::CancellationToken::new(),
+            };
+
+            fanout.broadcast(b"Error: no session found");
+            fanout.flush_pending();
+
+            let message = wss_rx.try_recv().expect("final output should be forwarded");
+            assert!(message.contains("no session found"));
+            assert_eq!(std::fs::read(path).unwrap(), b"Error: no session found");
         });
     }
 }

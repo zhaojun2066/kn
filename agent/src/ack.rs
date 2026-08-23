@@ -45,6 +45,27 @@ impl AckRegistry {
         rx
     }
 
+    /// 注册 ACK 等待者，但绝不覆盖同一会话正在进行的确认。
+    /// 创建会话与 WSS 重连可并发发生；覆盖旧 sender 会让创建任务把正常 PTY
+    /// 误判为确认超时并终止它。
+    pub async fn register_if_absent(
+        &self,
+        session_nid: &str,
+    ) -> Option<oneshot::Receiver<AckResult>> {
+        let (tx, rx) = oneshot::channel();
+        let mut pending = self.pending.lock().await;
+        if pending.contains_key(session_nid) {
+            return None;
+        }
+        pending.insert(session_nid.to_string(), tx);
+        Some(rx)
+    }
+
+    /// 放弃一次已超时的等待，允许下一次重试登记新的 receiver。
+    pub async fn cancel(&self, session_nid: &str) {
+        self.pending.lock().await.remove(session_nid);
+    }
+
     /// 解析待确认的 session_nid。调用方（handle_incoming）收到 session_created_ack 时调用。
     /// 返回 true 表示成功唤醒等待者，false 表示没有等待者（已超时或未注册）。
     pub async fn resolve(&self, session_nid: &str, result: AckResult) -> bool {
@@ -116,6 +137,16 @@ mod tests {
             AckResult::Ok => {}
             _ => panic!("expected Ok"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_register_if_absent_preserves_existing_waiter() {
+        let registry = AckRegistry::new();
+        let rx = registry.register_if_absent("s_race").await.unwrap();
+        assert!(registry.register_if_absent("s_race").await.is_none());
+
+        assert!(registry.resolve("s_race", AckResult::Ok).await);
+        assert!(matches!(rx.await.unwrap(), AckResult::Ok));
     }
 
     #[tokio::test]
