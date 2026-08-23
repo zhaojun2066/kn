@@ -2097,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "kn"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2126,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "kn-agent"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2163,7 +2163,7 @@ dependencies = [
 
 [[package]]
 name = "kn-common"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
