@@ -1378,7 +1378,10 @@ async fn handle_incoming(
                                     Ok(Ok(crate::ack::AckResult::Error(error))) => {
                                         ack_registry.cancel(&ack_nid).await;
                                         if is_permanent_reconnect_ack_error(&ack_source, &error) {
-                                            match ack_sessions.set_remote_enabled(&ack_nid, false).await {
+                                            match ack_sessions
+                                                .set_remote_enabled(&ack_nid, false)
+                                                .await
+                                            {
                                                 Ok(()) => tracing::warn!(
                                                     nid = %ack_nid,
                                                     error = %error,
