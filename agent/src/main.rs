@@ -2178,6 +2178,7 @@ async fn handle_incoming(
             message,
             paths,
             scope,
+            snapshot_id,
             request_id,
         } => {
             let project_key = canonical_project_key(device_id, &project_path);
@@ -2191,6 +2192,16 @@ async fn handle_incoming(
                             &registered_path,
                             &message,
                             &paths,
+                        )
+                        .await
+                    }
+                    "selectedAndStaged" => {
+                        crate::session::git_delivery::commit_selected_and_staged(
+                            &project_key,
+                            &registered_path,
+                            &message,
+                            &paths,
+                            snapshot_id.as_deref(),
                         )
                         .await
                     }
@@ -3015,6 +3026,7 @@ mod tests {
                 message: "commit".to_string(),
                 paths: vec!["README.md".to_string()],
                 scope: "selected".to_string(),
+                snapshot_id: None,
                 request_id: None,
             },
             proto::AgentIncoming::ProjectGitPush {

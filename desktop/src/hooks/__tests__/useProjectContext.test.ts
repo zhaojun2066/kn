@@ -12,8 +12,8 @@ const projectA: ProjectInfo = {
 };
 
 const projectB: ProjectInfo = {
-  name: "site",
-  path: "/repo/site",
+  name: "docs",
+  path: "/repo/docs",
   defaultProfile: "work",
   pinned: true,
 };
@@ -34,7 +34,7 @@ describe("useProjectContext", () => {
   });
 
   it("restores active project from localStorage when project still exists", () => {
-    localStorage.setItem("kn-active-project", "site");
+    localStorage.setItem("kn-active-project", "docs");
 
     const { result } = renderHook(() => useProjectContext([projectA, projectB]));
 
@@ -53,7 +53,7 @@ describe("useProjectContext", () => {
   it("can activate project from a path", () => {
     const { result } = renderHook(() => useProjectContext([projectA, projectB]));
 
-    act(() => result.current.activateProjectByPath("/repo/site/src"));
+    act(() => result.current.activateProjectByPath("/repo/docs/src"));
 
     expect(result.current.activeProject).toEqual(projectB);
   });

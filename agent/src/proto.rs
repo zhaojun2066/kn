@@ -176,6 +176,7 @@ pub enum AgentIncoming {
         message: String,
         paths: Vec<String>,
         scope: String,
+        snapshot_id: Option<String>,
         request_id: Option<String>,
     },
     ProjectGitPush {
@@ -654,6 +655,7 @@ impl WsEnvelope {
                     message,
                     paths,
                     scope: data["scope"].as_str().unwrap_or("selected").to_string(),
+                    snapshot_id: data["snapshotId"].as_str().map(str::to_string),
                     request_id: parse_delivery_request_id(data),
                 })
             }
@@ -1635,6 +1637,28 @@ mod tests {
             AgentIncoming::ProjectGitCommit { scope, paths, .. } => {
                 assert_eq!(scope, "allWorkingTree");
                 assert!(paths.is_empty());
+            }
+            _ => panic!("expected ProjectGitCommit"),
+        }
+
+        let staged_commit: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "project_git_commit",
+            "data": {
+                "projectKey": "42:/repo", "deviceId": 42, "projectPath": "/repo",
+                "message": "feat: merge staged", "scope": "selectedAndStaged", "paths": ["README.md"], "snapshotId": "snapshot-1"
+            }
+        }))
+        .unwrap();
+        match staged_commit.parse().unwrap() {
+            AgentIncoming::ProjectGitCommit {
+                scope,
+                paths,
+                snapshot_id,
+                ..
+            } => {
+                assert_eq!(scope, "selectedAndStaged");
+                assert_eq!(paths, vec!["README.md"]);
+                assert_eq!(snapshot_id.as_deref(), Some("snapshot-1"));
             }
             _ => panic!("expected ProjectGitCommit"),
         }

@@ -414,6 +414,114 @@ pub async fn commit(project_key: &str, cwd: &str, message: &str, paths: &[String
     })
 }
 
+/// Commits the current staging area together with the complete working-tree
+/// changes for the selected paths. The real index is only replaced after the
+/// temporary-index commit succeeds, so a failed request preserves the user's
+/// existing staging selection.
+pub async fn commit_selected_and_staged(
+    project_key: &str,
+    cwd: &str,
+    message: &str,
+    paths: &[String],
+    expected_snapshot_id: Option<&str>,
+) -> Value {
+    if let Err(message) = validate_commit_request(message, paths) {
+        return commit_error(project_key, &message);
+    }
+    let index_lock = match acquire_real_index_lock(cwd).await {
+        Ok(lock) => lock,
+        Err(IndexLockError::Busy) => return commit_error(project_key, "indexHasChanges"),
+        Err(IndexLockError::Git(error)) => {
+            return commit_error(project_key, commit_error_code(error))
+        }
+        Err(IndexLockError::Io) => return commit_error(project_key, "error"),
+    };
+    let raw = match raw_status(cwd).await {
+        Ok(raw) => raw,
+        Err(_) => return commit_error(project_key, "error"),
+    };
+    if expected_snapshot_id.is_some_and(|expected| expected != snapshot_id(&raw)) {
+        return workspace_changed(project_key);
+    }
+    let entries = parse_status(&raw).3;
+    let available: HashSet<String> = entries.iter().map(|entry| entry.path.clone()).collect();
+    if paths.iter().any(|path| !available.contains(path)) {
+        return commit_error(project_key, "pathDenied");
+    }
+    let temp_dir = match create_private_temp_dir().await {
+        Ok(dir) => dir,
+        Err(_) => return commit_error(project_key, "error"),
+    };
+    let mut index_lock = index_lock;
+    let message_file = temp_dir.path().join("message.txt");
+    if index_lock.seed_from_real_index().is_err()
+        || tokio::fs::write(&message_file, message.trim())
+            .await
+            .is_err()
+    {
+        return commit_error(project_key, "error");
+    }
+    let paths_to_update: Vec<String> = entries
+        .iter()
+        .filter(|entry| paths.contains(&entry.path))
+        // A staged deletion is already present in the copied temporary index;
+        // re-adding its now-absent path makes `git add` reject the whole commit.
+        .filter(|entry| {
+            !(is_staged(&entry.raw_status) && !Path::new(cwd).join(&entry.path).exists())
+        })
+        .map(|entry| entry.path.clone())
+        .collect();
+    let env = [(
+        "GIT_INDEX_FILE",
+        index_lock.path().to_string_lossy().into_owned(),
+    )];
+    let result = async {
+        if !paths_to_update.is_empty() {
+            let add_args = [
+                vec!["add".to_string(), "-A".to_string(), "--".to_string()],
+                paths_to_update,
+            ]
+            .concat();
+            git_output_with_env(cwd, &add_args, &env).await?;
+        }
+        git_output_with_env(
+            cwd,
+            &[
+                "commit".to_string(),
+                "-F".to_string(),
+                message_file.to_string_lossy().into_owned(),
+            ],
+            &env,
+        )
+        .await
+    }
+    .await;
+    if let Err(error) = result {
+        return commit_error(project_key, commit_error_code(error));
+    }
+    if index_lock.publish().is_err() {
+        return json!({
+            "projectKey": project_key,
+            "status": "ok",
+            "message": "提交已完成，但暂存区同步失败；请在电脑端刷新 Git 状态",
+            "commitScope": "selectedAndStaged"
+        });
+    }
+    let head = git_output(cwd, &["rev-parse", "--short", "HEAD"])
+        .await
+        .ok()
+        .map(|value| value.trim().to_string());
+    json!({
+        "projectKey": project_key,
+        "status": "ok",
+        "commit": head,
+        "message": message.trim(),
+        "commitScope": "selectedAndStaged",
+        "committedFileCount": paths.len(),
+        "gitStatus": status(project_key, cwd).await
+    })
+}
+
 /// Commits every Git-visible working-tree change through an isolated temporary index.
 /// The repository's real staging area remains untouched throughout this operation.
 pub async fn commit_all_working_tree(project_key: &str, cwd: &str, message: &str) -> Value {
@@ -821,15 +929,38 @@ enum IndexLockError {
 }
 
 struct RealIndexLock {
+    index_path: PathBuf,
     path: PathBuf,
     marker_path: PathBuf,
-    _file: std::fs::File,
+    file: Option<std::fs::File>,
 }
 
 impl Drop for RealIndexLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
         let _ = std::fs::remove_file(&self.marker_path);
+    }
+}
+
+impl RealIndexLock {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Atomically publishes a completed temporary index while holding the
+    /// real index lock. The resulting index matches the commit that advanced
+    /// HEAD, so already-staged content is consumed by the successful commit.
+    fn seed_from_real_index(&mut self) -> Result<(), std::io::Error> {
+        self.file.take();
+        std::fs::copy(&self.index_path, &self.path)?;
+        Ok(())
+    }
+
+    fn publish(mut self) -> Result<(), std::io::Error> {
+        self.file.take();
+        std::fs::rename(&self.path, &self.index_path)?;
+        let _ = std::fs::remove_file(&self.marker_path);
+        Ok(())
     }
 }
 
@@ -906,9 +1037,10 @@ async fn acquire_real_index_lock(cwd: &str) -> Result<RealIndexLock, IndexLockEr
         }
     };
     Ok(RealIndexLock {
+        index_path,
         path: lock_path,
         marker_path,
-        _file: file,
+        file: Some(file),
     })
 }
 
@@ -1010,6 +1142,7 @@ mod tests {
             "networkUnavailable"
         );
     }
+
     use tempfile::TempDir;
 
     fn run_git(cwd: &std::path::Path, args: &[&str]) {
@@ -1180,28 +1313,207 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commit_rejects_preexisting_staged_content_without_modifying_index() {
+    async fn selected_and_staged_commit_combines_existing_index_and_selected_files() {
         let repo = initialized_repo();
         std::fs::write(repo.path().join("README.md"), "staged\n").expect("write staged file");
         run_git(repo.path(), &["add", "README.md"]);
         std::fs::write(repo.path().join("selected.txt"), "selected\n").expect("write selected");
 
-        let result = commit(
+        let result = commit_selected_and_staged(
             "device:/repo",
             repo.path().to_str().expect("utf8 repo"),
-            "should not commit",
+            "commit staged and selected",
             &["selected.txt".to_string()],
+            None,
         )
         .await;
 
-        assert_eq!(result["status"], "indexHasChanges");
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["commitScope"], "selectedAndStaged");
+        let names = StdCommand::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["show", "--format=", "--name-only", "HEAD"])
+            .output()
+            .expect("read commit names");
+        let names = String::from_utf8_lossy(&names.stdout);
+        assert!(names.contains("README.md"));
+        assert!(names.contains("selected.txt"));
         let cached = StdCommand::new("git")
             .arg("-C")
             .arg(repo.path())
             .args(["diff", "--cached", "--name-only"])
             .output()
             .expect("read index");
-        assert_eq!(String::from_utf8_lossy(&cached.stdout).trim(), "README.md");
+        assert!(String::from_utf8_lossy(&cached.stdout).trim().is_empty());
+    }
+
+    #[tokio::test]
+    async fn selected_and_staged_commit_keeps_staged_deletions_without_readding_them() {
+        let repo = initialized_repo();
+        let cwd = repo.path().to_str().expect("utf8 repo");
+        std::fs::write(repo.path().join("staged-deleted.txt"), "remove me\n")
+            .expect("write removable file");
+        run_git(repo.path(), &["add", "staged-deleted.txt"]);
+        run_git(repo.path(), &["commit", "-m", "add removable file"]);
+        std::fs::remove_file(repo.path().join("staged-deleted.txt")).expect("delete staged file");
+        run_git(repo.path(), &["add", "-A", "--", "staged-deleted.txt"]);
+        std::fs::write(repo.path().join("selected.txt"), "selected\n").expect("write selected");
+
+        let result = commit_selected_and_staged(
+            "device:/repo",
+            cwd,
+            "commit staged deletion and selected change",
+            &["staged-deleted.txt".to_string(), "selected.txt".to_string()],
+            None,
+        )
+        .await;
+
+        assert_eq!(result["status"], "ok");
+        let names = git_output(cwd, &["show", "--format=", "--name-only", "HEAD"])
+            .await
+            .expect("read commit names");
+        assert!(names.contains("staged-deleted.txt"));
+        assert!(names.contains("selected.txt"));
+    }
+
+    #[tokio::test]
+    async fn selected_and_staged_commit_preserves_unselected_working_changes() {
+        let repo = initialized_repo();
+        std::fs::write(repo.path().join("README.md"), "staged\n").expect("write staged file");
+        run_git(repo.path(), &["add", "README.md"]);
+        std::fs::write(repo.path().join("selected.txt"), "selected\n").expect("write selected");
+        std::fs::write(repo.path().join("unselected.txt"), "unselected\n")
+            .expect("write unselected");
+
+        let result = commit_selected_and_staged(
+            "device:/repo",
+            repo.path().to_str().expect("utf8 repo"),
+            "commit selected",
+            &["selected.txt".to_string()],
+            None,
+        )
+        .await;
+
+        assert_eq!(result["status"], "ok");
+        let current = status("device:/repo", repo.path().to_str().expect("utf8 repo")).await;
+        assert!(current["files"]
+            .as_array()
+            .is_some_and(|files| files.iter().any(|file| file["path"] == "unselected.txt")));
+    }
+
+    #[tokio::test]
+    async fn selected_and_staged_commit_includes_the_complete_partially_staged_file() {
+        let repo = initialized_repo();
+        std::fs::write(repo.path().join("README.md"), "staged\n").expect("write staged file");
+        run_git(repo.path(), &["add", "README.md"]);
+        std::fs::write(repo.path().join("README.md"), "complete current change\n")
+            .expect("write unstaged remainder");
+
+        let result = commit_selected_and_staged(
+            "device:/repo",
+            repo.path().to_str().expect("utf8 repo"),
+            "commit complete file",
+            &["README.md".to_string()],
+            None,
+        )
+        .await;
+
+        assert_eq!(result["status"], "ok");
+        let content = git_output(
+            repo.path().to_str().expect("utf8 repo"),
+            &["show", "HEAD:README.md"],
+        )
+        .await
+        .expect("read committed file");
+        assert_eq!(content, "complete current change\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn selected_and_staged_commit_failure_preserves_the_real_index() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = initialized_repo();
+        std::fs::write(repo.path().join("README.md"), "staged\n").expect("write staged file");
+        run_git(repo.path(), &["add", "README.md"]);
+        std::fs::write(repo.path().join("selected.txt"), "selected\n").expect("write selected");
+        let before_index = std::fs::read(repo.path().join(".git/index")).expect("read real index");
+        let hook = repo.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").expect("write failing hook");
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("make hook executable");
+
+        let result = commit_selected_and_staged(
+            "device:/repo",
+            repo.path().to_str().expect("utf8 repo"),
+            "will fail",
+            &["selected.txt".to_string()],
+            None,
+        )
+        .await;
+
+        assert_eq!(result["status"], "commitFailed");
+        assert_eq!(
+            std::fs::read(repo.path().join(".git/index")).expect("read real index"),
+            before_index
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_and_staged_commit_rejects_a_stale_workspace_snapshot() {
+        let repo = initialized_repo();
+        std::fs::write(repo.path().join("selected.txt"), "selected\n").expect("write selected");
+        let cwd = repo.path().to_str().expect("utf8 repo");
+        let snapshot = snapshot_id(&raw_status(cwd).await.expect("read status"));
+        std::fs::write(repo.path().join("other.txt"), "changed later\n")
+            .expect("write later change");
+
+        let result = commit_selected_and_staged(
+            "device:/repo",
+            cwd,
+            "must not commit stale selection",
+            &["selected.txt".to_string()],
+            Some(&snapshot),
+        )
+        .await;
+
+        assert_eq!(result["status"], "workspaceChanged");
+        assert_eq!(
+            git_output(cwd, &["log", "-1", "--pretty=%s"])
+                .await
+                .expect("read HEAD")
+                .trim(),
+            "initial"
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_and_staged_commit_supports_split_index_repositories() {
+        let repo = initialized_repo();
+        run_git(repo.path(), &["config", "core.splitIndex", "true"]);
+        run_git(repo.path(), &["update-index", "--split-index"]);
+        std::fs::write(repo.path().join("README.md"), "staged\n").expect("write staged file");
+        run_git(repo.path(), &["add", "README.md"]);
+        std::fs::write(repo.path().join("selected.txt"), "selected\n").expect("write selected");
+
+        let result = commit_selected_and_staged(
+            "device:/repo",
+            repo.path().to_str().expect("utf8 repo"),
+            "commit split index",
+            &["selected.txt".to_string()],
+            None,
+        )
+        .await;
+
+        assert_eq!(result["status"], "ok");
+        assert!(StdCommand::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["diff", "--cached", "--quiet"])
+            .status()
+            .expect("check staged state")
+            .success());
     }
 
     #[tokio::test]

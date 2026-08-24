@@ -1,8 +1,8 @@
-# kn
+# KN
 
-用手机继续电脑端 AI 会话的远程控制工具，同时提供 AI CLI 运行配置管理。在不同会话中为 `claude` / `codex` / `qoder` 无缝切换 API key、Base URL 和模型配置。
+KN 是 macOS 上的 AI 开发工作台：管理 AI CLI 运行配置和本机终端，并让用户可从 iPhone 继续已连接 Mac 上的 AI CLI 会话。
 
-> 🌐 官网：部署到自有服务器的正式官网地址（以 `desktop/src-tauri/runtime-config.json` 和总手册配置为准）
+项目由三个仓库协作：本仓（Desktop、CLI、Agent）、`kn-cloud`（私有 Cloud 服务）和 `kn-ios`（iOS 客户端）。功能和接口以代码与测试为准；开发文档入口见 [docs/README.md](docs/README.md)。
 
 ---
 
@@ -39,7 +39,7 @@ ai codex                    # 自动检测：项目级 → 默认 → 交互选�
 
 ## Desktop 应用
 
-Desktop 是 kn 的电脑端入口——一个基于 Tauri v2 的桌面 GUI，提供可视化运行配置管理、内置 PTY 终端、扩展管理、用量追踪和手机远程控制。
+Desktop 是 kn 的电脑端入口——一个基于 Tauri v2 的桌面 GUI，提供可视化运行配置管理、内置 PTY 终端、扩展管理、项目工作台和手机远程控制。
 
 ### 运行配置管理
 
@@ -69,9 +69,10 @@ Desktop 是 kn 的电脑端入口——一个基于 Tauri v2 的桌面 GUI，提
 
 全局快速启动器——模糊搜索运行配置、项目目录，按使用频率排序，回车即启。
 
-### Token 用量追踪
+### 项目工作台与用量
 
-自动记录每次 `ai` 调用的 token 消耗，支持按模型/按项目维度查看，可配置价格计算费用。
+- **项目工作台** — 管理已登记项目，并通过本地 Agent 提供 Git、PR 和验证任务能力
+- **Token 用量追踪** — 记录 `ai` 调用的用量，支持按模型和项目查看，可配置价格计算费用
 
 ---
 
@@ -120,7 +121,7 @@ cd ~/project && ai claude   # 自动使用 work 运行配置
 
 **多终端同时改配置会冲突吗？** 不会，文件锁保护并发写入，3 代轮转备份防数据丢失。
 
-**如何查看 token 用量？** Desktop 应用中的用量面板，支持按模型/按项目维度。
+**如何查看 token 用量？** Desktop 应用中的用量面板，支持按模型和项目维度查看。
 
 **支持哪些 AI 工具？** Claude Code、Codex CLI、Qoder CN（国产），任何兼容协议的 API 服务。
 
