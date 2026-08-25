@@ -4,6 +4,7 @@ import type { TerminalContext } from "./context";
 import { findLeaf, flattenPanes, type PaneLeaf } from "../../lib/pane-types";
 import type { TabSession } from "./types";
 import { newTab } from "./helpers";
+import { submitRelayExit } from "./relayExitOutbox";
 
 export interface TerminalCloseKillTargets {
   ptySessionIds: string[];
@@ -35,11 +36,6 @@ function collectLeafCloseKills(tab: TabSession, leaf: PaneLeaf): TerminalCloseKi
   if (leaf.sessionId.startsWith("s_")) return emptyTargets();
 
   const leafAgentNid = leaf.agentNid ?? (flattenPanes(tab.rootNode).length === 1 ? tab.agentNid : undefined);
-  const leafRemoteEnabled =
-    leaf.agentRemoteEnabled ??
-    (flattenPanes(tab.rootNode).length === 1 ? tab.agentRemoteEnabled : false);
-
-  if (leafRemoteEnabled) return emptyTargets();
 
   const ptySessionIds = leaf.ptyRunning ? [leaf.sessionId] : [];
   const relayExitNids = leafAgentNid ? [leafAgentNid] : [];
@@ -65,7 +61,7 @@ export function invokeTerminalCloseTargets(targets: TerminalCloseKillTargets): v
     invoke("agent_ipc", { method: "kill_session", params: { nid } }).catch(() => {});
   }
   for (const nid of targets.relayExitNids) {
-    invoke("agent_ipc", { method: "relay_exit", params: { nid, reason: "user_closed_tab" } }).catch(() => {});
+    void submitRelayExit({ nid, reason: "user_closed_tab" });
   }
 }
 

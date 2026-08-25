@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { TabSession } from "../types";
 import { collectPaneCloseKills, collectTerminalCloseKills } from "../useTabManagement";
+import { findAgentSessionPane } from "../useSessionCommands";
 
 function makeTab(sessionId: string, agentNid?: string, agentRemoteEnabled?: boolean): TabSession {
   return {
@@ -133,12 +134,12 @@ describe("terminal tab close kill targets", () => {
     expect(targets.relayExitNids).toEqual(["s_relay"]);
   });
 
-  it("detaches remote-enabled Relay tabs without killing the local PTY or agent session", () => {
+  it("ends remote-enabled Relay tabs when the local tab is closed", () => {
     const targets = collectTerminalCloseKills(makeTab("pty-local", "s_relay", true));
 
     expect(targets.agentNids).toEqual([]);
-    expect(targets.ptySessionIds).toEqual([]);
-    expect(targets.relayExitNids).toEqual([]);
+    expect(targets.ptySessionIds).toEqual(["pty-local"]);
+    expect(targets.relayExitNids).toEqual(["s_relay"]);
   });
 
   it("still kills local split panes when the same tab also contains a remote pane", () => {
@@ -167,11 +168,17 @@ describe("terminal tab close kill targets", () => {
     expect(targets.relayExitNids).toEqual([]);
   });
 
-  it("detaches a remote-enabled Relay pane while killing a sibling local pane", () => {
+  it("ends a remote-enabled Relay pane while killing a sibling local pane", () => {
     const targets = collectTerminalCloseKills(makeRelaySplitTab());
 
     expect(targets.agentNids).toEqual([]);
-    expect(targets.ptySessionIds).toEqual(["pty-local"]);
-    expect(targets.relayExitNids).toEqual([]);
+    expect(targets.ptySessionIds).toEqual(["pty-relay", "pty-local"]);
+    expect(targets.relayExitNids).toEqual(["s_relay"]);
+  });
+
+  it("finds the Relay pane rather than the active sibling when returning to a split terminal", () => {
+    const relayPane = findAgentSessionPane(makeRelaySplitTab(), "s_relay");
+
+    expect(relayPane?.paneId).toBe("pane-relay");
   });
 });

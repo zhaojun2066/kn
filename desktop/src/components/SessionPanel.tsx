@@ -12,6 +12,7 @@ export interface SessionPanelProps {
   initialTab: SessionTab;
   onClose: () => void;
   onOpenRemoteSession: (session: AgentSession) => void;
+  canOpenLocalRelaySession: (session: AgentSession) => boolean;
 }
 
 function basename(path: string) {
@@ -38,7 +39,7 @@ function SessionRow({ session, checked, onCheck, onOpen }: { session: AgentSessi
   </div>;
 }
 
-export function SessionPanel({ agent, initialTab, onClose, onOpenRemoteSession }: SessionPanelProps) {
+export function SessionPanel({ agent, initialTab, onClose, onOpenRemoteSession, canOpenLocalRelaySession }: SessionPanelProps) {
   const [tab, setTab] = useState<SessionTab>(initialTab);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<{ kind: "enable" | "kill"; targets: AgentSession[] } | null>(null);
@@ -86,7 +87,7 @@ export function SessionPanel({ agent, initialTab, onClose, onOpenRemoteSession }
         </div>
         <div className="flex items-center justify-between px-3 py-2 border-b border-app-border bg-[var(--app-subtle)] text-xs"><button type="button" disabled={processing} onClick={selectAll} className="flex items-center gap-1.5 text-app-text-dim hover:text-app-text disabled:opacity-40">{allSelected ? <CheckSquare size={13} className="text-app-accent" /> : <Square size={13} />}全选</button><div className="flex gap-2">{tab === "local" ? <button type="button" disabled={!targets.length || !remoteAccessAllowed || processing} title={!remoteAccessAllowed ? agent.agentStatus?.remote_access?.message : undefined} onClick={() => { if (remote.length + targets.length > 10) setError("已达到远程控制上限（10 个）"); else setConfirm({ kind: "enable", targets }); }} className="px-2 py-1 border border-app-accent/50 text-app-accent disabled:opacity-40">{processing ? "处理中…" : "开启远程"}</button> : <button type="button" disabled={!targets.length || processing} onClick={() => void run("disable", targets)} className="px-2 py-1 border border-app-border text-app-text-dim disabled:opacity-40">{processing ? "处理中…" : "关闭远程"}</button>}<button type="button" disabled={!targets.length || processing} onClick={() => setConfirm({ kind: "kill", targets })} className="px-2 py-1 border border-app-red/50 text-app-red disabled:opacity-40">终止进程</button></div></div>
         {error && <div role="alert" className="mx-3 mt-3 px-3 py-2 text-xs text-app-red bg-app-red/10">{error}</div>}
-        <div className="min-h-0 overflow-y-auto">{visible.length ? visible.map((session) => <SessionRow key={session.nid} session={session} checked={selected.has(session.nid)} onCheck={() => toggle(session.nid)} onOpen={session.remote_enabled ? () => { onOpenRemoteSession(session); onClose(); } : undefined} />) : <div className="px-6 py-12 text-center text-sm text-app-text-muted">{tab === "local" ? "暂无本地会话" : "暂无远程会话"}</div>}</div>
+        <div className="min-h-0 overflow-y-auto">{visible.length ? visible.map((session) => <SessionRow key={session.nid} session={session} checked={selected.has(session.nid)} onCheck={() => toggle(session.nid)} onOpen={session.remote_enabled && (session.kind === "Native" || canOpenLocalRelaySession(session)) ? () => { onOpenRemoteSession(session); onClose(); } : undefined} />) : <div className="px-6 py-12 text-center text-sm text-app-text-muted">{tab === "local" ? "暂无本地会话" : "暂无远程会话"}</div>}</div>
       </section>
     </div>
     <ConfirmDialog open={confirm !== null} title={confirm?.kind === "enable" ? "开启远程会话" : "终止进程"} message={confirm?.kind === "enable" ? `将向手机共享 ${confirm.targets.length} 个选中终端的输出，并允许手机输入命令。` : `确定要终止 ${confirm?.targets.length ?? 0} 个终端进程吗？此操作不可撤销。`} confirmLabel={confirm?.kind === "enable" ? "确认开启" : "终止"} variant={confirm?.kind === "enable" ? "primary" : "danger"} onConfirm={() => { if (confirm) void run(confirm.kind === "enable" ? "enable" : "kill", confirm.targets); setConfirm(null); }} onCancel={() => setConfirm(null)} />

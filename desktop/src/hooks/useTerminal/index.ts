@@ -25,6 +25,7 @@ import {
   syncNativeAgentSessions,
 } from "./agentSessionSync";
 import { findLeaf, flattenPanes } from "../../lib/pane-types";
+import { flushRelayExitOutbox } from "./relayExitOutbox";
 
 export function useTerminal(panelId: string = "right") {
   const isBottom = panelId === "bottom";
@@ -142,6 +143,23 @@ export function useTerminal(panelId: string = "right") {
     }
   }, [isBottom, state.setTabs]);
 
+  const canOpenLocalRelaySession = useCallback((session: AgentSession) => {
+    if (session.kind !== "Relay") return false;
+    return state.sessionsRef.current.some((tab) => {
+      const leaves = flattenPanes(tab.rootNode);
+      return leaves.some((leaf) => leaf.ptyRunning && (
+        leaf.agentNid === session.nid ||
+        (leaves.length === 1 && tab.agentNid === session.nid && !leaf.sessionId.startsWith("s_"))
+      ));
+    });
+  }, [state.sessionsRef]);
+
+  useEffect(() => {
+    void flushRelayExitOutbox();
+    const timer = window.setInterval(() => { void flushRelayExitOutbox(); }, 5_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     if (isBottom) return;
 
@@ -231,6 +249,7 @@ export function useTerminal(panelId: string = "right") {
     runInTerminal: commands.runInTerminal,
     runInNewTab: commands.runInNewTab,
     openRemoteSession: commands.openRemoteSession,
+    canOpenLocalRelaySession,
     syncAgentSessions,
     runProjectCommand: commands.runProjectCommand,
     newEmptyTab: actions.newEmptyTab,

@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { TerminalContext } from "./context";
 import type { PaneLeaf } from "../../lib/pane-types";
-import type { SessionRecord } from "./types";
+import type { SessionRecord, TabSession } from "./types";
 import { MAX_HISTORY, PTY_READY_SETTLE_MS, PTY_COMMAND_SETTLE_MS } from "./types";
 import { findLeaf, flattenPanes, replaceNode } from "../../lib/pane-types";
 import { syncActivePaneFields, newTab } from "./helpers";
@@ -12,6 +12,10 @@ import type { AgentSession } from "../useAgent";
 import { hasAgentSessionTab } from "./agentSessionSync";
 
 const AGENT_ATTACH_RETRY_DELAYS_MS = [80, 160, 260, 400];
+
+export function findAgentSessionPane(tab: TabSession, nid: string): PaneLeaf | undefined {
+  return flattenPanes(tab.rootNode).find((leaf) => leaf.sessionId === nid || leaf.agentNid === nid);
+}
 
 export function useSessionCommands(
   ctx: TerminalContext,
@@ -145,14 +149,22 @@ export function useSessionCommands(
   const attachOrOpenAgentSession = useCallback(async (session: AgentSession, label?: string) => {
     ctx.dismissedAgentNidsRef.current.delete(session.nid);
     const existing = sessionsRef.current.find((tab) => hasAgentSessionTab([tab], session.nid));
+    if (session.kind === "Relay" && !existing) {
+      throw new Error("本地终端已关闭，无法接管此远程会话");
+    }
     let tabId: string;
     let pane: PaneLeaf;
 
     if (existing) {
       tabId = existing.id;
-      const matchingLeaf = flattenPanes(existing.rootNode).find((leaf) => leaf.sessionId === session.nid);
+      const matchingLeaf = findAgentSessionPane(existing, session.nid);
       pane = matchingLeaf || findLeaf(existing.rootNode, existing.activePaneId)!;
       setActiveTabId(existing.id);
+      if (matchingLeaf && matchingLeaf.paneId !== existing.activePaneId) {
+        setTabs((prev) => prev.map((tab) => tab.id === existing.id
+          ? syncActivePaneFields({ ...tab, activePaneId: matchingLeaf.paneId })
+          : tab));
+      }
     } else {
       const tab = newTab(label || `${session.tool} · 本地`, session.cwd);
       const activeLeaf = findLeaf(tab.rootNode, tab.activePaneId)!;
@@ -180,6 +192,9 @@ export function useSessionCommands(
     if (!isOpen) setIsOpen(true);
 
     if (pane.ptyRunning) return;
+    if (session.kind === "Relay") {
+      throw new Error("本地终端已关闭，无法接管此远程会话");
+    }
 
     await waitForReady(pane.paneId);
     await new Promise((r) => setTimeout(r, PTY_READY_SETTLE_MS));

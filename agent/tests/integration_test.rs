@@ -570,9 +570,22 @@ fn test_ipc_relay_exit_marks_registered_relay_ended_without_kill() {
     );
     assert_ok(&resp);
 
+    // A Desktop retry after an Agent restart/cleanup must not remain queued
+    // just because the Relay was already removed.
     let resp = ipc_request_json(
         &dir.ipc_sock(),
-        &ipc_req("3", "poll_relay_input", serde_json::json!({"nid": &nid})),
+        &ipc_req(
+            "3",
+            "relay_exit",
+            serde_json::json!({"nid": "s_missing_relay", "reason": "user_closed_tab"}),
+        ),
+    );
+    let result = assert_ok(&resp);
+    assert_eq!(result["already_ended"].as_bool(), Some(true));
+
+    let resp = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("4", "poll_relay_input", serde_json::json!({"nid": &nid})),
     );
     let result = assert_ok(&resp);
     assert_eq!(result["status"].as_str().unwrap(), "ended");

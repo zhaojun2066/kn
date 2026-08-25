@@ -6,6 +6,7 @@ import type { PtyEvent } from "./types";
 import { findLeaf, flattenPanes, replaceNode } from "../../lib/pane-types";
 import { syncActivePaneFields } from "./helpers";
 import type { TabSession } from "./types";
+import { submitRelayExit } from "./relayExitOutbox";
 
 export interface PtyExitAgentNotification {
   method: "relay_exit";
@@ -98,10 +99,7 @@ export function usePtyLifecycle(ctx: TerminalContext) {
           );
 
           if (agentNotification) {
-            invoke("agent_ipc", {
-              method: agentNotification.method,
-              params: agentNotification.params,
-            }).catch(() => {});
+            void submitRelayExit(agentNotification.params);
           }
           break;
         }

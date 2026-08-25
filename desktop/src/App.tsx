@@ -2072,7 +2072,7 @@ export function App() {
         />
       )}
       {(agentPanel === "sessions-local" || agentPanel === "sessions-remote") && (
-        <SessionPanel agent={agentHook} initialTab={agentPanel === "sessions-local" ? "local" : "remote"} onClose={() => setAgentPanel(null)} onOpenRemoteSession={(session) => rightTerminal.openRemoteSession(session)} />
+        <SessionPanel agent={agentHook} initialTab={agentPanel === "sessions-local" ? "local" : "remote"} onClose={() => setAgentPanel(null)} onOpenRemoteSession={(session) => rightTerminal.openRemoteSession(session)} canOpenLocalRelaySession={rightTerminal.canOpenLocalRelaySession} />
       )}
       {agentPanel === "diagnostics" && (
         <SystemDiagnosticsPanel agent={agentHook} envCheck={envCheck} onRefreshEnvironment={refreshEnvCheck} onInstallTool={handleInstallTool} onClose={() => setAgentPanel(null)} />

@@ -1452,7 +1452,15 @@ impl IpcHandle {
                     serde_json::json!({"ok": true, "nid": nid, "reason": reason}),
                 )
             }
-            Ok(None) => err_response(&req.id, "NOT_FOUND", &format!("会话未找到: {}", nid)),
+            // Relay exit is an idempotent lifecycle signal. The Desktop may retry it
+            // after the Agent has restarted and discarded an already-ended session.
+            Ok(None) => {
+                tracing::info!(nid = %nid, reason = %reason, "Relay 会话已不存在，忽略重复结束请求");
+                ok_response(
+                    &req.id,
+                    serde_json::json!({"ok": true, "nid": nid, "reason": reason, "already_ended": true}),
+                )
+            }
             Err(e) => err_response(&req.id, "INTERNAL", &e.to_string()),
         }
     }
