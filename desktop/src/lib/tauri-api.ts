@@ -1,5 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ProfileList, ProfileDetail, MutationResult, HookExecutionLog } from "./types";
+import type { PromptTemplate } from "./promptLibrary";
+
+export interface PromptLibraryState {
+  syncEnabled: boolean;
+  prompts: PromptTemplate[];
+  systemPrompts?: PromptTemplate[];
+  /** UUIDs tombstoned by this Desktop when the user explicitly disabled sync. */
+  locallyDisabledUuids?: string[];
+}
+
+export async function getPromptLibrary(): Promise<PromptLibraryState> {
+  return invoke("get_prompt_library");
+}
+
+export async function savePromptLibrary(state: PromptLibraryState): Promise<PromptLibraryState> {
+  return invoke("save_prompt_library", { state });
+}
+
 
 export async function listProfiles(): Promise<ProfileList> {
   return invoke("list_profiles");

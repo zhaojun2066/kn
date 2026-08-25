@@ -63,6 +63,26 @@ pub fn restart_agent() -> Result<(), String> {
 }
 
 #[command]
+pub fn open_agent_logs() -> Result<(), String> {
+    let log_dir = crate::agent_runtime::AgentRuntime::current()
+        .agent_dir()
+        .join("logs");
+    std::fs::create_dir_all(&log_dir).map_err(|e| format!("创建 Agent 日志目录失败: {e}"))?;
+    let output = std::process::Command::new("open")
+        .arg(&log_dir)
+        .output()
+        .map_err(|e| format!("无法打开 Agent 日志目录: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "打开 Agent 日志目录失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+#[command]
 pub fn repair_agent(app: tauri::AppHandle) -> Result<(), String> {
     let runtime = crate::agent_runtime::AgentRuntime::current();
     let source = app

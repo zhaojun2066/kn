@@ -465,6 +465,10 @@ impl IpcHandle {
             "get_version" => self.handle_get_version(req).await,
             "redeem" => self.handle_redeem(req).await,
             "self_unbind" => self.handle_self_unbind(req).await,
+            "get_prompt_library" => self.handle_get_prompt_library(req).await,
+            "get_prompt_library_sync_state" => self.handle_get_prompt_library_sync_state(req).await,
+            "change_prompt_library" => self.handle_change_prompt_library(req).await,
+            "delete_prompt_library" => self.handle_delete_prompt_library(req).await,
             "cancel_bind" | "bindCancel" => self.handle_cancel_bind(req).await,
             _ => err_response(
                 &req.id,
@@ -1753,6 +1757,45 @@ impl IpcHandle {
                 "name": "kn-agent",
             }),
         )
+    }
+
+    fn prompt_library_token(&self, req: &IpcRequest) -> std::result::Result<String, String> {
+        crate::device::load_device_token()
+            .ok_or_else(|| err_response(&req.id, "NOT_BOUND", "设备未绑定，无法同步提示词"))
+    }
+
+    async fn handle_get_prompt_library(&self, req: &IpcRequest) -> String {
+        let token = match self.prompt_library_token(req) {
+            Ok(token) => token,
+            Err(response) => return response,
+        };
+        match crate::device::get_prompt_library(&self.bind_http_url, &token).await {
+            Ok(library) => ok_response(&req.id, library),
+            Err(error) => err_response(&req.id, "PROMPT_LIBRARY_GET_FAILED", &error.to_string()),
+        }
+    }
+
+    async fn handle_get_prompt_library_sync_state(&self, req: &IpcRequest) -> String {
+        let token = match self.prompt_library_token(req) { Ok(token) => token, Err(response) => return response };
+        match crate::device::get_prompt_library_sync_state(&self.bind_http_url, &token).await { Ok(state) => ok_response(&req.id, state), Err(error) => err_response(&req.id, "PROMPT_LIBRARY_GET_FAILED", &error.to_string()) }
+    }
+
+    async fn handle_change_prompt_library(&self, req: &IpcRequest) -> String {
+        let token = match self.prompt_library_token(req) { Ok(token) => token, Err(response) => return response };
+        let operations = req.params.get("operations").cloned().unwrap_or_else(|| serde_json::json!([]));
+        if !operations.is_array() { return err_response(&req.id, "INVALID_PARAMS", "operations 必须是数组"); }
+        match crate::device::change_prompt_library(&self.bind_http_url, &token, &operations).await { Ok(result) => ok_response(&req.id, result), Err(error) => err_response(&req.id, "PROMPT_LIBRARY_CHANGE_FAILED", &error.to_string()) }
+    }
+
+    async fn handle_delete_prompt_library(&self, req: &IpcRequest) -> String {
+        let token = match self.prompt_library_token(req) {
+            Ok(token) => token,
+            Err(response) => return response,
+        };
+        match crate::device::delete_prompt_library(&self.bind_http_url, &token).await {
+            Ok(()) => ok_response(&req.id, serde_json::json!({ "deleted": true })),
+            Err(error) => err_response(&req.id, "PROMPT_LIBRARY_DELETE_FAILED", &error.to_string()),
+        }
     }
 
     /// `redeem` — 卡密兑换：仅在有绑定关系时可用。

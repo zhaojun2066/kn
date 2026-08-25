@@ -14,6 +14,7 @@ import type { SessionRecord } from "../hooks/useTerminal";
 import { formatShortcut, isMac } from "../utils/shortcut";
 import { shortenPath } from "../lib/path-utils";
 import { TERMINAL_THEMES, loadTerminalTheme, saveTerminalTheme, isThemeSync, setThemeSync } from "../lib/terminalThemes";
+import { PromptPicker } from "./PromptLibraryDialog";
 
 interface TabInfo {
   id: string;
@@ -62,6 +63,7 @@ interface TerminalPanelProps {
   onZoomPane: (tabId: string) => void;
   onToggleRemoteSession?: (tabId: string, enabled: boolean) => void | Promise<void>;
   remoteToggleBusyNid?: string | null;
+  onInsertText?: (text: string) => void;
 }
 
 /* ── Format relative time ───────────────────────────────── */
@@ -76,6 +78,7 @@ export function TerminalPanel({
   onResumeSession, onNewSessionFromHistory, onDeleteHistory, onClearHistory,
   onSplitPane, onClosePane, onFocusPane, onNavigatePane, onCyclePane, onZoomPane,
   onToggleRemoteSession, remoteToggleBusyNid,
+  onInsertText,
 }: TerminalPanelProps) {
   const isBottom = mode === "bottom";
   const activeTab = tabs.find((t) => t.id === activeTabId);
@@ -439,6 +442,8 @@ export function TerminalPanel({
             </button>
           )}
         </div>
+
+        <PromptPicker mode={isBottom ? "bottom" : "right"} disabled={!activePane?.ptyRunning || !onInsertText} onInsert={(text) => onInsertText?.(text)} />
 
         {/* History button — right panel only */}
         {!isBottom && (

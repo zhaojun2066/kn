@@ -223,6 +223,7 @@ export function useTerminal(panelId: string = "right") {
     hide: actions.hide,
     toggle: actions.toggle,
     attachTerminal: ready.attachTerminal,
+    insertText: ready.insertText,
     handleTerminalReady: ready.handleTerminalReady,
     handleTerminalResize: ready.handleTerminalResize,
     pasteCommand: commands.pasteCommand,

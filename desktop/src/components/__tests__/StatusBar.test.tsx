@@ -1,6 +1,6 @@
 /// <reference types="vitest" />
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { StatusBar } from "../StatusBar";
 import type { ProfileSummary } from "../../lib/types";
@@ -25,6 +25,25 @@ const baseProps = {
 };
 
 describe("StatusBar", () => {
+  it("shows local and remote session counts and opens the selected session tab", () => {
+    const onOpenSessionPanel = vi.fn();
+    render(
+      <StatusBar
+        {...baseProps}
+        usage={{ todayTokens: 0, loading: false }}
+        localSessionCount={2}
+        remoteSessionCount={1}
+        onOpenSessionPanel={onOpenSessionPanel}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "本地会话 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "远程会话 1" }));
+
+    expect(onOpenSessionPanel).toHaveBeenNthCalledWith(1, "local");
+    expect(onOpenSessionPanel).toHaveBeenNthCalledWith(2, "remote");
+  });
+
   it("hides zero token usage while usage is still loading", () => {
     render(
       <StatusBar

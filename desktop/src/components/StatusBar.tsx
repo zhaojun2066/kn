@@ -16,6 +16,9 @@ interface StatusBarProps {
   appVersion: string;
   onShowUsage: () => void;
   activeProject?: ProjectInfo | null;
+  localSessionCount?: number;
+  remoteSessionCount?: number;
+  onOpenSessionPanel?: (tab: "local" | "remote") => void;
 }
 
 export function StatusBar({
@@ -29,6 +32,9 @@ export function StatusBar({
   appVersion,
   onShowUsage,
   activeProject,
+  localSessionCount = 0,
+  remoteSessionCount = 0,
+  onOpenSessionPanel,
 }: StatusBarProps) {
   return (
     <div className="flex items-center h-[26px] px-3 bg-app-statusbar border-t border-app-border select-none shrink-0 gap-3">
@@ -65,6 +71,29 @@ export function StatusBar({
         >
           ◉ {usage.todayTokens >= 1000 ? `${(usage.todayTokens / 1000).toFixed(1)}K` : usage.todayTokens}
         </span>
+      )}
+      {onOpenSessionPanel && (
+        <div className="flex items-center gap-1 shrink-0 border-l border-app-border pl-3">
+          <button
+            type="button"
+            onClick={() => onOpenSessionPanel("local")}
+            aria-label={`本地会话 ${localSessionCount}`}
+            className="text-2xs font-mono text-app-text-muted hover:text-app-text transition-colors"
+            title="查看本地会话"
+          >
+            本地 {localSessionCount}
+          </button>
+          <span className="text-app-text-muted">·</span>
+          <button
+            type="button"
+            onClick={() => onOpenSessionPanel("remote")}
+            aria-label={`远程会话 ${remoteSessionCount}`}
+            className="text-2xs font-mono text-app-text-muted hover:text-app-text transition-colors"
+            title="查看远程会话"
+          >
+            远程 {remoteSessionCount}
+          </button>
+        </div>
       )}
       <span className="text-2xs text-app-text-muted font-mono shrink-0">
         {selectedName ? (

@@ -4,6 +4,8 @@ import { Toolbar } from "./components/Toolbar";
 import { MainPanel, ProjectGuide } from "./components/MainPanel";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { AgentPanel } from "./components/AgentPanel";
+import { SessionPanel } from "./components/SessionPanel";
+import { SystemDiagnosticsPanel } from "./components/SystemDiagnosticsPanel";
 import { BindDialog } from "./components/BindDialog";
 import { RedeemDialog } from "./components/RedeemDialog";
 import { ProfileDialog } from "./components/ProfileDialog";
@@ -35,6 +37,7 @@ import { HookStore } from "./components/HookStore";
 import { MarketplaceBrowser } from "./components/MarketplaceBrowser";
 import { AboutDialog } from "./components/AboutDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { ImportPreview } from "./components/ImportPreview";
 import { ScanPreview, ScanProfile } from "./components/ScanPreview";
@@ -52,7 +55,7 @@ import { useSessionScanner } from "./hooks/useSessionScanner";
 import { ProjectSidebar } from "./components/ProjectSidebar";
 import type { MutationResult, ProfileDetail, ProjectInfo, ScopeTab, SessionInfo } from "./lib/types";
 import { basename } from "./lib/path-utils";
-import { showProfile, setEnvVar as setProfileEnvVar, unsetEnvVar as unsetProfileEnvVar } from "./lib/tauri-api";
+import { getPromptLibrary, savePromptLibrary, showProfile, setEnvVar as setProfileEnvVar, unsetEnvVar as unsetProfileEnvVar } from "./lib/tauri-api";
 import { inferAuthMode } from "./lib/auth-metadata";
 import { buildDestDir, getResourceData, getResourceType, getSubdir, type ResourceData } from "./lib/resource-transfer";
 import { flattenPanes } from "./lib/pane-types";
@@ -98,14 +101,53 @@ export function App() {
   const [envCheck, setEnvCheck] = useState<EnvCheckResult>(null);
   const [showAbout, setShowAbout] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPromptLibrary, setShowPromptLibrary] = useState(false);
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
-  const [showAgentPanel, setShowAgentPanel] = useState(false);
+  const [agentPanel, setAgentPanel] = useState<"remote" | "diagnostics" | "sessions-local" | "sessions-remote" | null>(null);
   const [showBindDialog, setShowBindDialog] = useState(false);
   const [showRedeemDialog, setShowRedeemDialog] = useState(false);
   const [remoteToggleBusyNid, setRemoteToggleBusyNid] = useState<string | null>(null);
   const agentHook = useAgent();
   const { clearTokenRevoked } = agentHook;
+
+  // A bound Desktop is an authenticated view of the account library. Keep the
+  // on-disk cache current after binding and after the network comes back; the
+  // picker still performs its own read on open, so it never relies on this
+  // background refresh for freshness.
+  useEffect(() => {
+    if (!agentHook.isBound) return;
+    let cancelled = false;
+    const refreshPromptLibrary = async () => {
+      try {
+        const [local, remote] = await Promise.all([
+          getPromptLibrary(),
+          invoke<{ systemPrompts: import("./lib/promptLibrary").PromptTemplate[]; customPrompts: import("./lib/promptLibrary").PromptTemplate[]; tombstones: { uuid: string; revision: number }[] }>("agent_ipc", { method: "get_prompt_library_sync_state", params: {} }),
+        ]);
+        if (!cancelled && Array.isArray(remote.customPrompts)) {
+          // Empty Cloud user data must never erase local custom prompts.
+          const byUuid = new Map(local.prompts.map((prompt) => [prompt.uuid, prompt]));
+          remote.customPrompts.forEach((prompt) => {
+            const current = byUuid.get(prompt.uuid);
+            if (!current || (prompt.revision ?? 0) >= (current.revision ?? 0)) byUuid.set(prompt.uuid, prompt);
+          });
+          remote.tombstones.forEach((tombstone) => {
+            const current = byUuid.get(tombstone.uuid);
+            if (current && tombstone.revision >= (current.revision ?? 0)) byUuid.set(tombstone.uuid, { ...current, revision: tombstone.revision, cloudDeletedLocallyRetained: true });
+          });
+          await savePromptLibrary({ ...local, prompts: [...byUuid.values()], systemPrompts: remote.systemPrompts });
+        }
+      } catch {
+        // Offline Agent/Cloud is expected; the existing local cache remains usable.
+      }
+    };
+    void refreshPromptLibrary();
+    window.addEventListener("online", refreshPromptLibrary);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("online", refreshPromptLibrary);
+    };
+  }, [agentHook.isBound]);
   const handleCloseBindDialog = useCallback(() => {
     setShowBindDialog(false);
     clearTokenRevoked();
@@ -335,8 +377,12 @@ export function App() {
   }, [ctx.profiles]);
 
   // Environment check — refresh on mount, on panel open, on dialog open
-  const refreshEnvCheck = useCallback(() => {
-    invoke<EnvCheckResult>("check_environment").then(setEnvCheck).catch(() => {});
+  const refreshEnvCheck = useCallback(async () => {
+    try {
+      setEnvCheck(await invoke<EnvCheckResult>("check_environment"));
+    } catch {
+      // A failed diagnostic refresh must not disrupt the rest of the desktop UI.
+    }
   }, []);
   useEffect(() => { refreshEnvCheck(); }, [refreshEnvCheck]);
 
@@ -1214,6 +1260,12 @@ export function App() {
     selectedName: ctx.selectedName,
     onDeselect: ctx.deselect,
     onToggleBottomTerminal: bottomTerminal.toggle,
+    onOpenPromptPicker: () => {
+      const active = document.activeElement as HTMLElement | null;
+      const panel = active?.closest("[data-panel]") as HTMLElement | null;
+      const mode = panel?.dataset.panel === "bottom" ? "bottom" : "right";
+      window.dispatchEvent(new CustomEvent("kn-open-prompt-picker", { detail: mode }));
+    },
     showAddDialog,
     showDeleteConfirm,
     showNameDialog,
@@ -1560,6 +1612,7 @@ export function App() {
     onNewSessionFromHistory: (r: any) => tm.newSessionFromHistory(r),
     onDeleteHistory: (id: string) => tm.deleteHistory(id),
     onClearHistory: () => tm.clearHistory(),
+    onInsertText: tm.insertText,
     // Pane operations
     onSplitPane: tm.splitPane,
     onClosePane: tm.closePane,
@@ -1581,6 +1634,7 @@ export function App() {
         onShowOnboarding={() => setShowWelcome(true)}
         onShowShortcuts={() => setShowShortcuts(true)}
         onCheckUpdate={handleCheckUpdate}
+        onOpenPromptLibrary={() => setShowPromptLibrary(true)}
         onAbout={() => setShowAbout(true)}
         onSettings={() => setShowSettings(true)}
         sidebarVisible={sidebarVisible}
@@ -1602,9 +1656,11 @@ export function App() {
         activeProject={activeProject}
         onOpenProfiles={() => setProfileDrawerOpen(true)}
         onOpenResources={() => setResourceDrawerOpen(true)}
-        onToggleAgent={() => setShowAgentPanel((v) => !v)}
-        agentPanelOpen={showAgentPanel}
+        onToggleAgent={() => setAgentPanel((value) => value === "remote" ? null : "remote")}
+        agentPanelOpen={agentPanel === "remote"}
         agentStatusIcon={agentHook.statusIcon}
+        onToggleDiagnostics={() => setAgentPanel((value) => value === "diagnostics" ? null : "diagnostics")}
+        diagnosticsOpen={agentPanel === "diagnostics"}
       />
 
       {/* Main content — ActivityBar | Sidebar/ResourceList | (MainPanel + BottomTerminal) | RightTerminal */}
@@ -1810,6 +1866,9 @@ export function App() {
         appVersion={appVersion}
         onShowUsage={() => setShowUsage(true)}
         activeProject={activeProject}
+        localSessionCount={agentHook.sessions.filter((session) => session.status === "running" && !session.remote_enabled).length}
+        remoteSessionCount={agentHook.sessions.filter((session) => session.status === "running" && session.remote_enabled).length}
+        onOpenSessionPanel={(tab) => setAgentPanel(tab === "local" ? "sessions-local" : "sessions-remote")}
       />
 
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
@@ -1996,25 +2055,27 @@ export function App() {
 
       <UsagePanel open={showUsage} onClose={() => setShowUsage(false)} />
 
-      {showAgentPanel && (
+      {agentPanel === "remote" && (
         <AgentPanel
-          onClose={() => setShowAgentPanel(false)}
+          onClose={() => setAgentPanel(null)}
           onBind={() => {
-            setShowAgentPanel(false);
+            setAgentPanel(null);
             setShowBindDialog(true);
           }}
           onRedeem={() => {
-            setShowAgentPanel(false);
+            setAgentPanel(null);
             setShowRedeemDialog(true);
           }}
           onUnbind={agentHook.selfUnbind}
-          onCheckUpdate={() => { setShowAgentPanel(false); void handleCheckUpdate(); }}
-          onOpenRemoteSession={(session) => {
-            rightTerminal.openRemoteSession(session);
-            setShowAgentPanel(false);
-          }}
+          onCheckUpdate={() => { setAgentPanel(null); void handleCheckUpdate(); }}
           agent={agentHook}
         />
+      )}
+      {(agentPanel === "sessions-local" || agentPanel === "sessions-remote") && (
+        <SessionPanel agent={agentHook} initialTab={agentPanel === "sessions-local" ? "local" : "remote"} onClose={() => setAgentPanel(null)} onOpenRemoteSession={(session) => rightTerminal.openRemoteSession(session)} />
+      )}
+      {agentPanel === "diagnostics" && (
+        <SystemDiagnosticsPanel agent={agentHook} envCheck={envCheck} onRefreshEnvironment={refreshEnvCheck} onInstallTool={handleInstallTool} onClose={() => setAgentPanel(null)} />
       )}
       {showBindDialog && <BindDialog onClose={handleCloseBindDialog} agent={agentHook} />}
       {showRedeemDialog && <RedeemDialog onClose={handleCloseRedeemDialog} agent={agentHook} />}
@@ -2022,6 +2083,7 @@ export function App() {
       <AboutDialog open={showAbout} onClose={() => setShowAbout(false)} />
 
       <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
+      <PromptLibraryDialog open={showPromptLibrary} onClose={() => setShowPromptLibrary(false)} />
 
       <HookWizard
         open={hookWizardOpen}

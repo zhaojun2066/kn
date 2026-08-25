@@ -90,6 +90,19 @@ export function useTerminalReady(ctx: TerminalContext) {
     });
   }, [ctx.termRefs, sessionsRef]);
 
+  /** Write text to the active PTY without appending Enter. */
+  const insertText = useCallback((text: string) => {
+    if (!text) return;
+    const activeTab = sessionsRef.current.find((tab) => tab.id === ctx.activeTabIdRef.current);
+    if (!activeTab) return;
+    const leaf = findPaneInTabs([activeTab], activeTab.activePaneId);
+    if (!leaf?.ptyRunning) return;
+    invoke("write_pty", { sessionId: leaf.sessionId, data: text }).catch(() => {});
+    // The picker takes focus while searching; return it to the active xterm
+    // after its click handler has unmounted the menu.
+    window.setTimeout(() => ctx.termRefs.current.get(leaf.paneId)?.focus(), 0);
+  }, [ctx.activeTabIdRef, sessionsRef]);
+
   const setErrorCallback = useCallback((cb: (msg: string) => void) => {
     errorCallbackRef.current = cb;
   }, [errorCallbackRef]);
@@ -125,6 +138,7 @@ export function useTerminalReady(ctx: TerminalContext) {
     cleanupReadyWait,
     handleTerminalResize,
     attachTerminal,
+    insertText,
     setErrorCallback,
     reportTerminalError,
     setValidProfiles,

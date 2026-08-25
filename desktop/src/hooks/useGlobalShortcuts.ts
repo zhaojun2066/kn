@@ -5,6 +5,7 @@ interface GlobalShortcutOptions {
   selectedName: string | null;
   onDeselect: () => void;
   onToggleBottomTerminal: () => void;
+  onOpenPromptPicker: () => void;
   showAddDialog: boolean;
   showDeleteConfirm: boolean;
   showNameDialog: boolean;
@@ -33,6 +34,7 @@ export function useGlobalShortcuts({
   selectedName,
   onDeselect,
   onToggleBottomTerminal,
+  onOpenPromptPicker,
   showAddDialog,
   showDeleteConfirm,
   showNameDialog,
@@ -64,6 +66,16 @@ export function useGlobalShortcuts({
         event.preventDefault();
         setQuickSwitcherMode("history");
         setShowQuickSwitcher(true);
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && (event.key === "l" || event.key === "L")) {
+        // Xterm receives keyboard events through a textarea, but this shortcut
+        // is specifically intended to work while that terminal has focus.
+        const terminalInput = event.target instanceof HTMLElement && Boolean(event.target.closest(".xterm"));
+        if (!isTextInput(event.target) || terminalInput) {
+          event.preventDefault();
+          onOpenPromptPicker();
+        }
         return;
       }
       if ((event.metaKey || event.ctrlKey) && event.key === "k") {
@@ -128,6 +140,7 @@ export function useGlobalShortcuts({
     selectedName,
     onDeselect,
     onToggleBottomTerminal,
+    onOpenPromptPicker,
     showAddDialog,
     showDeleteConfirm,
     showNameDialog,

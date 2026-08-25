@@ -477,6 +477,50 @@ pub async fn self_unbind(http_url: &str, device_token: &str) -> Result<()> {
     envelope.into_data().map(|_| ())
 }
 
+/// Read the bound account's custom prompt library through the device credential.
+pub async fn get_prompt_library(http_url: &str, device_token: &str) -> Result<serde_json::Value> {
+    let response = http()
+        .get(format!("{}/api/v1/device/prompt-library", http_url))
+        .header("Authorization", format!("Bearer {}", device_token))
+        .send()
+        .await
+        .map_err(AgentError::Http)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(AgentError::Http)?;
+    let envelope: CloudEnvelope<serde_json::Value> = serde_json::from_slice(&body)
+        .map_err(|_| AgentError::Protocol(format!("prompt-library 响应无效 (HTTP {})", status)))?;
+    envelope.into_data()
+}
+
+/// Pull Desktop sync state, including deletion tombstones and Cloud-owned system presets.
+pub async fn get_prompt_library_sync_state(http_url: &str, device_token: &str) -> Result<serde_json::Value> {
+    let response = http().get(format!("{}/api/v1/device/prompt-library/sync-state", http_url)).header("Authorization", format!("Bearer {}", device_token)).send().await.map_err(AgentError::Http)?;
+    let status = response.status(); let body = response.bytes().await.map_err(AgentError::Http)?;
+    serde_json::from_slice::<CloudEnvelope<serde_json::Value>>(&body).map_err(|_| AgentError::Protocol(format!("prompt-library sync-state 响应无效 (HTTP {})", status)))?.into_data()
+}
+
+/// Submit only the prompts that actually changed; each operation carries its base revision.
+pub async fn change_prompt_library(http_url: &str, device_token: &str, operations: &serde_json::Value) -> Result<serde_json::Value> {
+    let response = http().post(format!("{}/api/v1/device/prompt-library/changes", http_url)).header("Authorization", format!("Bearer {}", device_token)).json(&serde_json::json!({"operations": operations})).send().await.map_err(AgentError::Http)?;
+    let status = response.status(); let body = response.bytes().await.map_err(AgentError::Http)?;
+    serde_json::from_slice::<CloudEnvelope<serde_json::Value>>(&body).map_err(|_| AgentError::Protocol(format!("prompt-library changes 响应无效 (HTTP {})", status)))?.into_data()
+}
+
+/// Turning sync off tombstones the server copy; the Desktop keeps its local file.
+pub async fn delete_prompt_library(http_url: &str, device_token: &str) -> Result<()> {
+    let response = http()
+        .delete(format!("{}/api/v1/device/prompt-library", http_url))
+        .header("Authorization", format!("Bearer {}", device_token))
+        .send()
+        .await
+        .map_err(AgentError::Http)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(AgentError::Http)?;
+    let envelope: CloudEnvelope<serde_json::Value> = serde_json::from_slice(&body)
+        .map_err(|_| AgentError::Protocol(format!("prompt-library 响应无效 (HTTP {})", status)))?;
+    envelope.into_data().map(|_| ())
+}
+
 /// 从磁盘加载 device_token。无 token 时返回 None。
 pub fn load_device_token() -> Option<String> {
     let path = device_token_path();

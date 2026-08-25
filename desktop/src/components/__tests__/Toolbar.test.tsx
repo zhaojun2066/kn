@@ -14,6 +14,7 @@ const baseProps = {
   onShowOnboarding: vi.fn(),
   onShowShortcuts: vi.fn(),
   onCheckUpdate: vi.fn(),
+  onOpenPromptLibrary: vi.fn(),
   onAbout: vi.fn(),
   onSettings: vi.fn(),
   sidebarVisible: true,

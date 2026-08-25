@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   Sun, Moon, Monitor, HelpCircle, RotateCw, ChevronDown, Settings, Keyboard,
   PanelLeft, PanelBottom, PanelRight, Circle, Info, Check, Terminal, Search, History,
-  Copy, Container, Puzzle, Radio, Compass,
+  Copy, Container, Puzzle, Radio, Compass, Stethoscope, MessageSquareText,
 } from "lucide-react";
 import { formatShortcut } from "../utils/shortcut";
 import { Button } from "./common/Button";
@@ -18,6 +18,7 @@ interface ToolbarProps {
   onCheckUpdate: () => void;
   onAbout: () => void;
   onSettings: () => void;
+  onOpenPromptLibrary: () => void;
   sidebarVisible: boolean;
   onToggleSidebar: () => void;
   terminalVisible: boolean;
@@ -35,6 +36,8 @@ interface ToolbarProps {
   onToggleAgent?: () => void;
   agentPanelOpen?: boolean;
   agentStatusIcon?: string;
+  onToggleDiagnostics?: () => void;
+  diagnosticsOpen?: boolean;
 }
 
 const themeIcons: Record<ThemeMode, React.ReactNode> = {
@@ -86,7 +89,7 @@ function DropMenu({ items, children }: { items: { label: string; icon?: React.Re
 export function Toolbar({
   onToggleTerminal, onShowHelp, onShowOnboarding, onShowShortcuts,
   onCheckUpdate,
-  onAbout, onSettings,
+  onAbout, onSettings, onOpenPromptLibrary,
   sidebarVisible, onToggleSidebar,
   terminalVisible, rightTerminalVisible, onToggleRightTerminal,
   envCheck, onInstallTool, onRefreshEnvCheck,
@@ -97,6 +100,8 @@ export function Toolbar({
   onToggleAgent,
   agentPanelOpen,
   agentStatusIcon,
+  onToggleDiagnostics,
+  diagnosticsOpen,
 }: ToolbarProps) {
   const { mode, setTheme } = useTheme();
   const cycleTheme = () => setTheme(themeNext[mode]);
@@ -201,15 +206,17 @@ export function Toolbar({
         </>
       )}
 
-      {/* ══ Env Health Indicator — click-to-toggle diagnostic panel ══ */}
-      {envCheck && (
-        <div className="ml-0.5">
-          <EnvPanel
-            envCheck={envCheck}
-            onInstallTool={onInstallTool}
-            onOpen={onRefreshEnvCheck}
-          />
-        </div>
+      {onToggleDiagnostics && (
+        <button
+          type="button"
+          onClick={onToggleDiagnostics}
+          aria-label="系统诊断"
+          title={envCheck?.all_ok ? "系统诊断：状态正常" : "系统诊断：有待处理项"}
+          className={`relative h-[26px] w-[26px] inline-flex items-center justify-center transition-colors duration-fast rounded-md ${diagnosticsOpen ? "text-app-accent bg-[var(--app-selected)]" : "text-app-text-dim hover:text-app-text hover:bg-[var(--app-hover)]"}`}
+        >
+          <Stethoscope size={14} aria-hidden="true" />
+          {envCheck && !envCheck.all_ok && <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-app-amber" />}
+        </button>
       )}
 
       {/* Theme toggle */}
@@ -226,6 +233,7 @@ export function Toolbar({
         { label: "引导", icon: <Compass size={13} />, onClick: onShowOnboarding },
         { label: "帮助", icon: <HelpCircle size={13} />, onClick: onShowHelp },
         { label: "检查更新", icon: <RotateCw size={13} />, onClick: onCheckUpdate },
+        { label: "常用提示词", icon: <MessageSquareText size={13} />, onClick: onOpenPromptLibrary },
         { label: "设置", icon: <Settings size={13} />, onClick: onSettings },
         { label: "关于", icon: <Info size={13} />, onClick: onAbout },
       ]}>
