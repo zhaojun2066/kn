@@ -60,6 +60,23 @@ pub struct WsEnvelope {
 /// Agent 接收的消息（类型安全，已分派）。
 #[derive(Debug, Clone)]
 pub enum AgentIncoming {
+    /// Metadata wrapper added by Cloud after authentication.  The value is
+    /// never accepted from a public client as authority; the Agent validates
+    /// it against its device-local controller before handling the command.
+    WithControl {
+        connection_id: Option<String>,
+        message: Box<AgentIncoming>,
+    },
+    /// Explicitly replace this Agent's current remote command controller.
+    DeviceControlClaim {
+        connection_id: String,
+        request_id: Option<String>,
+    },
+    /// Query whether one physical public connection currently controls this Agent.
+    DeviceControlStatus {
+        connection_id: String,
+        request_id: Option<String>,
+    },
     /// 心跳响应
     Pong {
         ts: i64,
@@ -325,6 +342,31 @@ fn parse_delivery_request_id(data: &serde_json::Value) -> Option<String> {
 impl WsEnvelope {
     /// 将原始信封解析为类型化的 AgentIncoming。
     pub fn parse(&self) -> Result<AgentIncoming, String> {
+        let parsed = self.parse_unchecked()?;
+        if requires_device_control(&self.msg_type)
+            && self
+                .data
+                .as_ref()
+                .and_then(|data| data.get("controllerConnectionId"))
+                .is_some()
+        {
+            let connection_id = self
+                .data
+                .as_ref()
+                .and_then(|data| data.get("controllerConnectionId"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            return Ok(AgentIncoming::WithControl {
+                connection_id,
+                message: Box::new(parsed),
+            });
+        }
+        Ok(parsed)
+    }
+
+    fn parse_unchecked(&self) -> Result<AgentIncoming, String> {
         match self.msg_type.as_str() {
             "pong" => {
                 let data = self.data.as_ref();
@@ -382,6 +424,42 @@ impl WsEnvelope {
                     ws_session_id,
                     node_id,
                     protocol_version,
+                })
+            }
+            "device_control_claim" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "device_control_claim 缺少 data 字段".to_string())?;
+                let connection_id = data["connectionId"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if connection_id.is_empty() {
+                    return Err("device_control_claim 缺少 connectionId".to_string());
+                }
+                Ok(AgentIncoming::DeviceControlClaim {
+                    connection_id,
+                    request_id: data["requestId"].as_str().map(str::to_string),
+                })
+            }
+            "device_control_status" => {
+                let data = self
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| "device_control_status 缺少 data 字段".to_string())?;
+                let connection_id = data["connectionId"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if connection_id.is_empty() {
+                    return Err("device_control_status 缺少 connectionId".to_string());
+                }
+                Ok(AgentIncoming::DeviceControlStatus {
+                    connection_id,
+                    request_id: data["requestId"].as_str().map(str::to_string),
                 })
             }
             "project_delivery_ack" => {
@@ -934,12 +1012,96 @@ impl WsEnvelope {
     }
 }
 
+impl AgentIncoming {
+    pub fn session_id_for_control_rejection(&self) -> Option<String> {
+        match self {
+            Self::Input { session_nid, .. }
+            | Self::Ctrl { session_nid, .. }
+            | Self::Resize { session_nid, .. }
+            | Self::ResumeSession { session_nid }
+            | Self::KillSession { session_nid, .. } => Some(session_nid.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn requires_device_control(&self) -> bool {
+        matches!(
+            self,
+            Self::StartSession { .. }
+                | Self::Input { .. }
+                | Self::Ctrl { .. }
+                | Self::Resize { .. }
+                | Self::ResumeSession { .. }
+                | Self::KillSession { .. }
+                | Self::ProjectVerifyChanges { .. }
+                | Self::ProjectCancelVerify { .. }
+                | Self::ProjectGitCommit { .. }
+                | Self::ProjectGitPush { .. }
+                | Self::ProjectGitCheckout { .. }
+                | Self::ProjectGitCreateBranch { .. }
+                | Self::ProjectPrCreate { .. }
+        )
+    }
+}
+
+fn requires_device_control(message_type: &str) -> bool {
+    matches!(
+        message_type,
+        "start_session"
+            | "resume_local_history_session"
+            | "input"
+            | "ctrl"
+            | "resize"
+            | "kill_session"
+            | "resume_session"
+            | "project_verify_changes"
+            | "project_cancel_verify"
+            | "project_git_commit"
+            | "project_git_push"
+            | "project_git_checkout"
+            | "project_git_create_branch"
+            | "project_pr_create"
+    )
+}
+
 // ── Outbound messages ──────────────────────────────────────
 
 /// Agent 发送给云端的消息构建器。每个方法返回预序列化的 JSON 字符串。
 pub struct WsMessageBuilder;
 
 impl WsMessageBuilder {
+    pub fn device_control_changed(
+        connection_id: &str,
+        request_id: Option<&str>,
+        is_controller: bool,
+        reason: &str,
+    ) -> String {
+        serde_json::json!({
+            "type": "device_control_changed",
+            "data": {
+                "connectionId": connection_id,
+                "requestId": request_id,
+                "isController": is_controller,
+                "reason": reason,
+            }
+        })
+        .to_string()
+    }
+
+    pub fn device_control_rejected(
+        connection_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> String {
+        serde_json::json!({
+            "type": "device_control_rejected",
+            "data": {
+                "connectionId": connection_id,
+                "sessionId": session_id,
+                "reason": "not_controller"
+            }
+        })
+        .to_string()
+    }
     /// 心跳 ping。
     pub fn ping() -> String {
         r#"{"type":"ping"}"#.to_string()
@@ -1440,6 +1602,57 @@ mod tests {
                 assert_eq!(rows, 18);
             }
             _ => panic!("expected history resume StartSession"),
+        }
+    }
+
+    #[test]
+    fn mutating_messages_are_wrapped_with_the_cloud_injected_controller_connection() {
+        let envelope: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "input",
+            "data": {
+                "sessionId": "s_123",
+                "content": "pwd\\n",
+                "seq": 1,
+                "controllerConnectionId": "web-physical-connection"
+            }
+        }))
+        .unwrap();
+
+        match envelope.parse().unwrap() {
+            AgentIncoming::WithControl {
+                connection_id,
+                message,
+            } => {
+                assert_eq!(connection_id.as_deref(), Some("web-physical-connection"));
+                assert!(matches!(*message, AgentIncoming::Input { .. }));
+            }
+            other => panic!("expected controlled input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn device_control_messages_validate_connection_id() {
+        let invalid: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "device_control_claim",
+            "data": { "connectionId": "   " }
+        }))
+        .unwrap();
+        assert!(invalid.parse().is_err());
+
+        let status: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "device_control_status",
+            "data": { "connectionId": "ios-physical-connection", "requestId": "r-1" }
+        }))
+        .unwrap();
+        match status.parse().unwrap() {
+            AgentIncoming::DeviceControlStatus {
+                connection_id,
+                request_id,
+            } => {
+                assert_eq!(connection_id, "ios-physical-connection");
+                assert_eq!(request_id.as_deref(), Some("r-1"));
+            }
+            other => panic!("expected device control status, got {other:?}"),
         }
     }
 

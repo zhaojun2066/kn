@@ -507,17 +507,51 @@ pub async fn get_prompt_library(http_url: &str, device_token: &str) -> Result<se
 }
 
 /// Pull Desktop sync state, including deletion tombstones and Cloud-owned system presets.
-pub async fn get_prompt_library_sync_state(http_url: &str, device_token: &str) -> Result<serde_json::Value> {
-    let response = http().get(format!("{}/api/v1/device/prompt-library/sync-state", http_url)).header("Authorization", format!("Bearer {}", device_token)).send().await.map_err(AgentError::Http)?;
-    let status = response.status(); let body = response.bytes().await.map_err(AgentError::Http)?;
-    serde_json::from_slice::<CloudEnvelope<serde_json::Value>>(&body).map_err(|_| AgentError::Protocol(format!("prompt-library sync-state 响应无效 (HTTP {})", status)))?.into_data()
+pub async fn get_prompt_library_sync_state(
+    http_url: &str,
+    device_token: &str,
+) -> Result<serde_json::Value> {
+    let response = http()
+        .get(format!(
+            "{}/api/v1/device/prompt-library/sync-state",
+            http_url
+        ))
+        .header("Authorization", format!("Bearer {}", device_token))
+        .send()
+        .await
+        .map_err(AgentError::Http)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(AgentError::Http)?;
+    serde_json::from_slice::<CloudEnvelope<serde_json::Value>>(&body)
+        .map_err(|_| {
+            AgentError::Protocol(format!(
+                "prompt-library sync-state 响应无效 (HTTP {})",
+                status
+            ))
+        })?
+        .into_data()
 }
 
 /// Submit only the prompts that actually changed; each operation carries its base revision.
-pub async fn change_prompt_library(http_url: &str, device_token: &str, operations: &serde_json::Value) -> Result<serde_json::Value> {
-    let response = http().post(format!("{}/api/v1/device/prompt-library/changes", http_url)).header("Authorization", format!("Bearer {}", device_token)).json(&serde_json::json!({"operations": operations})).send().await.map_err(AgentError::Http)?;
-    let status = response.status(); let body = response.bytes().await.map_err(AgentError::Http)?;
-    serde_json::from_slice::<CloudEnvelope<serde_json::Value>>(&body).map_err(|_| AgentError::Protocol(format!("prompt-library changes 响应无效 (HTTP {})", status)))?.into_data()
+pub async fn change_prompt_library(
+    http_url: &str,
+    device_token: &str,
+    operations: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let response = http()
+        .post(format!("{}/api/v1/device/prompt-library/changes", http_url))
+        .header("Authorization", format!("Bearer {}", device_token))
+        .json(&serde_json::json!({"operations": operations}))
+        .send()
+        .await
+        .map_err(AgentError::Http)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(AgentError::Http)?;
+    serde_json::from_slice::<CloudEnvelope<serde_json::Value>>(&body)
+        .map_err(|_| {
+            AgentError::Protocol(format!("prompt-library changes 响应无效 (HTTP {})", status))
+        })?
+        .into_data()
 }
 
 /// Turning sync off tombstones the server copy; the Desktop keeps its local file.

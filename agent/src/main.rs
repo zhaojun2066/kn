@@ -6,12 +6,13 @@
 
 use clap::Parser;
 use kn_agent::{
-    ack, bind, config, device, error::AgentError, ipc, proto, session, state, ws_client,
+    ack, bind, config, device, device_control, error::AgentError, ipc, proto, session, state,
+    ws_client,
 };
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::Deserialize;
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -710,6 +711,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let store = Box::new(session::MemorySessionStore::new());
     let sessions = Arc::new(session::SessionManager::new(store));
     let input_merger = Arc::new(session::InputMerger::new());
+    // Agent-local, in-memory authority for commands that mutate this computer.
+    // This deliberately disappears on an Agent restart or WSS disconnect.
+    let device_control = Arc::new(Mutex::new(device_control::DeviceControl::default()));
 
     // ── 9.5. 恢复上次异常退出时残留的会话 ──
     match session::persistence::recover_surviving_sessions(&sessions).await {
@@ -944,6 +948,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     let session_revisions = project_session_revisions.clone();
                     let session_activity = project_session_activity.clone();
                     let session_scan_gate = project_session_scan_gate.clone();
+                    let control = device_control.clone();
                     if should_dispatch_in_background(&m) {
                         tokio::spawn(async move {
                             handle_incoming(
@@ -958,6 +963,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 session_revisions,
                                 session_activity,
                                 session_scan_gate,
+                                control,
                             )
                             .await;
                         });
@@ -974,6 +980,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             session_revisions,
                             session_activity,
                             session_scan_gate,
+                            device_control.clone(),
                         )
                         .await;
                     }
@@ -1138,6 +1145,9 @@ async fn cli_heartbeat_loop(
 }
 
 fn should_dispatch_in_background(message: &proto::AgentIncoming) -> bool {
+    if let proto::AgentIncoming::WithControl { message, .. } = message {
+        return should_dispatch_in_background(message);
+    }
     matches!(
         message,
         proto::AgentIncoming::ProjectGitStatus { .. }
@@ -1193,8 +1203,88 @@ async fn handle_incoming(
         tokio::sync::Mutex<kn_agent::project_session_index::ProjectActivityTracker>,
     >,
     project_session_scan_gate: Arc<kn_agent::project_session_index::ProjectScanGate>,
+    device_control: Arc<Mutex<device_control::DeviceControl>>,
 ) {
+    let rejected_session_id = match &msg {
+        proto::AgentIncoming::WithControl { message, .. } => {
+            message.session_id_for_control_rejection()
+        }
+        message => message.session_id_for_control_rejection(),
+    };
+    let (msg, had_control_proof) = match msg {
+        proto::AgentIncoming::WithControl {
+            connection_id,
+            message,
+        } => {
+            let permitted = device_control
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .authorize_write(connection_id.as_deref());
+            if !permitted {
+                let rejected = proto::WsMessageBuilder::device_control_rejected(
+                    connection_id.as_deref(),
+                    rejected_session_id.as_deref(),
+                );
+                if let Some(tx) = outgoing.lock().await.as_ref() {
+                    let _ = tx.send(rejected);
+                }
+                return;
+            }
+            (*message, true)
+        }
+        other => (other, false),
+    };
+    if msg.requires_device_control() && !had_control_proof {
+        let rejected =
+            proto::WsMessageBuilder::device_control_rejected(None, rejected_session_id.as_deref());
+        if let Some(tx) = outgoing.lock().await.as_ref() {
+            let _ = tx.send(rejected);
+        }
+        return;
+    }
     match msg {
+        proto::AgentIncoming::WithControl { .. } => {
+            unreachable!("control wrapper is unwrapped above")
+        }
+        proto::AgentIncoming::DeviceControlClaim {
+            connection_id,
+            request_id,
+        } => {
+            let change = device_control
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .claim(connection_id.clone());
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                if let Some(previous) = change.previous_connection_id.as_deref() {
+                    let _ = tx.send(proto::WsMessageBuilder::device_control_changed(
+                        previous, None, false, "revoked",
+                    ));
+                }
+                let _ = tx.send(proto::WsMessageBuilder::device_control_changed(
+                    &connection_id,
+                    request_id.as_deref(),
+                    true,
+                    "claimed",
+                ));
+            }
+        }
+        proto::AgentIncoming::DeviceControlStatus {
+            connection_id,
+            request_id,
+        } => {
+            let is_controller = device_control
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .status(&connection_id);
+            if let Some(tx) = outgoing.lock().await.as_ref() {
+                let _ = tx.send(proto::WsMessageBuilder::device_control_changed(
+                    &connection_id,
+                    request_id.as_deref(),
+                    is_controller,
+                    "checked",
+                ));
+            }
+        }
         proto::AgentIncoming::Pong { remote_access, .. } => {
             state.set_remote_access(remote_access).await;
         }
@@ -1426,7 +1516,11 @@ async fn handle_incoming(
                         user = from_user_id,
                         "远程启动失败：profile 无法解析为可用 tool"
                     );
-                    let msg = proto::WsMessageBuilder::session_start_failed(&profile, err.reason(), request_id.as_deref());
+                    let msg = proto::WsMessageBuilder::session_start_failed(
+                        &profile,
+                        err.reason(),
+                        request_id.as_deref(),
+                    );
                     if let Some(tx) = outgoing.lock().await.as_ref() {
                         let _ = tx.send(msg);
                     }

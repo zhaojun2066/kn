@@ -1784,15 +1784,33 @@ impl IpcHandle {
     }
 
     async fn handle_get_prompt_library_sync_state(&self, req: &IpcRequest) -> String {
-        let token = match self.prompt_library_token(req) { Ok(token) => token, Err(response) => return response };
-        match crate::device::get_prompt_library_sync_state(&self.bind_http_url, &token).await { Ok(state) => ok_response(&req.id, state), Err(error) => err_response(&req.id, "PROMPT_LIBRARY_GET_FAILED", &error.to_string()) }
+        let token = match self.prompt_library_token(req) {
+            Ok(token) => token,
+            Err(response) => return response,
+        };
+        match crate::device::get_prompt_library_sync_state(&self.bind_http_url, &token).await {
+            Ok(state) => ok_response(&req.id, state),
+            Err(error) => err_response(&req.id, "PROMPT_LIBRARY_GET_FAILED", &error.to_string()),
+        }
     }
 
     async fn handle_change_prompt_library(&self, req: &IpcRequest) -> String {
-        let token = match self.prompt_library_token(req) { Ok(token) => token, Err(response) => return response };
-        let operations = req.params.get("operations").cloned().unwrap_or_else(|| serde_json::json!([]));
-        if !operations.is_array() { return err_response(&req.id, "INVALID_PARAMS", "operations 必须是数组"); }
-        match crate::device::change_prompt_library(&self.bind_http_url, &token, &operations).await { Ok(result) => ok_response(&req.id, result), Err(error) => err_response(&req.id, "PROMPT_LIBRARY_CHANGE_FAILED", &error.to_string()) }
+        let token = match self.prompt_library_token(req) {
+            Ok(token) => token,
+            Err(response) => return response,
+        };
+        let operations = req
+            .params
+            .get("operations")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        if !operations.is_array() {
+            return err_response(&req.id, "INVALID_PARAMS", "operations 必须是数组");
+        }
+        match crate::device::change_prompt_library(&self.bind_http_url, &token, &operations).await {
+            Ok(result) => ok_response(&req.id, result),
+            Err(error) => err_response(&req.id, "PROMPT_LIBRARY_CHANGE_FAILED", &error.to_string()),
+        }
     }
 
     async fn handle_delete_prompt_library(&self, req: &IpcRequest) -> String {
