@@ -1561,6 +1561,7 @@ async fn handle_incoming(
                     let c = cwd_resolved.clone();
                     let history_cli_args = cli_args.clone();
                     let history_request_id = request_id.clone();
+                    let spawn_failure_request_id = history_request_id.clone();
                     let remote_enabled = Some(session.remote_enabled.clone());
                     let out = outgoing.clone();
 
@@ -1593,7 +1594,7 @@ async fn handle_incoming(
                                 let failed = proto::WsMessageBuilder::session_start_failed(
                                     &p,
                                     "spawn_failed",
-                                    history_request_id.as_deref(),
+                                    spawn_failure_request_id.as_deref(),
                                 );
                                 if let Some(tx) = out.lock().await.as_ref() {
                                     let _ = tx.send(failed);
