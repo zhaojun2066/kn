@@ -103,6 +103,8 @@ pub enum AgentIncoming {
         expected_cli: Option<String>,
         /// 仅由受校验的本地历史恢复生成的原生 CLI 参数。
         cli_args: Vec<String>,
+        /// 本地历史恢复的端到端请求关联 ID；普通新会话为 None。
+        request_id: Option<String>,
     },
     /// 用户输入文本（session 由 data.sessionId 标识）
     Input {
@@ -431,6 +433,7 @@ impl WsEnvelope {
                     rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
                     expected_cli: None,
                     cli_args: Vec::new(),
+                    request_id: None,
                 })
             }
             "input" => {
@@ -539,6 +542,7 @@ impl WsEnvelope {
                 };
                 let cli = required("cli")?;
                 let native_session_id = required("nativeSessionId")?;
+                let request_id = required("requestId")?;
                 let cli_args = crate::session::env::history_resume_args(&cli, &native_session_id)
                     .map_err(|_| "resume_local_history_session 参数无效".to_string())?;
                 Ok(AgentIncoming::StartSession {
@@ -547,6 +551,7 @@ impl WsEnvelope {
                     from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
                     expected_cli: Some(cli),
                     cli_args,
+                    request_id: Some(request_id),
                     cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
                     rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
                 })
@@ -977,6 +982,7 @@ impl WsMessageBuilder {
             source,
             msg_id,
             None,
+            None,
         )
     }
 
@@ -992,6 +998,7 @@ impl WsMessageBuilder {
         source: &str,
         msg_id: Option<&str>,
         cli_version: Option<&str>,
+        request_id: Option<&str>,
     ) -> String {
         let mut data = serde_json::json!({
             "sessionId": session_nid,
@@ -1010,6 +1017,9 @@ impl WsMessageBuilder {
         if let Some(version) = cli_version {
             data["cliVersion"] = serde_json::Value::String(version.to_string());
         }
+        if let Some(request_id) = request_id {
+            data["requestId"] = serde_json::Value::String(request_id.to_string());
+        }
         serde_json::json!({
             "type": "session_created",
             "data": data
@@ -1018,13 +1028,17 @@ impl WsMessageBuilder {
     }
 
     /// 会话启动失败通知。Cloud 消费并映射成 iOS 稳定错误语义。
-    pub fn session_start_failed(profile: &str, reason: &str) -> String {
+    pub fn session_start_failed(profile: &str, reason: &str, request_id: Option<&str>) -> String {
+        let mut data = serde_json::json!({
+            "profile": profile,
+            "reason": reason
+        });
+        if let Some(request_id) = request_id {
+            data["requestId"] = serde_json::Value::String(request_id.to_string());
+        }
         serde_json::json!({
             "type": "session_start_failed",
-            "data": {
-                "profile": profile,
-                "reason": reason
-            }
+            "data": data
         })
         .to_string()
     }
@@ -1374,6 +1388,7 @@ mod tests {
                 rows,
                 expected_cli,
                 cli_args,
+                ..
             } => {
                 assert_eq!(profile, "my-profile");
                 assert_eq!(cwd, Some("/Users/test/project".into()));
@@ -1397,6 +1412,7 @@ mod tests {
                 "fromUserId": 100,
                 "nativeSessionId": "native_123",
                 "cli": "qoderclicn",
+                "requestId": "resume-request-1",
                 "cols": 48,
                 "rows": 18
             }
@@ -1411,12 +1427,15 @@ mod tests {
                 rows,
                 expected_cli,
                 cli_args,
+                request_id,
+                ..
             } => {
                 assert_eq!(profile, "work");
                 assert_eq!(cwd, Some("/Users/test/project".to_string()));
                 assert_eq!(from_user_id, 100);
                 assert_eq!(expected_cli, Some("qoderclicn".to_string()));
                 assert_eq!(cli_args, vec!["-r", "native_123"]);
+                assert_eq!(request_id.as_deref(), Some("resume-request-1"));
                 assert_eq!(cols, 48);
                 assert_eq!(rows, 18);
             }

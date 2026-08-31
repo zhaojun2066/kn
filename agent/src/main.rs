@@ -1415,6 +1415,7 @@ async fn handle_incoming(
             rows,
             expected_cli,
             cli_args,
+            request_id,
         } => {
             let resolved_tool = match session::env::resolve_tool_from_profile(&profile) {
                 Ok(tool) => tool,
@@ -1425,7 +1426,7 @@ async fn handle_incoming(
                         user = from_user_id,
                         "远程启动失败：profile 无法解析为可用 tool"
                     );
-                    let msg = proto::WsMessageBuilder::session_start_failed(&profile, err.reason());
+                    let msg = proto::WsMessageBuilder::session_start_failed(&profile, err.reason(), request_id.as_deref());
                     if let Some(tx) = outgoing.lock().await.as_ref() {
                         let _ = tx.send(msg);
                     }
@@ -1444,6 +1445,7 @@ async fn handle_incoming(
                     let msg = proto::WsMessageBuilder::session_start_failed(
                         &profile,
                         "profile_cli_mismatch",
+                        request_id.as_deref(),
                     );
                     if let Some(tx) = outgoing.lock().await.as_ref() {
                         let _ = tx.send(msg);
@@ -1558,6 +1560,7 @@ async fn handle_incoming(
                     let p = profile.clone();
                     let c = cwd_resolved.clone();
                     let history_cli_args = cli_args.clone();
+                    let history_request_id = request_id.clone();
                     let remote_enabled = Some(session.remote_enabled.clone());
                     let out = outgoing.clone();
 
@@ -1590,6 +1593,7 @@ async fn handle_incoming(
                                 let failed = proto::WsMessageBuilder::session_start_failed(
                                     &p,
                                     "spawn_failed",
+                                    history_request_id.as_deref(),
                                 );
                                 if let Some(tx) = out.lock().await.as_ref() {
                                     let _ = tx.send(failed);
@@ -1635,6 +1639,7 @@ async fn handle_incoming(
                                     "ios",
                                     Some(&msg_id),
                                     ack_cli_version.as_deref(),
+                                    history_request_id.as_deref(),
                                 );
 
                             // 先注册再发送，避免低延迟 ACK 在 receiver 建立前被丢弃。
