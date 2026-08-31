@@ -238,6 +238,95 @@ describe("useAgent", () => {
     expect(redeemResult.error).toContain("CODE_NOT_FOUND");
   });
 
+  it("does not report a locally requested unbind as a server token revocation", async () => {
+    let selfUnbindRequested = false;
+    mockInvoke.mockImplementation((_cmd: string, args: { method: string }) => {
+      if (args.method === "self_unbind") {
+        selfUnbindRequested = true;
+        return Promise.resolve({ status: "unbound" });
+      }
+      if (args.method === "status") {
+        return Promise.resolve(mockStatus({ state: selfUnbindRequested ? "unbound" : "connected" }));
+      }
+      if (args.method === "sessions") return Promise.resolve({ sessions: [] });
+      return Promise.reject(new Error("unknown"));
+    });
+
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(result.current.isConnected).toBe(true);
+
+    await act(async () => {
+      await result.current.selfUnbind();
+      await Promise.resolve();
+    });
+
+    expect(result.current.agentStatus?.state).toBe("unbound");
+    expect(result.current.tokenRevoked).toBe(false);
+  });
+
+  it("reports an unexpected connected-to-unbound transition as token revocation", async () => {
+    let statusCalls = 0;
+    mockInvoke.mockImplementation((_cmd: string, args: { method: string }) => {
+      if (args.method === "status") {
+        statusCalls += 1;
+        return Promise.resolve(mockStatus({ state: statusCalls === 1 ? "connected" : "unbound" }));
+      }
+      if (args.method === "sessions") return Promise.resolve({ sessions: [] });
+      return Promise.reject(new Error("unknown"));
+    });
+
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      await result.current.fetchStatus();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.tokenRevoked).toBe(true);
+  });
+
+  it("does not suppress a later server revocation when self-unbind status refresh fails", async () => {
+    let phase: "connected" | "failed" | "unbound" = "connected";
+    mockInvoke.mockImplementation((_cmd: string, args: { method: string }) => {
+      if (args.method === "self_unbind") return Promise.resolve({ status: "unbound" });
+      if (args.method === "status") {
+        if (phase === "failed") return Promise.reject(new Error("Agent offline"));
+        return Promise.resolve(mockStatus({ state: phase }));
+      }
+      if (args.method === "sessions") return Promise.resolve({ sessions: [] });
+      return Promise.reject(new Error("unknown"));
+    });
+
+    const { result } = renderHook(() => useAgent());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    phase = "failed";
+    await act(async () => {
+      await result.current.selfUnbind();
+    });
+
+    phase = "connected";
+    await act(async () => {
+      await result.current.fetchStatus();
+      await Promise.resolve();
+    });
+    phase = "unbound";
+    await act(async () => {
+      await result.current.fetchStatus();
+      await Promise.resolve();
+    });
+
+    expect(result.current.tokenRevoked).toBe(true);
+  });
+
   // ── isBound state mapping ──────────────────────────────────
 
   it.each([

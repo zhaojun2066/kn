@@ -472,9 +472,23 @@ pub async fn self_unbind(http_url: &str, device_token: &str) -> Result<()> {
         .map_err(AgentError::Http)?;
     let status = response.status();
     let body = response.bytes().await.map_err(AgentError::Http)?;
-    let envelope: CloudEnvelope<serde_json::Value> = serde_json::from_slice(&body)
+    parse_self_unbind_response(status, &body)
+}
+
+fn parse_self_unbind_response(status: reqwest::StatusCode, body: &[u8]) -> Result<()> {
+    let envelope: CloudEnvelope<serde_json::Value> = serde_json::from_slice(body)
         .map_err(|_| AgentError::Protocol(format!("self-unbind 响应无效 (HTTP {})", status)))?;
-    envelope.into_data().map(|_| ())
+    // `ApiResponse.ok()` intentionally has `data: null`; successful self-unbind
+    // therefore must be decided from the envelope code, not data presence.
+    if envelope.code == 0 {
+        return Ok(());
+    }
+    Err(AgentError::Protocol(
+        envelope
+            .message
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| format!("云端错误 code={}", envelope.code)),
+    ))
 }
 
 /// Read the bound account's custom prompt library through the device credential.
@@ -958,5 +972,27 @@ pub(crate) mod tests {
             classify_bind_activation_error(500, "服务暂不可用"),
             AgentError::BindActivationRetryable(_)
         ));
+    }
+
+    #[test]
+    fn self_unbind_accepts_cloud_success_without_data() {
+        let result = parse_self_unbind_response(
+            reqwest::StatusCode::OK,
+            br#"{"code":0,"message":"ok","data":null}"#,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn self_unbind_rejects_an_unrecognized_device_credential() {
+        let result = parse_self_unbind_response(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"code":401,"message":"未登录或 token 已过期","data":null}"#.as_bytes(),
+        );
+
+        assert!(
+            matches!(result, Err(AgentError::Protocol(message)) if message == "未登录或 token 已过期")
+        );
     }
 }

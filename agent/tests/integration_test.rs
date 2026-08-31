@@ -9,7 +9,8 @@
 //! - CLI tools (claude, codex) must be installed for PTY session tests (group C).
 //!   Tests check binary availability and skip gracefully if not found.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command};
@@ -146,13 +147,26 @@ fn assert_err<'a>(resp: &'a serde_json::Value, expected_code: &str) -> &'a serde
 
 /// Spawn a kn-agent process with isolated KN_HOME for testing.
 fn spawn_agent(kn_home: &TempDir) -> ChildGuard {
+    spawn_agent_with_cloud(
+        kn_home,
+        "ws://localhost:8081/v1/ws",
+        "http://localhost:8080",
+    )
+}
+
+/// Spawn an Agent with isolated Cloud endpoints for IPC/HTTP integration tests.
+fn spawn_agent_with_cloud(
+    kn_home: &TempDir,
+    cloud_ws_url: &str,
+    cloud_http_url: &str,
+) -> ChildGuard {
     let kn_home_str = kn_home.path().to_string_lossy().to_string();
     let bin = std::env::var("CARGO_BIN_EXE_kn-agent")
         .unwrap_or_else(|_| "target/debug/kn-agent".to_string());
     let child = Command::new(bin)
         .env("KN_HOME", &kn_home_str)
-        .env("KN_CLOUD_URL", "ws://localhost:8081/v1/ws")
-        .env("KN_CLOUD_HTTP_URL", "http://localhost:8080")
+        .env("KN_CLOUD_URL", cloud_ws_url)
+        .env("KN_CLOUD_HTTP_URL", cloud_http_url)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -227,6 +241,56 @@ fn test_ipc_sessions_empty() {
         .expect("sessions should be array");
     assert!(sessions.is_empty());
     assert_eq!(result["count"].as_u64().unwrap(), 0);
+}
+
+#[test]
+fn self_unbind_with_expired_credential_preserves_local_binding() {
+    let dir = TempDir::new("self-unbind-expired");
+    let token_path = dir.path().join("agent/device_token");
+    std::fs::write(&token_path, "expired-device-token").expect("write test device token");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Cloud HTTP server");
+    let cloud_http_url = format!("http://{}", listener.local_addr().unwrap());
+    let cloud_thread = std::thread::spawn(move || {
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().expect("accept Cloud request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("set mock read timeout");
+            let mut request = [0u8; 2048];
+            let read = stream.read(&mut request).expect("read Cloud request");
+            let request = String::from_utf8_lossy(&request[..read]);
+            if request.contains("/api/v1/device/self-unbind") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 55\r\nConnection: close\r\n\r\n{\"code\":401,\"message\":\"credential expired\",\"data\":null}",
+                    )
+                    .expect("write self-unbind response");
+                return;
+            }
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .expect("write startup response");
+        }
+        panic!("Agent did not send a self-unbind request");
+    });
+
+    let _agent = spawn_agent_with_cloud(&dir, "ws://127.0.0.1:9/v1/ws", &cloud_http_url);
+    assert!(wait_for_ipc_socket(&dir.ipc_sock(), 10));
+
+    let unbind = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("unbind", "self_unbind", serde_json::json!({})),
+    );
+    assert_err(&unbind, "SELF_UNBIND_FAILED");
+    cloud_thread.join().expect("mock Cloud thread");
+    assert!(token_path.exists(), "failed cloud unbind must preserve the local token");
+
+    let status = ipc_request_json(
+        &dir.ipc_sock(),
+        &ipc_req("status", "status", serde_json::json!({})),
+    );
+    assert_ne!(assert_ok(&status)["state"], "unbound");
 }
 
 #[test]

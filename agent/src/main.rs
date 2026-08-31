@@ -1154,22 +1154,6 @@ fn should_dispatch_in_background(message: &proto::AgentIncoming) -> bool {
     )
 }
 
-async fn project_has_active_terminal(
-    sessions: &session::SessionManager,
-    project_path: &str,
-) -> bool {
-    sessions
-        .list()
-        .await
-        .map(|items| {
-            items.into_iter().any(|item| {
-                item.cwd.trim_end_matches('/') == project_path.trim_end_matches('/')
-                    && item.status != session::SessionStatus::Ended
-            })
-        })
-        .unwrap_or(true)
-}
-
 fn project_verification_is_running(project_key: &str) -> bool {
     crate::session::verify_changes::status(project_key)["status"].as_str() == Some("running")
 }
@@ -2334,9 +2318,7 @@ async fn handle_incoming(
                 let _operation = project_delivery_gate
                     .lock(&project_operation_key(&registered_path))
                     .await;
-                if project_has_active_terminal(&sessions, &registered_path).await {
-                    serde_json::json!({"status":"activeTerminal", "message":"请先结束该项目的终端会话"})
-                } else if project_verification_is_running(&project_key) {
+                if project_verification_is_running(&project_key) {
                     serde_json::json!({"status":"verificationRunning", "message":"请先等待构建或测试结束"})
                 } else {
                     crate::session::git_delivery::checkout_branch(
@@ -2378,9 +2360,7 @@ async fn handle_incoming(
                 let _operation = project_delivery_gate
                     .lock(&project_operation_key(&registered_path))
                     .await;
-                if project_has_active_terminal(&sessions, &registered_path).await {
-                    serde_json::json!({"status":"activeTerminal", "message":"请先结束该项目的终端会话"})
-                } else if project_verification_is_running(&project_key) {
+                if project_verification_is_running(&project_key) {
                     serde_json::json!({"status":"verificationRunning", "message":"请先等待构建或测试结束"})
                 } else {
                     crate::session::git_delivery::create_and_checkout_branch(

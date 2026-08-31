@@ -47,6 +47,20 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
     }
   }, []);
 
+  // After the phone confirms, the Agent may need a few more seconds to save
+  // the credential and establish WSS. Keep polling its durable status during
+  // that interval; only the QR deadline and countdown are no longer relevant.
+  const clearBindingDeadline = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+  }, []);
+
   const resetBindingView = useCallback(() => {
     activeBindRequestRef.current = null;
     setErrorMsg(null);
@@ -218,18 +232,18 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
         agent.agentStatus.binding?.state === "activating" ||
         agent.agentStatus.binding?.state === "activationUncertain"
       ) {
-        cleanup();
+        clearBindingDeadline();
         setPhase("activating");
       } else if (agent.isConnected) {
         cleanup();
         activeBindRequestRef.current = null;
         setPhase("success");
       } else if (agent.isBound) {
-        cleanup();
+        clearBindingDeadline();
         setPhase("connecting");
       }
     }
-  }, [agent.agentStatus, agent.isBound, agent.isConnected, phase, cleanup]);
+  }, [agent.agentStatus, agent.isBound, agent.isConnected, phase, cleanup, clearBindingDeadline]);
 
   // Auto-close on success after a brief delay
   useEffect(() => {
@@ -297,6 +311,14 @@ export function BindDialog({ onClose, agent }: BindDialogProps) {
                   </div>
                 )}
               </div>
+              {bindCode && (
+                <div className="text-center">
+                  <div className="text-2xs font-mono text-app-text-muted">绑定码</div>
+                  <div className="text-sm font-mono font-semibold tracking-[0.2em] text-app-text" aria-label={`绑定码：${bindCode}`}>
+                    {bindCode}
+                  </div>
+                </div>
+              )}
               <div className="text-center space-y-1">
                 <div className="text-sm font-mono text-app-text">请用 KN App 扫码绑定</div>
                 <div className="text-xs font-mono text-app-text-muted">

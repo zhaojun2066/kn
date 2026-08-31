@@ -98,6 +98,7 @@ describe("BindDialog", () => {
     await waitFor(
       () => {
         expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy();
+        expect(screen.getByText("ABC123")).toBeTruthy();
         expect(screen.getByText(/二维码有效期/)).toBeTruthy();
       },
       { timeout: 3000 },
@@ -313,6 +314,50 @@ describe("BindDialog with fake timers", () => {
       vi.advanceTimersByTime(2000);
     });
     expect(fetchStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps polling after phone confirmation so it can observe the Agent connecting", async () => {
+    const bindDevice = vi.fn().mockResolvedValue({
+      ok: true,
+      bindCode: "ABC123",
+      expiresIn: 120,
+      confirmUrl: "https://knshark.com/bind",
+    });
+    const fetchStatus = vi.fn();
+    const activatingStatus: AgentStatus = {
+      state: "binding",
+      crash_count: 0,
+      safe_mode: false,
+      binding: { state: "activating" },
+    };
+
+    const { rerender } = render(
+      <BindDialog onClose={vi.fn()} agent={mockAgentState({ bindDevice, fetchStatus })} />,
+    );
+    await settle();
+    await waitFor(() => expect(screen.getByText("请用 KN App 扫码绑定")).toBeTruthy());
+
+    rerender(
+      <BindDialog
+        onClose={vi.fn()}
+        agent={mockAgentState({
+          bindDevice: vi.fn(),
+          fetchStatus,
+          agentStatus: activatingStatus,
+          isRunning: true,
+          isBinding: true,
+          statusIcon: "binding",
+        })}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("手机已确认，正在确认设备")).toBeTruthy());
+    const callsAfterConfirmation = fetchStatus.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(fetchStatus.mock.calls.length).toBeGreaterThan(callsAfterConfirmation);
   });
 
   it("auto-closes after success delay", async () => {

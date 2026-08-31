@@ -106,18 +106,21 @@ export function useAgent() {
 
   // Track previous state to detect token revocation (connected/running/idle → unbound)
   const prevStateRef = useRef<AgentStateName | null>(null);
+  // A successful self-unbind deliberately transitions through `unbound`; it
+  // must not be mistaken for an unexpected Cloud-side credential revocation.
+  const suppressNextTokenRevocationRef = useRef(false);
 
   const fetchStatus = useCallback(async () => {
     try {
       const result = await invoke<AgentStatus>("agent_ipc", { method: "status" });
       setAgentStatus(result);
       setError(null);
-      return true;
+      return result;
     } catch {
       // Agent not running — normal, not an error
       setAgentStatus(null);
       setError(null);
-      return false;
+      return null;
     }
   }, []);
 
@@ -159,7 +162,11 @@ export function useAgent() {
     const wasBound = prev !== null && ["connected", "idle", "running"].includes(prev);
 
     if (wasBound && currentState === "unbound") {
-      setTokenRevoked(true);
+      if (suppressNextTokenRevocationRef.current) {
+        suppressNextTokenRevocationRef.current = false;
+      } else {
+        setTokenRevoked(true);
+      }
     }
 
     // Clear revocation flag when agent becomes bound again or goes offline
@@ -278,7 +285,14 @@ export function useAgent() {
     try {
       await invoke("agent_ipc", { method: "self_unbind" });
       setSessions([]);
-      await fetchStatus();
+      suppressNextTokenRevocationRef.current = true;
+      const status = await fetchStatus();
+      // The Agent completes its state transition before acknowledging
+      // self_unbind. Do not let a failed or unexpected refresh suppress a
+      // later, genuine Cloud-side revocation.
+      if (status?.state !== "unbound") {
+        suppressNextTokenRevocationRef.current = false;
+      }
       return { ok: true };
     } catch (e: unknown) {
       const msg = String(e);
