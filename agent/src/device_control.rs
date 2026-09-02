@@ -2,12 +2,9 @@
 //!
 //! Cloud authenticates and routes public WebSocket traffic, but the Agent is
 //! the final authority for commands that change this computer.  A lease is
-//! intentionally in-memory: restarting or disconnecting the Agent revokes
-//! control instead of leaving a stale remote owner behind.
-
-use std::time::{Duration, Instant};
-
-const LEASE_TTL: Duration = Duration::from_secs(90);
+//! intentionally in-memory: restarting the Agent revokes control instead of
+//! leaving a stale remote owner behind. A transient Cloud/WSS reconnect keeps
+//! the authority because the Agent process remains the same.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
@@ -20,7 +17,6 @@ pub struct Change {
 #[derive(Debug, Clone)]
 struct Lease {
     connection_id: String,
-    expires_at: Instant,
 }
 
 #[derive(Debug, Default)]
@@ -30,13 +26,11 @@ pub struct DeviceControl {
 
 impl DeviceControl {
     pub fn claim(&mut self, connection_id: String) -> Change {
-        self.expire_if_needed();
         let previous_connection_id = self.lease.as_ref().and_then(|lease| {
             (lease.connection_id != connection_id).then(|| lease.connection_id.clone())
         });
         self.lease = Some(Lease {
             connection_id: connection_id.clone(),
-            expires_at: Instant::now() + LEASE_TTL,
         });
         Change {
             connection_id,
@@ -46,38 +40,26 @@ impl DeviceControl {
         }
     }
 
-    pub fn status(&mut self, connection_id: &str) -> bool {
-        self.expire_if_needed();
+    pub fn status(&self, connection_id: &str) -> bool {
         self.lease
             .as_ref()
             .is_some_and(|lease| lease.connection_id == connection_id)
     }
 
-    /// A successful write renews the device-local lease.  The Cloud never
-    /// decides this: a forged or stale connection id is rejected here.
-    pub fn authorize_write(&mut self, connection_id: Option<&str>) -> bool {
-        self.expire_if_needed();
+    /// The lease is durable for this Agent process. The Cloud never decides
+    /// it: a forged or stale connection id is rejected here. A new explicit
+    /// claim or Agent restart is the only revocation path.
+    pub fn authorize_write(&self, connection_id: Option<&str>) -> bool {
         let Some(connection_id) = connection_id else {
             return false;
         };
-        let Some(lease) = self.lease.as_mut() else {
+        let Some(lease) = self.lease.as_ref() else {
             return false;
         };
         if lease.connection_id != connection_id {
             return false;
         }
-        lease.expires_at = Instant::now() + LEASE_TTL;
         true
-    }
-
-    fn expire_if_needed(&mut self) {
-        if self
-            .lease
-            .as_ref()
-            .is_some_and(|lease| lease.expires_at <= Instant::now())
-        {
-            self.lease = None;
-        }
     }
 }
 
@@ -104,5 +86,16 @@ mod tests {
         control.claim("web-a".into());
         assert!(!control.authorize_write(None));
         assert!(!control.authorize_write(Some("web-b")));
+    }
+
+    #[test]
+    fn lease_survives_a_transport_reconnect_while_the_agent_is_alive() {
+        let mut control = DeviceControl::default();
+        control.claim("ios-a".into());
+
+        // A Cloud/WSS reconnect does not recreate DeviceControl. The caller
+        // returns with the same verified logical-client identity.
+        assert!(control.status("ios-a"));
+        assert!(control.authorize_write(Some("ios-a")));
     }
 }

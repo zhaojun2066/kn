@@ -712,7 +712,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let sessions = Arc::new(session::SessionManager::new(store));
     let input_merger = Arc::new(session::InputMerger::new());
     // Agent-local, in-memory authority for commands that mutate this computer.
-    // This deliberately disappears on an Agent restart or WSS disconnect.
+    // It disappears only on an Agent restart; short Cloud/WSS reconnects keep
+    // the same lease so a temporarily disconnected controller is not replaced.
     let device_control = Arc::new(Mutex::new(device_control::DeviceControl::default()));
 
     // ── 9.5. 恢复上次异常退出时残留的会话 ──
@@ -3017,6 +3018,7 @@ mod tests {
                 kn_agent::project_session_index::ProjectActivityTracker::default(),
             )),
             Arc::new(kn_agent::project_session_index::ProjectScanGate::default()),
+            Arc::new(Mutex::new(device_control::DeviceControl::default())),
         )
         .await;
 
