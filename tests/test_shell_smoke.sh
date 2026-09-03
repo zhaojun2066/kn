@@ -45,6 +45,16 @@ TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 CFG="$TMP_DIR/config.yaml"
 
+RC_HOME="$TMP_DIR/rc-home"
+mkdir -p "$RC_HOME/.kn" "$RC_HOME/.kn-dev" "$RC_HOME/custom-kn"
+cp "$SHELL_RC" "$RC_HOME/.kn-dev/shell-rc"
+resolved_kn_dir=$(HOME="$RC_HOME" bash -lc 'source "$HOME/.kn-dev/shell-rc"; printf "%s" "$KN_DIR"')
+[ "$resolved_kn_dir" = "$RC_HOME/.kn-dev" ] && pass "installed .kn-dev shell-rc resolves KN_DIR to .kn-dev" \
+    || fail "installed .kn-dev shell-rc resolved KN_DIR to '$resolved_kn_dir'"
+resolved_kn_home=$(HOME="$RC_HOME" KN_HOME="$RC_HOME/custom-kn" bash -lc 'source "$HOME/.kn-dev/shell-rc"; printf "%s" "$KN_DIR"')
+[ "$resolved_kn_home" = "$RC_HOME/custom-kn" ] && pass "KN_HOME overrides installed shell-rc directory" \
+    || fail "KN_HOME did not override installed shell-rc directory"
+
 cat > "$CFG" << 'YEOF'
 default: test
 profiles:
@@ -247,6 +257,10 @@ YEOF
 cat > "$AUTH_BIN/codex" << 'YEOF'
 #!/bin/bash
 printf '%s\n' "$@" > "$HOME/codex-args.txt"
+if [ -n "${EXPECT_TEMP_AUTH_AT_START:-}" ]; then
+    [ -f "$CODEX_HOME/auth.json" ] || exit 11
+    grep -q '"OPENAI_API_KEY"' "$CODEX_HOME/auth.json" || exit 12
+fi
 if [ -n "${EXPECT_AUTH_RESTORED:-}" ]; then
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         current="__missing__"
@@ -259,6 +273,15 @@ fi
 if [ -n "${EXPECT_NO_OPENAI_AUTH_ENV:-}" ]; then
     [ -z "${OPENAI_API_KEY+x}" ] && [ -z "${OPENAI_BASE_URL+x}" ] && [ -z "${OPENAI_MODEL+x}" ] || exit 10
 fi
+if [ -n "${EXPECT_STDIN_TTY:-}" ]; then
+    [ -t 0 ] || { echo "Error: stdin is not a terminal" >&2; exit 13; }
+fi
+if [ -n "${EXPECT_NO_PYTHON_PARENT:-}" ]; then
+    parent_comm=$(ps -o comm= -p "$PPID" 2>/dev/null || true)
+    case "$parent_comm" in
+        *python*) echo "Error: codex parent is python wrapper: $parent_comm" >&2; exit 14 ;;
+    esac
+fi
 exit 0
 YEOF
 cat > "$AUTH_BIN/qoderclicn" << 'YEOF'
@@ -270,12 +293,13 @@ chmod +x "$AUTH_BIN/codex" "$AUTH_BIN/qoderclicn"
 printf '%s\n' 'cli_auth_credentials_store = "file" # keyring is disabled' > "$AUTH_HOME/.codex/config.toml"
 
 auth_before=$(cat "$AUTH_HOME/.codex/auth.json")
-HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" OPENAI_API_KEY=parent-key OPENAI_BASE_URL=https://parent.example/v1 OPENAI_MODEL=parent-model EXPECT_AUTH_RESTORED="$auth_before" EXPECT_NO_OPENAI_AUTH_ENV=1 _ai_launch_with_profile codex codex-key >/dev/null
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" OPENAI_API_KEY=parent-key OPENAI_BASE_URL=https://parent.example/v1 OPENAI_MODEL=parent-model EXPECT_TEMP_AUTH_AT_START=1 EXPECT_AUTH_RESTORED="$auth_before" EXPECT_NO_OPENAI_AUTH_ENV=1 _ai_launch_with_profile codex codex-key >/dev/null
 auth_after=$(cat "$AUTH_HOME/.codex/auth.json")
 [ "$auth_after" = "$auth_before" ] && pass "Codex API key profile restores auth.json after start" \
     || fail "Codex API key profile did not restore auth.json after start"
 [ "$(cat "$AUTH_HOME/auth-during-codex.txt")" = "$auth_before" ] && pass "Codex API key profile is restored while CLI is running" \
     || fail "Codex API key profile left temporary auth while CLI was running"
+pass "Codex API key profile exposes temporary auth during child startup"
 [ ! -d "$AUTH_HOME/.codex/kn-auth" ] && pass "Codex auth state is not written under CODEX_HOME" \
     || fail "Codex auth state was written under CODEX_HOME"
 [ -n "$(find "$AUTH_HOME/.kn-codex-auth" -name account.auth.json -print -quit 2>/dev/null)" ] && pass "Codex account auth slot stored outside CODEX_HOME" \
@@ -289,6 +313,80 @@ grep -q 'model_providers.custom.requires_openai_auth=true' "$AUTH_HOME/codex-arg
 grep -q 'model="gpt-test"' "$AUTH_HOME/codex-args.txt" \
     && pass "Codex API key profile passes model as launch arg" \
     || fail "Codex API key profile missed model launch arg"
+
+set +e
+python3 - "$SHELL_RC" "$AUTH_HOME" "$AUTH_BIN" <<'PY'
+import os, pty, shlex, sys
+
+shell_rc, home, bindir = sys.argv[1:]
+env = os.environ.copy()
+env.update({
+    "HOME": home,
+    "KN_HOME": os.path.join(home, ".kn"),
+    "CODEX_HOME": os.path.join(home, ".codex"),
+    "CONFIG": os.path.join(home, ".kn", "config.yaml"),
+    "PATH": f"{bindir}:{env.get('PATH', '')}",
+    "EXPECT_STDIN_TTY": "1",
+    "EXPECT_NO_PYTHON_PARENT": "1",
+})
+cmd = f"source {shlex.quote(shell_rc)}; _ai_launch_with_profile codex codex-key >/dev/null"
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("bash", ["bash", "-lc", cmd], env)
+while True:
+    try:
+        if not os.read(fd, 1024):
+            break
+    except OSError:
+        break
+_, status = os.waitpid(pid, 0)
+raise SystemExit(os.waitstatus_to_exitcode(status))
+PY
+tty_rc=$?
+set -e
+[ "$tty_rc" = "0" ] && pass "Codex API key profile preserves terminal stdin for CLI" \
+    || fail "Codex API key profile lost terminal stdin for CLI"
+
+if command -v zsh >/dev/null 2>&1; then
+    set +e
+    zsh_tty_output=$(python3 - "$SHELL_RC" "$AUTH_HOME" "$AUTH_BIN" <<'PY'
+import os, pty, shlex, sys
+
+shell_rc, home, bindir = sys.argv[1:]
+env = os.environ.copy()
+env.update({
+    "HOME": home,
+    "KN_HOME": os.path.join(home, ".kn"),
+    "CODEX_HOME": os.path.join(home, ".codex"),
+    "CONFIG": os.path.join(home, ".kn", "config.yaml"),
+    "PATH": f"{bindir}:{env.get('PATH', '')}",
+    "EXPECT_STDIN_TTY": "1",
+    "EXPECT_NO_PYTHON_PARENT": "1",
+})
+cmd = f"source {shlex.quote(shell_rc)}; _ai_launch_with_profile codex codex-key >/dev/null"
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("zsh", ["zsh", "-fic", cmd], env)
+output = b""
+while True:
+    try:
+        chunk = os.read(fd, 1024)
+        if not chunk:
+            break
+        output += chunk
+    except OSError:
+        break
+_, status = os.waitpid(pid, 0)
+sys.stdout.buffer.write(output)
+raise SystemExit(os.waitstatus_to_exitcode(status))
+PY
+)
+    zsh_tty_rc=$?
+    set -e
+    [ "$zsh_tty_rc" = "0" ] && ! echo "$zsh_tty_output" | grep -Eq 'nice\(5\) failed|^\[[0-9]+\]' \
+        && pass "Codex API key profile stays quiet in interactive zsh terminal" \
+        || fail "Codex API key profile emitted zsh job-control noise or failed: $zsh_tty_output"
+fi
 
 rm -f "$AUTH_HOME/codex-args.txt"
 set +e

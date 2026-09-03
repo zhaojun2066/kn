@@ -7,6 +7,7 @@ use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 static AUTH_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -127,6 +128,19 @@ fn codex_auth_args_and_restore_with_paths(
     let account_paths = paths.for_profile("local-login");
     let restore = prepare_account_auth_if_needed(&account_paths)?;
     Ok((extra_args, restore))
+}
+
+pub(crate) fn restore_grace_period() -> Duration {
+    restore_grace_period_from_value(std::env::var("KN_CODEX_AUTH_RESTORE_DELAY_MS").ok())
+}
+
+fn restore_grace_period_from_value(value: Option<String>) -> Duration {
+    let millis = value
+        .as_deref()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(500)
+        .min(5000);
+    Duration::from_millis(millis)
 }
 
 fn prepare_api_key_auth(api_key: &str, paths: &CodexAuthPaths) -> Result<CodexAuthRestore, String> {
@@ -670,6 +684,26 @@ mod tests {
         let target = PathBuf::from("/tmp/auth.json");
 
         assert_ne!(unique_temp_path(&target), unique_temp_path(&target));
+    }
+
+    #[test]
+    fn restore_grace_period_defaults_and_caps() {
+        assert_eq!(
+            restore_grace_period_from_value(None),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            restore_grace_period_from_value(Some("25".into())),
+            Duration::from_millis(25)
+        );
+        assert_eq!(
+            restore_grace_period_from_value(Some("not-a-number".into())),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            restore_grace_period_from_value(Some("6000".into())),
+            Duration::from_millis(5000)
+        );
     }
 
     #[test]

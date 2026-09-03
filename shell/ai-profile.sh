@@ -3,14 +3,28 @@
 # Usage: ai <tool> [profile] [args...]
 #        ai profile <command>
 
-# Config directory: prefer ~/.kn (new), fall back to ~/.claude-profiles (legacy)
-if [ -d "$HOME/.kn" ]; then
+# Config directory: explicit KN_HOME wins. Otherwise, when this file is sourced
+# from an installed shell-rc, use that shell-rc's own directory so dev
+# (~/.kn-dev) and production (~/.kn) stay separated.
+_KN_SHELL_RC_PATH=""
+if [ -n "${BASH_SOURCE:-}" ]; then
+    _KN_SHELL_RC_PATH="${BASH_SOURCE[0]}"
+elif [ -n "${ZSH_VERSION:-}" ]; then
+    _KN_SHELL_RC_PATH="$(eval 'printf "%s" "${(%):-%x}"' 2>/dev/null || true)"
+fi
+
+if [ -n "${KN_HOME:-}" ]; then
+    KN_DIR="$KN_HOME"
+elif [ -n "$_KN_SHELL_RC_PATH" ] && [ "$(basename "$_KN_SHELL_RC_PATH")" = "shell-rc" ]; then
+    KN_DIR="$(cd "$(dirname "$_KN_SHELL_RC_PATH")" && pwd)"
+elif [ -d "$HOME/.kn" ]; then
     KN_DIR="$HOME/.kn"
 elif [ -d "$HOME/.claude-profiles" ]; then
     KN_DIR="$HOME/.claude-profiles"
 else
     KN_DIR="$HOME/.kn"
 fi
+unset _KN_SHELL_RC_PATH
 CONFIG="$KN_DIR/config.yaml"
 
 # ── Resolve profile CLI (preferred but optional) ──
@@ -472,6 +486,8 @@ _kn_codex_recover_or_reject_existing_lock() {
 _kn_codex_restore_auth_and_release() {
     local lock_dir="$1"
     local auth="$2"
+    [ -d "$lock_dir" ] || return 0
+
     local written="$lock_dir/written.auth.json"
     local backup="$lock_dir/original.auth.json"
     local no_original="$lock_dir/no-original"
@@ -492,83 +508,45 @@ _kn_codex_restore_auth_and_release() {
     rm -rf "$lock_dir"
 }
 
+_kn_codex_restore_delay_seconds() {
+    local delay_ms="${KN_CODEX_AUTH_RESTORE_DELAY_MS:-500}"
+    case "$delay_ms" in
+        ''|*[!0-9]*) delay_ms=500 ;;
+    esac
+    if [ "$delay_ms" -gt 5000 ]; then
+        delay_ms=5000
+    fi
+    awk -v ms="$delay_ms" 'BEGIN { printf "%.3f", ms / 1000 }'
+}
+
 _kn_codex_run_with_after_start_restore() {
     local tool="$1"
     local lock_dir="$2"
     local auth="$3"
     shift 3
 
-    if ! command -v python3 >/dev/null 2>&1; then
-        _kn_codex_restore_auth_and_release "$lock_dir" "$auth"
-        echo "kn: Codex auth 短窗口恢复需要 python3；已恢复原 auth.json，未启动 Codex。" >&2
-        return 1
+    if [ -n "${ZSH_VERSION:-}" ]; then
+        setopt localoptions nobgnice nomonitor 2>/dev/null || true
     fi
 
-    python3 - "$tool" "$lock_dir" "$auth" "$(_kn_codex_account_auth_path)" "$@" <<'PY'
-import json, os, shutil, subprocess, sys
+    (
+        local delay_seconds
+        delay_seconds="$(_kn_codex_restore_delay_seconds)"
+        if [ "$delay_seconds" != "0.000" ]; then
+            sleep "$delay_seconds"
+        fi
+        _kn_codex_restore_auth_and_release "$lock_dir" "$auth"
+    ) &
+    local restore_pid=$!
 
-tool, lock_dir, auth, account, *args = sys.argv[1:]
-written = os.path.join(lock_dir, "written.auth.json")
-original = os.path.join(lock_dir, "original.auth.json")
-no_original = os.path.join(lock_dir, "no-original")
+    command "$tool" "$@"
+    local rc=$?
 
-def same_file(a, b):
-    try:
-        with open(a, "rb") as fa, open(b, "rb") as fb:
-            return fa.read() == fb.read()
-    except OSError:
-        return False
-
-def classify(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return "unknown"
-    mode = str(data.get("auth_mode", "")).lower()
-    has_api = "OPENAI_API_KEY" in data
-    if has_api or mode in ("apikey", "api_key"):
-        return "api_key"
-    if not has_api and (mode == "chatgpt" or "tokens" in data or "ChatgptAuthTokens" in data):
-        return "account"
-    return "unknown"
-
-def copy_auth(src, dst):
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    tmp = f"{dst}.tmp.{os.getpid()}"
-    shutil.copyfile(src, tmp)
-    os.chmod(tmp, 0o600)
-    with open(tmp, "rb") as f:
-        os.fsync(f.fileno())
-    os.replace(tmp, dst)
-    try:
-        dir_fd = os.open(os.path.dirname(dst), os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    except OSError:
-        pass
-
-def restore():
-    if same_file(auth, written):
-        if os.path.exists(original):
-            copy_auth(original, auth)
-        elif os.path.exists(no_original) and os.path.exists(auth):
-            os.remove(auth)
-    elif classify(auth) == "account":
-        copy_auth(auth, account)
-    shutil.rmtree(lock_dir, ignore_errors=True)
-
-try:
-    proc = subprocess.Popen([tool, *args])
-except Exception:
-    restore()
-    raise
-
-restore()
-sys.exit(proc.wait())
-PY
+    if kill -0 "$restore_pid" 2>/dev/null; then
+        _kn_codex_restore_auth_and_release "$lock_dir" "$auth"
+    fi
+    wait "$restore_pid" 2>/dev/null || true
+    return "$rc"
 }
 
 # ── Launch tool with profile env injected ──

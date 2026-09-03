@@ -813,6 +813,7 @@ impl SessionManager {
             format!("shell_spawn_failed: {}", e)
         })?;
         if let Some(auth_restore) = prep.auth_restore.as_mut() {
+            std::thread::sleep(super::codex_auth::restore_grace_period());
             if let Err(error) = auth_restore.restore_after_start() {
                 tracing::warn!(error=%error, "Codex auth restore after start failed; will retry on session exit");
             }
