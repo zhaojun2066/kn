@@ -258,6 +258,8 @@ mod tests {
             status: SessionStatus::Running,
             last_input: Arc::new(std::sync::Mutex::new(String::new())),
             last_output_snippet: Arc::new(std::sync::Mutex::new(String::new())),
+            display_summary: Arc::new(std::sync::Mutex::new(None)),
+            summary_input_buffer: Arc::new(std::sync::Mutex::new(String::new())),
             ended_reported: Arc::new(AtomicBool::new(false)),
             remote_enabled: Arc::new(AtomicBool::new(true)),
             relay_inputs: Arc::new(std::sync::Mutex::new(Vec::new())),

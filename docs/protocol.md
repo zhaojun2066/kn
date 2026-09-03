@@ -2,6 +2,8 @@
 
 Cloud 是 KN 的协议边界：移动端只使用 Cloud 公共协议；Agent 使用内部协议；Cloud 的 mapper 和 dispatcher 负责两者转换。不要让 iOS 直接兼容 Agent 的字段、消息名或错误语义。
 
+远程写权限只在 Cloud 公共边界判定。Agent 通过 Device Token 证明电脑身份，内部协议不携带、不保存、不校验客户端安装 ID、登录 generation 或控制租约；Agent 只执行 Cloud 已鉴权并路由到本机的命令。
+
 ```text
 iOS public protocol (camelCase)
         │
@@ -28,7 +30,7 @@ Agent 的 WSS 消息使用以下信封；具体 `data` 以 `agent/src/proto.rs`�
 当前 Agent 处理的方向包括：
 
 - Cloud → Agent：连接确认、心跳、启动/恢复/结束会话、输入和控制信号、回放、项目 Git/PR/验证请求。
-- Agent → Cloud：心跳、会话生命周期与输出、运行配置/项目列表、项目 Git/PR/验证结果与交付确认。
+- Agent → Cloud：心跳、会话生命周期与输出、活跃会话的首条已提交输入摘要（`session_summary_updated`，不含终端正文）、运行配置/项目列表、项目 Git/PR/验证结果与交付确认。
 
 ## 变更流程
 

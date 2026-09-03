@@ -1998,6 +1998,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             status: crate::session::SessionStatus::Running,
             remote_enabled: false,
+            display_summary: None,
         };
 
         let json = session_to_json(&summary);

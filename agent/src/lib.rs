@@ -7,7 +7,6 @@ pub mod bind;
 pub mod config;
 pub mod delivery_outbox_store;
 pub mod device;
-pub mod device_control;
 pub mod error;
 pub mod health;
 pub mod ipc;

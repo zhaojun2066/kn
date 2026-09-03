@@ -33,6 +33,7 @@ pub struct SessionManager {
     create_mutex: tokio::sync::Mutex<()>,
     /// 远程开关互斥锁：防止 check+set 竞态导致超过 REMOTE_LIMIT
     remote_mutex: tokio::sync::Mutex<()>,
+    summary_notifier: std::sync::Mutex<Option<mpsc::UnboundedSender<(String, String)>>>,
 }
 
 /// 全局会话数量上限
@@ -104,7 +105,12 @@ impl SessionManager {
             pty_masters: tokio::sync::Mutex::new(HashMap::new()),
             create_mutex: tokio::sync::Mutex::new(()),
             remote_mutex: tokio::sync::Mutex::new(()),
+            summary_notifier: std::sync::Mutex::new(None),
         }
+    }
+
+    pub fn set_summary_notifier(&self, notifier: mpsc::UnboundedSender<(String, String)>) {
+        *self.summary_notifier.lock().unwrap_or_else(|e| e.into_inner()) = Some(notifier);
     }
 
     /// 创建新会话（收到 start_session 后调用）。
@@ -148,6 +154,8 @@ impl SessionManager {
             status: SessionStatus::Created,
             last_input: Arc::new(std::sync::Mutex::new(String::new())),
             last_output_snippet: Arc::new(std::sync::Mutex::new(String::new())),
+            display_summary: Arc::new(std::sync::Mutex::new(None)),
+            summary_input_buffer: Arc::new(std::sync::Mutex::new(String::new())),
             ended_reported: Arc::new(AtomicBool::new(false)),
             remote_enabled: Arc::new(AtomicBool::new(false)),
             relay_inputs: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -380,6 +388,17 @@ impl SessionManager {
         let mut output_rx = handle.fanout.register_subscriber();
         let pty_writer = handle.writer.clone();
         drop(handles);
+        let summary_session = self
+            .store
+            .get(nid)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "session not found".to_string())?;
+        let summary_notifier = self
+            .summary_notifier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
 
         let sid = nid.to_string();
         tokio::spawn(async move {
@@ -418,6 +437,13 @@ impl SessionManager {
                 match sock_reader.read(&mut buf).await {
                     Ok(0) => break,
                     Ok(n) => {
+                        if let Ok(text) = std::str::from_utf8(&buf[..n]) {
+                            if let Some(summary) = summary_session.record_display_summary_input(text) {
+                                if let Some(notifier) = summary_notifier.as_ref() {
+                                    let _ = notifier.send((sid.clone(), summary));
+                                }
+                            }
+                        }
                         let mut w = pty_writer.lock().await;
                         use std::io::Write;
                         if w.write_all(&buf[..n]).is_err() {
@@ -480,6 +506,27 @@ impl SessionManager {
     /// 清理 desktop-owned Relay 的 PID 跟踪；Relay PTY 已由桌面侧结束。
     pub async fn clear_child_pid(&self, nid: &str) {
         self.child_pids.lock().await.remove(nid);
+    }
+
+    /// Returns the first completed user input once, for publication as the
+    /// active remote session's compact display summary.
+    pub async fn record_display_summary_input(
+        &self,
+        nid: &str,
+        text: &str,
+    ) -> Result<Option<String>> {
+        let session = self
+            .store
+            .get(nid)
+            .await?
+            .ok_or_else(|| AgentError::SessionNotFound(nid.to_string()))?;
+        let summary = session.record_display_summary_input(text);
+        if let Some(value) = &summary {
+            if let Some(notifier) = self.summary_notifier.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                let _ = notifier.send((nid.to_string(), value.clone()));
+            }
+        }
+        Ok(summary)
     }
 
     /// Queue remote input for a desktop-owned Relay session.

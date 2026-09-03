@@ -78,6 +78,11 @@ impl SessionStore for MemorySessionStore {
                 created_at: s.created_at,
                 status: s.status,
                 remote_enabled: s.remote_enabled.load(Ordering::Relaxed),
+                display_summary: s
+                    .display_summary
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
             })
             .collect();
         summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));

@@ -6,13 +6,13 @@
 
 use clap::Parser;
 use kn_agent::{
-    ack, bind, config, device, device_control, error::AgentError, ipc, proto, session, state,
+    ack, bind, config, device, error::AgentError, ipc, proto, session, state,
     ws_client,
 };
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::Deserialize;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -710,11 +710,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // 桌面应用都能通过 IPC 与 Agent 通信。
     let store = Box::new(session::MemorySessionStore::new());
     let sessions = Arc::new(session::SessionManager::new(store));
+    let (summary_tx, mut summary_rx) = mpsc::unbounded_channel::<(String, String)>();
+    sessions.set_summary_notifier(summary_tx);
     let input_merger = Arc::new(session::InputMerger::new());
-    // Agent-local, in-memory authority for commands that mutate this computer.
-    // It disappears only on an Agent restart; short Cloud/WSS reconnects keep
-    // the same lease so a temporarily disconnected controller is not replaced.
-    let device_control = Arc::new(Mutex::new(device_control::DeviceControl::default()));
 
     // ── 9.5. 恢复上次异常退出时残留的会话 ──
     match session::persistence::recover_surviving_sessions(&sessions).await {
@@ -731,6 +729,22 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // ── WSS outgoing channel（提前声明，IPC 模块需要引用） ──
     let outgoing_tx_ref: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<String>>>> =
         Arc::new(tokio::sync::Mutex::new(None));
+    {
+        let summary_outgoing = outgoing_tx_ref.clone();
+        tokio::spawn(async move {
+            while let Some((session_id, summary)) = summary_rx.recv().await {
+                loop {
+                    let delivered = summary_outgoing.lock().await.as_ref().is_some_and(|tx| {
+                        tx.send(proto::WsMessageBuilder::session_summary_updated(
+                            &session_id, &summary, unix_millis(),
+                        )).is_ok()
+                    });
+                    if delivered { break; }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        });
+    }
     let wss_cancel_ref: Arc<tokio::sync::Mutex<Option<CancellationToken>>> =
         Arc::new(tokio::sync::Mutex::new(None));
 
@@ -949,7 +963,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     let session_revisions = project_session_revisions.clone();
                     let session_activity = project_session_activity.clone();
                     let session_scan_gate = project_session_scan_gate.clone();
-                    let control = device_control.clone();
                     if should_dispatch_in_background(&m) {
                         tokio::spawn(async move {
                             handle_incoming(
@@ -964,7 +977,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 session_revisions,
                                 session_activity,
                                 session_scan_gate,
-                                control,
                             )
                             .await;
                         });
@@ -981,7 +993,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             session_revisions,
                             session_activity,
                             session_scan_gate,
-                            device_control.clone(),
                         )
                         .await;
                     }
@@ -1146,9 +1157,6 @@ async fn cli_heartbeat_loop(
 }
 
 fn should_dispatch_in_background(message: &proto::AgentIncoming) -> bool {
-    if let proto::AgentIncoming::WithControl { message, .. } = message {
-        return should_dispatch_in_background(message);
-    }
     matches!(
         message,
         proto::AgentIncoming::ProjectGitStatus { .. }
@@ -1204,88 +1212,8 @@ async fn handle_incoming(
         tokio::sync::Mutex<kn_agent::project_session_index::ProjectActivityTracker>,
     >,
     project_session_scan_gate: Arc<kn_agent::project_session_index::ProjectScanGate>,
-    device_control: Arc<Mutex<device_control::DeviceControl>>,
 ) {
-    let rejected_session_id = match &msg {
-        proto::AgentIncoming::WithControl { message, .. } => {
-            message.session_id_for_control_rejection()
-        }
-        message => message.session_id_for_control_rejection(),
-    };
-    let (msg, had_control_proof) = match msg {
-        proto::AgentIncoming::WithControl {
-            connection_id,
-            message,
-        } => {
-            let permitted = device_control
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .authorize_write(connection_id.as_deref());
-            if !permitted {
-                let rejected = proto::WsMessageBuilder::device_control_rejected(
-                    connection_id.as_deref(),
-                    rejected_session_id.as_deref(),
-                );
-                if let Some(tx) = outgoing.lock().await.as_ref() {
-                    let _ = tx.send(rejected);
-                }
-                return;
-            }
-            (*message, true)
-        }
-        other => (other, false),
-    };
-    if msg.requires_device_control() && !had_control_proof {
-        let rejected =
-            proto::WsMessageBuilder::device_control_rejected(None, rejected_session_id.as_deref());
-        if let Some(tx) = outgoing.lock().await.as_ref() {
-            let _ = tx.send(rejected);
-        }
-        return;
-    }
     match msg {
-        proto::AgentIncoming::WithControl { .. } => {
-            unreachable!("control wrapper is unwrapped above")
-        }
-        proto::AgentIncoming::DeviceControlClaim {
-            connection_id,
-            request_id,
-        } => {
-            let change = device_control
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .claim(connection_id.clone());
-            if let Some(tx) = outgoing.lock().await.as_ref() {
-                if let Some(previous) = change.previous_connection_id.as_deref() {
-                    let _ = tx.send(proto::WsMessageBuilder::device_control_changed(
-                        previous, None, false, "revoked",
-                    ));
-                }
-                let _ = tx.send(proto::WsMessageBuilder::device_control_changed(
-                    &connection_id,
-                    request_id.as_deref(),
-                    true,
-                    "claimed",
-                ));
-            }
-        }
-        proto::AgentIncoming::DeviceControlStatus {
-            connection_id,
-            request_id,
-        } => {
-            let is_controller = device_control
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .status(&connection_id);
-            if let Some(tx) = outgoing.lock().await.as_ref() {
-                let _ = tx.send(proto::WsMessageBuilder::device_control_changed(
-                    &connection_id,
-                    request_id.as_deref(),
-                    is_controller,
-                    "checked",
-                ));
-            }
-        }
         proto::AgentIncoming::Pong { remote_access, .. } => {
             state.set_remote_access(remote_access).await;
         }
@@ -1905,6 +1833,9 @@ async fn handle_incoming(
                         }
                         let nid = session_summary.nid.clone();
                         let text = content.clone();
+                        if let Err(error) = sessions.record_display_summary_input(&nid, &text).await {
+                            tracing::warn!(nid = %nid, %error, "会话摘要记录失败");
+                        }
                         if session_summary.kind == session::SessionKind::Relay {
                             if let Err(e) = sessions.queue_relay_input(&nid, text).await {
                                 tracing::error!(nid = %nid, error = %e, "Relay input 入队失败");
@@ -3018,7 +2949,6 @@ mod tests {
                 kn_agent::project_session_index::ProjectActivityTracker::default(),
             )),
             Arc::new(kn_agent::project_session_index::ProjectScanGate::default()),
-            Arc::new(Mutex::new(device_control::DeviceControl::default())),
         )
         .await;
 

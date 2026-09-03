@@ -534,7 +534,7 @@ fn extract_history_title<R: BufRead>(reader: R, cli: &str) -> Option<String> {
                         .and_then(|role| role.as_str())
                         == Some("user")
                 {
-                    first_user_prompt = payload
+                    let user_text = payload
                         .and_then(|item| item.get("content"))
                         .and_then(|content| content.as_array())
                         .and_then(|parts| {
@@ -544,13 +544,51 @@ fn extract_history_title<R: BufRead>(reader: R, cli: &str) -> Option<String> {
                             })
                         })
                         .and_then(|part| part.get("text").and_then(|text| text.as_str()))
-                        .and_then(|text| preview_text(Some(text), MAX_TITLE_CHARS));
+                        .filter(|text| !is_codex_bootstrap_prompt(text));
+                    first_user_prompt =
+                        user_text.and_then(|text| preview_text(Some(text), MAX_TITLE_CHARS));
                 }
             }
             _ => {}
         }
     }
     ai_title.or(last_prompt).or(first_user_prompt)
+}
+
+/// Codex persists some client-injected startup context as a `user` message.
+/// It is not a user request and must never become a history title.  Keep this
+/// deliberately narrow so a real request that merely mentions AGENTS.md still
+/// remains eligible for the title fallback.
+fn is_codex_bootstrap_prompt(text: &str) -> bool {
+    let text = text.trim_start();
+    const CLIENT_INJECTED_PREFIXES: &[&str] = &[
+        "<environment_context>",
+        "<app-context>",
+        "<skills_instructions>",
+        "<permissions instructions>",
+        "<recommended_plugins>",
+        "<command-name>",
+        "<command-message>",
+        "<turn_aborted>",
+        "<codex_internal_context",
+        "<subagent_notification",
+        "<codex_delegation>",
+        "<task-notification>",
+        "<local-command-stdout>",
+    ];
+    if CLIENT_INJECTED_PREFIXES
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+    {
+        return true;
+    }
+
+    text.starts_with("# AGENTS.md instructions for ")
+        && (text.contains("<environment_context>")
+            || text.contains("<app-context>")
+            || text.contains("<skills_instructions>")
+            || text.contains("<permissions instructions>")
+            || text.contains("<INSTRUCTIONS>"))
 }
 
 fn claude_message_text(value: &serde_json::Value, max_chars: usize) -> Option<String> {
@@ -598,6 +636,18 @@ mod tests {
         }
     }
 
+    fn codex_user_record(text: &str) -> String {
+        serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": text }]
+            }
+        })
+        .to_string()
+    }
+
     #[test]
     fn preview_uses_cli_title_then_first_user_prompt_as_fallback() {
         let claude = concat!(
@@ -618,6 +668,108 @@ mod tests {
         assert_eq!(
             extract_history_title(codex.as_bytes(), "codex"),
             Some("Fix history list".into())
+        );
+    }
+
+    #[test]
+    fn codex_history_title_skips_bootstrap_before_real_user_prompt() {
+        let codex = concat!(
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/example/project\n<environment_context>managed</environment_context>"}]}}"##,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"修复历史会话标题"}]}}"#,
+        );
+
+        assert_eq!(
+            extract_history_title(codex.as_bytes(), "codex"),
+            Some("修复历史会话标题".into())
+        );
+    }
+
+    #[test]
+    fn codex_history_title_keeps_real_request_that_mentions_agents_md() {
+        let codex = r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"请修改 AGENTS.md 的开发规范"}]}}"#;
+
+        assert_eq!(
+            extract_history_title(codex.as_bytes(), "codex"),
+            Some("请修改 AGENTS.md 的开发规范".into())
+        );
+    }
+
+    #[test]
+    fn codex_history_title_is_none_when_only_bootstrap_exists() {
+        let codex = r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/example/project\n<skills_instructions>managed</skills_instructions>"}]}}"##;
+
+        assert_eq!(extract_history_title(codex.as_bytes(), "codex"), None);
+    }
+
+    #[test]
+    fn codex_history_title_skips_agents_instructions_block() {
+        let codex = concat!(
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/example/project\n<INSTRUCTIONS>managed</INSTRUCTIONS>"}]}}"##,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"修复历史会话标题"}]}}"#,
+        );
+
+        assert_eq!(
+            extract_history_title(codex.as_bytes(), "codex"),
+            Some("修复历史会话标题".into())
+        );
+    }
+
+    #[test]
+    fn codex_history_title_skips_plugin_and_command_bootstrap_blocks() {
+        let codex = concat!(
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<recommended_plugins>\nplugin catalogue"}]}}"##,
+            "\n",
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<command-name>review"}]}}"##,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"修复历史会话标题"}]}}"#,
+        );
+
+        assert_eq!(
+            extract_history_title(codex.as_bytes(), "codex"),
+            Some("修复历史会话标题".into())
+        );
+    }
+
+    #[test]
+    fn codex_history_title_keeps_real_request_that_mentions_bootstrap_markers() {
+        let codex = r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"请说明 <recommended_plugins> 字段的用途"}]}}"##;
+
+        assert_eq!(
+            extract_history_title(codex.as_bytes(), "codex"),
+            Some("请说明 <recommended_plugins> 字段的用途".into())
+        );
+    }
+
+    #[test]
+    fn codex_history_title_skips_all_known_client_injected_context_blocks() {
+        let injected = [
+            "# AGENTS.md instructions for /Users/example/project\n<INSTRUCTIONS>managed</INSTRUCTIONS>",
+            "<environment_context>managed</environment_context>",
+            "<app-context>managed</app-context>",
+            "<skills_instructions>managed</skills_instructions>",
+            "<permissions instructions>managed</permissions instructions>",
+            "<recommended_plugins>catalogue</recommended_plugins>",
+            "<command-name>review</command-name>",
+            "<command-message>managed</command-message>",
+            "<turn_aborted>managed</turn_aborted>",
+            "<codex_internal_context source=\"goal\">managed</codex_internal_context>",
+            "<subagent_notification>managed</subagent_notification>",
+            "<codex_delegation>managed</codex_delegation>",
+            "<task-notification>managed</task-notification>",
+            "<local-command-stdout>managed</local-command-stdout>",
+        ];
+        let mut records = injected
+            .iter()
+            .map(|text| codex_user_record(text))
+            .collect::<Vec<_>>();
+        records.push(codex_user_record("修复历史会话标题"));
+        let codex = records.join("\n");
+
+        assert_eq!(
+            extract_history_title(codex.as_bytes(), "codex"),
+            Some("修复历史会话标题".into())
         );
     }
 

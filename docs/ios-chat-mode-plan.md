@@ -197,7 +197,7 @@ iOS 点击 timeline action
 | Desktop 文本、代码、图片的复制 | Mac 剪贴板不能远程共享；复制本身不需要读 Mac 路径时无需 Agent。 | 已在 timeline payload 的小文本/图片 preview 可本地复制；完整资源先由 `chatResourceOpen` 获取受权内容后复制。 | 使用 iOS clipboard，并给 VoiceOver 成功提示；大文件不自动整段复制。 |
 | 图片预览、加入下一条消息、下载、图片编辑 | Desktop 可以从本机路径解析原图；iOS 不能信任该路径。 | `chatResourceOpen` 返回安全 preview；`chatResourceDownload` 给副本；`chatAttachmentCreate` 只接受 Agent 公布且模型支持的 resource ID。图片编辑另列 capability，编辑结果必须成为新的受控附件。 | 预览/分享/“添加到聊天”按 capability 显示；模型不支持图片输入、资源过期或编辑不支持时明确禁用并说明。 |
 | diff 的文件打开、源文件比较、undo/reapply | undo/reapply 会修改 Mac 工作区，且可能与正在运行的 Codex/用户编辑冲突。 | 读取走 `chatResourceOpen` / `chatDiffPage`。变更类动作只能新增 `chatWorkspaceActionRequest`：包含 action ID、thread/turn、预期 revision、幂等键；Agent 重验 writer、设备控制、项目根并生成审批 request，不能由 Cloud 或 iOS 直接执行。 | 首期 diff 默认为只读；以后若支持 apply/revert，必须显示审批卡、预期文件/变更摘要、冲突/过期 revision 的失败结果。 |
-| background terminal / process | Desktop 可以直连本机 PTY；手机无法安全复用它，也不应把终端 ANSI 当聊天详情。 | `chatBackgroundTaskOpen` 仅返回结构化摘要/日志分页；若需要交互，跳转既有 Terminal 模式并经过现有 `device_control`。 | 聊天内显示任务状态、最后输出、跳转终端；不在 `ChatThreadView` 注入原始 terminal 输入框。 |
+| background terminal / process | Desktop 可以直连本机 PTY；手机无法安全复用它，也不应把终端 ANSI 当聊天详情。 | `chatBackgroundTaskOpen` 仅返回结构化摘要/日志分页；若需要交互，跳转既有 Terminal 模式并经过 Cloud 已鉴权的远程写路径。 | 聊天内显示任务状态、最后输出、跳转终端；不在 `ChatThreadView` 注入原始 terminal 输入框。 |
 | subagent transcript 与继续任务 | 子 thread 可能有独立 writer、pending request 和资源授权。 | `chatSubagentOpen` / page 返回 parent-child 已验证的 timeline 和 `canInteract`；继续/interrupt/response 复用 chat action，且 Agent 重新取得该 subagent lease。 | 可读详情始终可尝试；无 writer 或不可交互时只读并显示 Retry/原端提示，绝不把父 thread 的 writer 继承给子 thread。 |
 | 浏览本地预览站点、外部链接、MCP resource | localhost 只对 Mac 可见；第三方 URL、MCP payload 不能被信任。 | Agent 把 localhost 归类为 `macOnlyPreview`；外部 URL 要经过 scheme/host allowlist，返回 `externalLink`；MCP interactive resource 只有解析器受支持时返回受控 schema/HTTPS URL。 | `macOnlyPreview` 显示“仅可在 Mac 查看”；外部链接经确认在安全浏览器打开；未知或不安全 resource 仅显示摘要。 |
 | 编辑 Desktop writing block、表格、checklist、应用内 artefact | 这不是普通聊天 Markdown；编辑可能触发生成、保存、第三方集成或本机写入。 | 作为独立 `interactiveArtifact` capability：Agent 发布 schema、版本、允许 mutation 和审批策略；无安全的 iOS renderer 时不下发编辑动作。 | 一期只读快照；只有完整 schema/保存/冲突/回滚/E2E 均具备时才允许原生编辑，不能嵌入 Desktop WebView。 |
@@ -233,7 +233,7 @@ Desktop 在恢复碰到 writer conflict 时让会话只读：隐藏 composer，�
 3. 若 writer 是外部 Codex CLI 或 Desktop，聊天历史只读，隐藏输入框，显示 Retry；不得杀外部进程；
 4. 不能把一个正在执行的 CLI 会话接管成“继续 token 流式回复”。可以展示已持久化内容，但断开后只能显示“已中断/请在原端继续”。
 
-现有 Agent 已在 `main.rs` / `proto.rs` 对可变消息执行设备控制校验（`requires_device_control`）。这能防止多个 KN 连接抢同一台 Agent，但它**不能替代** Codex 的 thread writer 互斥：前者是 KN 设备控制，后者是 Codex 会话写锁。聊天动作应接入这条已存在的校验路径；任何仍在开发、尚未合并的控制状态实现都不能作为一期前提。[`agent/src/main.rs`](../agent/src/main.rs)、[`agent/src/proto.rs`](../agent/src/proto.rs)
+当前远程写权限由 Cloud 在公共 WS 边界统一校验：当前唯一登录安装、当前物理连接、设备归属、远程访问权益和 Agent 在线状态全部通过后，Agent 才会收到内部命令。它**不能替代** Codex 的 thread writer 互斥：KN 只保证账号到电脑的远程写授权，Codex 仍需要自己的会话写锁。聊天动作应接入这条 Cloud 授权路径；任何 Agent 本地控制租约都不能作为一期前提。[`agent/src/main.rs`](../agent/src/main.rs)、[`agent/src/proto.rs`](../agent/src/proto.rs)
 
 ### 2. 审批和问题会阻塞一个 turn
 
