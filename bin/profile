@@ -5,6 +5,7 @@ import os
 import sys
 import json
 import re
+import ast
 
 # Import shared config module (works both in dev and after install)
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -67,6 +68,86 @@ _CLI_ICONS = {
     "generic": "○",
 }
 _RESET = "\033[0m"
+
+
+def _strip_toml_comment(line):
+    """Strip TOML comments outside quoted strings."""
+    in_single = False
+    in_double = False
+    escaped = False
+    for i, ch in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if in_double and ch == "\\":
+            escaped = True
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if ch == "#" and not in_single and not in_double:
+            return line[:i].rstrip()
+    return line.rstrip()
+
+
+def _decode_toml_scalar(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return ast.literal_eval(value)
+    lower = value.lower()
+    if lower == "true":
+        return True
+    if lower == "false":
+        return False
+    return value
+
+
+def _parse_simple_toml_fallback(text):
+    """Parse the small TOML subset needed for Codex config import."""
+    root = {}
+    current = root
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = _strip_toml_comment(raw_line).strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line.strip("[]").strip()
+            if not section or section.startswith("[") or section.endswith("]"):
+                raise ValueError(f"unsupported TOML table on line {line_no}")
+            current = root
+            for part in section.split("."):
+                part = part.strip()
+                if not part:
+                    raise ValueError(f"unsupported TOML table on line {line_no}")
+                current = current.setdefault(part, {})
+                if not isinstance(current, dict):
+                    raise ValueError(f"conflicting TOML table on line {line_no}")
+            continue
+        if "=" not in line:
+            raise ValueError(f"unsupported TOML syntax on line {line_no}")
+        key, value = line.split("=", 1)
+        key = key.strip().strip("'\"")
+        if not key:
+            raise ValueError(f"empty TOML key on line {line_no}")
+        current[key] = _decode_toml_scalar(value)
+    return root
+
+
+def _load_toml_file(path):
+    """Load TOML without making Python 3.11 a hard runtime requirement."""
+    try:
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except ImportError:
+        with open(path, "r", encoding="utf-8") as f:
+            return _parse_simple_toml_fallback(f.read())
 
 
 def cmd_list(config):
@@ -243,25 +324,9 @@ def _import_codex_config(config, json_mode=False):
         print(f"Imported {len(env)} env vars from auth.json → profile '{name}'", file=sys.stderr if json_mode else sys.stdout)
         return True
 
-    # Parse TOML (requires Python 3.11+)
+    # Parse TOML.
     try:
-        import tomllib
-        with open(codex_file, "rb") as f:
-            codex = tomllib.load(f)
-    except ImportError:
-        print("Warning: Python 3.11+ required to read Codex config.toml", file=sys.stderr)
-        if not env:
-            return False
-        name = "codex-imported"
-        config.setdefault("profiles", {})[name] = {
-            "desc": "Imported from ~/.codex/auth.json",
-            "env": env,
-        }
-        if not config.get("default"):
-            config["default"] = name
-        cfg.write_config(config)
-        print(f"Imported {len(env)} env vars from auth.json → profile '{name}'", file=sys.stderr if json_mode else sys.stdout)
-        return True
+        codex = _load_toml_file(codex_file)
     except Exception as e:
         print(f"Warning: error reading {codex_file}: {e}", file=sys.stderr)
         if not env:

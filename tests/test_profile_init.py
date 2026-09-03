@@ -314,6 +314,32 @@ base_url = '{suffix}'
                 f"Failed for suffix {suffix}: got {config['profiles'][pname]['env'].get('OPENAI_BASE_URL')}"
             )
 
+    def test_simple_toml_fallback_extracts_codex_fields(self):
+        """Dependency-free TOML fallback reads the fields used by Codex import."""
+        toml = """model = 'gpt-5.5' # comment
+
+[model_providers.custom]
+name = 'fallback-provider'
+base_url = 'http://api.example.com/v1/responses'
+
+[shell_environment_policy.set]
+CUSTOM_FLAG = 'enabled # not a comment'
+"""
+        parsed = profile._parse_simple_toml_fallback(toml)
+        self.assertEqual(parsed["model"], "gpt-5.5")
+        self.assertEqual(
+            parsed["model_providers"]["custom"]["name"],
+            "fallback-provider",
+        )
+        self.assertEqual(
+            parsed["model_providers"]["custom"]["base_url"],
+            "http://api.example.com/v1/responses",
+        )
+        self.assertEqual(
+            parsed["shell_environment_policy"]["set"]["CUSTOM_FLAG"],
+            "enabled # not a comment",
+        )
+
     def test_corrupted_toml(self):
         """Malformed TOML → warning, fallback to auth.json if available."""
         config = cfg.read_config()

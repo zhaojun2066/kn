@@ -938,8 +938,7 @@ impl WsEnvelope {
     }
 }
 
-impl AgentIncoming {
-}
+impl AgentIncoming {}
 
 // ── Outbound messages ──────────────────────────────────────
 
@@ -1047,7 +1046,6 @@ impl WsMessageBuilder {
         })
         .to_string()
     }
-
 
     /// 会话启动失败通知。Cloud 消费并映射成 iOS 稳定错误语义。
     pub fn session_start_failed(profile: &str, reason: &str, request_id: Option<&str>) -> String {

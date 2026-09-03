@@ -39,6 +39,7 @@ portable-pty.workspace = true
 notify = "6"
 regex-lite.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
+toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

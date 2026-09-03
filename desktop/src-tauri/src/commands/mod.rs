@@ -11,8 +11,8 @@ pub mod external;
 pub mod file_io;
 pub mod network;
 pub mod platform;
-pub mod prompt_library;
 pub mod profile;
+pub mod prompt_library;
 pub mod release;
 pub mod system_scan;
 
@@ -23,7 +23,7 @@ pub use external::*;
 pub use file_io::*;
 pub use network::*;
 pub use platform::*;
-pub use prompt_library::*;
 pub use profile::*;
+pub use prompt_library::*;
 pub use release::*;
 pub use system_scan::*;

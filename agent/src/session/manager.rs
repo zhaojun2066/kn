@@ -110,7 +110,10 @@ impl SessionManager {
     }
 
     pub fn set_summary_notifier(&self, notifier: mpsc::UnboundedSender<(String, String)>) {
-        *self.summary_notifier.lock().unwrap_or_else(|e| e.into_inner()) = Some(notifier);
+        *self
+            .summary_notifier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(notifier);
     }
 
     /// 创建新会话（收到 start_session 后调用）。
@@ -438,7 +441,9 @@ impl SessionManager {
                     Ok(0) => break,
                     Ok(n) => {
                         if let Ok(text) = std::str::from_utf8(&buf[..n]) {
-                            if let Some(summary) = summary_session.record_display_summary_input(text) {
+                            if let Some(summary) =
+                                summary_session.record_display_summary_input(text)
+                            {
                                 if let Some(notifier) = summary_notifier.as_ref() {
                                     let _ = notifier.send((sid.clone(), summary));
                                 }
@@ -522,7 +527,12 @@ impl SessionManager {
             .ok_or_else(|| AgentError::SessionNotFound(nid.to_string()))?;
         let summary = session.record_display_summary_input(text);
         if let Some(value) = &summary {
-            if let Some(notifier) = self.summary_notifier.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            if let Some(notifier) = self
+                .summary_notifier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
                 let _ = notifier.send((nid.to_string(), value.clone()));
             }
         }
@@ -704,10 +714,7 @@ impl SessionManager {
                 None
             };
 
-        // 3. Tool 预处理
-        let prep = prepare_tool_env(tool, &env_vars)?;
-
-        // 4. openpty
+        // 3. openpty
         let pty_system = portable_pty::NativePtySystem::default();
         let size = portable_pty::PtySize {
             rows,
@@ -725,6 +732,10 @@ impl SessionManager {
             );
             format!("pty_alloc_failed: {}", e)
         })?;
+
+        // 4. Tool 预处理。Codex auth 短窗口切换必须发生在 openpty 成功后，
+        // 避免 PTY 分配失败时留下临时 auth.json。
+        let mut prep = prepare_tool_env(tool, &env_vars, profile)?;
 
         // 5. spawn CLI. Real CLI binaries are spawned directly so the shell
         // never falls back to interpreting Mach-O bytes as a script.
@@ -744,10 +755,16 @@ impl SessionManager {
         }
 
         for (k, v) in std::env::vars() {
+            if prep.env_removals.iter().any(|name| name == &k) {
+                continue;
+            }
             cmd.env(&k, &v);
         }
         if let Some(ref ev) = env_vars {
             for (k, v) in ev {
+                if prep.env_removals.iter().any(|name| name == k) {
+                    continue;
+                }
                 cmd.env(k, v);
             }
         }
@@ -783,6 +800,9 @@ impl SessionManager {
         }
 
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
+            if let Some(auth_restore) = prep.auth_restore.as_mut() {
+                let _ = auth_restore.restore_after_start();
+            }
             let _ = wss_tx.send(
                 serde_json::json!({
                     "type": "error_notify",
@@ -792,6 +812,12 @@ impl SessionManager {
             );
             format!("shell_spawn_failed: {}", e)
         })?;
+        if let Some(auth_restore) = prep.auth_restore.as_mut() {
+            if let Err(error) = auth_restore.restore_after_start() {
+                tracing::warn!(error=%error, "Codex auth restore after start failed; will retry on session exit");
+            }
+        }
+        let mut auth_restore_on_exit = prep.auth_restore;
         drop(pair.slave);
 
         // 6. 创建 I/O 通道 + session 生命周期令牌
@@ -907,6 +933,11 @@ impl SessionManager {
                     None
                 }
             };
+            if let Some(auth_restore) = auth_restore_on_exit.as_mut() {
+                if let Err(error) = auth_restore.restore_on_exit() {
+                    tracing::warn!(session_id=%sid, error=%error, "Codex auth restore on exit failed");
+                }
+            }
             // 子进程已退出，立即从 child_pids 移除，防止 kill_session 操作已回收的 PID
             {
                 let removed = self_for_pid_cleanup

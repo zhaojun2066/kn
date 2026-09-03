@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod codex_auth;
 pub mod env;
 pub mod git_delivery;
 pub mod git_preview;

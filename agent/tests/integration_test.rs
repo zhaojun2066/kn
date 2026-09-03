@@ -284,7 +284,10 @@ fn self_unbind_with_expired_credential_preserves_local_binding() {
     );
     assert_err(&unbind, "SELF_UNBIND_FAILED");
     cloud_thread.join().expect("mock Cloud thread");
-    assert!(token_path.exists(), "failed cloud unbind must preserve the local token");
+    assert!(
+        token_path.exists(),
+        "failed cloud unbind must preserve the local token"
+    );
 
     let status = ipc_request_json(
         &dir.ipc_sock(),

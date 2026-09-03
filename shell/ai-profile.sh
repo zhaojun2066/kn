@@ -175,8 +175,208 @@ _check_tool() {
     return 0
 }
 
+_kn_codex_home_dir() {
+    echo "${CODEX_HOME:-$HOME/.codex}"
+}
+
+_kn_codex_canonical_auth_path() {
+    local codex_home="$1"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$codex_home" <<'PY'
+import os, sys
+
+codex_home = os.path.abspath(os.path.expanduser(sys.argv[1]))
+auth = os.path.join(codex_home, "auth.json")
+if os.path.exists(auth):
+    print(os.path.realpath(auth))
+elif os.path.exists(codex_home):
+    print(os.path.join(os.path.realpath(codex_home), "auth.json"))
+else:
+    parent = os.path.dirname(codex_home)
+    if parent and os.path.exists(parent):
+        print(os.path.join(os.path.realpath(parent), os.path.basename(codex_home), "auth.json"))
+    else:
+        print(os.path.normpath(auth))
+PY
+    else
+        case "$codex_home" in
+            /*) echo "${codex_home%/}/auth.json" ;;
+            *) echo "$PWD/${codex_home%/}/auth.json" ;;
+        esac
+    fi
+}
+
+_kn_codex_auth_path() {
+    _kn_codex_canonical_auth_path "$(_kn_codex_home_dir)"
+}
+
+_kn_codex_auth_state_root() {
+    echo "${KN_CODEX_AUTH_STATE_DIR:-$HOME/.kn-codex-auth}"
+}
+
+_kn_codex_scope_id() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:16])' "$1"
+    else
+        printf '%s' "$1" | cksum | awk '{print $1}'
+    fi
+}
+
+_kn_codex_auth_scope_dir() {
+    local auth_path="$(_kn_codex_auth_path)"
+    echo "$(_kn_codex_auth_state_root)/$(_kn_codex_scope_id "$auth_path")"
+}
+
 _kn_codex_auth_lock_dir() {
-    echo "${KN_HOME:-$HOME/.kn}/locks/codex-auth.lock"
+    echo "$(_kn_codex_auth_scope_dir)/codex-auth.lock"
+}
+
+_kn_codex_account_auth_path() {
+    echo "$(_kn_codex_auth_scope_dir)/account.auth.json"
+}
+
+_kn_codex_ensure_auth_state_dirs() {
+    local state_root="$(_kn_codex_auth_state_root)"
+    local scope_dir="$(_kn_codex_auth_scope_dir)"
+    mkdir -p "$scope_dir" || return 1
+    chmod 700 "$state_root" "$scope_dir" 2>/dev/null || true
+}
+
+_kn_codex_profile_auth_path() {
+    local profile_name="$1"
+    local safe
+    safe="$(printf '%s' "$profile_name" | sed 's/[^A-Za-z0-9._-]/_/g')"
+    [ -n "$safe" ] || safe="profile"
+    echo "${KN_HOME:-$HOME/.kn}/codex-auth/api-key/${safe}.auth.json"
+}
+
+_kn_codex_auth_kind() {
+    local auth="$1"
+    [ -f "$auth" ] || { echo "unknown"; return; }
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$auth" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    print("unknown")
+    raise SystemExit
+mode = str(data.get("auth_mode", "")).lower()
+has_api = "OPENAI_API_KEY" in data
+if has_api or mode in ("apikey", "api_key"):
+    print("api_key")
+elif not has_api and (mode == "chatgpt" or "tokens" in data or "ChatgptAuthTokens" in data):
+    print("account")
+else:
+    print("unknown")
+PY
+    else
+        grep -q '"OPENAI_API_KEY"' "$auth" && { echo "api_key"; return; }
+        grep -q '"auth_mode"[[:space:]]*:[[:space:]]*"chatgpt"' "$auth" && { echo "account"; return; }
+        grep -q '"tokens"' "$auth" && { echo "account"; return; }
+        echo "unknown"
+    fi
+}
+
+_kn_codex_copy_auth_file() {
+    local src="$1"
+    local dst="$2"
+    case "$dst" in
+        "$(_kn_codex_auth_state_root)"/*) _kn_codex_ensure_auth_state_dirs || return 1 ;;
+    esac
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "kn: Codex auth 安全写入需要 python3。" >&2
+        return 1
+    fi
+    python3 - "$src" "$dst" <<'PY'
+import os, shutil, sys
+
+src, dst = sys.argv[1], sys.argv[2]
+os.makedirs(os.path.dirname(dst), exist_ok=True)
+tmp = f"{dst}.tmp.{os.getpid()}"
+shutil.copyfile(src, tmp)
+os.chmod(tmp, 0o600)
+with open(tmp, "rb") as f:
+    os.fsync(f.fileno())
+os.replace(tmp, dst)
+try:
+    dir_fd = os.open(os.path.dirname(dst), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+except OSError:
+    pass
+PY
+}
+
+_kn_codex_write_api_auth() {
+    local dst="$1"
+    local apikey="$2"
+    case "$dst" in
+        "$(_kn_codex_auth_state_root)"/*) _kn_codex_ensure_auth_state_dirs || return 1 ;;
+    esac
+    mkdir -p "$(dirname "$dst")" || return 1
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "kn: Codex API Key auth 切换需要 python3 来安全写入临时 auth.json。" >&2
+        return 1
+    fi
+    printf '%s' "$apikey" | python3 -c '
+import json, os, sys
+
+path = sys.argv[1]
+key = sys.stdin.read()
+tmp = f"{path}.tmp.{os.getpid()}"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump({"auth_mode": "apikey", "OPENAI_API_KEY": key}, f, separators=(",", ":"))
+    f.write("\n")
+    f.flush()
+    os.fsync(f.fileno())
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+try:
+    dir_fd = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+except OSError:
+    pass
+' "$dst"
+}
+
+_kn_codex_keyring_auth_configured() {
+    local cfg="$(_kn_codex_home_dir)/config.toml"
+    [ -f "$cfg" ] || return 1
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$cfg" <<'PY'
+import re, sys
+try:
+    text = open(sys.argv[1], encoding="utf-8").read()
+except OSError:
+    raise SystemExit(1)
+try:
+    import tomllib
+    if str(tomllib.loads(text).get("cli_auth_credentials_store", "")).lower() == "keyring":
+        raise SystemExit(0)
+    raise SystemExit(1)
+except Exception:
+    pass
+for line in text.splitlines():
+    line = line.split("#", 1)[0].strip()
+    if not line or not line.startswith("cli_auth_credentials_store"):
+        continue
+    match = re.match(r"cli_auth_credentials_store\s*=\s*['\"]?([^'\"]+)['\"]?\s*$", line)
+    if match and match.group(1).strip().lower() == "keyring":
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+        return $?
+    fi
+    grep -E '^[[:space:]]*cli_auth_credentials_store[[:space:]]*=' "$cfg" 2>/dev/null \
+        | sed 's/[[:space:]]*#.*$//' \
+        | grep -Eq '=[[:space:]]*["'\'']?keyring["'\'']?[[:space:]]*$'
 }
 
 _kn_pid_alive() {
@@ -190,16 +390,20 @@ _kn_codex_recover_stale_lock() {
     local written="$lock_dir/written.auth.json"
     local backup="$lock_dir/original.auth.json"
     local no_original="$lock_dir/no-original"
+    local account="$(_kn_codex_account_auth_path)"
 
     if [ -f "$written" ] && [ -f "$auth" ] && cmp -s "$auth" "$written"; then
         if [ -f "$backup" ]; then
-            cp "$backup" "$auth"
+            _kn_codex_copy_auth_file "$backup" "$auth"
             echo "kn: 已从上次异常退出中恢复 Codex auth.json" >&2
         elif [ -f "$no_original" ]; then
             rm -f "$auth"
             echo "kn: 已清理上次异常退出留下的 Codex 临时 auth.json" >&2
         fi
     else
+        if [ "$(_kn_codex_auth_kind "$auth")" = "account" ]; then
+            _kn_codex_copy_auth_file "$auth" "$account"
+        fi
         echo "kn: 检测到上次 Codex API Key 会话异常退出，但 auth.json 已变化，已保留当前内容" >&2
     fi
     rm -rf "$lock_dir"
@@ -211,9 +415,11 @@ _kn_codex_acquire_auth_lock() {
     local lock_dir="$(_kn_codex_auth_lock_dir)"
     local lock_parent
     lock_parent="$(dirname "$lock_dir")"
-    mkdir -p "$lock_parent"
+    _kn_codex_ensure_auth_state_dirs || return 1
+    mkdir -p "$lock_parent" || return 1
 
     if mkdir "$lock_dir" 2>/dev/null; then
+        chmod 700 "$lock_dir" 2>/dev/null || true
         {
             echo "pid=$$"
             echo "profile=$profile_name"
@@ -234,6 +440,7 @@ _kn_codex_acquire_auth_lock() {
 
     _kn_codex_recover_stale_lock "$lock_dir" "$auth"
     if mkdir "$lock_dir" 2>/dev/null; then
+        chmod 700 "$lock_dir" 2>/dev/null || true
         {
             echo "pid=$$"
             echo "profile=$profile_name"
@@ -248,23 +455,120 @@ _kn_codex_acquire_auth_lock() {
     return 1
 }
 
+_kn_codex_recover_or_reject_existing_lock() {
+    local auth="$1"
+    local lock_dir="$(_kn_codex_auth_lock_dir)"
+    [ -d "$lock_dir" ] || return 0
+
+    local old_pid
+    old_pid="$(sed -n 's/^pid=//p' "$lock_dir/meta" 2>/dev/null | head -1)"
+    if _kn_pid_alive "$old_pid"; then
+        echo "kn: Codex auth 正在由另一个 kn 会话切换，暂时不能启动账号登录配置。" >&2
+        return 1
+    fi
+    _kn_codex_recover_stale_lock "$lock_dir" "$auth"
+}
+
 _kn_codex_restore_auth_and_release() {
     local lock_dir="$1"
     local auth="$2"
     local written="$lock_dir/written.auth.json"
     local backup="$lock_dir/original.auth.json"
     local no_original="$lock_dir/no-original"
+    local account="$(_kn_codex_account_auth_path)"
 
     if [ -f "$written" ] && [ -f "$auth" ] && cmp -s "$auth" "$written"; then
         if [ -f "$backup" ]; then
-            cp "$backup" "$auth"
+            _kn_codex_copy_auth_file "$backup" "$auth"
         elif [ -f "$no_original" ]; then
             rm -f "$auth"
         fi
     else
+        if [ "$(_kn_codex_auth_kind "$auth")" = "account" ]; then
+            _kn_codex_copy_auth_file "$auth" "$account"
+        fi
         echo "kn: Codex auth.json 在会话期间被外部修改，已保留当前内容。" >&2
     fi
     rm -rf "$lock_dir"
+}
+
+_kn_codex_run_with_after_start_restore() {
+    local tool="$1"
+    local lock_dir="$2"
+    local auth="$3"
+    shift 3
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        _kn_codex_restore_auth_and_release "$lock_dir" "$auth"
+        echo "kn: Codex auth 短窗口恢复需要 python3；已恢复原 auth.json，未启动 Codex。" >&2
+        return 1
+    fi
+
+    python3 - "$tool" "$lock_dir" "$auth" "$(_kn_codex_account_auth_path)" "$@" <<'PY'
+import json, os, shutil, subprocess, sys
+
+tool, lock_dir, auth, account, *args = sys.argv[1:]
+written = os.path.join(lock_dir, "written.auth.json")
+original = os.path.join(lock_dir, "original.auth.json")
+no_original = os.path.join(lock_dir, "no-original")
+
+def same_file(a, b):
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
+
+def classify(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return "unknown"
+    mode = str(data.get("auth_mode", "")).lower()
+    has_api = "OPENAI_API_KEY" in data
+    if has_api or mode in ("apikey", "api_key"):
+        return "api_key"
+    if not has_api and (mode == "chatgpt" or "tokens" in data or "ChatgptAuthTokens" in data):
+        return "account"
+    return "unknown"
+
+def copy_auth(src, dst):
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    tmp = f"{dst}.tmp.{os.getpid()}"
+    shutil.copyfile(src, tmp)
+    os.chmod(tmp, 0o600)
+    with open(tmp, "rb") as f:
+        os.fsync(f.fileno())
+    os.replace(tmp, dst)
+    try:
+        dir_fd = os.open(os.path.dirname(dst), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+def restore():
+    if same_file(auth, written):
+        if os.path.exists(original):
+            copy_auth(original, auth)
+        elif os.path.exists(no_original) and os.path.exists(auth):
+            os.remove(auth)
+    elif classify(auth) == "account":
+        copy_auth(auth, account)
+    shutil.rmtree(lock_dir, ignore_errors=True)
+
+try:
+    proc = subprocess.Popen([tool, *args])
+except Exception:
+    restore()
+    raise
+
+restore()
+sys.exit(proc.wait())
+PY
 }
 
 # ── Launch tool with profile env injected ──
@@ -346,39 +650,85 @@ print(json.dumps({'env': env}))
             fi
             ;;
         codex)
-            # Codex ignores OPENAI_API_KEY env var; reads only ~/.codex/auth.json.
-            # API Key profiles temporarily write auth.json under a kn lock, then restore it.
-            # Local-login profiles do not touch auth.json and let Codex validate login state.
-            local _kn_apikey=$(echo "$env_output" | sed -n "s/^export OPENAI_API_KEY='\\(.*\\)'/\\1/p")
-            local _kn_base=$(echo "$env_output" | sed -n "s/^export OPENAI_BASE_URL='\\(.*\\)'/\\1/p")
-            local _kn_model=$(echo "$env_output" | sed -n "s/^export OPENAI_MODEL='\\(.*\\)'/\\1/p")
-            local _kn_auth="$HOME/.codex/auth.json"
-            [ -n "$_kn_model" ] && set -- -c "model=$(_toml_string "$_kn_model")" "$@"
-            if [ -n "$_kn_base" ]; then
-                set -- \
-                    -c "model_provider=\"custom\"" \
-                    -c "model_providers.custom.name=\"Custom\"" \
-                    -c "model_providers.custom.env_key=\"OPENAI_API_KEY\"" \
-                    -c "model_providers.custom.base_url=$(_toml_string "$_kn_base")" \
-                    "$@"
+            # Codex reads auth.json during startup. kn only swaps that file for
+            # the launch window, then restores the previous file immediately.
+            if _kn_codex_keyring_auth_configured; then
+                echo "kn: Codex 已配置 keyring 凭据存储，当前版本只接管 file auth storage。" >&2
+                return 1
             fi
-            if [ -n "$_kn_apikey" ]; then
+            local _kn_apikey _kn_base _kn_model _kn_auth_mode
+            _kn_apikey="$(unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL _KN_AUTH_MODE; eval "$env_output"; printf '%s' "${OPENAI_API_KEY-}")"
+            _kn_base="$(unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL _KN_AUTH_MODE; eval "$env_output"; printf '%s' "${OPENAI_BASE_URL-}")"
+            _kn_model="$(unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL _KN_AUTH_MODE; eval "$env_output"; printf '%s' "${OPENAI_MODEL-}")"
+            _kn_auth_mode="$(unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL _KN_AUTH_MODE; eval "$env_output"; printf '%s' "${_KN_AUTH_MODE-}" | tr '[:upper:]' '[:lower:]')"
+            local _kn_auth="$(_kn_codex_auth_path)"
+            local _kn_account="$(_kn_codex_account_auth_path)"
+            local _kn_explicit_local_login=0
+            local _kn_explicit_api_key=0
+            case "$_kn_auth_mode" in
+                local_login|chatgpt) _kn_explicit_local_login=1 ;;
+                api_key|apikey) _kn_explicit_api_key=1 ;;
+            esac
+            [ -n "$_kn_model" ] && set -- -c "model=$(_toml_string "$_kn_model")" "$@"
+            if [ "$_kn_explicit_api_key" = "1" ] && [ -z "$_kn_apikey" ]; then
+                echo "kn: Codex API Key profile 缺少 OPENAI_API_KEY。" >&2
+                return 1
+            fi
+            if [ "$_kn_explicit_local_login" != "1" ] && { [ -n "$_kn_apikey" ] || [ "$_kn_explicit_api_key" = "1" ]; }; then
+                if [ -n "$_kn_base" ]; then
+                    set -- \
+                        -c "model_provider=\"custom\"" \
+                        -c "model_providers.custom.name=\"Custom\"" \
+                        -c "model_providers.custom.env_key=\"OPENAI_API_KEY\"" \
+                        -c "model_providers.custom.base_url=$(_toml_string "$_kn_base")" \
+                        -c "model_providers.custom.requires_openai_auth=true" \
+                        -c "model_providers.custom.wire_api=\"responses\"" \
+                        "$@"
+                else
+                    set -- -c "model_provider=\"openai\"" "$@"
+                fi
                 local _kn_lock_dir
                 _kn_lock_dir="$(_kn_codex_acquire_auth_lock "$profile_name" "$_kn_auth")" || return 1
-                [ -d "$HOME/.codex" ] || mkdir -p "$HOME/.codex"
+                [ -d "$(dirname "$_kn_auth")" ] || mkdir -p "$(dirname "$_kn_auth")"
                 if [ -f "$_kn_auth" ]; then
-                    cp "$_kn_auth" "$_kn_lock_dir/original.auth.json"
+                    _kn_codex_copy_auth_file "$_kn_auth" "$_kn_lock_dir/original.auth.json" || { rm -rf "$_kn_lock_dir"; return 1; }
+                    if [ "$(_kn_codex_auth_kind "$_kn_auth")" = "account" ]; then
+                        _kn_codex_copy_auth_file "$_kn_auth" "$_kn_account" || { rm -rf "$_kn_lock_dir"; return 1; }
+                    fi
                 else
-                    : > "$_kn_lock_dir/no-original"
+                    : > "$_kn_lock_dir/no-original" || { rm -rf "$_kn_lock_dir"; return 1; }
+                    chmod 600 "$_kn_lock_dir/no-original" 2>/dev/null || true
                 fi
-                printf '{"auth_mode":"apikey","OPENAI_API_KEY":"%s"}\n' "$_kn_apikey" > "$_kn_auth"
-                cp "$_kn_auth" "$_kn_lock_dir/written.auth.json"
-                (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")
-                local _kn_rc=$?
-                _kn_codex_restore_auth_and_release "$_kn_lock_dir" "$_kn_auth"
-                return $_kn_rc
+                _kn_codex_write_api_auth "$(_kn_codex_profile_auth_path "$profile_name")" "$_kn_apikey" || { _kn_codex_restore_auth_and_release "$_kn_lock_dir" "$_kn_auth"; return 1; }
+                _kn_codex_write_api_auth "$_kn_auth" "$_kn_apikey" || { _kn_codex_restore_auth_and_release "$_kn_lock_dir" "$_kn_auth"; return 1; }
+                _kn_codex_copy_auth_file "$_kn_auth" "$_kn_lock_dir/written.auth.json" || { _kn_codex_restore_auth_and_release "$_kn_lock_dir" "$_kn_auth"; return 1; }
+                (eval "$env_output" && unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && _kn_codex_run_with_after_start_restore "$tool" "$_kn_lock_dir" "$_kn_auth" "$@")
+                return $?
             fi
-            (eval "$env_output" && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")
+
+            set -- -c "model_provider=\"openai\"" "$@"
+            if [ "$(_kn_codex_auth_kind "$_kn_auth")" = "account" ]; then
+                _kn_codex_copy_auth_file "$_kn_auth" "$_kn_account" || return 1
+                (eval "$env_output" && unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")
+                return
+            fi
+            _kn_codex_recover_or_reject_existing_lock "$_kn_auth" || return 1
+            if [ -f "$_kn_account" ]; then
+                local _kn_lock_dir
+                _kn_lock_dir="$(_kn_codex_acquire_auth_lock "$profile_name" "$_kn_auth")" || return 1
+                [ -d "$(dirname "$_kn_auth")" ] || mkdir -p "$(dirname "$_kn_auth")"
+                if [ -f "$_kn_auth" ]; then
+                    _kn_codex_copy_auth_file "$_kn_auth" "$_kn_lock_dir/original.auth.json" || { rm -rf "$_kn_lock_dir"; return 1; }
+                else
+                    : > "$_kn_lock_dir/no-original" || { rm -rf "$_kn_lock_dir"; return 1; }
+                    chmod 600 "$_kn_lock_dir/no-original" 2>/dev/null || true
+                fi
+                _kn_codex_copy_auth_file "$_kn_account" "$_kn_auth" || { _kn_codex_restore_auth_and_release "$_kn_lock_dir" "$_kn_auth"; return 1; }
+                _kn_codex_copy_auth_file "$_kn_auth" "$_kn_lock_dir/written.auth.json" || { _kn_codex_restore_auth_and_release "$_kn_lock_dir" "$_kn_auth"; return 1; }
+                (eval "$env_output" && unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && _kn_codex_run_with_after_start_restore "$tool" "$_kn_lock_dir" "$_kn_auth" "$@")
+                return $?
+            fi
+            (eval "$env_output" && unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL && export KN_PROFILE="$profile_name" && export KN_CLI_TOOL="$tool" && export KN_WORKING_DIR="$PWD" && command "$tool" "$@")
             return
             ;;
         *)

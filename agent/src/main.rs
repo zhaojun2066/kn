@@ -6,8 +6,7 @@
 
 use clap::Parser;
 use kn_agent::{
-    ack, bind, config, device, error::AgentError, ipc, proto, session, state,
-    ws_client,
+    ack, bind, config, device, error::AgentError, ipc, proto, session, state, ws_client,
 };
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::Deserialize;
@@ -736,10 +735,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 loop {
                     let delivered = summary_outgoing.lock().await.as_ref().is_some_and(|tx| {
                         tx.send(proto::WsMessageBuilder::session_summary_updated(
-                            &session_id, &summary, unix_millis(),
-                        )).is_ok()
+                            &session_id,
+                            &summary,
+                            unix_millis(),
+                        ))
+                        .is_ok()
                     });
-                    if delivered { break; }
+                    if delivered {
+                        break;
+                    }
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -1833,7 +1837,8 @@ async fn handle_incoming(
                         }
                         let nid = session_summary.nid.clone();
                         let text = content.clone();
-                        if let Err(error) = sessions.record_display_summary_input(&nid, &text).await {
+                        if let Err(error) = sessions.record_display_summary_input(&nid, &text).await
+                        {
                             tracing::warn!(nid = %nid, %error, "会话摘要记录失败");
                         }
                         if session_summary.kind == session::SessionKind::Relay {

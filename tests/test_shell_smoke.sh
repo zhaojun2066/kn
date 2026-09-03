@@ -219,11 +219,24 @@ profiles:
       _KN_AUTH_MODE: api_key
       OPENAI_API_KEY: sk-codex-test
       OPENAI_BASE_URL: https://proxy.example.com/v1
+      OPENAI_MODEL: gpt-test
+  codex-key-missing:
+    desc: "Codex API key mode without key"
+    env:
+      _KN_CLI_TYPE: codex
+      _KN_AUTH_MODE: api_key
   codex-login:
     desc: "Codex local login"
     env:
       _KN_CLI_TYPE: codex
       _KN_AUTH_MODE: local_login
+  codex-login-dirty:
+    desc: "Codex local login with residual key env"
+    env:
+      _KN_CLI_TYPE: codex
+      _KN_AUTH_MODE: local_login
+      OPENAI_API_KEY: sk-should-not-be-used
+      OPENAI_BASE_URL: https://should-be-ignored.example/v1
   qoder-token:
     desc: "QoderCN token"
     env:
@@ -234,6 +247,18 @@ YEOF
 cat > "$AUTH_BIN/codex" << 'YEOF'
 #!/bin/bash
 printf '%s\n' "$@" > "$HOME/codex-args.txt"
+if [ -n "${EXPECT_AUTH_RESTORED:-}" ]; then
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        current="__missing__"
+        [ -f "$CODEX_HOME/auth.json" ] && current=$(cat "$CODEX_HOME/auth.json")
+        [ "$current" = "$EXPECT_AUTH_RESTORED" ] && break
+        sleep 0.05
+    done
+    [ -f "$CODEX_HOME/auth.json" ] && cat "$CODEX_HOME/auth.json" > "$HOME/auth-during-codex.txt" || printf '__missing__' > "$HOME/auth-during-codex.txt"
+fi
+if [ -n "${EXPECT_NO_OPENAI_AUTH_ENV:-}" ]; then
+    [ -z "${OPENAI_API_KEY+x}" ] && [ -z "${OPENAI_BASE_URL+x}" ] && [ -z "${OPENAI_MODEL+x}" ] || exit 10
+fi
 exit 0
 YEOF
 cat > "$AUTH_BIN/qoderclicn" << 'YEOF'
@@ -242,21 +267,57 @@ cat > "$AUTH_BIN/qoderclicn" << 'YEOF'
 exit 0
 YEOF
 chmod +x "$AUTH_BIN/codex" "$AUTH_BIN/qoderclicn"
+printf '%s\n' 'cli_auth_credentials_store = "file" # keyring is disabled' > "$AUTH_HOME/.codex/config.toml"
 
 auth_before=$(cat "$AUTH_HOME/.codex/auth.json")
-HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile codex codex-key >/dev/null
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" OPENAI_API_KEY=parent-key OPENAI_BASE_URL=https://parent.example/v1 OPENAI_MODEL=parent-model EXPECT_AUTH_RESTORED="$auth_before" EXPECT_NO_OPENAI_AUTH_ENV=1 _ai_launch_with_profile codex codex-key >/dev/null
 auth_after=$(cat "$AUTH_HOME/.codex/auth.json")
-[ "$auth_after" = "$auth_before" ] && pass "Codex API key profile restores auth.json" \
-    || fail "Codex API key profile did not restore auth.json"
+[ "$auth_after" = "$auth_before" ] && pass "Codex API key profile restores auth.json after start" \
+    || fail "Codex API key profile did not restore auth.json after start"
+[ "$(cat "$AUTH_HOME/auth-during-codex.txt")" = "$auth_before" ] && pass "Codex API key profile is restored while CLI is running" \
+    || fail "Codex API key profile left temporary auth while CLI was running"
+[ ! -d "$AUTH_HOME/.codex/kn-auth" ] && pass "Codex auth state is not written under CODEX_HOME" \
+    || fail "Codex auth state was written under CODEX_HOME"
+[ -n "$(find "$AUTH_HOME/.kn-codex-auth" -name account.auth.json -print -quit 2>/dev/null)" ] && pass "Codex account auth slot stored outside CODEX_HOME" \
+    || fail "Codex account auth slot was not stored outside CODEX_HOME"
 grep -q 'model_provider="custom"' "$AUTH_HOME/codex-args.txt" \
     && pass "Codex API key profile selects custom provider for base URL" \
     || fail "Codex API key profile did not select custom provider"
+grep -q 'model_providers.custom.requires_openai_auth=true' "$AUTH_HOME/codex-args.txt" \
+    && pass "Codex API key profile passes custom provider auth flag" \
+    || fail "Codex API key profile missed custom provider auth flag"
+grep -q 'model="gpt-test"' "$AUTH_HOME/codex-args.txt" \
+    && pass "Codex API key profile passes model as launch arg" \
+    || fail "Codex API key profile missed model launch arg"
 
-HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile codex codex-login >/dev/null
+rm -f "$AUTH_HOME/codex-args.txt"
+set +e
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" OPENAI_API_KEY=parent-key _ai_launch_with_profile codex codex-key-missing >/dev/null 2>&1
+missing_key_rc=$?
+set -e
+[ "$missing_key_rc" != "0" ] && [ ! -f "$AUTH_HOME/codex-args.txt" ] \
+    && pass "Codex API key mode ignores parent OPENAI_API_KEY when profile key is missing" \
+    || fail "Codex API key mode used parent OPENAI_API_KEY for missing profile key"
+
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile codex codex-login >/dev/null
 auth_login_after=$(cat "$AUTH_HOME/.codex/auth.json")
 [ "$auth_login_after" = "$auth_before" ] && pass "Codex local-login profile does not modify auth.json" \
     || fail "Codex local-login profile modified auth.json"
-HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" ai codex codex-login >/dev/null
+grep -q 'model_provider="openai"' "$AUTH_HOME/codex-args.txt" \
+    && pass "Codex local-login profile selects OpenAI provider" \
+    || fail "Codex local-login profile did not select OpenAI provider"
+scope_dir=$(HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" _kn_codex_auth_scope_dir)
+scope_mode=$(stat -f "%Lp" "$scope_dir" 2>/dev/null || stat -c "%a" "$scope_dir" 2>/dev/null)
+[ "$scope_mode" = "700" ] && pass "Codex auth state scope dir is private" \
+    || fail "Codex auth state scope dir mode expected 700, got '$scope_mode'"
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" EXPECT_NO_OPENAI_AUTH_ENV=1 _ai_launch_with_profile codex codex-login-dirty >/dev/null
+grep -q 'model_provider="openai"' "$AUTH_HOME/codex-args.txt" \
+    && pass "Codex explicit local-login wins over residual API key" \
+    || fail "Codex explicit local-login did not force OpenAI provider"
+[ ! -f "$AUTH_HOME/.kn/codex-auth/api-key/codex-login-dirty.auth.json" ] \
+    && pass "Codex local-login residual API key is not persisted as API slot" \
+    || fail "Codex local-login residual API key created API slot"
+HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" ai codex codex-login >/dev/null
 if grep -q '^codex-login$' "$AUTH_HOME/codex-args.txt"; then
     fail "ai codex <local-login-profile> leaked profile name to Codex"
 else
@@ -273,6 +334,62 @@ set -e
 [ ! -f "$AUTH_HOME/codex-args.txt" ] \
     && pass "ai codex <missing-profile> does not launch Codex" \
     || fail "ai codex <missing-profile> launched Codex"
+
+NOAUTH_HOME="$TMP_DIR/noauth-home"
+mkdir -p "$NOAUTH_HOME/.kn" "$NOAUTH_HOME/.codex"
+cp "$AUTH_HOME/.kn/config.yaml" "$NOAUTH_HOME/.kn/config.yaml"
+HOME="$NOAUTH_HOME" KN_HOME="$NOAUTH_HOME/.kn" CODEX_HOME="$NOAUTH_HOME/.codex" CONFIG="$NOAUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" EXPECT_AUTH_RESTORED="__missing__" _ai_launch_with_profile codex codex-key >/dev/null
+[ ! -f "$NOAUTH_HOME/.codex/auth.json" ] && pass "Codex API key profile removes temporary auth when no original existed" \
+    || fail "Codex API key profile left auth.json when no original existed"
+
+SLOT_HOME="$TMP_DIR/slot-home"
+mkdir -p "$SLOT_HOME/.kn" "$SLOT_HOME/.codex"
+cp "$AUTH_HOME/.kn/config.yaml" "$SLOT_HOME/.kn/config.yaml"
+slot_original='{"auth_mode":"apikey","OPENAI_API_KEY":"outside"}'
+printf '%s\n' "$slot_original" > "$SLOT_HOME/.codex/auth.json"
+slot_scope=$(HOME="$SLOT_HOME" KN_HOME="$SLOT_HOME/.kn" CODEX_HOME="$SLOT_HOME/.codex" _kn_codex_auth_scope_dir)
+mkdir -p "$slot_scope"
+printf '%s\n' '{"auth_mode":"chatgpt","tokens":{"id_token":"slot"}}' > "$slot_scope/account.auth.json"
+HOME="$SLOT_HOME" KN_HOME="$SLOT_HOME/.kn" CODEX_HOME="$SLOT_HOME/.codex" CONFIG="$SLOT_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" EXPECT_AUTH_RESTORED="$slot_original" _ai_launch_with_profile codex codex-login >/dev/null
+[ "$(cat "$SLOT_HOME/.codex/auth.json")" = "$slot_original" ] && pass "Codex local-login slot restore is temporary" \
+    || fail "Codex local-login slot did not restore original auth"
+[ "$(cat "$SLOT_HOME/auth-during-codex.txt")" = "$slot_original" ] && pass "Codex local-login auth is restored while CLI is running" \
+    || fail "Codex local-login auth remained swapped while CLI was running"
+
+lock_prod=$(HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" _kn_codex_auth_lock_dir)
+lock_dev=$(HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn-dev" CODEX_HOME="$AUTH_HOME/.codex" _kn_codex_auth_lock_dir)
+[ "$lock_prod" = "$lock_dev" ] && pass "Codex auth lock is shared across prod and dev KN_HOME" \
+    || fail "Codex auth lock differs across prod and dev KN_HOME"
+lock_no_slash=$(HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex" _kn_codex_auth_lock_dir)
+lock_slash=$(HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CODEX_HOME="$AUTH_HOME/.codex/" _kn_codex_auth_lock_dir)
+[ "$lock_no_slash" = "$lock_slash" ] && pass "Codex auth lock is stable with trailing slash CODEX_HOME" \
+    || fail "Codex auth lock differs for trailing slash CODEX_HOME"
+
+LIVE_LOCK_HOME="$TMP_DIR/live-lock-home"
+mkdir -p "$LIVE_LOCK_HOME/.kn" "$LIVE_LOCK_HOME/.codex"
+cp "$AUTH_HOME/.kn/config.yaml" "$LIVE_LOCK_HOME/.kn/config.yaml"
+printf '%s\n' '{"auth_mode":"apikey","OPENAI_API_KEY":"temporary"}' > "$LIVE_LOCK_HOME/.codex/auth.json"
+live_lock=$(HOME="$LIVE_LOCK_HOME" KN_HOME="$LIVE_LOCK_HOME/.kn" CODEX_HOME="$LIVE_LOCK_HOME/.codex" _kn_codex_auth_lock_dir)
+mkdir -p "$live_lock"
+printf 'pid=%s\n' "$$" > "$live_lock/meta"
+rm -f "$LIVE_LOCK_HOME/codex-args.txt"
+set +e
+HOME="$LIVE_LOCK_HOME" KN_HOME="$LIVE_LOCK_HOME/.kn" CODEX_HOME="$LIVE_LOCK_HOME/.codex" CONFIG="$LIVE_LOCK_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile codex codex-login >/dev/null 2>&1
+live_lock_rc=$?
+set -e
+[ "$live_lock_rc" != "0" ] && [ ! -f "$LIVE_LOCK_HOME/codex-args.txt" ] && pass "Codex local-login rejects live auth lock" \
+    || fail "Codex local-login did not reject live auth lock"
+
+KEYRING_HOME="$TMP_DIR/keyring-home"
+mkdir -p "$KEYRING_HOME/.kn" "$KEYRING_HOME/.codex"
+cp "$AUTH_HOME/.kn/config.yaml" "$KEYRING_HOME/.kn/config.yaml"
+printf '%s\n' 'cli_auth_credentials_store = "keyring"' > "$KEYRING_HOME/.codex/config.toml"
+set +e
+HOME="$KEYRING_HOME" KN_HOME="$KEYRING_HOME/.kn" CODEX_HOME="$KEYRING_HOME/.codex" CONFIG="$KEYRING_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile codex codex-login >/dev/null 2>&1
+keyring_rc=$?
+set -e
+[ "$keyring_rc" != "0" ] && pass "Codex explicit keyring auth storage is rejected" \
+    || fail "Codex explicit keyring auth storage was not rejected"
 
 HOME="$AUTH_HOME" KN_HOME="$AUTH_HOME/.kn" CONFIG="$AUTH_HOME/.kn/config.yaml" PATH="$AUTH_BIN:$PATH" _ai_launch_with_profile qoderclicn qoder-token >/dev/null \
     && pass "QoderCN token profile injects QODERCN_PERSONAL_ACCESS_TOKEN" \

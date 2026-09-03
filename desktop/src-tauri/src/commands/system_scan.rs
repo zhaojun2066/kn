@@ -187,16 +187,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let codex = tmp.path().join(".codex");
         std::fs::create_dir_all(&codex).unwrap();
-        std::fs::write(codex.join("auth.json"), r#"{"auth_mode":"chatgpt","tokens":{}}"#).unwrap();
+        std::fs::write(
+            codex.join("auth.json"),
+            r#"{"auth_mode":"chatgpt","tokens":{}}"#,
+        )
+        .unwrap();
         std::fs::write(codex.join("config.toml"), r#"model = "gpt-5-codex""#).unwrap();
         let err = scan_system_configs_from_home(tmp.path().to_path_buf()).unwrap_err();
         assert!(err.contains("未找到配置"));
 
-        std::fs::write(codex.join("auth.json"), r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#).unwrap();
+        std::fs::write(
+            codex.join("auth.json"),
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}"#,
+        )
+        .unwrap();
         let result = scan_system_configs_from_home(tmp.path().to_path_buf()).unwrap();
         assert_eq!(result.profiles.len(), 1);
         assert_eq!(result.profiles[0].cli_type, "codex");
         assert_eq!(result.profiles[0].auth_mode, "api_key");
-        assert_eq!(result.profiles[0].env.get("OPENAI_API_KEY").unwrap(), "sk-test");
+        assert_eq!(
+            result.profiles[0].env.get("OPENAI_API_KEY").unwrap(),
+            "sk-test"
+        );
     }
 }
