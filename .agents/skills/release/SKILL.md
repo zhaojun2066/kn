@@ -49,10 +49,10 @@ git log --oneline origin/main..HEAD 2>/dev/null || echo "已同步"
 
 ### Step 3: 选择发布模式
 
-读取当前版本：
+读取当前版本（唯一版本源是根 `Cargo.toml` 的 workspace package version）：
 
 ```bash
-grep '"version"' desktop/src-tauri/tauri.conf.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/'
+grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/'
 ```
 
 检查最新 release tag：
@@ -166,11 +166,9 @@ git cliff --unreleased
 
 ```bash
 # 1. 如果还没在 main，切到 main 并 merge（Step 2 中可能已执行）
-# 2. 更新版本号
-#    - 用 Edit 工具修改 desktop/src-tauri/tauri.conf.json 的 version
-#    - 用 Edit 工具修改 desktop/src-tauri/Cargo.toml 的 version
+# 2. 更新唯一版本号：根 Cargo.toml 的 [workspace.package] version
 # 3. 提交
-git add desktop/src-tauri/tauri.conf.json desktop/src-tauri/Cargo.toml
+git add Cargo.toml
 git commit -m "release: v<VERSION>"
 # 4. 打 annotated tag
 git tag -a v<VERSION> -m "v<VERSION>"

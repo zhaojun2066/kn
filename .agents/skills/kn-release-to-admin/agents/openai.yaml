@@ -1,0 +1,6 @@
+interface:
+  display_name: "KN 发布到 Admin"
+  short_description: "等待 GitHub 构建并上传 KN 桌面候选包到 Admin"
+  default_prompt: "Use $kn-release-to-admin to wait for v1.2.0 to build and upload it as an Admin draft."
+policy:
+  allow_implicit_invocation: true
