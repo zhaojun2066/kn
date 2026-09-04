@@ -9,6 +9,7 @@ import http.client
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from urllib.parse import urlparse
 VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 WORKFLOW = "build-desktop.yml"
 WORKFLOW_NAME = "Build Desktop App"
+MACOS_SYSTEM_CA_BUNDLE = Path("/etc/ssl/cert.pem")
 
 
 def fail(message: str) -> None:
@@ -191,7 +193,15 @@ class AdminClient:
         self.token = token
 
     def _connection(self) -> http.client.HTTPSConnection:
-        return http.client.HTTPSConnection(self.base.netloc, timeout=120)
+        # Python.org's macOS framework may not include the current system trust
+        # roots. Prefer the OS bundle that curl and system clients use, without
+        # relaxing certificate or hostname verification.
+        context = (
+            ssl.create_default_context(cafile=str(MACOS_SYSTEM_CA_BUNDLE))
+            if MACOS_SYSTEM_CA_BUNDLE.is_file()
+            else ssl.create_default_context()
+        )
+        return http.client.HTTPSConnection(self.base.netloc, timeout=120, context=context)
 
     def _path(self, endpoint: str) -> str:
         prefix = self.base.path.rstrip("/")
