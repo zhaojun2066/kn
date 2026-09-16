@@ -501,25 +501,4 @@ mod tests {
         assert!(frames[0].len() <= outbound_frame::MAX_TEXT_FRAME_BYTES);
     }
 
-    #[test]
-    fn oversized_log_window_result_keeps_required_window_fields() {
-        let original = serde_json::json!({
-            "type": "project_verify_log_window_result",
-            "data": {
-                "projectKey": "17:/repo", "deviceId": 17, "projectPath": "/repo",
-                "requestId": "r-log", "runId": "run-1", "stage": "build",
-                "lines": ["x".repeat(800 * 1024)]
-            }
-        })
-        .to_string();
-        let frames = outbound_frame::protect_outbound_text(original);
-        let value: serde_json::Value = serde_json::from_str(&frames[0]).unwrap();
-        let data = &value["data"];
-        assert_eq!(data["status"], "responseTooLarge");
-        assert_eq!(data["startLine"], 0);
-        assert_eq!(data["endLine"], 0);
-        assert_eq!(data["centerLine"], 0);
-        assert!(data["lines"].is_array());
-        assert_eq!(data["contentTruncated"], true);
-    }
 }

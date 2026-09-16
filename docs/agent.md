@@ -16,7 +16,6 @@
 | `<config_root>/agent/ipc.sock` | Desktop 与 Agent 的 Unix Domain Socket |
 | `<config_root>/agent/logs/` | Agent 日志 |
 | `<config_root>/agent/sessions/` | 会话元数据、输出日志和恢复信息 |
-| `<config_root>/agent/terminal-parser-profiles.json` | 终端解析规则 |
 | `<config_root>/agent/config.json` | 可选运行时地址配置 |
 | `<config_root>/projects.json` | Desktop 注册的项目，Agent 仅允许对其中项目执行远程工作台操作 |
 
@@ -26,7 +25,7 @@
 | --- | --- |
 | `ipc.rs` | JSON-RPC 风格本地请求：状态、绑定、会话、兑换、解除绑定等 |
 | `ws_client.rs`、`proto.rs` | WSS 连接、重连和 Agent 内部消息编解码 |
-| `session/` | PTY 生命周期、输入/输出、持久化、回放、Git/PR/验证操作 |
+| `session/` | PTY 生命周期、输入/输出、持久化、回放、Git/PR 操作 |
 | `bind.rs`、`device.rs`、`state.rs` | 设备身份、绑定状态和本地安全存储 |
 | `project_delivery.rs`、`delivery_outbox_store.rs` | 可确认的项目交付队列与断线恢复 |
 

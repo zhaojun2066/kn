@@ -9,8 +9,7 @@
 //!
 //! ## Agent 出站 (agent → cloud) — 对齐 Java ALLOWED_MESSAGES:
 //! - ping, session_created, session_start_failed, session_ended, output, profile_list, project_list
-//! - project_change_summary_result, project_change_file_diff_result, project_verify_plan_result
-//! - project_verify_changes_result, project_verify_changes_progress
+//! - project_change_summary_result, project_change_file_diff_result
 //!
 //! ## Agent 入站 (cloud → agent):
 //! - 心跳: pong
@@ -19,7 +18,7 @@
 //! - 确认: profile_list_ack
 //! - 错误: error_notify (Java sendError 可向任意客户端发送)
 //! - 结束: kill_session
-//! - 项目工作台: project_change_summary, project_change_file_diff, project_verify_plan, project_verify_changes
+//! - 项目工作台: project_change_summary, project_change_file_diff 与 Git/PR 操作
 //!
 //! 不在 agent 白名单/不需要 agent 关注的消息:
 //! - start_session_ack, ack (仅 mobile)
@@ -236,61 +235,12 @@ pub enum AgentIncoming {
         body: String,
         request_id: Option<String>,
     },
-    ProjectVerifyPlan {
-        project_key: String,
-        device_id: u64,
-        project_path: String,
-        environment: String,
-        request_id: Option<String>,
-    },
-    ProjectVerifyChanges {
-        project_key: String,
-        device_id: u64,
-        project_path: String,
-        environment: String,
-        target: String,
-        request_id: Option<String>,
-    },
-    ProjectCancelVerify {
-        project_key: String,
-        device_id: u64,
-        project_path: String,
-        run_id: String,
-    },
-    ProjectVerifyStatus {
-        project_key: String,
-        device_id: u64,
-        project_path: String,
-        request_id: Option<String>,
-    },
-    /// 项目列表的轻量本地 Git 与最近验证摘要。
+    /// 项目列表的轻量本地 Git 摘要。
     ProjectListStatus {
         project_key: String,
         device_id: u64,
         project_path: String,
         request_id: Option<String>,
-    },
-    ProjectVerifyLogWindow {
-        project_key: String,
-        device_id: u64,
-        project_path: String,
-        request_id: Option<String>,
-        run_id: String,
-        stage: String,
-        center_line: usize,
-        before: usize,
-        after: usize,
-    },
-    ProjectVerifyLogIssues {
-        project_key: String,
-        device_id: u64,
-        project_path: String,
-        request_id: Option<String>,
-        run_id: String,
-        stages: Vec<String>,
-        rules_version: String,
-        matchers: Vec<serde_json::Value>,
-        limit: usize,
     },
     DeviceHealth {
         device_id: u64,
@@ -841,131 +791,6 @@ impl WsEnvelope {
                     title,
                     body,
                     request_id: parse_delivery_request_id(data),
-                })
-            }
-            "project_verify_plan" => {
-                let data = self
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| "project_verify_plan 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) =
-                    parse_project_scope(data, "project_verify_plan")?;
-                Ok(AgentIncoming::ProjectVerifyPlan {
-                    project_key,
-                    device_id,
-                    project_path,
-                    environment: data["environment"]
-                        .as_str()
-                        .unwrap_or("default")
-                        .to_string(),
-                    request_id: parse_delivery_request_id(data),
-                })
-            }
-            "project_verify_changes" => {
-                let data = self
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| "project_verify_changes 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) =
-                    parse_project_scope(data, "project_verify_changes")?;
-                Ok(AgentIncoming::ProjectVerifyChanges {
-                    project_key,
-                    device_id,
-                    project_path,
-                    environment: data["environment"]
-                        .as_str()
-                        .unwrap_or("default")
-                        .to_string(),
-                    target: data["target"].as_str().unwrap_or("all").to_string(),
-                    request_id: parse_delivery_request_id(data),
-                })
-            }
-            "project_cancel_verify" => {
-                let data = self
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| "project_cancel_verify 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) =
-                    parse_project_scope(data, "project_cancel_verify")?;
-                let run_id = data["runId"].as_str().unwrap_or("").to_string();
-                if run_id.is_empty() {
-                    return Err("project_cancel_verify runId 为空".to_string());
-                }
-                Ok(AgentIncoming::ProjectCancelVerify {
-                    project_key,
-                    device_id,
-                    project_path,
-                    run_id,
-                })
-            }
-            "project_verify_status" => {
-                let data = self
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| "project_verify_status 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) =
-                    parse_project_scope(data, "project_verify_status")?;
-                Ok(AgentIncoming::ProjectVerifyStatus {
-                    project_key,
-                    device_id,
-                    project_path,
-                    request_id: parse_delivery_request_id(data),
-                })
-            }
-            "project_verify_log_window" => {
-                let data = self
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| "project_verify_log_window 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) =
-                    parse_project_scope(data, "project_verify_log_window")?;
-                let run_id = data["runId"].as_str().unwrap_or("").to_string();
-                let stage = data["stage"].as_str().unwrap_or("").to_string();
-                if run_id.is_empty() || stage.is_empty() {
-                    return Err("project_verify_log_window runId/stage 为空".to_string());
-                }
-                Ok(AgentIncoming::ProjectVerifyLogWindow {
-                    project_key,
-                    device_id,
-                    project_path,
-                    request_id: parse_delivery_request_id(data),
-                    run_id,
-                    stage,
-                    center_line: data["centerLine"].as_u64().unwrap_or(1) as usize,
-                    before: data["before"].as_u64().unwrap_or(100) as usize,
-                    after: data["after"].as_u64().unwrap_or(100) as usize,
-                })
-            }
-            "project_verify_log_issues" => {
-                let data = self
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| "project_verify_log_issues 缺少 data 字段".to_string())?;
-                let (project_key, device_id, project_path) =
-                    parse_project_scope(data, "project_verify_log_issues")?;
-                let run_id = data["runId"].as_str().unwrap_or("").to_string();
-                if run_id.is_empty() {
-                    return Err("project_verify_log_issues runId 为空".to_string());
-                }
-                let stages = data["stages"]
-                    .as_array()
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(|value| value.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Ok(AgentIncoming::ProjectVerifyLogIssues {
-                    project_key,
-                    device_id,
-                    project_path,
-                    request_id: parse_delivery_request_id(data),
-                    run_id,
-                    stages,
-                    rules_version: data["rulesVersion"].as_str().unwrap_or("").to_string(),
-                    matchers: data["matchers"].as_array().cloned().unwrap_or_default(),
-                    limit: data["limit"].as_u64().unwrap_or(300) as usize,
                 })
             }
             "device_health" => {
@@ -1764,41 +1589,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_project_verify_changes() {
-        let json = serde_json::json!({
-            "type": "project_verify_changes",
-            "data": {
-                "projectKey": "42:/repo",
-                "deviceId": 42,
-                "projectPath": "/repo",
-                "environment": "ci",
-                "target": "build",
-                "requestId": "verify-request-1"
-            }
-        });
-        let env: WsEnvelope = serde_json::from_value(json).unwrap();
-        let msg = env.parse().unwrap();
-        match msg {
-            AgentIncoming::ProjectVerifyChanges {
-                project_key,
-                device_id,
-                project_path,
-                environment,
-                target,
-                request_id,
-            } => {
-                assert_eq!(project_key, "42:/repo");
-                assert_eq!(device_id, 42);
-                assert_eq!(project_path, "/repo");
-                assert_eq!(environment, "ci");
-                assert_eq!(target, "build");
-                assert_eq!(request_id.as_deref(), Some("verify-request-1"));
-            }
-            _ => panic!("expected ProjectVerifyChanges"),
-        }
-    }
-
-    #[test]
     fn test_parse_project_git_commit() {
         let json = serde_json::json!({
             "type": "project_git_commit",
@@ -1881,36 +1671,6 @@ mod tests {
                 assert_eq!(snapshot_id.as_deref(), Some("snapshot-1"));
             }
             _ => panic!("expected ProjectGitCommit"),
-        }
-    }
-
-    #[test]
-    fn test_parse_project_verify_plan() {
-        let json = serde_json::json!({
-            "type": "project_verify_plan",
-            "data": {
-                "projectKey": "42:/repo",
-                "deviceId": 42,
-                "projectPath": "/repo",
-                "environment": "default"
-            }
-        });
-        let env: WsEnvelope = serde_json::from_value(json).unwrap();
-        let msg = env.parse().unwrap();
-        match msg {
-            AgentIncoming::ProjectVerifyPlan {
-                project_key,
-                device_id,
-                project_path,
-                environment,
-                ..
-            } => {
-                assert_eq!(project_key, "42:/repo");
-                assert_eq!(device_id, 42);
-                assert_eq!(project_path, "/repo");
-                assert_eq!(environment, "default");
-            }
-            _ => panic!("expected ProjectVerifyPlan"),
         }
     }
 
@@ -2000,52 +1760,6 @@ mod tests {
         assert_eq!(parsed["data"]["sessionId"], "s_abc123");
         assert!(parsed["data"].get("to_session_id").is_none());
         assert_eq!(parsed["data"]["ansi_text"], "hello\x1b[0m");
-    }
-
-    #[test]
-    fn test_outbound_project_verify_changes_result() {
-        let json = WsMessageBuilder::project_result(
-            "project_verify_changes_result",
-            "42:/repo",
-            42,
-            "/repo",
-            serde_json::json!({
-                "status": "passed",
-                "target": "all",
-                "stages": [
-                    { "name": "build", "status": "passed", "outputTail": "ok" }
-                ]
-            }),
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["type"], "project_verify_changes_result");
-        assert_eq!(parsed["data"]["projectKey"], "42:/repo");
-        assert_eq!(parsed["data"]["deviceId"], 42);
-        assert_eq!(parsed["data"]["projectPath"], "/repo");
-        assert_eq!(parsed["data"]["stages"][0]["outputTail"], "ok");
-    }
-
-    #[test]
-    fn test_outbound_project_verify_plan_result() {
-        let json = WsMessageBuilder::project_result(
-            "project_verify_plan_result",
-            "42:/repo",
-            42,
-            "/repo",
-            serde_json::json!({
-                "status": "ok",
-                "environment": "default",
-                "commandSource": "manual",
-                "build": { "available": true, "enabled": true, "command": "cargo check" }
-            }),
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["type"], "project_verify_plan_result");
-        assert_eq!(parsed["data"]["projectKey"], "42:/repo");
-        assert_eq!(parsed["data"]["deviceId"], 42);
-        assert_eq!(parsed["data"]["projectPath"], "/repo");
-        assert_eq!(parsed["data"]["commandSource"], "manual");
-        assert_eq!(parsed["data"]["build"]["command"], "cargo check");
     }
 
     #[test]

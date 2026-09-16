@@ -104,7 +104,7 @@ pub fn parse_porcelain_v2(output: &str) -> GitListStatus {
     }
 }
 
-pub async fn read(project_key: &str, cwd: &str, last_verification: Option<Value>) -> Value {
+pub async fn read(project_key: &str, cwd: &str) -> Value {
     let git = match timeout(
         GIT_STATUS_TIMEOUT,
         Command::new("git")
@@ -135,7 +135,6 @@ pub async fn read(project_key: &str, cwd: &str, last_verification: Option<Value>
         "projectKey": project_key,
         "status": "ok",
         "git": git.as_json(),
-        "lastVerification": last_verification,
     })
 }
 

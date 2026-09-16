@@ -72,16 +72,6 @@ fn project_too_large_result(message_type: &str, original: &Value) -> String {
         data.insert("hasMore".to_string(), json!(false));
         data.insert("truncated".to_string(), json!(false));
         data.insert("snapshotId".to_string(), Value::Null);
-    } else if message_type == "project_verify_log_window_result" {
-        // Keep the iOS log-window DTO decodable even when the original window
-        // was too large to send. Cloud adds the same defaults defensively.
-        data.insert("startLine".to_string(), json!(0));
-        data.insert("endLine".to_string(), json!(0));
-        data.insert("centerLine".to_string(), json!(0));
-        data.insert("lines".to_string(), json!([]));
-        data.insert("hasEarlier".to_string(), json!(false));
-        data.insert("hasLater".to_string(), json!(false));
-        data.insert("contentTruncated".to_string(), json!(true));
     }
     json!({"type": message_type, "data": data}).to_string()
 }
@@ -112,10 +102,6 @@ fn too_large_message(message_type: &str) -> &'static str {
         "变更摘要内容过大，请缩小范围后重试"
     } else if message_type.contains("file_diff") {
         "该文件 Diff 过大，请在电脑端查看"
-    } else if message_type.contains("verify_log_window") {
-        "日志窗口内容过大，请缩小查看范围"
-    } else if message_type.contains("verify_log_issues") {
-        "错误内容过多，已停止本次传输"
     } else if message_type.contains("pr_") {
         "PR 详情内容过大，请在 GitHub 查看"
     } else {
