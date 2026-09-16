@@ -25,6 +25,7 @@
 //! - start_session_ack, ack (仅 mobile)
 //! - agent_error (Java 代码中未实现)
 
+use crate::session::types::{SessionInitiator, ViewportOwner};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,7 +87,7 @@ pub enum AgentIncoming {
         node_id: Option<String>,
         protocol_version: Option<u32>,
     },
-    /// 启动新会话（来自 iOS/Desktop 用户）
+    /// 启动新会话（来自 Cloud 远程控制或 Agent IPC 本地工作流）
     /// sessionId 由 Agent 自行生成（"s_" + nanoid(12)），cloud 不再预分配。
     StartSession {
         /// Profile 名称
@@ -103,8 +104,12 @@ pub enum AgentIncoming {
         expected_cli: Option<String>,
         /// 仅由受校验的本地历史恢复生成的原生 CLI 参数。
         cli_args: Vec<String>,
-        /// 本地历史恢复的端到端请求关联 ID；普通新会话为 None。
-        request_id: Option<String>,
+        /// Cloud-validated end-to-end request correlation ID for every remote launch.
+        request_id: String,
+        /// Agent-owned runtime initiation semantics, validated from Cloud's internal protocol.
+        initiator: SessionInitiator,
+        /// Agent-owned current terminal viewport semantics.
+        viewport_owner: ViewportOwner,
     },
     /// 用户输入文本（session 由 data.sessionId 标识）
     Input {
@@ -123,6 +128,7 @@ pub enum AgentIncoming {
         session_nid: String,
         cols: u16,
         rows: u16,
+        viewport_owner: ViewportOwner,
     },
     /// 云端错误通知（对齐 Java MessageTypes.ERROR_NOTIFY + sendError()）
     ErrorNotify {
@@ -134,6 +140,7 @@ pub enum AgentIncoming {
     /// 请求回放会话输出日志（iOS 恢复会话时发送）
     ReplayOutput {
         session_nid: String,
+        replay_id: String,
     },
     /// WSS 对 session_created 的确认
     SessionCreatedAck {
@@ -322,6 +329,21 @@ fn parse_delivery_request_id(data: &serde_json::Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn parse_session_semantics(
+    data: &serde_json::Value,
+    message_type: &str,
+) -> Result<(SessionInitiator, ViewportOwner), String> {
+    let initiator = data["initiator"]
+        .as_str()
+        .and_then(SessionInitiator::from_wire)
+        .ok_or_else(|| format!("{message_type} 缺少或包含无效 initiator"))?;
+    let viewport_owner = data["viewport_owner"]
+        .as_str()
+        .and_then(ViewportOwner::from_wire)
+        .ok_or_else(|| format!("{message_type} 缺少或包含无效 viewport_owner"))?;
+    Ok((initiator, viewport_owner))
+}
+
 impl WsEnvelope {
     /// 将原始信封解析为类型化的 AgentIncoming。
     pub fn parse(&self) -> Result<AgentIncoming, String> {
@@ -429,6 +451,7 @@ impl WsEnvelope {
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| "start_session 缺少 profile 字段".to_string())?
                     .to_string();
+                let (initiator, viewport_owner) = parse_session_semantics(data, "start_session")?;
                 Ok(AgentIncoming::StartSession {
                     profile,
                     cwd: data["cwd"].as_str().map(String::from),
@@ -437,7 +460,17 @@ impl WsEnvelope {
                     rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
                     expected_cli: None,
                     cli_args: Vec::new(),
-                    request_id: None,
+                    // Cloud validates this before forwarding. It remains mandatory through
+                    // session_created/session_start_failed so concurrent launches cannot
+                    // be guessed from profile or timing.
+                    request_id: data["requestId"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned)
+                        .ok_or_else(|| "start_session 缺少 requestId 字段".to_string())?,
+                    initiator,
+                    viewport_owner,
                 })
             }
             "input" => {
@@ -475,10 +508,15 @@ impl WsEnvelope {
                     .as_ref()
                     .ok_or_else(|| "resize 缺少 data 字段".to_string())?;
                 let session_nid = data["sessionId"].as_str().unwrap_or("").to_string();
+                let viewport_owner = data["viewport_owner"]
+                    .as_str()
+                    .and_then(ViewportOwner::from_wire)
+                    .ok_or_else(|| "resize 缺少或包含无效 viewport_owner".to_string())?;
                 Ok(AgentIncoming::Resize {
                     session_nid,
                     cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
                     rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
+                    viewport_owner,
                 })
             }
             "error_notify" => {
@@ -501,7 +539,18 @@ impl WsEnvelope {
                 if session_nid.is_empty() {
                     return Err("replay_output sessionId 为空".to_string());
                 }
-                Ok(AgentIncoming::ReplayOutput { session_nid })
+                let replay_id = data["replay_id"].as_str().unwrap_or("").to_string();
+                if !replay_id
+                    .chars()
+                    .all(|value| value.is_ascii_alphanumeric() || value == '_' || value == '-')
+                    || !(16..=128).contains(&replay_id.len())
+                {
+                    return Err("replay_output replay_id 非法".to_string());
+                }
+                Ok(AgentIncoming::ReplayOutput {
+                    session_nid,
+                    replay_id,
+                })
             }
             "session_created_ack" => {
                 let data = self
@@ -549,15 +598,19 @@ impl WsEnvelope {
                 let request_id = required("requestId")?;
                 let cli_args = crate::session::env::history_resume_args(&cli, &native_session_id)
                     .map_err(|_| "resume_local_history_session 参数无效".to_string())?;
+                let (initiator, viewport_owner) =
+                    parse_session_semantics(data, "resume_local_history_session")?;
                 Ok(AgentIncoming::StartSession {
                     profile: required("profile")?,
                     cwd: Some(required("cwd")?),
                     from_user_id: data["fromUserId"].as_u64().unwrap_or(0),
                     expected_cli: Some(cli),
                     cli_args,
-                    request_id: Some(request_id),
+                    request_id,
                     cols: data["cols"].as_u64().map(|v| v as u16).unwrap_or(80),
                     rows: data["rows"].as_u64().map(|v| v as u16).unwrap_or(24),
+                    initiator,
+                    viewport_owner,
                 })
             }
             "kill_session" => {
@@ -952,8 +1005,7 @@ impl WsMessageBuilder {
     }
 
     /// 会话创建确认。sessionId 已由 Agent 生成。
-    /// 携带 tool/cwd/cols/rows/source 供 cloud 写入 Redis Hash，pid 由后续 heartbeat 更新。
-    /// `source`: "ios" | "desktop" — 区分发起方，cloud 据此走不同注册逻辑。
+    /// Carries Agent runtime semantics, not a public-client platform identity.
     /// `msg_id`: 可选 ACK 关联 ID，cloud 在 session_created_ack 中原样返回。
     pub fn session_created(
         session_nid: &str,
@@ -962,9 +1014,20 @@ impl WsMessageBuilder {
         profile: Option<&str>,
         cols: u16,
         rows: u16,
-        source: &str,
+        initiator: SessionInitiator,
+        viewport_owner: ViewportOwner,
     ) -> String {
-        Self::session_created_with_msg_id(session_nid, tool, cwd, profile, cols, rows, source, None)
+        Self::session_created_with_msg_id(
+            session_nid,
+            tool,
+            cwd,
+            profile,
+            cols,
+            rows,
+            initiator,
+            viewport_owner,
+            None,
+        )
     }
 
     /// 带 msg_id 的 session_created，用于 ACK 关联。
@@ -975,7 +1038,8 @@ impl WsMessageBuilder {
         profile: Option<&str>,
         cols: u16,
         rows: u16,
-        source: &str,
+        initiator: SessionInitiator,
+        viewport_owner: ViewportOwner,
         msg_id: Option<&str>,
     ) -> String {
         Self::session_created_with_msg_id_and_version(
@@ -985,7 +1049,8 @@ impl WsMessageBuilder {
             profile,
             cols,
             rows,
-            source,
+            initiator,
+            viewport_owner,
             msg_id,
             None,
             None,
@@ -1001,7 +1066,8 @@ impl WsMessageBuilder {
         profile: Option<&str>,
         cols: u16,
         rows: u16,
-        source: &str,
+        initiator: SessionInitiator,
+        viewport_owner: ViewportOwner,
         msg_id: Option<&str>,
         cli_version: Option<&str>,
         request_id: Option<&str>,
@@ -1012,7 +1078,8 @@ impl WsMessageBuilder {
             "cwd": cwd,
             "cols": cols,
             "rows": rows,
-            "source": source
+            "initiator": initiator.as_str(),
+            "viewport_owner": viewport_owner.as_str()
         });
         if let Some(p) = profile {
             data["profile"] = serde_json::Value::String(p.to_string());
@@ -1075,14 +1142,24 @@ impl WsMessageBuilder {
         .to_string()
     }
 
-    /// PTY 输出数据。session 由 sessionId 标识。
-    pub fn output(session_nid: &str, ansi_text: &str) -> String {
+    /// Sequenced live PTY output. `output_seq` is decimal text for JS-safe transport.
+    pub fn output_live(session_nid: &str, ansi_text: &str, output_seq: u64) -> String {
         serde_json::json!({
             "type": "output",
             "data": {
                 "sessionId": session_nid,
-                "ansi_text": ansi_text
+                "ansi_text": ansi_text,
+                "output_seq": output_seq.to_string()
             }
+        })
+        .to_string()
+    }
+
+    /// Snapshot output belonging to one explicit replay transaction.
+    pub fn output_replay(session_nid: &str, ansi_text: &str, replay_id: &str) -> String {
+        serde_json::json!({
+            "type": "output",
+            "data": { "sessionId": session_nid, "ansi_text": ansi_text, "replay_id": replay_id }
         })
         .to_string()
     }
@@ -1090,19 +1167,23 @@ impl WsMessageBuilder {
     /// 会话输出回放完成通知。Cloud 转发给 iOS，用于区分“无历史输出”和“仍在等待输出”。
     pub fn replay_output_done(
         session_nid: &str,
+        replay_id: &str,
         status: &str,
         bytes: usize,
         chunks: usize,
         message: Option<&str>,
+        snapshot_high_watermark: Option<u64>,
     ) -> String {
         serde_json::json!({
             "type": "replay_output_done",
             "data": {
                 "sessionId": session_nid,
+                "replay_id": replay_id,
                 "status": status,
                 "bytes": bytes,
                 "chunks": chunks,
-                "message": message
+                "message": message,
+                "snapshot_high_watermark": snapshot_high_watermark.map(|value| value.to_string())
             }
         })
         .to_string()
@@ -1394,7 +1475,10 @@ mod tests {
                 "cwd": "/Users/test/project",
                 "fromUserId": 100,
                 "cols": 48,
-                "rows": 18
+                "rows": 18,
+                "requestId": "android-start-1",
+                "initiator": "remote",
+                "viewport_owner": "mobile"
             }
         });
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
@@ -1408,6 +1492,7 @@ mod tests {
                 rows,
                 expected_cli,
                 cli_args,
+                request_id,
                 ..
             } => {
                 assert_eq!(profile, "my-profile");
@@ -1417,9 +1502,65 @@ mod tests {
                 assert_eq!(rows, 18);
                 assert_eq!(expected_cli, None);
                 assert!(cli_args.is_empty());
+                assert_eq!(request_id, "android-start-1");
             }
             _ => panic!("expected StartSession"),
         }
+    }
+
+    #[test]
+    fn start_session_requires_platform_neutral_runtime_semantics() {
+        let json = serde_json::json!({
+            "type": "start_session",
+            "data": {
+                "profile": "my-profile",
+                "fromUserId": 100,
+                "requestId": "standard-start-1",
+                "initiator": "remote",
+                "viewport_owner": "mobile"
+            }
+        });
+        let env: WsEnvelope = serde_json::from_value(json).unwrap();
+
+        assert!(env.parse().is_ok());
+
+        let missing_semantics: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "start_session",
+            "data": {"profile": "my-profile", "fromUserId": 100}
+        }))
+        .unwrap();
+        assert!(missing_semantics.parse().is_err());
+
+        for (initiator, viewport_owner) in [("ios", "mobile"), ("remote", "ios")] {
+            let invalid_semantics: WsEnvelope = serde_json::from_value(serde_json::json!({
+                "type": "start_session",
+                "data": {
+                    "profile": "my-profile",
+                    "fromUserId": 100,
+                    "requestId": "standard-start-2",
+                    "initiator": initiator,
+                    "viewport_owner": viewport_owner
+                }
+            }))
+            .unwrap();
+            assert!(invalid_semantics.parse().is_err());
+        }
+    }
+
+    #[test]
+    fn start_session_requires_request_id() {
+        let env: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "start_session",
+            "data": {
+                "profile": "my-profile",
+                "fromUserId": 100,
+                "initiator": "remote",
+                "viewport_owner": "mobile"
+            }
+        }))
+        .unwrap();
+
+        assert!(env.parse().is_err());
     }
 
     #[test]
@@ -1434,7 +1575,9 @@ mod tests {
                 "cli": "qoderclicn",
                 "requestId": "resume-request-1",
                 "cols": 48,
-                "rows": 18
+                "rows": 18,
+                "initiator": "remote",
+                "viewport_owner": "mobile"
             }
         });
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
@@ -1455,7 +1598,7 @@ mod tests {
                 assert_eq!(from_user_id, 100);
                 assert_eq!(expected_cli, Some("qoderclicn".to_string()));
                 assert_eq!(cli_args, vec!["-r", "native_123"]);
-                assert_eq!(request_id.as_deref(), Some("resume-request-1"));
+                assert_eq!(request_id, "resume-request-1");
                 assert_eq!(cols, 48);
                 assert_eq!(rows, 18);
             }
@@ -1514,7 +1657,8 @@ mod tests {
                 "sessionId": "s_abc123def456",
                 "seq": 7,
                 "cols": 52,
-                "rows": 20
+                "rows": 20,
+                "viewport_owner": "mobile"
             }
         });
         let env: WsEnvelope = serde_json::from_value(json).unwrap();
@@ -1524,13 +1668,25 @@ mod tests {
                 session_nid,
                 cols,
                 rows,
+                viewport_owner,
             } => {
                 assert_eq!(session_nid, "s_abc123def456");
                 assert_eq!(cols, 52);
                 assert_eq!(rows, 20);
+                assert_eq!(viewport_owner, ViewportOwner::Mobile);
             }
             _ => panic!("expected Resize"),
         }
+    }
+
+    #[test]
+    fn resize_requires_a_platform_neutral_viewport_owner() {
+        let env: WsEnvelope = serde_json::from_value(serde_json::json!({
+            "type": "resize",
+            "data": {"sessionId": "s_abc123def456", "cols": 52, "rows": 20}
+        }))
+        .unwrap();
+        assert!(env.parse().is_err());
     }
 
     #[test]
@@ -1773,7 +1929,8 @@ mod tests {
             None,
             80,
             24,
-            "ios",
+            SessionInitiator::Remote,
+            ViewportOwner::Mobile,
         );
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "session_created");
@@ -1782,7 +1939,8 @@ mod tests {
         assert_eq!(parsed["data"]["cwd"], "/home/user/proj");
         assert_eq!(parsed["data"]["cols"], 80);
         assert_eq!(parsed["data"]["rows"], 24);
-        assert_eq!(parsed["data"]["source"], "ios");
+        assert_eq!(parsed["data"]["initiator"], "remote");
+        assert_eq!(parsed["data"]["viewport_owner"], "mobile");
     }
 
     #[test]
@@ -1816,7 +1974,8 @@ mod tests {
             Some("default"),
             52,
             18,
-            "ios",
+            SessionInitiator::Remote,
+            ViewportOwner::Mobile,
             Some("s_abc123def456-0"),
         );
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1835,7 +1994,7 @@ mod tests {
 
     #[test]
     fn test_outbound_output() {
-        let json = WsMessageBuilder::output("s_abc123", "hello\x1b[0m");
+        let json = WsMessageBuilder::output_live("s_abc123", "hello\x1b[0m", 1);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "output");
         assert_eq!(parsed["data"]["sessionId"], "s_abc123");
@@ -1891,7 +2050,15 @@ mod tests {
 
     #[test]
     fn test_outbound_replay_output_done() {
-        let json = WsMessageBuilder::replay_output_done("s_abc123", "ok", 12345, 2, None);
+        let json = WsMessageBuilder::replay_output_done(
+            "s_abc123",
+            "replay_1234567890",
+            "ok",
+            12345,
+            2,
+            None,
+            Some(1),
+        );
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "replay_output_done");
         assert_eq!(parsed["data"]["sessionId"], "s_abc123");
@@ -1903,8 +2070,15 @@ mod tests {
 
     #[test]
     fn test_outbound_replay_output_done_with_message() {
-        let json =
-            WsMessageBuilder::replay_output_done("s_abc123", "error", 0, 0, Some("read failed"));
+        let json = WsMessageBuilder::replay_output_done(
+            "s_abc123",
+            "replay_1234567890",
+            "error",
+            0,
+            0,
+            Some("read failed"),
+            None,
+        );
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "replay_output_done");
         assert_eq!(parsed["data"]["sessionId"], "s_abc123");
@@ -1917,7 +2091,7 @@ mod tests {
     #[test]
     fn test_output_message_to_session_id_is_string() {
         // 对齐新协议: sessionId 统一为 String
-        let msg = WsMessageBuilder::output("s_abc123", "hello");
+        let msg = WsMessageBuilder::output_live("s_abc123", "hello", 1);
         let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
         let tsid = &parsed["data"]["sessionId"];
         assert!(

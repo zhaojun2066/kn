@@ -5,7 +5,7 @@
 
 use crate::error::Result;
 use crate::session::output::remove_replay_log;
-use crate::session::types::{ManagedSession, SessionKind};
+use crate::session::types::{ManagedSession, SessionInitiator, SessionKind, ViewportOwner};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -15,7 +15,8 @@ pub struct SessionRecord {
     pub nid: String,
     #[serde(rename = "kind")]
     pub kind: String, // "Native" | "Relay"
-    pub source: String, // "ios" | "desktop"
+    pub initiator: String,      // "remote" | "desktop_local"
+    pub viewport_owner: String, // "mobile" | "desktop"
     pub tool: String,
     pub profile: Option<String>,
     pub cwd: String,
@@ -49,7 +50,8 @@ pub fn write_session_record(session: &ManagedSession, pid: u32) -> Result<()> {
     let record = SessionRecord {
         nid: session.nid.clone(),
         kind: kind_str.to_string(),
-        source: session.source.clone(),
+        initiator: session.initiator.as_str().to_string(),
+        viewport_owner: session.viewport_owner.as_str().to_string(),
         tool: session.tool.clone(),
         profile: session.profile.clone(),
         cwd: session.cwd.clone(),
@@ -134,20 +136,32 @@ pub fn list_session_records() -> Result<Vec<SessionRecord>> {
             continue;
         }
 
-        match std::fs::read_to_string(&json_path) {
-            Ok(content) => match serde_json::from_str::<SessionRecord>(&content) {
-                Ok(record) => records.push(record),
-                Err(e) => {
-                    tracing::warn!(path = %json_path.display(), error = %e, "session.json 解析失败，跳过");
-                }
-            },
+        match read_session_record(&json_path) {
+            Ok(Some(record)) => records.push(record),
+            Ok(None) => {}
             Err(e) => {
-                tracing::warn!(path = %json_path.display(), error = %e, "session.json 读取失败，跳过");
+                tracing::warn!(path = %json_path.display(), error = %e, "session.json 读取失败，跳过")
             }
         }
     }
 
     Ok(records)
+}
+
+/// Read one record. A legacy or malformed record cannot be safely interpreted
+/// under the single current protocol, so remove it rather than retrying with a
+/// guessed platform origin on every subsequent restart.
+fn read_session_record(json_path: &std::path::Path) -> Result<Option<SessionRecord>> {
+    let content = std::fs::read_to_string(json_path)?;
+    match serde_json::from_str::<SessionRecord>(&content) {
+        Ok(record) => Ok(Some(record)),
+        Err(error) => {
+            tracing::warn!(path = %json_path.display(), error = %error,
+                "session.json 缺少当前协议的受控会话语义，已删除");
+            std::fs::remove_file(json_path)?;
+            Ok(None)
+        }
+    }
 }
 
 // ── 恢复 ──────────────────────────────────────────────────────
@@ -185,10 +199,24 @@ pub async fn recover_surviving_sessions(
             _ => SessionKind::Native,
         };
 
+        let Some(initiator) = SessionInitiator::from_wire(&record.initiator) else {
+            tracing::warn!(nid = %record.nid, initiator = %record.initiator, "恢复扫描: 无效 initiator，清理");
+            delete_session_record(&record.nid);
+            remove_replay_log(&record.nid);
+            continue;
+        };
+        let Some(viewport_owner) = ViewportOwner::from_wire(&record.viewport_owner) else {
+            tracing::warn!(nid = %record.nid, viewport_owner = %record.viewport_owner, "恢复扫描: 无效 viewport_owner，清理");
+            delete_session_record(&record.nid);
+            remove_replay_log(&record.nid);
+            continue;
+        };
+
         match sessions
             .create(
                 record.nid.clone(),
-                record.source.clone(),
+                initiator,
+                viewport_owner,
                 record.tool.clone(),
                 record.profile.clone(),
                 record.cwd.clone(),
@@ -210,7 +238,7 @@ pub async fn recover_surviving_sessions(
 
                 tracing::info!(
                     nid = %record.nid, pid = record.pid, kind = %record.kind,
-                    source = %record.source, tool = %record.tool,
+                    initiator = %record.initiator, viewport_owner = %record.viewport_owner, tool = %record.tool,
                     remote = record.remote_enabled,
                     "🔄 会话已恢复"
                 );
@@ -250,13 +278,13 @@ mod tests {
         ManagedSession {
             kind: SessionKind::Native,
             nid: nid.to_string(),
-            source: "ios".to_string(),
+            initiator: SessionInitiator::Remote,
             tool: "claude".to_string(),
             profile: Some("test".to_string()),
             cwd: "/tmp".to_string(),
             cols: 80,
             rows: 24,
-            viewport_owner: crate::session::types::ViewportOwner::Ios,
+            viewport_owner: crate::session::types::ViewportOwner::Mobile,
             created_at: Utc::now(),
             status: SessionStatus::Running,
             last_input: Arc::new(std::sync::Mutex::new(String::new())),
@@ -275,7 +303,8 @@ mod tests {
         let record = SessionRecord {
             nid: session.nid.clone(),
             kind: "Native".to_string(),
-            source: session.source.clone(),
+            initiator: session.initiator.as_str().to_string(),
+            viewport_owner: session.viewport_owner.as_str().to_string(),
             tool: session.tool.clone(),
             profile: session.profile.clone(),
             cwd: session.cwd.clone(),
@@ -300,6 +329,23 @@ mod tests {
         // Just verify the function doesn't panic.
         let records = list_session_records();
         assert!(records.is_ok());
+    }
+
+    #[test]
+    fn legacy_source_record_is_deleted_instead_of_inferred() {
+        let dir =
+            std::env::temp_dir().join(format!("kn-agent-session-record-{}", nanoid::nanoid!(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let record = dir.join("session.json");
+        std::fs::write(
+            &record,
+            r#"{"nid":"s_legacy","kind":"Native","source":"ios"}"#,
+        )
+        .unwrap();
+
+        assert!(read_session_record(&record).unwrap().is_none());
+        assert!(!record.exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -21,26 +21,50 @@ pub enum SessionKind {
     Relay,
 }
 
-/// 当前 PTY 视口尺寸的主控端。
+/// Agent-owned session initiation semantics. This is deliberately not a public-client kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionInitiator {
+    Remote,
+    DesktopLocal,
+}
+
+impl SessionInitiator {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionInitiator::Remote => "remote",
+            SessionInitiator::DesktopLocal => "desktop_local",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "remote" => Some(SessionInitiator::Remote),
+            "desktop_local" => Some(SessionInitiator::DesktopLocal),
+            _ => None,
+        }
+    }
+}
+
+/// Current PTY viewport owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewportOwner {
     Desktop,
-    Ios,
+    Mobile,
 }
 
 impl ViewportOwner {
     pub fn as_str(self) -> &'static str {
         match self {
             ViewportOwner::Desktop => "desktop",
-            ViewportOwner::Ios => "ios",
+            ViewportOwner::Mobile => "mobile",
         }
     }
 
-    pub fn from_source(source: &str) -> Self {
-        if source.eq_ignore_ascii_case("ios") {
-            ViewportOwner::Ios
-        } else {
-            ViewportOwner::Desktop
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "mobile" => Some(ViewportOwner::Mobile),
+            "desktop" => Some(ViewportOwner::Desktop),
+            _ => None,
         }
     }
 }
@@ -58,8 +82,8 @@ pub struct ManagedSession {
     pub profile: Option<String>,
     /// 工作目录
     pub cwd: String,
-    /// 会话来源 ("ios" | "desktop")
-    pub source: String,
+    /// Agent-owned origin semantics; never iOS/Android/Web identity.
+    pub initiator: SessionInitiator,
     /// 终端列数
     pub cols: u16,
     /// 终端行数
@@ -80,9 +104,9 @@ pub struct ManagedSession {
     pub summary_input_buffer: Arc<std::sync::Mutex<String>>,
     /// 是否已经上报过 session_ended，避免重复发送。
     pub(crate) ended_reported: Arc<AtomicBool>,
-    /// 是否接受远程控制（iOS 可见/可控）。关闭后输出不发送到 WSS。
+    /// Whether this session accepts remote control. When disabled, output is not sent to WSS.
     pub remote_enabled: Arc<AtomicBool>,
-    /// Relay 会话的 iOS 输入队列（agent 没有 PTY，输入由此暂存供 desktop 轮询）
+    /// Relay-session remote input queue (the Agent does not own the PTY).
     pub relay_inputs: Arc<std::sync::Mutex<Vec<(i64, String)>>>,
 }
 
@@ -176,7 +200,7 @@ pub struct SessionSummary {
     pub tool: String,
     pub profile: Option<String>,
     pub cwd: String,
-    pub source: String,
+    pub initiator: SessionInitiator,
     pub cols: u16,
     pub rows: u16,
     pub viewport_owner: ViewportOwner,
@@ -197,10 +221,10 @@ mod tests {
             tool: "codex".into(),
             profile: None,
             cwd: "/repo".into(),
-            source: "ios".into(),
+            initiator: SessionInitiator::Remote,
             cols: 80,
             rows: 24,
-            viewport_owner: ViewportOwner::Ios,
+            viewport_owner: ViewportOwner::Mobile,
             created_at: Utc::now(),
             status: SessionStatus::Running,
             last_input: Arc::new(std::sync::Mutex::new(String::new())),

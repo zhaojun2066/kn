@@ -45,4 +45,6 @@ pub use input::{InputMerger, InputMessage};
 pub use manager::{SessionLaunchKind, SessionManager};
 pub use output::OutputFanout;
 pub use store::{MemorySessionStore, SessionStore};
-pub use types::{ManagedSession, SessionKind, SessionStatus, SessionSummary, ViewportOwner};
+pub use types::{
+    ManagedSession, SessionInitiator, SessionKind, SessionStatus, SessionSummary, ViewportOwner,
+};

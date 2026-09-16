@@ -155,6 +155,9 @@ impl StateMachine {
             (Idle, SessionStarted) => Ok(Running),
 
             // 连接管理
+            // 成功完成的 WSS 握手本身证明当前凭证有效；这也能修复旧连接
+            // 的延迟失效事件留下 Unbound 后，新连接已建立却未更新状态的情况。
+            (Unbound, WsConnected { has_token: true }) => Ok(Connected),
             (BoundOffline, WsDisconnected) => Ok(BoundOffline),
             (Connected, WsDisconnected) => Ok(Reconnecting),
             (Running, WsDisconnected) => Ok(Reconnecting),
@@ -355,6 +358,40 @@ mod tests {
         m.transition(StateEvent::BindInit).await.unwrap();
         m.transition(StateEvent::BindResult).await.unwrap();
         assert_eq!(m.current().await, AgentState::BoundOffline);
+        m.transition(StateEvent::WsConnected { has_token: true })
+            .await
+            .unwrap();
+        assert_eq!(m.current().await, AgentState::Connected);
+    }
+
+    #[tokio::test]
+    async fn stale_wss_auth_event_cannot_interrupt_an_active_binding() {
+        let m = sm(0);
+        m.transition(StateEvent::Start).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
+        m.transition(StateEvent::BindInit).await.unwrap();
+
+        // 旧 WSS 任务可能在新绑定完成前才报告旧凭证已失效。调用方必须
+        // 忽略该事件，状态机也不能把 Binding 当作无凭证连接处理。
+        assert!(m
+            .transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .is_err());
+        m.transition(StateEvent::BindResult).await.unwrap();
+        assert_eq!(m.current().await, AgentState::BoundOffline);
+    }
+
+    #[tokio::test]
+    async fn successful_wss_handshake_recovers_from_unbound() {
+        let m = sm(0);
+        m.transition(StateEvent::Start).await.unwrap();
+        m.transition(StateEvent::WsConnected { has_token: false })
+            .await
+            .unwrap();
+
+        // 已完成的握手证明当前凭证有效，即使旧任务曾留下 Unbound。
         m.transition(StateEvent::WsConnected { has_token: true })
             .await
             .unwrap();

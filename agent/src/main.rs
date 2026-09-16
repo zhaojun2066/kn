@@ -808,7 +808,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // - 其他断开 → 由 run_ws_loop 内部自动重连（指数退避）
 
     let mut wss_active = false;
+    // 仅能由持有该凭证的 WSS 任务清理它。绑定期间旧任务可能迟到退出，
+    // 绝不能把新保存的 device_token 当作旧凭证清理。
     let mut wss_task = None; // Option<JoinHandle<kn_agent::error::Result<()>>>
+    let mut wss_active_token: Option<String> = None;
+    let mut wss_restart_pending = false;
     let mut incoming_rx: Option<mpsc::UnboundedReceiver<proto::AgentIncoming>> = None;
     let mut _project_watcher: Option<notify::RecommendedWatcher> = None;
     let mut _project_session_history_watcher: Option<notify::RecommendedWatcher> = None;
@@ -867,7 +871,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             // ── WSS 触发：初始启动 或 绑定完成 ──
             Some(()) = wss_trigger_rx.recv() => {
                 if wss_active {
-                    tracing::debug!("WSS 已在运行中，忽略重复触发");
+                    let current_token = device::load_device_token();
+                    if current_token.as_deref() != wss_active_token.as_deref() {
+                        // 新绑定已换发凭证，旧 WSS 任务结束后必须使用新凭证重连。
+                        wss_restart_pending = current_token.is_some();
+                        tracing::info!("WSS 正在使用旧凭证，已登记新凭证重连");
+                    } else {
+                        tracing::debug!("WSS 已在运行中，忽略重复触发");
+                    }
                     continue;
                 }
 
@@ -912,6 +923,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let ws_state = state_machine.clone();
                 let ws_outgoing = outgoing_tx_ref.clone();
                 let ws_shutdown = shutdown.child_token();
+                wss_active_token = Some(ws_token.clone());
                 *wss_cancel_ref.lock().await = Some(ws_shutdown.clone());
 
                 // 在后台 spawn run_ws_loop（内部有无限重连逻辑）
@@ -1010,8 +1022,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     None => std::future::pending().await,
                 }
             } => {
+                let active_token_is_current = wss_active_token.as_deref().is_some_and(|token| {
+                    device::load_device_token().as_deref() == Some(token)
+                });
+                let binding_in_progress = state_machine.current().await == state::AgentState::Binding;
                 match result {
-                    Some(Ok(Err(ref e))) if e.to_string().contains("AUTH_REJECTED") => {
+                    Some(Ok(Err(ref e)))
+                        if e.to_string().contains("AUTH_REJECTED")
+                            && active_token_is_current
+                            && !binding_in_progress => {
                         tracing::warn!(
                             "device_token 已失效，切换至未绑定状态（IPC 仍运行）"
                         );
@@ -1024,7 +1043,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             .transition(state::StateEvent::TokenRevoked)
                             .await;
                     }
-                    Some(Ok(Ok(()))) => {
+                    Some(Ok(Err(ref e))) if e.to_string().contains("AUTH_REJECTED") => {
+                        tracing::info!("旧 WSS 凭证已失效，但新绑定或新凭证已接管，忽略过期退出结果");
+                    }
+                    Some(Ok(Ok(()))) if active_token_is_current => {
                         tracing::info!("WSS 循环正常退出");
                         if shutdown.is_cancelled() {
                             break;
@@ -1033,17 +1055,20 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             .transition(state::StateEvent::WsConnected { has_token: false })
                             .await;
                     }
-                    Some(Ok(Err(e))) => {
+                    Some(Ok(Err(e))) if active_token_is_current => {
                         tracing::error!("WSS 循环错误: {}", e);
                         let _ = state_machine
                             .transition(state::StateEvent::WsConnected { has_token: false })
                             .await;
                     }
-                    Some(Err(e)) => {
+                    Some(Err(e)) if active_token_is_current => {
                         tracing::error!("WSS 任务 panic: {}", e);
                         let _ = state_machine
                             .transition(state::StateEvent::WsConnected { has_token: false })
                             .await;
+                    }
+                    Some(_) => {
+                        tracing::info!("WSS 旧任务退出时当前凭证已变更，不回写绑定状态");
                     }
                     None => {
                         tracing::debug!("WSS task handle 为 None，忽略");
@@ -1055,6 +1080,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 wss_active = false;
                 wss_task = None;
                 incoming_rx = None;
+                wss_active_token = None;
+
+                let restart_with_new_token = wss_restart_pending
+                    || (!active_token_is_current && device::load_device_token().is_some());
+                wss_restart_pending = false;
+                if restart_with_new_token && !device::wss_is_blocked_by_pending_activation() {
+                    let _ = wss_trigger_tx.send(());
+                }
             }
         }
     }
@@ -1188,8 +1221,8 @@ fn project_operation_key(project_path: &str) -> String {
 /// Cloud 的 `session_created_ack` 只有 Desktop 重新同步路径会携带这些稳定的
 /// RemoteAccessGuard 拒绝码。它们表示账号已经不能使用远程功能，重试不会成功；
 /// Redis、网络或未知错误则一律保留远程状态，等待下次连接重试。
-fn is_permanent_reconnect_ack_error(source: &str, error: &str) -> bool {
-    if !source.eq_ignore_ascii_case("desktop") {
+fn is_permanent_reconnect_ack_error(initiator: session::SessionInitiator, error: &str) -> bool {
+    if initiator != session::SessionInitiator::DesktopLocal {
         return false;
     }
 
@@ -1329,7 +1362,8 @@ async fn handle_incoming(
                     let ack_profile = s.profile.clone();
                     let ack_cols = s.cols;
                     let ack_rows = s.rows;
-                    let ack_source = s.source.clone();
+                    let ack_initiator = s.initiator;
+                    let ack_viewport_owner = s.viewport_owner;
                     let ack_outgoing = outgoing.clone();
                     let ack_registry = ack_registry.clone();
                     let ack_sessions = sessions.clone();
@@ -1347,7 +1381,8 @@ async fn handle_incoming(
                                 ack_profile.as_deref(),
                                 ack_cols,
                                 ack_rows,
-                                &ack_source,
+                                ack_initiator,
+                                ack_viewport_owner,
                                 Some(&msg_id),
                             );
 
@@ -1384,7 +1419,7 @@ async fn handle_incoming(
                                     }
                                     Ok(Ok(crate::ack::AckResult::Error(error))) => {
                                         ack_registry.cancel(&ack_nid).await;
-                                        if is_permanent_reconnect_ack_error(&ack_source, &error) {
+                                        if is_permanent_reconnect_ack_error(ack_initiator, &error) {
                                             match ack_sessions
                                                 .set_remote_enabled(&ack_nid, false)
                                                 .await
@@ -1436,6 +1471,8 @@ async fn handle_incoming(
             from_user_id,
             cols,
             rows,
+            initiator,
+            viewport_owner,
             expected_cli,
             cli_args,
             request_id,
@@ -1452,7 +1489,7 @@ async fn handle_incoming(
                     let msg = proto::WsMessageBuilder::session_start_failed(
                         &profile,
                         err.reason(),
-                        request_id.as_deref(),
+                        Some(request_id.as_str()),
                     );
                     if let Some(tx) = outgoing.lock().await.as_ref() {
                         let _ = tx.send(msg);
@@ -1472,7 +1509,7 @@ async fn handle_incoming(
                     let msg = proto::WsMessageBuilder::session_start_failed(
                         &profile,
                         "profile_cli_mismatch",
-                        request_id.as_deref(),
+                        Some(request_id.as_str()),
                     );
                     if let Some(tx) = outgoing.lock().await.as_ref() {
                         let _ = tx.send(msg);
@@ -1515,7 +1552,8 @@ async fn handle_incoming(
             match sessions
                 .create(
                     session_nid.clone(),
-                    "ios".to_string(),
+                    initiator,
+                    viewport_owner,
                     resolved_tool.clone(),
                     Some(profile.clone()),
                     cwd_resolved.clone(),
@@ -1621,7 +1659,7 @@ async fn handle_incoming(
                                 let failed = proto::WsMessageBuilder::session_start_failed(
                                     &p,
                                     "spawn_failed",
-                                    spawn_failure_request_id.as_deref(),
+                                    Some(spawn_failure_request_id.as_str()),
                                 );
                                 if let Some(tx) = out.lock().await.as_ref() {
                                     let _ = tx.send(failed);
@@ -1664,10 +1702,11 @@ async fn handle_incoming(
                                     Some(ack_profile.as_str()),
                                     ack_cols,
                                     ack_rows,
-                                    "ios",
+                                    initiator,
+                                    viewport_owner,
                                     Some(&msg_id),
                                     ack_cli_version.as_deref(),
-                                    history_request_id.as_deref(),
+                                    Some(history_request_id.as_str()),
                                 );
 
                             // 先注册再发送，避免低延迟 ACK 在 receiver 建立前被丢弃。
@@ -1852,7 +1891,7 @@ async fn handle_incoming(
                                 .push(session::InputMessage {
                                     session_id: nid.clone(),
                                     text,
-                                    source: "ios".into(),
+                                    input_path: "remote".into(),
                                 })
                                 .await;
                             tracing::info!(nid = %nid, "📱 [INPUT] 已推入 InputMerger 队列");
@@ -1910,7 +1949,7 @@ async fn handle_incoming(
                             .push(session::InputMessage {
                                 session_id: nid,
                                 text,
-                                source: "ios".into(),
+                                input_path: "remote".into(),
                             })
                             .await;
                     }
@@ -1927,6 +1966,7 @@ async fn handle_incoming(
             session_nid,
             cols,
             rows,
+            viewport_owner,
         } => {
             tracing::debug!(
                 nid = %session_nid,
@@ -1945,11 +1985,11 @@ async fn handle_incoming(
                         return;
                     }
                     if let Err(e) = sessions
-                        .resize_from_source(
+                        .resize_from_viewport_owner(
                             &session_summary.nid,
                             cols,
                             rows,
-                            session::ViewportOwner::Ios,
+                            viewport_owner,
                         )
                         .await
                     {
@@ -1974,87 +2014,18 @@ async fn handle_incoming(
         proto::AgentIncoming::ProfileListAck => {
             tracing::debug!("Profile 列表已确认");
         }
-        proto::AgentIncoming::ReplayOutput { session_nid } => {
+        proto::AgentIncoming::ReplayOutput {
+            session_nid,
+            replay_id,
+        } => {
             tracing::info!(
                 nid = %session_nid,
                 "收到 replay_output 请求，读取本地输出日志"
             );
 
-            let replay = session::OutputFanout::replay_log_result(&session_nid);
-            match replay.status {
-                "ok" => {
-                    // 环形日志存储的是原始字节（包含 ANSI escape），直接转为 String
-                    tracing::info!(
-                        nid = %session_nid,
-                        bytes = replay.bytes,
-                        "回放输出日志"
-                    );
-
-                    // 分块发送：每块最多 32KB，避免单条 WSS 消息过大
-                    const CHUNK_SIZE: usize = 32 * 1024;
-                    let ansi_text = String::from_utf8_lossy(&replay.data).into_owned();
-                    let mut offset = 0;
-                    let mut chunks = 0usize;
-                    while offset < ansi_text.len() {
-                        let end = std::cmp::min(offset + CHUNK_SIZE, ansi_text.len());
-                        // 在 UTF-8 字符边界切割，避免截断多字节字符
-                        let mut chunk_end = end;
-                        while chunk_end > offset && !ansi_text.is_char_boundary(chunk_end) {
-                            chunk_end -= 1;
-                        }
-                        let chunk = &ansi_text[offset..chunk_end];
-                        let msg = proto::WsMessageBuilder::output(&session_nid, chunk);
-                        if let Some(tx) = outgoing.lock().await.as_ref() {
-                            let _ = tx.send(msg);
-                        }
-                        chunks += 1;
-                        offset = chunk_end;
-                    }
-                    let done = proto::WsMessageBuilder::replay_output_done(
-                        &session_nid,
-                        "ok",
-                        replay.bytes,
-                        chunks,
-                        None,
-                    );
-                    if let Some(tx) = outgoing.lock().await.as_ref() {
-                        let _ = tx.send(done);
-                    }
-                }
-                "empty" => {
-                    tracing::warn!(
-                        nid = %session_nid,
-                        "replay_output: 未找到输出日志或日志为空"
-                    );
-                    let done = proto::WsMessageBuilder::replay_output_done(
-                        &session_nid,
-                        "empty",
-                        0,
-                        0,
-                        None,
-                    );
-                    if let Some(tx) = outgoing.lock().await.as_ref() {
-                        let _ = tx.send(done);
-                    }
-                }
-                _ => {
-                    let message = replay.message.as_deref().unwrap_or("读取输出日志失败");
-                    tracing::warn!(
-                        nid = %session_nid,
-                        message = %message,
-                        "replay_output: 读取输出日志失败"
-                    );
-                    let done = proto::WsMessageBuilder::replay_output_done(
-                        &session_nid,
-                        "error",
-                        0,
-                        0,
-                        Some(message),
-                    );
-                    if let Some(tx) = outgoing.lock().await.as_ref() {
-                        let _ = tx.send(done);
-                    }
-                }
+            let output_tx = outgoing.lock().await.as_ref().cloned();
+            if let Some(output_tx) = output_tx {
+                session::OutputFanout::replay_to_wss(&session_nid, &replay_id, &output_tx);
             }
         }
         proto::AgentIncoming::ProjectChangeSummary {
@@ -2806,7 +2777,8 @@ async fn handle_incoming(
                         summary.profile.as_deref(),
                         summary.cols,
                         summary.rows,
-                        &summary.source,
+                        summary.initiator,
+                        summary.viewport_owner,
                     );
                     if let Some(tx) = outgoing.lock().await.as_ref() {
                         let _ = tx.send(msg);
@@ -2886,19 +2858,25 @@ mod tests {
             "membershipGracePeriod: 会员已到期，无法开启远程会话",
             "userNotFound: 用户不存在",
         ] {
-            assert!(is_permanent_reconnect_ack_error("desktop", error));
+            assert!(is_permanent_reconnect_ack_error(
+                session::SessionInitiator::DesktopLocal,
+                error,
+            ));
         }
     }
 
     #[test]
     fn reconnect_transient_or_non_desktop_errors_keep_remote_state() {
         assert!(!is_permanent_reconnect_ack_error(
-            "desktop",
+            session::SessionInitiator::DesktopLocal,
             "Redis write failed: connection reset"
         ));
-        assert!(!is_permanent_reconnect_ack_error("desktop", "send failed"));
         assert!(!is_permanent_reconnect_ack_error(
-            "ios",
+            session::SessionInitiator::DesktopLocal,
+            "send failed",
+        ));
+        assert!(!is_permanent_reconnect_ack_error(
+            session::SessionInitiator::Remote,
             "membershipExpired: 会员已过期，无法开启远程会话"
         ));
     }

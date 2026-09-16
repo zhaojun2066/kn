@@ -7,6 +7,7 @@
 mod mock_wss;
 
 use kn_agent::proto::{AgentIncoming, WsEnvelope, WsMessageBuilder};
+use kn_agent::session::{SessionInitiator, ViewportOwner};
 
 // ── Message parsing tests (all known types) ─────────────────
 
@@ -24,7 +25,7 @@ fn test_all_incoming_types_parse_without_panic() {
         ),
         // Session lifecycle (cloud forwards from iOS to agent)
         (
-            r#"{"type":"start_session","data":{"profile":"default","fromUserId":1}}"#,
+            r#"{"type":"start_session","data":{"profile":"default","fromUserId":1,"initiator":"remote","viewport_owner":"mobile"}}"#,
             "start_session",
         ),
         // Message routing (cloud forwards from iOS to agent) — sessionId identifies the session
@@ -37,7 +38,7 @@ fn test_all_incoming_types_parse_without_panic() {
             "ctrl",
         ),
         (
-            r#"{"type":"resize","data":{"sessionId":"s_abc123","cols":48,"rows":18}}"#,
+            r#"{"type":"resize","data":{"sessionId":"s_abc123","cols":48,"rows":18,"viewport_owner":"mobile"}}"#,
             "resize",
         ),
         (
@@ -61,7 +62,7 @@ fn test_all_incoming_types_parse_without_panic() {
         ),
         // New: resume_session
         (
-            r#"{"type":"replay_output","data":{"sessionId":"s_abc123"}}"#,
+            r#"{"type":"replay_output","data":{"sessionId":"s_abc123","replay_id":"replay_1234567890"}}"#,
             "replay_output",
         ),
         (
@@ -336,7 +337,7 @@ fn variant_name(msg: &AgentIncoming) -> &'static str {
 #[test]
 fn test_output_session_id_is_string() {
     // 新协议: sessionId 统一为 String
-    let msg = WsMessageBuilder::output("s_abc123", "hello world");
+    let msg = WsMessageBuilder::output_live("s_abc123", "hello world", 1);
     let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
 
     assert_eq!(parsed["type"], "output");
@@ -459,7 +460,7 @@ fn test_output_format_matches_new_protocol() {
     // - type: "output"
     // - data.sessionId: String
     // - data.ansi_text: String
-    let msg = WsMessageBuilder::output("s_def456", "test\x1b[0m");
+    let msg = WsMessageBuilder::output_live("s_def456", "test\x1b[0m", 1);
     let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
 
     // Envelope-level type
@@ -502,12 +503,22 @@ fn test_all_outbound_builders_produce_valid_json() {
     assert_eq!(v["type"], "ping");
 
     // session_created
-    let created = WsMessageBuilder::session_created("s_abc", "claude", "/tmp", None, 80, 24, "ios");
+    let created = WsMessageBuilder::session_created(
+        "s_abc",
+        "claude",
+        "/tmp",
+        None,
+        80,
+        24,
+        SessionInitiator::Remote,
+        ViewportOwner::Mobile,
+    );
     let v: serde_json::Value = serde_json::from_str(&created).unwrap();
     assert_eq!(v["type"], "session_created");
     assert_eq!(v["data"]["sessionId"], "s_abc");
     assert_eq!(v["data"]["tool"], "claude");
-    assert_eq!(v["data"]["source"], "ios");
+    assert_eq!(v["data"]["initiator"], "remote");
+    assert_eq!(v["data"]["viewport_owner"], "mobile");
 
     // session_ended
     let ended = WsMessageBuilder::session_ended("s_abc", "user_disconnected");
@@ -517,7 +528,7 @@ fn test_all_outbound_builders_produce_valid_json() {
     assert_eq!(v["data"]["reason"], "user_disconnected");
 
     // output
-    let output = WsMessageBuilder::output("s_abc", "ansi text");
+    let output = WsMessageBuilder::output_live("s_abc", "ansi text", 1);
     let v: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(v["type"], "output");
     assert_eq!(v["data"]["sessionId"], "s_abc");
@@ -601,7 +612,7 @@ fn test_error_notify_with_minimal_data() {
 fn test_start_session_parsing_matches_java_forward_format() {
     // Java WsMessageFactory.startSessionForward builds:
     // {"type":"start_session","ts":...,
-    //  "data":{"profile":"...","cwd":"...","fromUserId":...}}
+    //  "data":{"profile":"...","cwd":"...","fromUserId":...,"initiator":"remote","viewport_owner":"mobile"}}
     let json = serde_json::json!({
         "type": "start_session",
         "ts": 1234567890i64,
@@ -610,7 +621,9 @@ fn test_start_session_parsing_matches_java_forward_format() {
             "cwd": "/Users/test/project",
             "fromUserId": 100,
             "cols": 48,
-            "rows": 18
+            "rows": 18,
+            "initiator": "remote",
+            "viewport_owner": "mobile"
         }
     });
     let env: WsEnvelope = serde_json::from_value(json).unwrap();

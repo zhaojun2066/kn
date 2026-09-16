@@ -204,7 +204,7 @@ async fn connect_and_run(
         .with_header("X-KN-Agent-Version", agent_version)
         .with_header("X-KN-OS-Version", safe_os_version)
         .with_header("X-KN-Hostname", safe_hostname)
-        .with_header("X-KN-Protocol-Version", "1");
+        .with_header("X-KN-Protocol-Version", "3");
 
     tracing::info!("正在连接 {} ...", cloud_url);
 

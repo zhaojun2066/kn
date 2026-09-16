@@ -461,7 +461,6 @@ fn test_ipc_register_session_creates_running_relay_session() {
                 "tool": "claude",
                 "profile": "work",
                 "cwd": ".",
-                "source": "desktop",
                 "pid": std::process::id(),
             }),
         ),
@@ -469,7 +468,8 @@ fn test_ipc_register_session_creates_running_relay_session() {
     let result = assert_ok(&resp);
     let nid = result["nid"].as_str().unwrap().to_string();
     assert_eq!(result["status"].as_str().unwrap(), "registered");
-    assert_eq!(result["source"].as_str().unwrap(), "desktop");
+    assert_eq!(result["initiator"].as_str().unwrap(), "desktop_local");
+    assert_eq!(result["viewport_owner"].as_str().unwrap(), "desktop");
 
     let resp = ipc_request_json(
         &dir.ipc_sock(),
@@ -501,7 +501,6 @@ fn test_ipc_relay_output_and_poll_input_for_registered_session() {
                 "tool": "claude",
                 "profile": "work",
                 "cwd": ".",
-                "source": "desktop",
             }),
         ),
     );
@@ -542,7 +541,6 @@ fn test_ipc_enable_remote_requires_wss_but_disable_is_local_only() {
                 "tool": "claude",
                 "profile": "work",
                 "cwd": ".",
-                "source": "desktop",
             }),
         ),
     );
@@ -584,7 +582,6 @@ fn test_ipc_kill_registered_relay_session_marks_it_ended() {
                 "tool": "claude",
                 "profile": "work",
                 "cwd": ".",
-                "source": "desktop",
             }),
         ),
     );
@@ -621,7 +618,6 @@ fn test_ipc_relay_exit_marks_registered_relay_ended_without_kill() {
                 "tool": "claude",
                 "profile": "work",
                 "cwd": ".",
-                "source": "desktop",
             }),
         ),
     );
@@ -994,7 +990,8 @@ async fn start_pty_basic(tool: &str) -> (String, Arc<kn_agent::session::SessionM
     sessions
         .create(
             nid.clone(),
-            "test".into(),
+            kn_agent::session::SessionInitiator::Remote,
+            kn_agent::session::ViewportOwner::Mobile,
             tool.to_string(),
             None,
             cwd.clone(),
@@ -1071,7 +1068,8 @@ async fn test_pty_input_output_roundtrip() {
     sessions
         .create(
             nid.clone(),
-            "test".into(),
+            kn_agent::session::SessionInitiator::Remote,
+            kn_agent::session::ViewportOwner::Mobile,
             "bash".into(),
             None,
             cwd.clone(),
@@ -1109,7 +1107,7 @@ async fn test_pty_input_output_roundtrip() {
         .push(kn_agent::session::InputMessage {
             session_id: nid.clone(),
             text: format!("echo {}\n", test_marker),
-            source: "test".into(),
+            input_path: "test".into(),
         })
         .await;
 
@@ -1151,7 +1149,8 @@ async fn test_pty_kill_session() {
     sessions
         .create(
             nid.clone(),
-            "test".into(),
+            kn_agent::session::SessionInitiator::Remote,
+            kn_agent::session::ViewportOwner::Mobile,
             "bash".into(),
             None,
             cwd.clone(),
@@ -1201,7 +1200,8 @@ async fn test_pty_resize_session() {
     sessions
         .create(
             nid.clone(),
-            "test".into(),
+            kn_agent::session::SessionInitiator::Remote,
+            kn_agent::session::ViewportOwner::Mobile,
             "bash".into(),
             None,
             cwd.clone(),
@@ -1252,7 +1252,8 @@ async fn test_pty_multiple_concurrent_sessions() {
         sessions
             .create(
                 nid.clone(),
-                "test".into(),
+                kn_agent::session::SessionInitiator::Remote,
+                kn_agent::session::ViewportOwner::Mobile,
                 "bash".into(),
                 None,
                 cwd.clone(),
@@ -1650,7 +1651,8 @@ async fn test_output_fanout_subscriber_receives_data() {
     sessions
         .create(
             nid.clone(),
-            "test".into(),
+            kn_agent::session::SessionInitiator::Remote,
+            kn_agent::session::ViewportOwner::Mobile,
             "bash".into(),
             None,
             cwd.clone(),
@@ -1688,7 +1690,7 @@ async fn test_output_fanout_subscriber_receives_data() {
         .push(kn_agent::session::InputMessage {
             session_id: nid.clone(),
             text: "echo FANOUT_TEST\n".into(),
-            source: "test".into(),
+            input_path: "test".into(),
         })
         .await;
 

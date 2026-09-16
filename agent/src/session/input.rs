@@ -8,8 +8,8 @@ use tracing;
 pub struct InputMessage {
     pub session_id: String,
     pub text: String,
-    /// 来源: "ios" / "local" / "desktop"
-    pub source: String,
+    /// Agent-local input path: "remote" or "desktop_local".
+    pub input_path: String,
 }
 
 /// 每会话 FIFO 输入队列 + Notify 唤醒机制。

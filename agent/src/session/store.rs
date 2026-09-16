@@ -68,7 +68,7 @@ impl SessionStore for MemorySessionStore {
             .map(|s| SessionSummary {
                 nid: s.nid.clone(),
                 kind: s.kind,
-                source: s.source.clone(),
+                initiator: s.initiator,
                 tool: s.tool.clone(),
                 profile: s.profile.clone(),
                 cwd: s.cwd.clone(),

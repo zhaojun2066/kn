@@ -27,7 +27,7 @@
 //! | ctrl               | nid, signal                        | Send ctrl_c/ctrl_d/ctrl_z to PTY     |
 //! | resize             | nid, cols, rows                    | Update terminal size                 |
 //! | kill_session       | nid                                | SIGKILL PTY + end session + notify cloud |
-//! | register_session   | tool, profile?, cwd, source?       | Register desktop PTY (Relay, no PTY spawn) |
+//! | register_session   | tool, profile?, cwd                | Register desktop PTY (Relay, no PTY spawn) |
 //! | relay_exit         | nid, reason?                       | Mark desktop-owned Relay PTY as ended     |
 //! | set_remote_enabled | nid, enabled                       | Toggle iOS visibility/control            |
 //! | relay_output       | nid, data                          | Forward desktop-owned PTY output         |
@@ -48,6 +48,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ack::AckRegistry;
 use crate::error::{AgentError, Result};
+use crate::session::types::SessionInitiator;
 use crate::session::{InputMerger, InputMessage, SessionManager, SessionSummary, ViewportOwner};
 use crate::state::{StateEvent, StateMachine};
 
@@ -793,7 +794,24 @@ impl IpcHandle {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     continue;
                 }
-                let _ = state.transition(StateEvent::BindResult).await;
+                // 旧 WSS 任务可能在本轮绑定期间才报告其旧凭证失效。只有本轮
+                // worker 仍有效且刚激活的凭证仍是磁盘上的当前凭证，才允许
+                // 完成状态收尾；真实解绑已清除/替换凭证时绝不允许旧 worker
+                // 复活绑定状态。
+                if bind_gen.load(Ordering::Relaxed) != generation
+                    || crate::device::load_device_token().as_deref()
+                        != Some(activation.device_token.as_str())
+                {
+                    tracing::warn!(
+                        generation,
+                        "绑定收尾已被更新的凭证或解绑操作取代，不更新 Agent 状态"
+                    );
+                    return;
+                }
+                if let Err(error) = state.transition(StateEvent::BindResult).await {
+                    tracing::error!(error = %error, "绑定已激活但 Agent 状态未能收尾");
+                    return;
+                }
                 let _ = wss_trigger.send(());
                 let mut guard = bind_cancel_ref.lock().await;
                 if guard.as_ref().map(|worker| worker.generation) == Some(generation) {
@@ -1016,7 +1034,8 @@ impl IpcHandle {
             .sessions
             .create(
                 nid.clone(),
-                "desktop".to_string(),
+                SessionInitiator::DesktopLocal,
+                ViewportOwner::Desktop,
                 tool.to_string(),
                 profile.clone(),
                 cwd.clone(),
@@ -1183,7 +1202,7 @@ impl IpcHandle {
                     .push(InputMessage {
                         session_id: nid.clone(),
                         text,
-                        source: "desktop".into(),
+                        input_path: "desktop_local".into(),
                     })
                     .await;
                 ok_response(&req.id, serde_json::json!({"ok": true, "nid": nid}))
@@ -1242,7 +1261,7 @@ impl IpcHandle {
                     .push(InputMessage {
                         session_id: nid.clone(),
                         text,
-                        source: "desktop".into(),
+                        input_path: "desktop_local".into(),
                     })
                     .await;
                 ok_response(
@@ -1280,7 +1299,7 @@ impl IpcHandle {
 
         match self
             .sessions
-            .resize_from_source(nid, cols, rows, ViewportOwner::Desktop)
+            .resize_from_viewport_owner(nid, cols, rows, ViewportOwner::Desktop)
             .await
         {
             Ok(_) => ok_response(
@@ -1341,7 +1360,6 @@ impl IpcHandle {
     /// - `tool` (string): CLI tool name (claude | codex | qoder)
     /// - `profile` (string, optional): profile name for env injection
     /// - `cwd` (string): working directory
-    /// - `source` (string, default "desktop"): session origin
     async fn handle_register_session(&self, req: &IpcRequest) -> String {
         let tool = req
             .params
@@ -1358,12 +1376,6 @@ impl IpcHandle {
             .get("cwd")
             .and_then(|v| v.as_str())
             .unwrap_or(".");
-        let source = req
-            .params
-            .get("source")
-            .and_then(|v| v.as_str())
-            .unwrap_or("desktop")
-            .to_string();
         let pid = req.params.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
         let nid = format!("s_{}", nanoid::nanoid!(12));
@@ -1373,7 +1385,8 @@ impl IpcHandle {
             .sessions
             .create(
                 nid.clone(),
-                source.clone(),
+                SessionInitiator::DesktopLocal,
+                ViewportOwner::Desktop,
                 tool.to_string(),
                 profile.clone(),
                 cwd.to_string(),
@@ -1405,7 +1418,8 @@ impl IpcHandle {
                         "tool": session.tool,
                         "profile": session.profile,
                         "cwd": session.cwd,
-                        "source": session.source,
+                        "initiator": session.initiator.as_str(),
+                        "viewport_owner": session.viewport_owner.as_str(),
                         "status": "registered",
                         "created_at": session.created_at.to_rfc3339(),
                     }),
@@ -1509,7 +1523,8 @@ impl IpcHandle {
                     session.profile.as_deref(),
                     session.cols,
                     session.rows,
-                    "desktop",
+                    session.initiator,
+                    session.viewport_owner,
                     Some(&format!("desktop-{}", nid)),
                 );
                 let Some(rx) = self.ack_registry.register_if_absent(nid).await else {
@@ -1604,15 +1619,17 @@ impl IpcHandle {
                     );
                 }
                 session.record_output_snippet(data);
-                crate::session::OutputFanout::append_log_static(nid, data.as_bytes());
-
                 if session
                     .remote_enabled
                     .load(std::sync::atomic::Ordering::Relaxed)
                 {
                     if let Some(tx) = self.outgoing_tx_ref.lock().await.as_ref() {
-                        let _ = tx.send(crate::proto::WsMessageBuilder::output(nid, data));
+                        crate::session::OutputFanout::emit_static_live(nid, data, tx);
                     }
+                } else {
+                    // Keep output recoverable even while remote delivery is disabled.
+                    let (discard_tx, _discard_rx) = tokio::sync::mpsc::unbounded_channel();
+                    crate::session::OutputFanout::emit_static_live(nid, data, &discard_tx);
                 }
                 ok_response(&req.id, serde_json::json!({"ok": true, "nid": nid}))
             }
@@ -1915,7 +1932,7 @@ fn session_to_json(s: &SessionSummary) -> serde_json::Value {
     serde_json::json!({
         "nid": s.nid,
         "kind": kind,
-        "source": s.source,
+        "initiator": s.initiator.as_str(),
         "tool": s.tool,
         "profile": s.profile,
         "cwd": s.cwd,
@@ -1984,14 +2001,14 @@ mod tests {
     }
 
     #[test]
-    fn test_session_to_json_includes_kind_and_source() {
+    fn test_session_to_json_includes_kind_and_platform_neutral_semantics() {
         let summary = crate::session::types::SessionSummary {
             nid: "s_test".to_string(),
             kind: crate::session::types::SessionKind::Native,
             tool: "claude".to_string(),
             profile: Some("work".to_string()),
             cwd: "/tmp/project".to_string(),
-            source: "desktop".to_string(),
+            initiator: crate::session::types::SessionInitiator::DesktopLocal,
             cols: 100,
             rows: 30,
             viewport_owner: crate::session::types::ViewportOwner::Desktop,
@@ -2004,7 +2021,7 @@ mod tests {
         let json = session_to_json(&summary);
 
         assert_eq!(json["kind"], "Native");
-        assert_eq!(json["source"], "desktop");
+        assert_eq!(json["initiator"], "desktop_local");
         assert_eq!(json["nid"], "s_test");
     }
 

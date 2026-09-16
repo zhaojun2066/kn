@@ -5,7 +5,7 @@ use crate::session::input::InputMerger;
 use crate::session::output::{remove_replay_log, OutputFanout};
 use crate::session::store::SessionStore;
 use crate::session::types::{
-    ManagedSession, SessionKind, SessionStatus, SessionSummary, ViewportOwner,
+    ManagedSession, SessionInitiator, SessionKind, SessionStatus, SessionSummary, ViewportOwner,
 };
 use crate::state::StateMachine;
 use chrono::Utc;
@@ -123,7 +123,8 @@ impl SessionManager {
     pub async fn create(
         &self,
         nid: String,
-        source: String,
+        initiator: SessionInitiator,
+        viewport_owner: ViewportOwner,
         tool: String,
         profile: Option<String>,
         cwd: String,
@@ -142,11 +143,10 @@ impl SessionManager {
             }
         }
 
-        let viewport_owner = ViewportOwner::from_source(&source);
         let session = ManagedSession {
             kind,
             nid: nid.clone(),
-            source,
+            initiator,
             tool,
             profile,
             cwd,
@@ -594,7 +594,7 @@ impl SessionManager {
     }
 
     /// 更新终端尺寸，并标记当前视口主控端。
-    pub async fn resize_from_source(
+    pub async fn resize_from_viewport_owner(
         &self,
         nid: &str,
         cols: u16,
@@ -1098,12 +1098,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resize_from_ios_updates_size_and_owner() {
+    async fn resize_from_mobile_updates_size_and_owner() {
         let manager = test_manager();
         manager
             .create(
                 "s_ios".into(),
-                "desktop".into(),
+                SessionInitiator::DesktopLocal,
+                ViewportOwner::Desktop,
                 "bash".into(),
                 None,
                 "/tmp".into(),
@@ -1113,14 +1114,14 @@ mod tests {
             .expect("create session");
 
         manager
-            .resize_from_source("s_ios", 52, 18, ViewportOwner::Ios)
+            .resize_from_viewport_owner("s_ios", 52, 18, ViewportOwner::Mobile)
             .await
-            .expect("resize from ios");
+            .expect("resize from mobile");
 
         let session = manager.get("s_ios").await.unwrap().unwrap();
         assert_eq!(session.cols, 52);
         assert_eq!(session.rows, 18);
-        assert_eq!(session.viewport_owner, ViewportOwner::Ios);
+        assert_eq!(session.viewport_owner, ViewportOwner::Mobile);
     }
 
     #[tokio::test]
@@ -1129,7 +1130,8 @@ mod tests {
         manager
             .create(
                 "s_desktop".into(),
-                "ios".into(),
+                SessionInitiator::Remote,
+                ViewportOwner::Mobile,
                 "bash".into(),
                 None,
                 "/tmp".into(),
@@ -1138,9 +1140,9 @@ mod tests {
             .await
             .expect("create session");
         manager
-            .resize_from_source("s_desktop", 50, 20, ViewportOwner::Ios)
+            .resize_from_viewport_owner("s_desktop", 50, 20, ViewportOwner::Mobile)
             .await
-            .expect("resize from ios");
+            .expect("resize from mobile");
 
         manager
             .set_viewport_owner("s_desktop", ViewportOwner::Desktop)
@@ -1159,7 +1161,8 @@ mod tests {
         manager
             .create(
                 "s_relay".into(),
-                "desktop".into(),
+                SessionInitiator::DesktopLocal,
+                ViewportOwner::Desktop,
                 "claude".into(),
                 Some("work".into()),
                 "/tmp".into(),
@@ -1196,7 +1199,8 @@ mod tests {
         manager
             .create(
                 "s_relay_running".into(),
-                "desktop".into(),
+                SessionInitiator::DesktopLocal,
+                ViewportOwner::Desktop,
                 "claude".into(),
                 Some("work".into()),
                 "/tmp".into(),

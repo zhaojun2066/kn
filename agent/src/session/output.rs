@@ -30,8 +30,17 @@ pub(crate) struct OutputFanoutInner {
     log_path: PathBuf,
     /// 日志当前大小（避免每次 fstat）
     log_size: std::sync::atomic::AtomicU64,
+    stream: Arc<OutputStream>,
     /// 远程控制开关（共享自 ManagedSession.remote_enabled），None 视为开启
     remote_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+/// The single owner of one session's remote output stream.  Its mutex spans
+/// durable live-frame sequencing and replay snapshot enqueueing, so an Agent
+/// cannot interleave a live frame into one replay transaction.
+struct OutputStream {
+    cursor: Mutex<u64>,
+    sequence_path: PathBuf,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -53,6 +62,63 @@ static STATIC_LOG_SIZES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Ar
 /// （PTY reader / relay output 与结束清理）竞争同一文件。
 static LOG_FILE_LOCKS: std::sync::LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static OUTPUT_STREAMS: std::sync::LazyLock<Mutex<HashMap<PathBuf, Arc<OutputStream>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn sequence_path(log_path: &PathBuf) -> PathBuf {
+    log_path.with_file_name("output.seq")
+}
+
+fn restore_sequence(sequence_path: &PathBuf) -> u64 {
+    std::fs::read_to_string(sequence_path)
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .rev()
+                .find_map(|line| line.parse::<u64>().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn get_output_stream(log_path: &PathBuf) -> Arc<OutputStream> {
+    let canonical = std::fs::canonicalize(log_path).unwrap_or_else(|_| log_path.clone());
+    let mut streams = OUTPUT_STREAMS.lock().unwrap();
+    streams
+        .entry(canonical)
+        .or_insert_with(|| {
+            let sequence_path = sequence_path(log_path);
+            Arc::new(OutputStream {
+                cursor: Mutex::new(restore_sequence(&sequence_path)),
+                sequence_path,
+            })
+        })
+        .clone()
+}
+
+fn remove_output_stream(log_path: &PathBuf) {
+    let canonical = std::fs::canonicalize(log_path).unwrap_or_else(|_| log_path.clone());
+    OUTPUT_STREAMS.lock().unwrap().remove(&canonical);
+}
+
+fn persist_next_sequence(stream: &OutputStream, cursor: &mut u64) -> std::io::Result<u64> {
+    let next = cursor
+        .checked_add(1)
+        .ok_or_else(|| std::io::Error::other("output sequence exhausted"))?;
+    if let Some(parent) = stream.sequence_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    use std::io::Write;
+    let mut journal = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&stream.sequence_path)?;
+    writeln!(journal, "{next}")?;
+    journal.sync_data()?;
+    *cursor = next;
+    Ok(next)
+}
 
 /// 获取或创建指定路径的日志写入锁。
 fn get_log_lock(path: &PathBuf) -> Arc<Mutex<()>> {
@@ -81,6 +147,8 @@ pub(crate) fn remove_replay_log(nid: &str) {
         .join("sessions")
         .join(nid)
         .join("output.log");
+    let stream = get_output_stream(&log_path);
+    let _stream_guard = stream.cursor.lock().unwrap();
     let lock = get_log_lock(&log_path);
     {
         let _guard = lock.lock().unwrap();
@@ -90,7 +158,13 @@ pub(crate) fn remove_replay_log(nid: &str) {
             }
         }
     }
+    if let Err(error) = std::fs::remove_file(&stream.sequence_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(nid = %nid, path = %stream.sequence_path.display(), error = %error, "删除输出序号日志失败");
+        }
+    }
     remove_log_lock(nid);
+    remove_output_stream(&log_path);
     STATIC_LOG_SIZES.lock().unwrap().remove(nid);
 }
 
@@ -133,6 +207,7 @@ impl OutputFanout {
             std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0),
         );
 
+        let stream = get_output_stream(&log_path);
         let inner = Arc::new(OutputFanoutInner {
             wss_tx: wss,
             ipc_tx: ipc,
@@ -141,6 +216,7 @@ impl OutputFanout {
             extra_subscribers: std::sync::Mutex::new(Vec::new()),
             log_path,
             log_size,
+            stream,
             remote_enabled,
         });
 
@@ -175,6 +251,7 @@ impl OutputFanout {
                                 inner_clone.ipc_tx.clone(),
                                 inner_clone.log_path.clone(),
                                 &inner_clone.log_size,
+                                inner_clone.stream.clone(),
                                 inner_clone.remote_enabled.clone(),
                             );
                         }
@@ -233,6 +310,7 @@ impl OutputFanout {
                     inner.ipc_tx.clone(),
                     inner.log_path.clone(),
                     &inner.log_size,
+                    inner.stream.clone(),
                     inner.remote_enabled.clone(),
                 );
             });
@@ -267,6 +345,7 @@ impl OutputFanout {
             self.inner.ipc_tx.clone(),
             self.inner.log_path.clone(),
             &self.inner.log_size,
+            self.inner.stream.clone(),
             self.inner.remote_enabled.clone(),
         );
     }
@@ -280,6 +359,7 @@ impl OutputFanout {
         ipc_tx: Option<mpsc::UnboundedSender<String>>,
         log_path: PathBuf,
         log_size: &std::sync::atomic::AtomicU64,
+        stream: Arc<OutputStream>,
         remote_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) {
         const CHUNK_SIZE: usize = 10 * 1024; // 10KB
@@ -303,14 +383,38 @@ impl OutputFanout {
             "📤 [FLUSH] 开始分块发送输出"
         );
 
-        // 写入环形日志
-        Self::append_log(&log_path, &data, log_size);
+        let mut cursor = stream
+            .cursor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Persist the raw snapshot before its sequence journal. A crash in this
+        // interval may leave bytes only in the next replay snapshot, never a
+        // reused sequence for an already-emitted live frame. If this fails, do
+        // not expose a live frame: its sequence would otherwise be outside the
+        // next snapshot and violate the replay fence. Local IPC does not take
+        // part in remote replay, so keep the desktop-local fan-out available.
+        if let Err(error) = Self::append_log(&log_path, &data, log_size) {
+            tracing::error!(nid = %session_nid, error = %error, "输出日志持久化失败，拒绝发送未被快照覆盖的 live output");
+            if let Some(ref tx) = ipc_tx {
+                for chunk in data.chunks(CHUNK_SIZE) {
+                    let _ = tx.send(String::from_utf8_lossy(chunk).to_string());
+                }
+            }
+            return;
+        }
 
         for (i, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
             let text = String::from_utf8_lossy(chunk);
             if !wss_blocked {
                 if let Some(ref tx) = wss_tx {
-                    let msg = WsMessageBuilder::output(&session_nid, &text);
+                    let sequence = match persist_next_sequence(&stream, &mut cursor) {
+                        Ok(sequence) => sequence,
+                        Err(error) => {
+                            tracing::error!(nid = %session_nid, error = %error, "输出序号持久化失败，拒绝发送无序 live output");
+                            continue;
+                        }
+                    };
+                    let msg = WsMessageBuilder::output_live(&session_nid, &text, sequence);
                     match tx.send(msg) {
                         Ok(_) => tracing::info!(
                             chunk = i,
@@ -336,42 +440,141 @@ impl OutputFanout {
     ///
     /// 使用 per-file Mutex 防止两个并发上下文（spawn_blocking PTY reader +
     /// 100ms timer flush）的 write-all → trim 序列互相穿插导致数据丢失。
-    fn append_log(path: &PathBuf, data: &[u8], log_size: &std::sync::atomic::AtomicU64) {
+    fn append_log(
+        path: &PathBuf,
+        data: &[u8],
+        log_size: &std::sync::atomic::AtomicU64,
+    ) -> std::io::Result<()> {
         let lock = get_log_lock(path);
         let _guard = lock.lock().unwrap();
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-        match std::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)
-        {
-            Ok(mut f) => {
-                use std::io::Write;
-                if let Err(e) = f.write_all(data) {
-                    tracing::warn!(path = %path.display(), error = %e, "环形日志写入失败");
-                    return;
-                }
-            }
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "环形日志打开失败");
-                return;
-            }
-        }
+            .open(path)?;
+        use std::io::Write;
+        file.write_all(data)?;
+        // A remote live frame may only be emitted once a subsequent replay can
+        // reconstruct it after a crash, not merely after it reached a process
+        // buffer.
+        file.sync_data()?;
         log_size.fetch_add(data.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
-    /// 供 relay 模式使用：不依赖 OutputFanout 实例，直接从 nid 写入完整活动日志。
-    /// 通过全局 `STATIC_LOG_SIZES` 表复用 log_size 跟踪，避免 relay 模式每次
-    /// 写入都查询文件元数据。
-    pub fn append_log_static(nid: &str, data: &[u8]) {
+    /// Relay-mode live output uses the same durable sequence owner as a native PTY.
+    pub fn emit_static_live(nid: &str, data: &str, wss_tx: &mpsc::UnboundedSender<String>) {
         let log_path = kn_common::path::agent_dir()
             .join("sessions")
             .join(nid)
             .join("output.log");
         let log_size = get_static_log_size(nid);
-        Self::append_log(&log_path, data, &*log_size);
+        let stream = get_output_stream(&log_path);
+        let mut cursor = stream
+            .cursor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = Self::append_log(&log_path, data.as_bytes(), &*log_size) {
+            tracing::error!(nid = %nid, error = %error, "Relay 输出日志持久化失败，拒绝发送未被快照覆盖的 live output");
+            return;
+        }
+        match persist_next_sequence(&stream, &mut cursor) {
+            Ok(sequence) => {
+                if let Err(error) = wss_tx.send(WsMessageBuilder::output_live(nid, data, sequence))
+                {
+                    tracing::warn!(nid = %nid, error = %error, "Relay output 发送到 WSS 失败");
+                }
+            }
+            Err(error) => {
+                tracing::error!(nid = %nid, error = %error, "Relay output 序号持久化失败，拒绝发送无序 live output")
+            }
+        }
+    }
+
+    /// Captures and enqueues one complete replay while holding the session's
+    /// stream fence. The caller must pass a cloned outgoing sender, so this
+    /// synchronous critical section never awaits a Tokio mutex.
+    pub fn replay_to_wss(nid: &str, replay_id: &str, wss_tx: &mpsc::UnboundedSender<String>) {
+        let log_path = kn_common::path::agent_dir()
+            .join("sessions")
+            .join(nid)
+            .join("output.log");
+        let stream = get_output_stream(&log_path);
+        Self::replay_to_wss_at_path(nid, replay_id, &log_path, stream, wss_tx);
+    }
+
+    fn replay_to_wss_at_path(
+        nid: &str,
+        replay_id: &str,
+        log_path: &PathBuf,
+        stream: Arc<OutputStream>,
+        wss_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        let cursor = stream
+            .cursor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let replay = Self::replay_log_result_at_path(log_path);
+        match replay.status {
+            "ok" => {
+                const CHUNK_SIZE: usize = 32 * 1024;
+                let ansi_text = String::from_utf8_lossy(&replay.data).into_owned();
+                let mut offset = 0;
+                let mut chunks = 0usize;
+                while offset < ansi_text.len() {
+                    let end = std::cmp::min(offset + CHUNK_SIZE, ansi_text.len());
+                    let mut chunk_end = end;
+                    while chunk_end > offset && !ansi_text.is_char_boundary(chunk_end) {
+                        chunk_end -= 1;
+                    }
+                    if wss_tx
+                        .send(WsMessageBuilder::output_replay(
+                            nid,
+                            &ansi_text[offset..chunk_end],
+                            replay_id,
+                        ))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    chunks += 1;
+                    offset = chunk_end;
+                }
+                let _ = wss_tx.send(WsMessageBuilder::replay_output_done(
+                    nid,
+                    replay_id,
+                    "ok",
+                    replay.bytes,
+                    chunks,
+                    None,
+                    Some(*cursor),
+                ));
+            }
+            "empty" => {
+                let _ = wss_tx.send(WsMessageBuilder::replay_output_done(
+                    nid,
+                    replay_id,
+                    "empty",
+                    0,
+                    0,
+                    None,
+                    Some(*cursor),
+                ));
+            }
+            _ => {
+                let _ = wss_tx.send(WsMessageBuilder::replay_output_done(
+                    nid,
+                    replay_id,
+                    "error",
+                    0,
+                    0,
+                    replay.message.as_deref(),
+                    None,
+                ));
+            }
+        }
     }
 
     /// 读取活动会话的完整日志，用于恢复时回放。
@@ -483,7 +686,7 @@ impl OutputFanout {
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputFanout, OutputFanoutInner};
+    use super::{get_output_stream, OutputFanout, OutputFanoutInner};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -551,14 +754,64 @@ mod tests {
     }
 
     #[test]
+    fn replay_empty_output_reports_zero_snapshot_high_watermark() {
+        with_temp_log("s_replay_empty", |path| {
+            let stream = get_output_stream(&path);
+            let (tx, mut rx) = mpsc::unbounded_channel();
+
+            OutputFanout::replay_to_wss_at_path(
+                "s_replay_empty",
+                "replay_request_0001",
+                &path,
+                stream,
+                &tx,
+            );
+
+            let done: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(done["type"], "replay_output_done");
+            assert_eq!(done["data"]["replay_id"], "replay_request_0001");
+            assert_eq!(done["data"]["status"], "empty");
+            assert_eq!(done["data"]["snapshot_high_watermark"], "0");
+        });
+    }
+
+    #[test]
+    fn replay_snapshot_echoes_its_id_and_current_live_sequence_fence() {
+        with_temp_log("s_replay_fence", |path| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"snapshot").unwrap();
+            let stream = get_output_stream(&path);
+            *stream.cursor.lock().unwrap() = 7;
+            let (tx, mut rx) = mpsc::unbounded_channel();
+
+            OutputFanout::replay_to_wss_at_path(
+                "s_replay_fence",
+                "replay_request_0002",
+                &path,
+                stream,
+                &tx,
+            );
+
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(snapshot["type"], "output");
+            assert_eq!(snapshot["data"]["replay_id"], "replay_request_0002");
+            assert!(snapshot["data"].get("output_seq").is_none());
+            let done: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(done["data"]["replay_id"], "replay_request_0002");
+            assert_eq!(done["data"]["snapshot_high_watermark"], "7");
+        });
+    }
+
+    #[test]
     fn active_session_log_keeps_output_beyond_the_legacy_ring_limit() {
         with_temp_log("s_complete", |path| {
             let log_size = AtomicU64::new(0);
             let first = vec![b'a'; 256 * 1024];
             let second = vec![b'b'; 256 * 1024];
 
-            OutputFanout::append_log(&path, &first, &log_size);
-            OutputFanout::append_log(&path, &second, &log_size);
+            OutputFanout::append_log(&path, &first, &log_size).unwrap();
+            OutputFanout::append_log(&path, &second, &log_size).unwrap();
 
             let recovered = std::fs::read(&path).unwrap();
             assert_eq!(recovered.len(), first.len() + second.len());
@@ -653,6 +906,7 @@ mod tests {
                     extra_subscribers: std::sync::Mutex::new(Vec::new()),
                     log_path: path.clone(),
                     log_size: AtomicU64::new(0),
+                    stream: get_output_stream(&path),
                     remote_enabled: None,
                 }),
                 cancel: tokio_util::sync::CancellationToken::new(),
@@ -664,6 +918,33 @@ mod tests {
             let message = wss_rx.try_recv().expect("final output should be forwarded");
             assert!(message.contains("no session found"));
             assert_eq!(std::fs::read(path).unwrap(), b"Error: no session found");
+        });
+    }
+
+    #[test]
+    fn log_write_failure_does_not_emit_a_live_frame_or_advance_the_cursor() {
+        with_temp_log("s_log_failure", |path| {
+            // Opening a directory as the output file deterministically fails
+            // on every supported platform, unlike permission-based tests.
+            std::fs::create_dir_all(&path).unwrap();
+            let stream = get_output_stream(&path);
+            let (wss_tx, mut wss_rx) = mpsc::unbounded_channel();
+            let (ipc_tx, mut ipc_rx) = mpsc::unbounded_channel();
+
+            OutputFanout::flush_chunked(
+                "s_log_failure".to_string(),
+                b"not replayable".to_vec(),
+                Some(wss_tx),
+                Some(ipc_tx),
+                path,
+                &AtomicU64::new(0),
+                stream.clone(),
+                None,
+            );
+
+            assert!(wss_rx.try_recv().is_err());
+            assert_eq!(ipc_rx.try_recv().unwrap(), "not replayable");
+            assert_eq!(*stream.cursor.lock().unwrap(), 0);
         });
     }
 }
