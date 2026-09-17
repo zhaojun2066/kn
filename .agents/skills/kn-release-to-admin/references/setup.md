@@ -9,13 +9,12 @@ Create `~/workspace/me/miyao/admin/release-publish.json` with non-secret values:
   "githubRepo": "owner/kn",
   "expectedBuildMinutes": 30,
   "maxWaitMinutes": 90,
-  "expectedMinProtocolVersion": 1,
   "pollSeconds": 30,
   "keychainService": "kn.release-publish.admin"
 }
 ```
 
-`githubRepo` is optional when `gh repo view` can identify the current repository. `expectedBuildMinutes` is a local progress baseline, not a promise from GitHub. `maxWaitMinutes` stops waiting safely when Actions appears stalled; it does not cancel the GitHub run. The current Admin API selects `expectedMinProtocolVersion` server-side; the helper verifies the returned value before publication.
+`githubRepo` is optional when `gh repo view` can identify the current repository. `expectedBuildMinutes` is a local progress baseline, not a promise from GitHub. `maxWaitMinutes` stops waiting safely when Actions appears stalled; it does not cancel the GitHub run. The helper does not use Agent protocol levels as a release gate. Admin may retain `minProtocolVersion` in legacy Desktop-update responses, but it is not Agent WSS admission control and must not be used to reject an otherwise matching release.
 
 Store the Admin password in macOS Keychain, replacing the email, service name, and password placeholders before executing:
 

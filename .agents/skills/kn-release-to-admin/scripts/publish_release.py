@@ -75,7 +75,6 @@ def load_config() -> dict[str, Any]:
     value.setdefault("expectedBuildMinutes", 30)
     value.setdefault("pollSeconds", 30)
     value.setdefault("maxWaitMinutes", 90)
-    value.setdefault("expectedMinProtocolVersion", 1)
     value.setdefault("keychainService", "kn.release-publish.admin")
     if not isinstance(value["expectedBuildMinutes"], int) or value["expectedBuildMinutes"] <= 0:
         fail("expectedBuildMinutes 必须是正整数")
@@ -83,8 +82,6 @@ def load_config() -> dict[str, Any]:
         fail("pollSeconds 必须在 5 到 300 秒之间")
     if not isinstance(value["maxWaitMinutes"], int) or value["maxWaitMinutes"] <= 0:
         fail("maxWaitMinutes 必须是正整数")
-    if not isinstance(value["expectedMinProtocolVersion"], int) or value["expectedMinProtocolVersion"] <= 0:
-        fail("expectedMinProtocolVersion 必须是正整数")
     return value
 
 
@@ -272,13 +269,11 @@ class AdminClient:
         return self._response(connection)
 
 
-def require_release(value: Any, version: str, expected_status: str, expected_min_protocol_version: int) -> dict[str, Any]:
+def require_release(value: Any, version: str, expected_status: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail("Admin 未返回发布记录")
     if value.get("version") != version or value.get("agentVersion") != version or value.get("status") != expected_status:
         fail("Admin 返回的发布记录与请求不一致")
-    if value.get("minProtocolVersion") != expected_min_protocol_version:
-        fail(f"Admin 返回的最低协议版本不是预期的 {expected_min_protocol_version}")
     if expected_status == "draft" and (not value.get("armSha256") or not value.get("intelSha256")):
         fail("Admin 未返回两份服务端 SHA-256")
     return value
@@ -314,23 +309,25 @@ def main() -> int:
         existing = client.get("/desktop-releases")
         draft = next((row for row in existing or [] if isinstance(row, dict) and row.get("version") == args.version), None)
         if draft is not None:
-            if not args.publish:
-                fail(f"Admin 已有 {args.version} 记录；为保护不可覆盖版本，已停止")
-            draft = require_release(draft, args.version, "draft", settings["expectedMinProtocolVersion"])
+            if draft.get("status") != "draft":
+                fail(f"Admin 已有 {args.version} 的 {draft.get('status', '未知')} 记录；为保护不可覆盖版本，已停止")
+            draft = require_release(draft, args.version, "draft")
             if draft["armSha256"] != arm_hash or draft["intelSha256"] != intel_hash:
                 fail("现有 Admin 草稿的 SHA-256 与本次 GitHub artifact 不一致，已停止")
-            output(f"[Admin] 使用已验收的草稿 #{draft['id']}；ARM SHA-256: {draft['armSha256']}; Intel SHA-256: {draft['intelSha256']}")
+            output(f"[Admin] 已核验现有草稿 #{draft['id']}；ARM SHA-256: {draft['armSha256']}; Intel SHA-256: {draft['intelSha256']}")
         else:
-            draft = require_release(client.upload({"version": args.version, "agentVersion": args.version, "notes": notes.read_text(encoding="utf-8")}, arm, intel), args.version, "draft", settings["expectedMinProtocolVersion"])
+            draft = require_release(client.upload({"version": args.version, "agentVersion": args.version, "notes": notes.read_text(encoding="utf-8")}, arm, intel), args.version, "draft")
             if draft["armSha256"] != arm_hash or draft["intelSha256"] != intel_hash:
                 fail("Admin 返回的 SHA-256 与上传 artifact 不一致，草稿已保留待调查")
             output(f"[Admin] 草稿 #{draft['id']} 已创建；ARM SHA-256: {draft['armSha256']}; Intel SHA-256: {draft['intelSha256']}")
-            if not args.publish:
-                output(f"[Admin] 草稿保留待验收。确认后重新执行并加 --publish --confirm-publish v{args.version}。")
-                return 0
+            output(f"[Admin] 草稿保留待验收，未公开发布。验收后重新执行并加 --publish --confirm-publish v{args.version}。")
+            return 0
+        if not args.publish:
+            output(f"[Admin] 草稿保留待验收，未作写入或公开发布。确认后重新执行并加 --publish --confirm-publish v{args.version}。")
+            return 0
         client.json_request(f"/desktop-releases/{draft['id']}/publish", {})
         published = next((row for row in client.get("/desktop-releases") if isinstance(row, dict) and row.get("id") == draft["id"]), None)
-        require_release(published, args.version, "published", settings["expectedMinProtocolVersion"])
+        require_release(published, args.version, "published")
         output(f"[Admin] v{args.version} 已发布。")
     return 0
 

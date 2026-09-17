@@ -32,7 +32,7 @@ When the user supplies a target version, use it directly; do not ask them to edi
 
 After the tag is pushed, run the bundled helper with the exact semantic version without the `v` prefix. It polls the tag's `Build Desktop App` run every 30 seconds. Each update shows job completion, elapsed time, job state, and an estimate computed from `expectedBuildMinutes` in the local configuration. It stops after `maxWaitMinutes` without cancelling the GitHub run. It exits without an Admin mutation if the workflow fails, is cancelled, times out, or its artifact is incomplete.
 
-After reporting a successful draft and the required ARM/Intel acceptance outcome, wait for explicit user approval. A user can then say:
+If the matching draft already exists, the helper performs a read-only verification of its version, Agent version, ARM/Intel SHA-256 values, and status against the GitHub artifact; it reports those details and makes no Admin mutation. If no record exists, it uploads the artifact and creates a draft, then always exits—even if `--publish` was supplied. After reporting the verified draft and the required ARM/Intel acceptance outcome, wait for explicit user approval. A user can then say:
 
 ```text
 草稿 v1.2.0 已验收，请公开发布。
@@ -42,9 +42,9 @@ Only then run the helper with `--publish --confirm-publish v<version>`. The help
 
 ## Guardrails
 
-- The version must be `x.y.z`; artifact name, tag, `Cargo.toml`, Admin draft version, and returned minimum protocol version must agree with local expectations.
+- The version must be `x.y.z`; artifact name, tag, `Cargo.toml`, Admin draft version, and Agent version must agree with local expectations.
 - Require exactly one ARM and one Intel DMG plus a non-empty `release-notes.md`.
 - Use the GitHub Actions artifact, not arbitrary local DMGs or GitHub Release assets.
-- Stop when a same-version Admin record exists; existing published files are never overwritten.
+- An existing draft is read and SHA-256-verified only; an existing non-draft record stops the workflow. Existing published files are never overwritten.
 - A failed or timed-out build, download, login, upload, or verification stops the workflow. A created draft remains available for inspection; automatic cleanup and retries do not publish it.
 - Treat public publication as a distinct, explicitly approved action. Do not pass `--publish` unless the user has just approved the displayed draft details.
