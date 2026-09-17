@@ -84,7 +84,6 @@ pub enum AgentIncoming {
     Connected {
         ws_session_id: String,
         node_id: Option<String>,
-        protocol_version: Option<u32>,
     },
     /// 启动新会话（来自 Cloud 远程控制或 Agent IPC 本地工作流）
     /// sessionId 由 Agent 自行生成（"s_" + nanoid(12)），cloud 不再预分配。
@@ -348,16 +347,9 @@ impl WsEnvelope {
                     .and_then(|d| d.get("node_id"))
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                let protocol_version = self
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("protocol_version"))
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32);
                 Ok(AgentIncoming::Connected {
                     ws_session_id,
                     node_id,
-                    protocol_version,
                 })
             }
             "project_delivery_ack" => {
@@ -1280,11 +1272,9 @@ mod tests {
             AgentIncoming::Connected {
                 ws_session_id,
                 node_id,
-                protocol_version,
             } => {
                 assert_eq!(ws_session_id, "abc123");
                 assert_eq!(node_id, Some("node1".into()));
-                assert_eq!(protocol_version, Some(1));
             }
             _ => panic!("expected Connected"),
         }

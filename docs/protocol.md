@@ -39,4 +39,11 @@ Agent 的 WSS 消息使用以下信封；具体 `data` 以 `agent/src/proto.rs`�
 3. 修改移动端公开消息时，同步修改 Cloud `MobileMessageDispatcher` / `MobileProtocolMapper`、`../kn-ios` 的编码解码和相关测试。
 4. 调整认证、会话 ID、重放、幂等或 ACK 语义时，检查 Redis 状态、断线恢复与所有三仓测试。
 
+## Agent 内部协议兼容性
+
+- Agent WSS 没有全局协议版本、Agent 版本映射或能力协商；Cloud 不以 Agent 版本决定准入、路由或 Redis 状态。
+- 既有事件的类型名、必填字段和语义保持不变。新增可选字段必须使旧端保持既有行为；不兼容的字段或语义变更必须新增事件类型（如 `_v2`），不得复用旧类型。
+- Cloud 向旧 Agent 发送新事件时，旧 Agent 忽略未知类型且连接继续；Agent 向旧 Cloud 发送新事件时，旧 Cloud 同样只记录元数据并忽略。新事件的发送方负责在 Cloud 先行发布后才依赖其结果。
+- 移动端公开协议仍由 Cloud 严格校验，未知公开类型按现有错误语义拒绝，不适用本兼容规则。
+
 消息清单不是静态设计稿。实现中的枚举、白名单和协议测试始终优先于本页。

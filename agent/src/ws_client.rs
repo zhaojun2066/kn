@@ -67,6 +67,23 @@ fn is_auth_rejection_error(message: &str) -> bool {
     message.contains("401") || message.contains("403")
 }
 
+fn build_connect_request(
+    uri: http::Uri,
+    device_token: &str,
+    machine_id: &str,
+    agent_version: &str,
+    os_version: &str,
+    hostname: &str,
+) -> tokio_tungstenite::tungstenite::client::ClientRequestBuilder {
+    tokio_tungstenite::tungstenite::client::ClientRequestBuilder::new(uri)
+        .with_header("Authorization", format!("Bearer {}", device_token))
+        .with_header("X-KN-Role", "kn-agent")
+        .with_header("X-KN-Machine-Id", machine_id)
+        .with_header("X-KN-Agent-Version", agent_version)
+        .with_header("X-KN-OS-Version", ws_header_value(os_version))
+        .with_header("X-KN-Hostname", ws_header_value(hostname))
+}
+
 // ── Public API ──────────────────────────────────────────────
 
 /// 运行 WebSocket 连接循环，返回出站消息发送端。
@@ -195,16 +212,14 @@ async fn connect_and_run(
         .parse()
         .map_err(|e| AgentError::Ws(format!("无效的云端 URL: {}", e)))?;
 
-    let safe_os_version = ws_header_value(os_version);
-    let safe_hostname = ws_header_value(hostname);
-    let request = tokio_tungstenite::tungstenite::client::ClientRequestBuilder::new(uri)
-        .with_header("Authorization", format!("Bearer {}", device_token))
-        .with_header("X-KN-Role", "kn-agent")
-        .with_header("X-KN-Machine-Id", machine_id)
-        .with_header("X-KN-Agent-Version", agent_version)
-        .with_header("X-KN-OS-Version", safe_os_version)
-        .with_header("X-KN-Hostname", safe_hostname)
-        .with_header("X-KN-Protocol-Version", "3");
+    let request = build_connect_request(
+        uri,
+        device_token,
+        machine_id,
+        agent_version,
+        os_version,
+        hostname,
+    );
 
     tracing::info!("正在连接 {} ...", cloud_url);
 
@@ -428,6 +443,7 @@ async fn connect_and_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
     #[test]
     fn test_backoff_delay_first_attempt() {
@@ -479,6 +495,23 @@ mod tests {
         assert!(is_auth_rejection_error("HTTP error: 401 Unauthorized"));
         assert!(is_auth_rejection_error("HTTP error: 403 Forbidden"));
         assert!(!is_auth_rejection_error("HTTP error: 400 Bad Request"));
+    }
+
+    #[test]
+    fn connection_request_has_agent_metadata_but_no_global_protocol_version() {
+        let request = build_connect_request(
+            "wss://cloud.example/v1/ws".parse().unwrap(),
+            "device-token",
+            "machine-1",
+            "1.2.10",
+            "macOS",
+            "KN Mac",
+        )
+        .into_client_request()
+        .unwrap();
+
+        assert_eq!(request.headers()["X-KN-Agent-Version"], "1.2.10");
+        assert!(request.headers().get("X-KN-Protocol-Version").is_none());
     }
 
     #[test]

@@ -7,7 +7,7 @@
 - 二进制：`kn-agent`；`kn-agent bind` 可发起设备绑定。
 - 常驻方式：Desktop 管理对应的 launchd 服务。
 - 配置优先级：`KN_CLOUD_URL` / `KN_CLOUD_HTTP_URL` / `KN_PURCHASE_URL` 环境变量，其次 `<config_root>/agent/config.json`，最后为内置生产默认地址。生产根目录为 `~/.kn`；Desktop Debug 启动的 Agent 使用 `~/.kn-dev` 并通过 `KN_HOME` 传入。
-- Cloud 连接：`wss://…/v1/ws`，Agent 使用 device token、机器 ID 与协议版本请求头认证。
+- Cloud 连接：`wss://…/v1/ws`，Agent 使用 device token 与机器 ID 认证；`X-KN-Agent-Version` 仅作为设备信息元数据，不参与协议准入或路由。
 
 ## 本地状态
 
@@ -36,4 +36,4 @@ cargo check -p kn-agent
 cargo test -p kn-agent --lib
 ```
 
-修改消息类型时，必须同时检查 [Cloud](cloud.md) 的 dispatcher / mapper 和 [协议](protocol.md) 的边界规则；若改变移动端公开消息，还必须检查 `../kn-ios`。
+修改消息类型时，必须同时检查 [Cloud](cloud.md) 的 dispatcher / mapper 和 [协议](protocol.md) 的边界与兼容规则；若改变移动端公开消息，还必须检查 `../kn-ios`。

@@ -15,7 +15,7 @@ HTTP 的成功/业务错误使用统一 `{ code, message, data }` 响应；WSS �
 ## 认证和连接
 
 - HTTP 的用户请求使用 JWT；认证白名单以 `AuthFilter` 为准。
-- Agent 连接 `/v1/ws` 时携带 `Authorization: Bearer <device_token>`、`X-KN-Role: kn-agent`、`X-KN-Machine-Id` 和 `X-KN-Protocol-Version`。
+- Agent 连接 `/v1/ws` 时携带 `Authorization: Bearer <device_token>`、`X-KN-Role: kn-agent` 与 `X-KN-Machine-Id`；`X-KN-Agent-Version` 仅用于设备信息展示，不参与协议准入或路由。
 - iOS 连接同一 WSS 入口，使用用户 access token；Cloud 据角色建立不同的会话上下文。
 - Redis 保存在线/心跳、短期绑定和会话协调状态，并通过 Pub/Sub 路由跨节点的 WS 消息；MySQL 保存长期业务数据。
 

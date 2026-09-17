@@ -62,6 +62,7 @@ cd src-tauri && cargo check
 - 不要在 `setState` 后读取同步 ref 来判断最新 React state；把依赖最新 state 的副作用置于 updater 内。
 - Agent 与 iOS 的边界由 Cloud 适配：iOS 公共消息使用 camelCase，Agent 内部消息以 `agent/src/proto.rs` 和 Cloud mapper/dispatcher 为准。
 - 修改绑定、WSS 消息、会话恢复、ACK 或项目交付语义时，同时检查 `../kn-cloud`、`../kn-ios` 和跨仓测试。
+- 修改 Agent 内部 WSS 时遵循 [docs/protocol.md](docs/protocol.md) 的兼容规则：稳定旧事件、以新事件承载不兼容变更、双向安全忽略未知内部事件；不要新增全局协议版本或 Agent 版本路由。
 
 ### Shell Wrapper
 

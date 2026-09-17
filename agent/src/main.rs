@@ -1275,16 +1275,8 @@ async fn handle_incoming(
                 let _ = tx.send(response);
             }
         }
-        proto::AgentIncoming::Connected {
-            ws_session_id,
-            protocol_version,
-            ..
-        } => {
-            tracing::info!(
-                "云端已连接: session={}, protocol=v{}",
-                ws_session_id,
-                protocol_version.unwrap_or(1)
-            );
+        proto::AgentIncoming::Connected { ws_session_id, .. } => {
+            tracing::info!("云端已连接: session={}", ws_session_id);
             let outbox = delivery_outbox.clone();
             let reconnect_outgoing = outgoing.clone();
             tokio::spawn(async move {
